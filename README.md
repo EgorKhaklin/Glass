@@ -243,7 +243,7 @@ Glass is dual-licensed under either of:
 - **MIT License** ([LICENSE-MIT](LICENSE-MIT) or <https://opensource.org/licenses/MIT>)
 - **Apache License, Version 2.0** ([LICENSE-APACHE](LICENSE-APACHE) or <https://www.apache.org/licenses/LICENSE-2.0>)
 
-at your option. This is the same pattern used by Rust and most of the modern compiler ecosystem: MIT for simplicity and broad compatibility, Apache 2.0 for the explicit patent grant.
+at your option. MIT for simplicity and broad compatibility, Apache 2.0 for the explicit patent grant.
 
 ### Contribution
 
