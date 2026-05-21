@@ -9,7 +9,7 @@
 <br/>
 
 [![Version](https://img.shields.io/badge/version-1.0.0-00bcd4?style=flat-square)](CHANGELOG.md)
-[![License](https://img.shields.io/badge/license-MIT-00bcd4?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT_OR_Apache--2.0-00bcd4?style=flat-square)](#license)
 [![Python](https://img.shields.io/badge/python-3.10+-00bcd4?style=flat-square)](pyproject.toml)
 [![Tests](https://img.shields.io/badge/tests-60%2F60_passing-00bcd4?style=flat-square)](tests/test_glass.py)
 [![Self-host](https://img.shields.io/badge/self--host-Stage_3_✓-00bcd4?style=flat-square)](examples/selfhost/prism.glass)
@@ -238,7 +238,16 @@ The cost is verbosity. The benefit is that six months later, when you come back 
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+Glass is dual-licensed under either of:
+
+- **MIT License** ([LICENSE-MIT](LICENSE-MIT) or <https://opensource.org/licenses/MIT>)
+- **Apache License, Version 2.0** ([LICENSE-APACHE](LICENSE-APACHE) or <https://www.apache.org/licenses/LICENSE-2.0>)
+
+at your option. This is the same pattern used by Rust and most of the modern compiler ecosystem: MIT for simplicity and broad compatibility, Apache 2.0 for the explicit patent grant.
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in Glass by you, as defined in the Apache-2.0 license, shall be dual-licensed as above, without any additional terms or conditions.
 
 <br/>
 
