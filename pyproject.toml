@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT OR Apache-2.0"}
 authors = [
-    {name = "VANTA (Egor Khaklin)"}
+    {name = "Egor Khaklin"}
 ]
 keywords = ["language", "functional", "type-system", "effects", "refinements", "self-hosting"]
 classifiers = [
