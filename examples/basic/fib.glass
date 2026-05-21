@@ -1,0 +1,9 @@
+# Recursion + if. Demonstrates that fn declarations bind for recursion
+# before the body is type-checked.
+
+fn fib(n: Int) : Int =
+  if n < 2 then n
+  else fib(n - 1) + fib(n - 2)
+
+let result : Int = fib(10)
+let _ = print("fib(10) = " ++ int_to_string(result))

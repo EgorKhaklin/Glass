@@ -1,0 +1,32 @@
+# The design-defining example.
+#
+# This is what Glass exists to make easy: a chain of pure transformations,
+# read top-to-bottom, with no indices, no mutation, no hidden state.
+#
+# Compare to a Python equivalent — same logic, but with for-loops, indices,
+# and accumulator variables to track. Here every line is locally legible.
+
+fn is_even(n: Int) : Bool =
+  n - (n / 2) * 2 == 0
+
+fn square(n: Int) : Int =
+  n * n
+
+# Sum of squares of even numbers from 1 to 10.
+let result : Int =
+  range(1, 11)
+    |> filter(is_even)
+    |> map(square)
+    |> fold(0, fn(acc: Int, x: Int) -> acc + x)
+
+let _ = print("sum of squares of evens 1..10 = " ++ int_to_string(result))
+
+# Pattern matching on lists, recursively.
+fn sum_list(xs: List<Int>) : Int =
+  match xs {
+    [] => 0;
+    [h, ...t] => h + sum_list(t)
+  }
+
+let xs : List<Int> = [1, 2, 3, 4, 5]
+let _ = print("sum of " ++ int_to_string(len(xs)) ++ " elements = " ++ int_to_string(sum_list(xs)))

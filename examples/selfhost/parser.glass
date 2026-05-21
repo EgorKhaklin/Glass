@@ -1,0 +1,129 @@
+# =============================================================================
+# v0.8 demo: parser.glass — a tokenizer for a small arithmetic grammar,
+# written in Glass.
+#
+# This is the first half of source → AST, the missing direction in the
+# self-hosting story. mini.glass already has AST → value (eval); this
+# file shows the path back to source via string processing. v0.8's new
+# string operations — substring, string_index_of, and the prelude's
+# string_contains built on them — are exactly the primitives a Glass
+# parser needs.
+#
+# Grammar handled:
+#   tokens ::= ws* (INT | "+" | "-" | "*" | "(" | ")") tokens | ε
+#
+# Next milestone: a full parser for mini.glass's grammar (lambdas,
+# let-in, if-then-else, application, operator precedence). Then the
+# loop closes: source → tokens → AST → value, all in Glass.
+# =============================================================================
+
+type Token =
+  | TInt(Int)
+  | TPlus
+  | TMinus
+  | TStar
+  | TLParen
+  | TRParen
+  | TEnd
+
+# --- Character-class helpers (using the new v0.8 string builtins) -------
+
+fn is_digit(c: String) : Bool = string_contains("0123456789", c)
+
+fn is_space(c: String) : Bool = if c == " " then true else c == "\t"
+
+# Glass has no Char type — characters are 1-length strings. char_at
+# returns "" past end-of-input, which is convenient (treated as
+# not-a-digit, not-a-space).
+fn char_at(s: String, i: Int) : String = substring(s, i, i + 1)
+
+# digit_value relies on string_index_of returning the position of the
+# character within "0123456789", which for single-digit strings IS the
+# digit value. A small but precise piece of cleverness.
+fn digit_value(c: String) : Int =
+  match string_index_of("0123456789", c) {
+    None    => 0;        # unreachable when caller has checked is_digit
+    Some(d) => d
+  }
+
+# --- Scanner primitives -------------------------------------------------
+
+fn skip_ws(s: String, i: Int) : Int =
+  if i >= string_length(s) then i
+  else if is_space(char_at(s, i)) then skip_ws(s, i + 1)
+  else i
+
+# Read an integer literal at position i; return (value, position-after).
+# Tuple return so the caller knows where to resume.
+fn read_int(s: String, i: Int, acc: Int) : (Int, Int) =
+  if i >= string_length(s) then (acc, i)
+  else
+    let c : String = char_at(s, i) in
+    if is_digit(c)
+      then read_int(s, i + 1, acc * 10 + digit_value(c))
+      else (acc, i)
+
+# Produce one token at position i; return (token, position-after).
+fn next_token(s: String, i: Int) : (Token, Int) =
+  let j : Int = skip_ws(s, i) in
+  if j >= string_length(s) then (TEnd, j)
+  else
+    let c : String = char_at(s, j) in
+    if is_digit(c) then
+      match read_int(s, j, 0) {
+        (n, k) => (TInt(n), k)
+      }
+    else if c == "+" then (TPlus,   j + 1)
+    else if c == "-" then (TMinus,  j + 1)
+    else if c == "*" then (TStar,   j + 1)
+    else if c == "(" then (TLParen, j + 1)
+    else if c == ")" then (TRParen, j + 1)
+    else (TEnd, j)   # unknown char — bail; a real impl would error here
+
+# Tokenize the whole string. Recursive walk until TEnd.
+fn tokenize(s: String, i: Int) : List<Token> =
+  match next_token(s, i) {
+    (TEnd, _) => [];
+    (t, j)    => [t] ++ tokenize(s, j)
+  }
+
+# --- Display ------------------------------------------------------------
+
+fn show_token(t: Token) : String =
+  match t {
+    TInt(n)  => "int(" ++ int_to_string(n) ++ ")";
+    TPlus    => "+";
+    TMinus   => "-";
+    TStar    => "*";
+    TLParen  => "(";
+    TRParen  => ")";
+    TEnd     => "<end>"
+  }
+
+fn show_tokens(ts: List<Token>) : String =
+  fold(ts, "", fn(acc: String, t: Token) ->
+    if string_length(acc) == 0
+      then show_token(t)
+      else acc ++ " " ++ show_token(t))
+
+# --- Demo ---------------------------------------------------------------
+
+fn run_tokens(label: String, s: String) : String !{IO} =
+  let _ : String = print(label ++ "  input:  " ++ s) in
+  print(label ++ "  tokens: " ++ show_tokens(tokenize(s, 0)))
+
+let _ : String = run_tokens("a)", "(1 + 2) * 3")
+let _ : String = run_tokens("b)", "  42 + 1234  ")
+let _ : String = run_tokens("c)", "1*2*3*4*5")
+let _ : String = run_tokens("d)", "((100 - 7) * (8 + 3))")
+let _ : String = run_tokens("e)", "")
+let _ : String = run_tokens("f)", "   ")
+let _ : String = run_tokens("g)", "0")
+
+# The macro picture: this file is small (~100 lines of Glass) and only
+# tokenizes an arithmetic subset. But it demonstrates that v0.8's string
+# primitives are sufficient. Scaling up to mini.glass's full grammar is
+# the same code shape, more cases. The parser itself (tokens → AST) is
+# straightforward recursive descent — Glass already has all the
+# language primitives needed (sum types, lists, Result, pattern match).
+# What was missing was the string operations. Now they're here.

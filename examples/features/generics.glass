@@ -1,0 +1,66 @@
+# v0.3 demo: user-defined polymorphic functions.
+#
+# Glass now supports generic fn declarations. Type parameters in <angle
+# brackets> become rigid type variables inside the body — you can pass them
+# around, wrap them in containers, return them — but you cannot pretend
+# they're a specific concrete type. From the outside, each call site
+# specialises them freshly via unification.
+
+# A generic Maybe-style fallback.
+fn or_else<T>(o: Option<T>, fallback: T) : T =
+  match o {
+    None    => fallback;
+    Some(x) => x
+  }
+
+# Two-argument fold under a different name to demonstrate generic Acc.
+fn sum_with<T>(xs: List<T>, init: Int, weigh: (T) -> Int) : Int =
+  fold(xs, init, fn(acc: Int, x: T) -> acc + weigh(x))
+
+# Compose two functions. Three type parameters.
+fn compose<A, B, C>(g: (B) -> C, f: (A) -> B) : (A) -> C =
+  fn(x: A) -> g(f(x))
+
+# ---- Usage -----------------------------------------------------------------
+
+let words : List<String> = ["hello", "world", "from", "glass"]
+
+# or_else on Option<Int>
+let n : Int = or_else(head(range(1, 4)), 0)
+let z : Int = or_else(head([]), 99)
+let _ = print("first of range(1,4) or 0:   " ++ int_to_string(n))
+let _ = print("first of [] or 99:         " ++ int_to_string(z))
+
+# sum_with: total length of all words
+let total_len : Int = sum_with(words, 0, string_length)
+let _ = print("sum of word lengths:       " ++ int_to_string(total_len))
+
+# compose two int functions
+fn inc(n: Int) : Int = n + 1
+fn dbl(n: Int) : Int = n * 2
+
+let inc_then_dbl : (Int) -> Int = compose(dbl, inc)
+let _ = print("(inc then dbl)(10):        " ++ int_to_string(inc_then_dbl(10)))
+
+# bind_result and bind_option from the prelude
+fn safe_div(a: Int, b: Int) : Result<Int, String> =
+  if b == 0 then Err("div by zero") else Ok(a / b)
+
+# Chain: 100 / 5 / 2 = 10  (with early-exit on any zero divisor)
+fn chain_divs(a: Int, b: Int, c: Int) : Result<Int, String> =
+  bind_result(safe_div(a, b), fn(q1: Int) ->
+    safe_div(q1, c))
+
+let r1 : Result<Int, String> = chain_divs(100, 5, 2)
+let r2 : Result<Int, String> = chain_divs(100, 0, 2)
+let r3 : Result<Int, String> = chain_divs(100, 5, 0)
+
+fn show_r(r: Result<Int, String>) : String =
+  match r {
+    Ok(n)  => "ok: " ++ int_to_string(n);
+    Err(m) => "err: " ++ m
+  }
+
+let _ = print("100/5/2:                   " ++ show_r(r1))
+let _ = print("100/0/2 (short-circuits):  " ++ show_r(r2))
+let _ = print("100/5/0:                   " ++ show_r(r3))

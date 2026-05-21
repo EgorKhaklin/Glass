@@ -1,0 +1,481 @@
+# =============================================================================
+# v0.8.3 demo: bootstrap.glass — full Glass-mini, source → value, in Glass.
+#
+# This file extends the v0.8.2 bootstrap (arithmetic + if) to mini.glass's
+# full grammar: variables, let-in, lambdas, function application,
+# higher-order functions, closures. The same code shape applies — more
+# token kinds, more parser productions, more eval cases. No new algorithmic
+# ideas, just volume.
+#
+# It also reads source from a file via the v0.8.3 !{File} effect, which
+# means Glass programs can now be run by other Glass programs. The
+# self-hosting workflow is in place: write a .glass-mini source file,
+# call run_file on it, get a value.
+#
+# Grammar (informally):
+#
+#   expr    ::= compare
+#   compare ::= add ( "<" add )?
+#   add     ::= mul ( "+" mul )*
+#   mul     ::= postfix ( "*" postfix )*
+#   postfix ::= atom ( "(" expr ")" )*           -- left-assoc application
+#   atom    ::= INT | "true" | "false" | IDENT
+#             | "(" expr ")"
+#             | "if" expr "then" expr "else" expr
+#             | "let" IDENT "=" expr "in" expr
+#             | "fn" "(" IDENT ")" "->" expr
+# =============================================================================
+
+# --- Data ---------------------------------------------------------------
+
+type Token =
+  | TInt(Int)
+  | TIdent(String)
+  | TTrue
+  | TFalse
+  | TPlus
+  | TStar
+  | TLt
+  | TEq            # =
+  | TArrow         # ->
+  | TIf
+  | TThen
+  | TElse
+  | TLet
+  | TIn
+  | TFn
+  | TLParen
+  | TRParen
+  | TEnd
+
+type Expr =
+  | EInt(Int)
+  | EBool(Bool)
+  | EVar(String)
+  | EAdd(Expr, Expr)
+  | EMul(Expr, Expr)
+  | ELt(Expr, Expr)
+  | EIf(Expr, Expr, Expr)
+  | ELet(String, Expr, Expr)
+  | EFn(String, Expr)
+  | EApp(Expr, Expr)
+
+type Value =
+  | VInt(Int)
+  | VBool(Bool)
+  | VClos(String, Expr, List<Pair<String, Value>>)
+
+
+# --- Lexer --------------------------------------------------------------
+
+fn is_digit(c: String) : Bool = string_contains("0123456789", c)
+
+fn is_alpha(c: String) : Bool =
+  string_contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_", c)
+
+fn is_alnum(c: String) : Bool =
+  if is_alpha(c) then true else is_digit(c)
+
+fn is_space(c: String) : Bool =
+  if c == " "  then true
+  else if c == "\t" then true
+  else c == "\n"
+
+fn char_at(s: String, i: Int) : String = substring(s, i, i + 1)
+
+fn digit_value(c: String) : Int =
+  match string_index_of("0123456789", c) {
+    None    => 0;
+    Some(d) => d
+  }
+
+fn skip_ws(s: String, i: Int) : Int =
+  if i >= string_length(s) then i
+  else if is_space(char_at(s, i)) then skip_ws(s, i + 1)
+  else i
+
+fn read_int(s: String, i: Int, acc: Int) : (Int, Int) =
+  if i >= string_length(s) then (acc, i)
+  else
+    let c : String = char_at(s, i) in
+    if is_digit(c) then read_int(s, i + 1, acc * 10 + digit_value(c))
+    else (acc, i)
+
+# Identifiers may contain alphanumerics + underscore after the first char.
+fn read_ident(s: String, i: Int, acc: String) : (String, Int) =
+  if i >= string_length(s) then (acc, i)
+  else
+    let c : String = char_at(s, i) in
+    if is_alnum(c) then read_ident(s, i + 1, acc ++ c)
+    else (acc, i)
+
+fn classify_word(s: String) : Token =
+  if s == "if"    then TIf
+  else if s == "then"  then TThen
+  else if s == "else"  then TElse
+  else if s == "let"   then TLet
+  else if s == "in"    then TIn
+  else if s == "fn"    then TFn
+  else if s == "true"  then TTrue
+  else if s == "false" then TFalse
+  else TIdent(s)
+
+fn next_token(s: String, i: Int) : (Token, Int) =
+  let j : Int = skip_ws(s, i) in
+  if j >= string_length(s) then (TEnd, j)
+  else
+    let c : String = char_at(s, j) in
+    if is_digit(c) then
+      match read_int(s, j, 0) {
+        (n, k) => (TInt(n), k)
+      }
+    else if is_alpha(c) then
+      match read_ident(s, j, "") {
+        (id, k) => (classify_word(id), k)
+      }
+    else if c == "+" then (TPlus,   j + 1)
+    else if c == "*" then (TStar,   j + 1)
+    else if c == "<" then (TLt,     j + 1)
+    else if c == "=" then (TEq,     j + 1)
+    else if c == "(" then (TLParen, j + 1)
+    else if c == ")" then (TRParen, j + 1)
+    else if c == "-" then
+      # Lookahead for ->. Only "-" alone isn't in the grammar, so any
+      # bare "-" is an unknown character and we abort.
+      if char_at(s, j + 1) == ">" then (TArrow, j + 2)
+      else (TEnd, j)
+    else (TEnd, j)
+
+fn tokenize_at(s: String, i: Int) : List<Token> =
+  match next_token(s, i) {
+    (TEnd, _) => [];
+    (t, k)    => [t] ++ tokenize_at(s, k)
+  }
+
+fn tokenize(s: String) : List<Token> = tokenize_at(s, 0)
+
+
+# --- Parser -------------------------------------------------------------
+
+fn peek_tok(ts: List<Token>) : Token =
+  match ts { [] => TEnd; [t, ...rest] => t }
+
+fn rest_tok(ts: List<Token>) : List<Token> =
+  match ts { [] => []; [_, ...r] => r }
+
+# parse_atom: literal, var, parenthesised expr, if-expr, let-expr, fn-expr.
+fn parse_atom(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  match peek_tok(ts) {
+    TInt(n)     => Ok((EInt(n),     rest_tok(ts)));
+    TTrue       => Ok((EBool(true), rest_tok(ts)));
+    TFalse      => Ok((EBool(false), rest_tok(ts)));
+    TIdent(name)=> Ok((EVar(name),  rest_tok(ts)));
+    TLParen     => parse_paren(rest_tok(ts));
+    TIf         => parse_if(rest_tok(ts));
+    TLet        => parse_let(rest_tok(ts));
+    TFn         => parse_fn(rest_tok(ts));
+    TEnd        => Err("unexpected end of input");
+    _           => Err("unexpected token in atom")
+  }
+
+fn parse_paren(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  bind_result(parse_expr(ts), fn(p: (Expr, List<Token>)) ->
+    match p {
+      (e, after) =>
+        match peek_tok(after) {
+          TRParen => Ok((e, rest_tok(after)));
+          _       => Err("expected )")
+        }
+    })
+
+fn parse_if(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  bind_result(parse_expr(ts), fn(p1: (Expr, List<Token>)) ->
+    match p1 {
+      (cond, after_c) =>
+        match peek_tok(after_c) {
+          TThen =>
+            bind_result(parse_expr(rest_tok(after_c)), fn(p2: (Expr, List<Token>)) ->
+              match p2 {
+                (tb, after_t) =>
+                  match peek_tok(after_t) {
+                    TElse =>
+                      bind_result(parse_expr(rest_tok(after_t)),
+                                  fn(p3: (Expr, List<Token>)) ->
+                        match p3 {
+                          (eb, after_e) => Ok((EIf(cond, tb, eb), after_e))
+                        });
+                    _ => Err("expected else")
+                  }
+              });
+          _ => Err("expected then")
+        }
+    })
+
+# let IDENT = expr in expr
+fn parse_let(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  match peek_tok(ts) {
+    TIdent(name) =>
+      let after_name : List<Token> = rest_tok(ts) in
+      match peek_tok(after_name) {
+        TEq =>
+          bind_result(parse_expr(rest_tok(after_name)),
+                      fn(p1: (Expr, List<Token>)) ->
+            match p1 {
+              (val, after_val) =>
+                match peek_tok(after_val) {
+                  TIn =>
+                    bind_result(parse_expr(rest_tok(after_val)),
+                                fn(p2: (Expr, List<Token>)) ->
+                      match p2 {
+                        (body, after_body) =>
+                          Ok((ELet(name, val, body), after_body))
+                      });
+                  _ => Err("expected 'in' after let value")
+                }
+            });
+        _ => Err("expected '=' after let name")
+      };
+    _ => Err("expected identifier after let")
+  }
+
+# fn ( IDENT ) -> expr
+fn parse_fn(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  match peek_tok(ts) {
+    TLParen =>
+      let after_lp : List<Token> = rest_tok(ts) in
+      match peek_tok(after_lp) {
+        TIdent(name) =>
+          let after_name : List<Token> = rest_tok(after_lp) in
+          match peek_tok(after_name) {
+            TRParen =>
+              let after_rp : List<Token> = rest_tok(after_name) in
+              match peek_tok(after_rp) {
+                TArrow =>
+                  bind_result(parse_expr(rest_tok(after_rp)),
+                              fn(p: (Expr, List<Token>)) ->
+                    match p {
+                      (body, after_body) =>
+                        Ok((EFn(name, body), after_body))
+                    });
+                _ => Err("expected '->' after fn parameter")
+              };
+            _ => Err("expected ')' after fn parameter")
+          };
+        _ => Err("expected identifier as fn parameter")
+      };
+    _ => Err("expected '(' after fn")
+  }
+
+# postfix: parse_atom followed by zero or more (...) applications.
+fn parse_app_loop(e: Expr, ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  match peek_tok(ts) {
+    TLParen =>
+      bind_result(parse_expr(rest_tok(ts)), fn(p: (Expr, List<Token>)) ->
+        match p {
+          (arg, after_arg) =>
+            match peek_tok(after_arg) {
+              TRParen => parse_app_loop(EApp(e, arg), rest_tok(after_arg));
+              _       => Err("expected ')' in function call")
+            }
+        });
+    _ => Ok((e, ts))
+  }
+
+fn parse_postfix(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  bind_result(parse_atom(ts), fn(p: (Expr, List<Token>)) ->
+    match p {
+      (e, after) => parse_app_loop(e, after)
+    })
+
+# Left-associative *
+fn parse_mul_rest(left: Expr, ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  match peek_tok(ts) {
+    TStar =>
+      bind_result(parse_postfix(rest_tok(ts)), fn(p: (Expr, List<Token>)) ->
+        match p { (right, after) => parse_mul_rest(EMul(left, right), after) });
+    _ => Ok((left, ts))
+  }
+
+fn parse_mul(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  bind_result(parse_postfix(ts), fn(p: (Expr, List<Token>)) ->
+    match p { (left, after) => parse_mul_rest(left, after) })
+
+# Left-associative +
+fn parse_add_rest(left: Expr, ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  match peek_tok(ts) {
+    TPlus =>
+      bind_result(parse_mul(rest_tok(ts)), fn(p: (Expr, List<Token>)) ->
+        match p { (right, after) => parse_add_rest(EAdd(left, right), after) });
+    _ => Ok((left, ts))
+  }
+
+fn parse_add(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  bind_result(parse_mul(ts), fn(p: (Expr, List<Token>)) ->
+    match p { (left, after) => parse_add_rest(left, after) })
+
+# Non-associative <
+fn parse_compare(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  bind_result(parse_add(ts), fn(p: (Expr, List<Token>)) ->
+    match p {
+      (left, after_left) =>
+        match peek_tok(after_left) {
+          TLt =>
+            bind_result(parse_add(rest_tok(after_left)),
+                        fn(p2: (Expr, List<Token>)) ->
+              match p2 {
+                (right, after_right) => Ok((ELt(left, right), after_right))
+              });
+          _ => Ok((left, after_left))
+        }
+    })
+
+fn parse_expr(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  parse_compare(ts)
+
+# Top-level
+fn parse(src: String) : Result<Expr, String> =
+  bind_result(parse_expr(tokenize(src)), fn(p: (Expr, List<Token>)) ->
+    match p {
+      (e, leftover) =>
+        match peek_tok(leftover) {
+          TEnd => Ok(e);
+          _    => Err("extra tokens after expression")
+        }
+    })
+
+
+# --- Evaluator ----------------------------------------------------------
+
+fn lookup_env(env: List<Pair<String, Value>>, name: String) : Option<Value> =
+  match env {
+    [] => None;
+    [Pair(k, v), ...rest] =>
+      if k == name then Some(v) else lookup_env(rest, name)
+  }
+
+fn eval_int_bin(
+  a: Expr, b: Expr,
+  env: List<Pair<String, Value>>,
+  mk: (Int, Int) -> Value
+) : Result<Value, String> =
+  bind_result(eval(a, env), fn(va: Value) ->
+    bind_result(eval(b, env), fn(vb: Value) ->
+      match va {
+        VInt(x) =>
+          match vb {
+            VInt(y) => Ok(mk(x, y));
+            _       => Err("rhs not Int")
+          };
+        _ => Err("lhs not Int")
+      }))
+
+fn eval(e: Expr, env: List<Pair<String, Value>>) : Result<Value, String> =
+  match e {
+    EInt(n)  => Ok(VInt(n));
+    EBool(b) => Ok(VBool(b));
+
+    EVar(name) =>
+      match lookup_env(env, name) {
+        None    => Err("unbound variable: " ++ name);
+        Some(v) => Ok(v)
+      };
+
+    EAdd(a, b) => eval_int_bin(a, b, env, fn(x: Int, y: Int) -> VInt(x + y));
+    EMul(a, b) => eval_int_bin(a, b, env, fn(x: Int, y: Int) -> VInt(x * y));
+    ELt(a, b)  => eval_int_bin(a, b, env, fn(x: Int, y: Int) -> VBool(x < y));
+
+    EIf(c, t, e_b) =>
+      bind_result(eval(c, env), fn(vc: Value) ->
+        match vc {
+          VBool(b) => if b then eval(t, env) else eval(e_b, env);
+          _        => Err("if condition not Bool")
+        });
+
+    ELet(name, value, body) =>
+      bind_result(eval(value, env), fn(v: Value) ->
+        eval(body, [Pair(name, v)] ++ env));
+
+    # A function literal captures the current environment — that's the
+    # closure. Lexical scope falls out naturally.
+    EFn(name, body) =>
+      Ok(VClos(name, body, env));
+
+    EApp(f, arg) =>
+      bind_result(eval(f, env), fn(vf: Value) ->
+        bind_result(eval(arg, env), fn(varg: Value) ->
+          match vf {
+            VClos(param, body, clos_env) =>
+              eval(body, [Pair(param, varg)] ++ clos_env);
+            _ => Err("not a function — can't apply")
+          }))
+  }
+
+
+# --- Top-level ----------------------------------------------------------
+
+fn show_value(v: Value) : String =
+  match v {
+    VInt(n)        => int_to_string(n);
+    VBool(b)       => if b then "true" else "false";
+    VClos(_, _, _) => "<closure>"
+  }
+
+fn run(src: String) : String !{IO} =
+  let outcome : String =
+    match parse(src) {
+      Err(msg) => "parse error: " ++ msg;
+      Ok(e)    =>
+        match eval(e, []) {
+          Err(msg) => "eval error: " ++ msg;
+          Ok(v)    => show_value(v)
+        }
+    } in
+  print(src ++ "  ==>  " ++ outcome)
+
+# Read a .glass-mini source file from disk and run it. !{File, IO}.
+# This is the workflow self-hosting needs: Glass programs that read
+# other Glass-program sources from disk.
+fn run_file(path: String) : String !{IO, File} =
+  match read_file(path) {
+    Err(msg) => print("can't read " ++ path ++ ": " ++ msg);
+    Ok(src)  => run(src)
+  }
+
+
+# --- Inline demos -------------------------------------------------------
+
+let _ : String = run("1 + 2 * 3")
+let _ : String = run("(1 + 2) * 3")
+let _ : String = run("let x = 5 in x + x")
+let _ : String = run("let f = fn(x) -> x + 1 in f(10)")
+let _ : String = run("let add = fn(x) -> fn(y) -> x + y in add(3)(4)")
+let _ : String = run("let twice = fn(f) -> fn(x) -> f(f(x)) in twice(fn(n) -> n + 10)(5)")
+let _ : String = run("if 3 < 5 then 100 else 200")
+let _ : String = run("let x = 10 in let y = x + 1 in y * 2")
+
+# Errors
+let _ : String = run("undefined_var")
+let _ : String = run("let f = 5 in f(3)")
+let _ : String = run("1 + ")
+
+
+# --- Glass reads Glass-mini source from disk ----------------------------
+#
+# This is the workflow moment: Glass programs reading other Glass-program
+# sources and executing them. Same machinery the v1.0 self-host uses,
+# just with a smaller language target.
+
+let _ : String = print("--- glass reads sample.glass-mini from disk ---")
+let _ : String = run_file("/home/claude/glass/examples/sample.glass-mini")
+let _ : String = run_file("/home/claude/glass/examples/sample2.glass-mini")
+let _ : String = run_file("/tmp/this-file-does-not-exist.glass-mini")
+
+# Trailing reflection: this file is ~430 lines of Glass, handling
+# untyped lambda calculus with arithmetic, booleans, conditionals,
+# let-bindings, lambdas, application, closures, higher-order functions —
+# the same grammar that mini.glass implements as a separate Glass
+# program with hand-built ASTs. The new piece is the parser.
+#
+# A user.glass-mini source file can now be loaded and run via
+# `run_file(path)`. See the run_file invocation later if a sample is
+# provided to the runner.

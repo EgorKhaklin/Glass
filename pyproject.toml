@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "glass-lang"
+version = "1.0.0"
+description = "Glass: a pure functional language designed for transparent local reasoning"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "VANTA (Egor Khaklin)"}
+]
+keywords = ["language", "functional", "type-system", "effects", "refinements", "self-hosting"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Compilers",
+    "Topic :: Software Development :: Interpreters",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+]
+dependencies = []
+
+[project.scripts]
+glass = "glass:main"
+
+[project.urls]
+Repository = "https://github.com/EgorKhaklin/Glass"
+Documentation = "https://github.com/EgorKhaklin/Glass/blob/main/LANG.md"
+Changelog = "https://github.com/EgorKhaklin/Glass/blob/main/CHANGELOG.md"
+
+[tool.setuptools]
+py-modules = ["glass"]

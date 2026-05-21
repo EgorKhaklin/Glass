@@ -1,0 +1,7 @@
+type IntList = | INil | ICons(Int, IntList)
+fn sum_list(xs: IntList) : Int =
+  match xs {
+    INil => 0;
+    ICons(h, t) => h + sum_list(t)
+  }
+sum_list(ICons(10, ICons(20, ICons(30, INil))))

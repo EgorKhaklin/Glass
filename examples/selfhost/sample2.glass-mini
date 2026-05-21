@@ -1,0 +1,4 @@
+let make_adder = fn(n) -> fn(x) -> x + n in
+let add5  = make_adder(5)  in
+let add10 = make_adder(10) in
+add5(add10(7))

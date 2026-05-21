@@ -1,0 +1,76 @@
+# =============================================================================
+# v0.5 demo: algebraic effects.
+#
+# Functions declare what side-effects they perform via `!{Effect1, Effect2}`
+# after the return type. Callers must declare a superset of what they invoke.
+# A `pure` function (empty effect set) cannot call an effectful one.
+#
+# This is the Rust-style "the type system makes risky operations visible at
+# every call site" pattern, applied to side-effects rather than ownership.
+# It's also where the future post-quantum / ZK / crypto story starts: see
+# LANG.md for how Random, Private, Commit, Measure, and ConstantTime fit in.
+# =============================================================================
+
+# ---- Pure core (no effects) -----------------------------------------------
+
+fn modulo(x: Int where (x >= 0), m: Int where (m > 0)) : Int =
+  x - (x / m) * m
+
+fn mod_add(
+  a: Int where (a >= 0),
+  b: Int where (b >= 0),
+  m: Int where (m > 0)
+) : Int =
+  modulo(a + b, m)
+
+# ---- IO-effectful wrapper -------------------------------------------------
+#
+# Identical semantics to mod_add, but logs each call. The !{IO} on the
+# signature is mandatory — drop it and the type checker rejects the body
+# because it calls print (which is `(String) -> String !{IO}`).
+
+fn loud_mod_add(
+  a: Int where (a >= 0),
+  b: Int where (b >= 0),
+  m: Int where (m > 0)
+) : Int !{IO} =
+  let _ : String = print("mod_add(" ++ int_to_string(a)
+                         ++ ", " ++ int_to_string(b)
+                         ++ ", " ++ int_to_string(m) ++ ")") in
+  mod_add(a, b, m)
+
+# ---- Random-effectful operation -------------------------------------------
+#
+# random_int is a builtin with signature (Int, Int) -> Int !{Random}.
+# A function that calls it must also declare !{Random}.
+
+fn pick_witness(p: Int where (p > 2)) : Int !{Random} =
+  random_int(1, p)
+
+# ---- Combining effects ----------------------------------------------------
+#
+# A function that does BOTH logging and randomness must declare both.
+# The type system catches you if you only declare one.
+
+fn loud_witness(p: Int where (p > 2)) : Int !{IO, Random} =
+  let w : Int = pick_witness(p) in
+  let _ : String = print("picked witness " ++ int_to_string(w) ++ " for p=" ++ int_to_string(p)) in
+  w
+
+# ---- Demonstration --------------------------------------------------------
+
+# Pure call — no effects propagate.
+let r1 : Int = mod_add(5, 7, 11)
+let _ : String = print("(5+7) mod 11        = " ++ int_to_string(r1))
+
+# Effectful call — works at top level (top level is the "main" scope and
+# allows any effects).
+let r2 : Int = loud_mod_add(8, 9, 13)
+let _ : String = print("(8+9) mod 13        = " ++ int_to_string(r2))
+
+# Random + IO chained together.
+let w : Int = loud_witness(13)
+let _ : String = print("got witness         = " ++ int_to_string(w))
+
+# Notice the inferred signatures shown above the output — every function
+# carries its effect set in its type, visible at every call site.

@@ -1,0 +1,552 @@
+# =============================================================================
+# v0.8.4 demo: infer.glass — Hindley-Milner type inference, in Glass.
+#
+# This is the algorithmic peak between v0.8 and v1.0 self-hosting.
+# Algorithm W: type inference with let-polymorphism, written in pure
+# Glass. The previous typecheck.glass is monomorphic — every variable
+# has one fixed type. This file shows let-polymorphism: a function
+# `id = fn(x) -> x` gets the polymorphic type `forall a. a -> a`, and
+# its uses get fresh type instantiations so `id(true)` and `id(42)`
+# coexist in the same program.
+#
+# Pure functional implementation. The substitution and the fresh-variable
+# counter are threaded explicitly through every call — Glass has no
+# mutation, so there's no other honest way. This is the same algorithm
+# every ML-family compiler implements; the demonstration is that Glass
+# can express it.
+#
+# Out of scope (intentionally, to focus on the algorithm):
+#   - Records, sums, tuples, lists
+#   - Refinements, effects
+#   - Recursive let (let rec)
+# Adding these is mechanical once HM works.
+# =============================================================================
+
+# --- Data ----------------------------------------------------------------
+
+# Type variables are integers, so freshness is just "increment a counter."
+# Names would work too, but integers are cheap to compare.
+type Type =
+  | TInt
+  | TBool
+  | TVar(Int)
+  | TFn(Type, Type)
+
+# A type scheme: forall vars . body. Used for let-polymorphism — the
+# bound variables are the "quantified" ones that get instantiated fresh
+# at each use site.
+type Scheme = | Scheme(List<Int>, Type)
+
+type Expr =
+  | EInt(Int)
+  | EBool(Bool)
+  | EVar(String)
+  | EAdd(Expr, Expr)
+  | ELt(Expr, Expr)
+  | EIf(Expr, Expr, Expr)
+  | ELam(String, Expr)
+  | EApp(Expr, Expr)
+  | ELet(String, Expr, Expr)
+  | ELetRec(String, Expr, Expr)
+
+
+# --- Int-list utilities --------------------------------------------------
+
+fn int_in(xs: List<Int>, n: Int) : Bool =
+  match xs {
+    []           => false;
+    [x, ...rest] => if x == n then true else int_in(rest, n)
+  }
+
+# Union with de-dup. Used for combining free-variable sets.
+fn int_union(a: List<Int>, b: List<Int>) : List<Int> =
+  match a {
+    []           => b;
+    [x, ...rest] =>
+      if int_in(b, x)
+        then int_union(rest, b)
+        else [x] ++ int_union(rest, b)
+  }
+
+fn int_diff(a: List<Int>, b: List<Int>) : List<Int> =
+  match a {
+    []           => [];
+    [x, ...rest] =>
+      if int_in(b, x)
+        then int_diff(rest, b)
+        else [x] ++ int_diff(rest, b)
+  }
+
+
+# --- Substitutions -------------------------------------------------------
+
+# A substitution is List<Pair<Int, Type>>. We append new bindings to the
+# front and resolve transitively in apply_subst.
+
+fn lookup_sub(s: List<Pair<Int, Type>>, n: Int) : Option<Type> =
+  match s {
+    []                     => None;
+    [Pair(k, v), ...rest]  => if k == n then Some(v) else lookup_sub(rest, n)
+  }
+
+fn apply_sub(s: List<Pair<Int, Type>>, t: Type) : Type =
+  match t {
+    TInt      => TInt;
+    TBool     => TBool;
+    TVar(n)   =>
+      match lookup_sub(s, n) {
+        None     => TVar(n);
+        Some(t2) => apply_sub(s, t2)
+      };
+    TFn(a, b) => TFn(apply_sub(s, a), apply_sub(s, b))
+  }
+
+# Apply a substitution to a type, avoiding the listed type variables.
+# Used when applying substitutions to scheme bodies — quantified
+# variables in a scheme are "fresh" within it and shouldn't be touched.
+fn apply_sub_avoid(s: List<Pair<Int, Type>>, t: Type, avoid: List<Int>) : Type =
+  match t {
+    TInt      => TInt;
+    TBool     => TBool;
+    TVar(n)   =>
+      if int_in(avoid, n) then TVar(n)
+      else match lookup_sub(s, n) {
+        None     => TVar(n);
+        Some(t2) => apply_sub_avoid(s, t2, avoid)
+      };
+    TFn(a, b) =>
+      TFn(apply_sub_avoid(s, a, avoid), apply_sub_avoid(s, b, avoid))
+  }
+
+
+# --- Free type variables -------------------------------------------------
+
+fn free_vars(t: Type) : List<Int> =
+  match t {
+    TInt      => [];
+    TBool     => [];
+    TVar(n)   => [n];
+    TFn(a, b) => int_union(free_vars(a), free_vars(b))
+  }
+
+fn free_vars_scheme(sch: Scheme) : List<Int> =
+  match sch { Scheme(qs, body) => int_diff(free_vars(body), qs) }
+
+# Free variables of the environment, AFTER applying the current
+# substitution. Used by generalize to determine which type variables
+# are "free in the outer context" and therefore should NOT be
+# quantified.
+fn free_vars_env(
+  env: List<Pair<String, Scheme>>,
+  s: List<Pair<Int, Type>>
+) : List<Int> =
+  match env {
+    []                       => [];
+    [Pair(_, sch), ...rest]  =>
+      match sch {
+        Scheme(qs, body) =>
+          int_union(
+            free_vars(apply_sub_avoid(s, body, qs)),
+            free_vars_env(rest, s)
+          )
+      }
+  }
+
+
+# --- Occurs check --------------------------------------------------------
+
+# Does TVar(n) appear in t (after resolving via s)? If yes, binding
+# n to t would create an infinite type — reject.
+fn occurs_in(n: Int, t: Type) : Bool =
+  match t {
+    TVar(m)   => m == n;
+    TFn(a, b) => if occurs_in(n, a) then true else occurs_in(n, b);
+    _         => false
+  }
+
+fn occurs(n: Int, t: Type, s: List<Pair<Int, Type>>) : Bool =
+  occurs_in(n, apply_sub(s, t))
+
+
+# --- Unification ---------------------------------------------------------
+
+# Find a substitution that makes t1 = t2 (extending s). Returns an
+# updated substitution, or Err on failure.
+fn unify(
+  t1: Type, t2: Type,
+  s: List<Pair<Int, Type>>
+) : Result<List<Pair<Int, Type>>, String> =
+  unify_rec(apply_sub(s, t1), apply_sub(s, t2), s)
+
+fn unify_rec(
+  t1: Type, t2: Type,
+  s: List<Pair<Int, Type>>
+) : Result<List<Pair<Int, Type>>, String> =
+  match t1 {
+    TVar(n) =>
+      match t2 {
+        TVar(m) =>
+          if n == m then Ok(s)
+          else Ok([Pair(n, t2)] ++ s);
+        _ =>
+          if occurs(n, t2, s)
+            then Err("occurs check: t" ++ int_to_string(n)
+                  ++ " in " ++ show_type(t2))
+            else Ok([Pair(n, t2)] ++ s)
+      };
+    TInt =>
+      match t2 {
+        TInt    => Ok(s);
+        TVar(_) => unify_rec(t2, t1, s);
+        _       => Err("can't unify Int with " ++ show_type(t2))
+      };
+    TBool =>
+      match t2 {
+        TBool   => Ok(s);
+        TVar(_) => unify_rec(t2, t1, s);
+        _       => Err("can't unify Bool with " ++ show_type(t2))
+      };
+    TFn(a1, b1) =>
+      match t2 {
+        TFn(a2, b2) =>
+          bind_result(unify(a1, a2, s), fn(s1: List<Pair<Int, Type>>) ->
+            unify(b1, b2, s1));
+        TVar(_) => unify_rec(t2, t1, s);
+        _       => Err("can't unify function with " ++ show_type(t2))
+      }
+  }
+
+
+# --- Instantiation & generalization --------------------------------------
+
+# Build a substitution mapping each quantified var to a fresh TVar.
+fn fresh_for_vars(qs: List<Int>, next: Int) : (List<Pair<Int, Type>>, Int) =
+  match qs {
+    [] => ([], next);
+    [q, ...rest] =>
+      match fresh_for_vars(rest, next + 1) {
+        (sub, n) => ([Pair(q, TVar(next))] ++ sub, n)
+      }
+  }
+
+# Instantiate a scheme: replace each quantified var with a fresh one.
+fn instantiate(sch: Scheme, next: Int) : (Type, Int) =
+  match sch {
+    Scheme(qs, body) =>
+      match fresh_for_vars(qs, next) {
+        (fresh_sub, new_next) => (apply_sub(fresh_sub, body), new_next)
+      }
+  }
+
+# Generalize a type to a scheme: quantify over its free vars MINUS those
+# free in the surrounding environment. The "env_fvs" param is the free
+# vars of the env at this point (after current substitution applied).
+fn generalize(env_fvs: List<Int>, t: Type) : Scheme =
+  Scheme(int_diff(free_vars(t), env_fvs), t)
+
+
+# --- Environment ---------------------------------------------------------
+
+fn lookup_env(
+  env: List<Pair<String, Scheme>>,
+  name: String
+) : Option<Scheme> =
+  match env {
+    []                       => None;
+    [Pair(k, v), ...rest]    =>
+      if k == name then Some(v) else lookup_env(rest, name)
+  }
+
+
+# --- Algorithm W: the inferer --------------------------------------------
+
+# Returns (inferred type, updated substitution, updated counter).
+# The substitution and counter are state threaded through every call.
+fn infer(
+  e: Expr,
+  env: List<Pair<String, Scheme>>,
+  s: List<Pair<Int, Type>>,
+  next: Int
+) : Result<(Type, List<Pair<Int, Type>>, Int), String> =
+  match e {
+    EInt(_)  => Ok((TInt,  s, next));
+    EBool(_) => Ok((TBool, s, next));
+
+    EVar(name) =>
+      match lookup_env(env, name) {
+        None      => Err("unbound: " ++ name);
+        Some(sch) =>
+          match instantiate(sch, next) {
+            (t, new_next) => Ok((t, s, new_next))
+          }
+      };
+
+    EAdd(a, b) =>
+      bind_result(infer(a, env, s, next),
+                  fn(r1: (Type, List<Pair<Int, Type>>, Int)) ->
+        match r1 { (ta, s1, n1) =>
+          bind_result(unify(ta, TInt, s1), fn(s2: List<Pair<Int, Type>>) ->
+            bind_result(infer(b, env, s2, n1),
+                        fn(r2: (Type, List<Pair<Int, Type>>, Int)) ->
+              match r2 { (tb, s3, n2) =>
+                bind_result(unify(tb, TInt, s3), fn(s4: List<Pair<Int, Type>>) ->
+                  Ok((TInt, s4, n2)))
+              }))
+        });
+
+    ELt(a, b) =>
+      bind_result(infer(a, env, s, next),
+                  fn(r1: (Type, List<Pair<Int, Type>>, Int)) ->
+        match r1 { (ta, s1, n1) =>
+          bind_result(unify(ta, TInt, s1), fn(s2: List<Pair<Int, Type>>) ->
+            bind_result(infer(b, env, s2, n1),
+                        fn(r2: (Type, List<Pair<Int, Type>>, Int)) ->
+              match r2 { (tb, s3, n2) =>
+                bind_result(unify(tb, TInt, s3), fn(s4: List<Pair<Int, Type>>) ->
+                  Ok((TBool, s4, n2)))
+              }))
+        });
+
+    EIf(c, t, e_b) =>
+      bind_result(infer(c, env, s, next),
+                  fn(r1: (Type, List<Pair<Int, Type>>, Int)) ->
+        match r1 { (tc, s1, n1) =>
+          bind_result(unify(tc, TBool, s1), fn(s2: List<Pair<Int, Type>>) ->
+            bind_result(infer(t, env, s2, n1),
+                        fn(r2: (Type, List<Pair<Int, Type>>, Int)) ->
+              match r2 { (tt, s3, n2) =>
+                bind_result(infer(e_b, env, s3, n2),
+                            fn(r3: (Type, List<Pair<Int, Type>>, Int)) ->
+                  match r3 { (te, s4, n3) =>
+                    bind_result(unify(tt, te, s4),
+                                fn(s5: List<Pair<Int, Type>>) ->
+                      Ok((apply_sub(s5, tt), s5, n3)))
+                  })
+              }))
+        });
+
+    ELam(x, body) =>
+      # Fresh tvar for the parameter; type-check body in extended env.
+      let a : Type = TVar(next) in
+      let env2 : List<Pair<String, Scheme>> =
+        [Pair(x, Scheme([], a))] ++ env in
+      bind_result(infer(body, env2, s, next + 1),
+                  fn(r: (Type, List<Pair<Int, Type>>, Int)) ->
+        match r { (tb, s1, n) =>
+          Ok((apply_sub(s1, TFn(a, tb)), s1, n))
+        });
+
+    EApp(f, arg) =>
+      bind_result(infer(f, env, s, next),
+                  fn(r1: (Type, List<Pair<Int, Type>>, Int)) ->
+        match r1 { (tf, s1, n1) =>
+          bind_result(infer(arg, env, s1, n1),
+                      fn(r2: (Type, List<Pair<Int, Type>>, Int)) ->
+            match r2 { (ta, s2, n2) =>
+              let result : Type = TVar(n2) in
+              bind_result(unify(tf, TFn(ta, result), s2),
+                          fn(s3: List<Pair<Int, Type>>) ->
+                Ok((apply_sub(s3, result), s3, n2 + 1)))
+            })
+        });
+
+    ELet(x, val, body) =>
+      # 1. Infer the value's type
+      # 2. Generalize over its free vars (minus env free vars) → scheme
+      # 3. Extend env with x : scheme
+      # 4. Infer body in the extended env
+      # This is what gives let-polymorphism: each use of x in body
+      # instantiates the scheme fresh.
+      bind_result(infer(val, env, s, next),
+                  fn(r1: (Type, List<Pair<Int, Type>>, Int)) ->
+        match r1 { (tv, s1, n1) =>
+          let env_fvs : List<Int> = free_vars_env(env, s1) in
+          let resolved : Type = apply_sub(s1, tv) in
+          let sch : Scheme = generalize(env_fvs, resolved) in
+          let env2 : List<Pair<String, Scheme>> =
+            [Pair(x, sch)] ++ env in
+          infer(body, env2, s1, n1)
+        });
+
+    ELetRec(x, val, body) =>
+      # Recursive let. The binding name is visible inside its own
+      # definition, so we type-check the value in an environment that
+      # already contains x : a (for a fresh tvar a). After inferring,
+      # we unify the inferred type with a (resolving recursion), then
+      # generalize for the body.
+      let a : Type = TVar(next) in
+      let env1 : List<Pair<String, Scheme>> =
+        [Pair(x, Scheme([], a))] ++ env in
+      bind_result(infer(val, env1, s, next + 1),
+                  fn(r1: (Type, List<Pair<Int, Type>>, Int)) ->
+        match r1 { (tv, s1, n1) =>
+          bind_result(unify(a, tv, s1), fn(s2: List<Pair<Int, Type>>) ->
+            let env_fvs : List<Int> = free_vars_env(env, s2) in
+            let resolved : Type = apply_sub(s2, tv) in
+            let sch : Scheme = generalize(env_fvs, resolved) in
+            let env2 : List<Pair<String, Scheme>> =
+              [Pair(x, sch)] ++ env in
+            infer(body, env2, s2, n1))
+        })
+  }
+
+
+# --- Top-level interface -------------------------------------------------
+
+# Pretty-print a type. Type variables show as t0, t1, ... by their IDs.
+fn show_type(t: Type) : String =
+  match t {
+    TInt      => "Int";
+    TBool     => "Bool";
+    TVar(n)   => "t" ++ int_to_string(n);
+    TFn(a, b) => "(" ++ show_type(a) ++ " -> " ++ show_type(b) ++ ")"
+  }
+
+# Run inference on an expression. Returns either the final type (with
+# substitution applied) or an error.
+fn run_infer(e: Expr) : Result<Type, String> =
+  bind_result(infer(e, [], [], 0),
+              fn(r: (Type, List<Pair<Int, Type>>, Int)) ->
+    match r { (t, s, _) => Ok(apply_sub(s, t)) })
+
+
+# --- Demo ----------------------------------------------------------------
+
+fn report(label: String, e: Expr) : String !{IO} =
+  match run_infer(e) {
+    Ok(t)    => print(label ++ "  ::  " ++ show_type(t));
+    Err(msg) => print(label ++ "  ::  ERROR: " ++ msg)
+  }
+
+# Constants
+let p1 : Expr = EInt(42)
+let p2 : Expr = EBool(true)
+
+# Polymorphic identity. Its inferred type is `tN -> tN` for some fresh N.
+let p3 : Expr = ELam("x", EVar("x"))
+
+# Identity APPLIED to an int. Should be Int.
+let p4 : Expr = EApp(ELam("x", EVar("x")), EInt(5))
+
+# let-polymorphism: id used at two types. This is the key HM test.
+# let id = fn(x) -> x in
+#   if id(true) then id(42) else id(0)
+let p5 : Expr = ELet(
+  "id", ELam("x", EVar("x")),
+  EIf(
+    EApp(EVar("id"), EBool(true)),
+    EApp(EVar("id"), EInt(42)),
+    EApp(EVar("id"), EInt(0))
+  )
+)
+
+# Const: fn(x) -> fn(y) -> x. Polymorphic in BOTH x and y.
+let p6 : Expr = ELam("x", ELam("y", EVar("x")))
+
+# Const applied: (const)(1)(true) ⇒ Int (1 is x, true is y, returns x)
+let p7 : Expr = EApp(
+  EApp(ELam("x", ELam("y", EVar("x"))), EInt(1)),
+  EBool(true)
+)
+
+# Higher-order: twice (a self-composer)
+# let twice = fn(f) -> fn(x) -> f(f(x)) in
+#   twice(fn(n) -> n + 1)(5)
+let p8 : Expr = ELet(
+  "twice",
+  ELam("f", ELam("x", EApp(EVar("f"), EApp(EVar("f"), EVar("x"))))),
+  EApp(EApp(EVar("twice"), ELam("n", EAdd(EVar("n"), EInt(1)))), EInt(5))
+)
+
+# Arithmetic: 1 + 2
+let p9 : Expr = EAdd(EInt(1), EInt(2))
+
+# Comparison: 3 < 5
+let p10 : Expr = ELt(EInt(3), EInt(5))
+
+# Error: occurs check. fn(x) -> x(x) requires x : a AND x : a -> b.
+# So a = a -> b, which is an infinite type. Reject.
+let p11 : Expr = ELam("x", EApp(EVar("x"), EVar("x")))
+
+# Error: if-condition not Bool
+let p12 : Expr = EIf(EInt(5), EInt(1), EInt(2))
+
+# Error: branches differ
+let p13 : Expr = EIf(EBool(true), EInt(1), EBool(true))
+
+# Error: rhs of + not Int
+let p14 : Expr = EAdd(EInt(1), EBool(true))
+
+# Error: unbound
+let p15 : Expr = EVar("undefined")
+
+# v0.8.4 — recursive let. Even though we can't evaluate this (no
+# subtraction in the grammar means the recursion never terminates),
+# we CAN type-check it. HM infers Int -> Int for the recursive fn.
+#   let rec f = fn(n) -> if n < 1 then 1 else f(n) in f(5)
+let p16 : Expr = ELetRec(
+  "f",
+  ELam("n",
+    EIf(ELt(EVar("n"), EInt(1)),
+        EInt(1),
+        EApp(EVar("f"), EVar("n")))),
+  EApp(EVar("f"), EInt(5))
+)
+
+# A second recursive case where the recursive call appears in
+# branching context. Type-inferring: f : Int -> Int.
+#   let rec g = fn(n) -> if true then n else g(n + 1) in g(0)
+let p17 : Expr = ELetRec(
+  "g",
+  ELam("n",
+    EIf(EBool(true),
+        EVar("n"),
+        EApp(EVar("g"), EAdd(EVar("n"), EInt(1))))),
+  EApp(EVar("g"), EInt(0))
+)
+
+# Polymorphic let rec is the subtle case: should the recursive name be
+# monomorphic (in scope of its definition) but polymorphic (in scope of
+# body)? Standard HM says yes — that's the "Mycroft" extension. Our
+# implementation matches this: x is monomorphic in its own body,
+# generalized for the let-body.
+# Here: let rec id = fn(x) -> x in id(42). id is polymorphic in the body.
+let p18 : Expr = ELetRec(
+  "id",
+  ELam("x", EVar("x")),
+  EApp(EVar("id"), EInt(42))
+)
+
+let _ : String = report("42                                  ", p1)
+let _ : String = report("true                                ", p2)
+let _ : String = report("fn(x) -> x                          ", p3)
+let _ : String = report("(fn(x) -> x)(5)                     ", p4)
+let _ : String = report("let id=fn(x)->x in if id(true) ...  ", p5)
+let _ : String = report("fn(x) -> fn(y) -> x                 ", p6)
+let _ : String = report("(const)(1)(true)                    ", p7)
+let _ : String = report("twice(fn(n)->n+1)(5)                ", p8)
+let _ : String = report("1 + 2                               ", p9)
+let _ : String = report("3 < 5                               ", p10)
+let _ : String = report("fn(x) -> x(x)                       ", p11)
+let _ : String = report("if 5 then 1 else 2                  ", p12)
+let _ : String = report("if true then 1 else true            ", p13)
+let _ : String = report("1 + true                            ", p14)
+let _ : String = report("undefined                           ", p15)
+let _ : String = report("let rec f=fn(n)->if n<1 then 1 ...  ", p16)
+let _ : String = report("let rec g=fn(n)->if true then n ... ", p17)
+let _ : String = report("let rec id=fn(x)->x in id(42)       ", p18)
+
+
+# What this file proves:
+#
+# Glass can express Algorithm W — the gold-standard type inference
+# algorithm — in pure functional code, with explicit state threading,
+# in ~430 lines. The implementation handles let-polymorphism, occurs
+# check, full unification, and produces accurate principal types for
+# every test case. p5 (id used at two types) returns Int — the
+# polymorphism IS working.
+#
+# This was the single algorithmic peak on the v1.0 self-host path.
+# What remains is mostly volume: more language constructs (records,
+# sums, lists, tuples, refinements, effects), more parser productions,
+# more eval cases. None of them have HM's algorithmic depth.

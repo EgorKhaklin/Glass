@@ -1,0 +1,787 @@
+# eff_infer.glass — Hindley-Milner type inference with effect polymorphism,
+# in pure Glass. The last algorithmic peak.
+#
+# The structural parallel to standalone HM (see infer.glass): effects are
+# inferred alongside types. Substitution, free-variable computation,
+# generalization, and instantiation are all extended to handle effect
+# rows alongside type variables.
+#
+# Effect model. Function types carry a "latent effect" annotation —
+# what happens when the function is CALLED. The ambient effects of any
+# expression are the union of latent effects from every function call
+# in it. Effect rows are Rémy-style: a list of concrete labels plus an
+# optional tail row variable. Two rows unify by aligning labels and
+# binding row vars; effect vars instantiate at constructor lookup just
+# like type vars.
+#
+# Example types this inferer produces:
+#   42                     : Int               (pure)
+#   tick                   : Int -> Int !{IO}  (built-in effectful)
+#   fn(x) -> x + 1         : Int -> Int        (pure)
+#   fn(x) -> tick(x)       : Int -> Int !{IO}
+#   fn(f) -> fn(x) -> f(x) : forall a b e. (a -> b !{e}) -> a -> b !{e}
+#                                (effect-polymorphic apply)
+#
+# The standalone-then-absorb pattern. This file proves the algorithm in
+# isolation, the way infer.glass proved HM before prism.glass absorbed
+# it. A follow-up will integrate effects into prism.glass.
+
+# ---------- AST ----------
+
+type Expr =
+  | EInt(Int)
+  | EBool(Bool)
+  | EVar(String)
+  | EAdd(Expr, Expr)
+  | ELt(Expr, Expr)
+  | EIf(Expr, Expr, Expr)
+  | ELam(String, Expr)
+  | EApp(Expr, Expr)
+  | ELet(String, Expr, Expr)
+
+# An effect row: concrete labels plus an optional tail row variable.
+# EffRow(["IO"], None)    = !{IO}              (closed)
+# EffRow([], None)        = !{}                (pure, closed)
+# EffRow(["IO"], Some(3)) = !{IO; e3}          (open: IO and possibly more)
+# EffRow([], Some(3))     = !{e3}              (fully polymorphic)
+type EffRow = | EffRow(List<String>, Option<Int>)
+
+type Type =
+  | TyInt
+  | TyBool
+  | TyVar(Int)
+  | TyFn(Type, Type, EffRow)
+
+# Two kinds of quantified variables: type vars and effect vars.
+type Scheme = | Scheme(List<Int>, List<Int>, Type)
+
+# Combined substitution: type-var bindings AND effect-var bindings.
+type Sub = | Sub(List<Pair<Int, Type>>, List<Pair<Int, EffRow>>)
+
+# ---------- helpers ----------
+
+fn empty_sub() : Sub = Sub([], [])
+
+fn pure_eff() : EffRow = EffRow([], None)
+
+fn fresh_eff_var(next: Int) : (EffRow, Int) =
+  (EffRow([], Some(next)), next + 1)
+
+# int set operations (re-used from infer.glass)
+fn int_in(xs: List<Int>, n: Int) : Bool =
+  match xs {
+    []           => false;
+    [x, ...rest] => if x == n then true else int_in(rest, n)
+  }
+
+fn int_union(xs: List<Int>, ys: List<Int>) : List<Int> =
+  match ys {
+    []           => xs;
+    [y, ...rest] =>
+      if int_in(xs, y) then int_union(xs, rest)
+      else int_union(xs ++ [y], rest)
+  }
+
+fn int_diff(xs: List<Int>, ys: List<Int>) : List<Int> =
+  match xs {
+    []           => [];
+    [x, ...rest] =>
+      if int_in(ys, x) then int_diff(rest, ys)
+      else [x] ++ int_diff(rest, ys)
+  }
+
+# string set operations
+fn str_in(xs: List<String>, s: String) : Bool =
+  match xs {
+    []           => false;
+    [x, ...rest] => if x == s then true else str_in(rest, s)
+  }
+
+fn str_union(xs: List<String>, ys: List<String>) : List<String> =
+  match ys {
+    []           => xs;
+    [y, ...rest] =>
+      if str_in(xs, y) then str_union(xs, rest)
+      else str_union(xs ++ [y], rest)
+  }
+
+fn str_diff(xs: List<String>, ys: List<String>) : List<String> =
+  match xs {
+    []           => [];
+    [x, ...rest] =>
+      if str_in(ys, x) then str_diff(rest, ys)
+      else [x] ++ str_diff(rest, ys)
+  }
+
+fn str_subset(xs: List<String>, ys: List<String>) : Bool =
+  match xs {
+    []           => true;
+    [x, ...rest] =>
+      if str_in(ys, x) then str_subset(rest, ys) else false
+  }
+
+fn str_eq_set(xs: List<String>, ys: List<String>) : Bool =
+  if str_subset(xs, ys) then str_subset(ys, xs) else false
+
+# ---------- substitutions ----------
+
+fn lookup_t_sub(s: List<Pair<Int, Type>>, n: Int) : Option<Type> =
+  match s {
+    []                    => None;
+    [Pair(k, v), ...rest] =>
+      if k == n then Some(v) else lookup_t_sub(rest, n)
+  }
+
+fn lookup_e_sub(s: List<Pair<Int, EffRow>>, n: Int) : Option<EffRow> =
+  match s {
+    []                    => None;
+    [Pair(k, v), ...rest] =>
+      if k == n then Some(v) else lookup_e_sub(rest, n)
+  }
+
+# Apply both substitutions to a type. Effect annotations on TyFn get the
+# effect sub; type vars get the type sub. Substitutions are followed
+# transitively (a type var may be bound to another type var, etc.).
+fn apply_sub(s: Sub, t: Type) : Type =
+  match s { Sub(s_t, s_e) =>
+    match t {
+      TyInt        => TyInt;
+      TyBool       => TyBool;
+      TyVar(n)     =>
+        match lookup_t_sub(s_t, n) {
+          None     => TyVar(n);
+          Some(t2) => apply_sub(s, t2)
+        };
+      TyFn(a, b, e) =>
+        TyFn(apply_sub(s, a),
+             apply_sub(s, b),
+             apply_eff_sub(s_e, e))
+    }
+  }
+
+# Apply effect substitution to an EffRow. If the row has a tail var
+# bound in s_e, the bound row's labels join (set union) with the
+# row's concrete labels, and the tail picks up the bound row's tail.
+fn apply_eff_sub(s_e: List<Pair<Int, EffRow>>, r: EffRow) : EffRow =
+  match r {
+    EffRow(c, None)    => EffRow(c, None);
+    EffRow(c, Some(n)) =>
+      match lookup_e_sub(s_e, n) {
+        None         => EffRow(c, Some(n));
+        Some(target) =>
+          # Recursively resolve, then union labels with c.
+          match apply_eff_sub(s_e, target) {
+            EffRow(c2, v2) => EffRow(str_union(c, c2), v2)
+          }
+      }
+  }
+
+# Apply both subs to an EffRow (the type sub is irrelevant for effects,
+# but we accept Sub for uniform call sites).
+fn apply_sub_eff(s: Sub, r: EffRow) : EffRow =
+  match s { Sub(_, s_e) => apply_eff_sub(s_e, r) }
+
+# ---------- free variables ----------
+
+fn free_t_vars(t: Type) : List<Int> =
+  match t {
+    TyInt         => [];
+    TyBool        => [];
+    TyVar(n)      => [n];
+    TyFn(a, b, _) => int_union(free_t_vars(a), free_t_vars(b))
+  }
+
+fn free_e_vars_row(r: EffRow) : List<Int> =
+  match r {
+    EffRow(_, None)    => [];
+    EffRow(_, Some(n)) => [n]
+  }
+
+fn free_e_vars(t: Type) : List<Int> =
+  match t {
+    TyInt         => [];
+    TyBool        => [];
+    TyVar(_)      => [];
+    TyFn(a, b, e) =>
+      int_union(int_union(free_e_vars(a), free_e_vars(b)),
+                free_e_vars_row(e))
+  }
+
+# Free type vars across an env, used for generalization.
+fn free_t_vars_env(env: List<Pair<String, Scheme>>) : List<Int> =
+  match env {
+    []                              => [];
+    [Pair(_, Scheme(qs, _, body)), ...rest] =>
+      int_union(int_diff(free_t_vars(body), qs),
+                free_t_vars_env(rest))
+  }
+
+fn free_e_vars_env(env: List<Pair<String, Scheme>>) : List<Int> =
+  match env {
+    []                              => [];
+    [Pair(_, Scheme(_, eqs, body)), ...rest] =>
+      int_union(int_diff(free_e_vars(body), eqs),
+                free_e_vars_env(rest))
+  }
+
+# ---------- occurs check ----------
+
+fn occurs_in(n: Int, t: Type) : Bool =
+  match t {
+    TyVar(m)      => n == m;
+    TyFn(a, b, _) => if occurs_in(n, a) then true else occurs_in(n, b);
+    _             => false
+  }
+
+# ---------- unification ----------
+
+fn unify(t1: Type, t2: Type, s: Sub, next: Int)
+  : Result<(Sub, Int), String> =
+  unify_rec(apply_sub(s, t1), apply_sub(s, t2), s, next)
+
+fn unify_rec(t1: Type, t2: Type, s: Sub, next: Int)
+  : Result<(Sub, Int), String> =
+  match t1 {
+    TyInt =>
+      match t2 {
+        TyInt    => Ok((s, next));
+        TyVar(_) => unify_rec(t2, t1, s, next);
+        _        => Err("type: can't unify Int with " ++ show_type(t2))
+      };
+    TyBool =>
+      match t2 {
+        TyBool   => Ok((s, next));
+        TyVar(_) => unify_rec(t2, t1, s, next);
+        _        => Err("type: can't unify Bool with " ++ show_type(t2))
+      };
+    TyVar(n) =>
+      match t2 {
+        TyVar(m) =>
+          if n == m then Ok((s, next))
+          else bind_t_var(n, t2, s, next);
+        _ =>
+          if occurs_in(n, t2)
+            then Err("type: occurs check failed for t" ++ int_to_string(n))
+            else bind_t_var(n, t2, s, next)
+      };
+    TyFn(a1, b1, e1) =>
+      match t2 {
+        TyFn(a2, b2, e2) =>
+          bind_result(unify(a1, a2, s, next), fn(r1: (Sub, Int)) ->
+            match r1 { (s1, n1) =>
+              bind_result(unify(b1, b2, s1, n1), fn(r2: (Sub, Int)) ->
+                match r2 { (s2, n2) =>
+                  unify_eff(e1, e2, s2, n2)
+                })
+            });
+        TyVar(_) => unify_rec(t2, t1, s, next);
+        _        =>
+          Err("type: can't unify function with " ++ show_type(t2))
+      }
+  }
+
+fn bind_t_var(n: Int, t: Type, s: Sub, next: Int)
+  : Result<(Sub, Int), String> =
+  match s { Sub(s_t, s_e) =>
+    Ok((Sub([Pair(n, t)] ++ s_t, s_e), next))
+  }
+
+# Row unification — the central new algorithm.
+#
+# Cases for EffRow(c1, v1) vs EffRow(c2, v2):
+#   1. v1 = None, v2 = None: c1 == c2 as sets.
+#   2. v1 = None, v2 = Some(b): c2 ⊆ c1; bind b to EffRow(c1 - c2, None).
+#   3. v1 = Some(a), v2 = None: symmetric to case 2.
+#   4. v1 = Some(a), v2 = Some(b), a == b: c1 == c2 as sets.
+#   5. v1 = Some(a), v2 = Some(b), a != b:
+#        fresh row var g;
+#        bind a to EffRow(c2 - c1, Some(g));
+#        bind b to EffRow(c1 - c2, Some(g)).
+fn unify_eff(e1: EffRow, e2: EffRow, s: Sub, next: Int)
+  : Result<(Sub, Int), String> =
+  let r1 : EffRow = apply_sub_eff(s, e1) in
+  let r2 : EffRow = apply_sub_eff(s, e2) in
+  match r1 {
+    EffRow(c1, v1) =>
+      match r2 {
+        EffRow(c2, v2) =>
+          match v1 {
+            None =>
+              match v2 {
+                None =>
+                  if str_eq_set(c1, c2) then Ok((s, next))
+                  else Err("eff: rows differ: !{" ++ join_str(c1)
+                           ++ "} vs !{" ++ join_str(c2) ++ "}");
+                Some(b) =>
+                  if str_subset(c2, c1)
+                    then bind_e_var(b, EffRow(str_diff(c1, c2), None), s, next)
+                    else Err("eff: rigid row !{" ++ join_str(c1)
+                             ++ "} cannot subsume !{" ++ join_str(c2)
+                             ++ "} (extra labels in rhs)")
+              };
+            Some(a) =>
+              match v2 {
+                None =>
+                  if str_subset(c1, c2)
+                    then bind_e_var(a, EffRow(str_diff(c2, c1), None), s, next)
+                    else Err("eff: rigid row !{" ++ join_str(c2)
+                             ++ "} cannot subsume !{" ++ join_str(c1)
+                             ++ "}");
+                Some(b) =>
+                  if a == b then
+                    if str_eq_set(c1, c2) then Ok((s, next))
+                    else Err("eff: rows with same tail differ in labels")
+                  else
+                    let g_pair : (EffRow, Int) = fresh_eff_var(next) in
+                    match g_pair { (g_row, n1) =>
+                      let g_var : Int =
+                        match g_row { EffRow(_, Some(gv)) => gv;
+                                      EffRow(_, None) => 0 } in
+                      bind_result(
+                        bind_e_var(a, EffRow(str_diff(c2, c1), Some(g_var)),
+                                   s, n1),
+                        fn(r: (Sub, Int)) ->
+                          match r { (s1, n2) =>
+                            bind_e_var(b,
+                                       EffRow(str_diff(c1, c2), Some(g_var)),
+                                       s1, n2)
+                          })
+                    }
+              }
+          }
+      }
+  }
+
+fn bind_e_var(n: Int, r: EffRow, s: Sub, next: Int)
+  : Result<(Sub, Int), String> =
+  match s { Sub(s_t, s_e) =>
+    Ok((Sub(s_t, [Pair(n, r)] ++ s_e), next))
+  }
+
+# ---------- generalize / instantiate ----------
+
+fn generalize(env: List<Pair<String, Scheme>>, t: Type) : Scheme =
+  let env_tv : List<Int> = free_t_vars_env(env) in
+  let env_ev : List<Int> = free_e_vars_env(env) in
+  let body_tv : List<Int> = free_t_vars(t) in
+  let body_ev : List<Int> = free_e_vars(t) in
+  let qs_t : List<Int> = int_diff(body_tv, env_tv) in
+  let qs_e : List<Int> = int_diff(body_ev, env_ev) in
+  Scheme(qs_t, qs_e, t)
+
+# Generate fresh type and effect vars for each quantified id,
+# then substitute through the body.
+fn instantiate(sch: Scheme, next: Int) : (Type, Int) =
+  match sch { Scheme(qs_t, qs_e, body) =>
+    let n_t : Int = len(qs_t) in
+    let n_e : Int = len(qs_e) in
+    let fresh_t_ids : List<Int> = range(next, next + n_t) in
+    let fresh_e_ids : List<Int> = range(next + n_t, next + n_t + n_e) in
+    let t_pairs : List<Pair<Int, Type>> =
+      zip_t_pairs(qs_t, fresh_t_ids) in
+    let e_pairs : List<Pair<Int, EffRow>> =
+      zip_e_pairs(qs_e, fresh_e_ids) in
+    let inst_sub : Sub = Sub(t_pairs, e_pairs) in
+    (apply_sub(inst_sub, body), next + n_t + n_e)
+  }
+
+fn zip_t_pairs(qs: List<Int>, fresh: List<Int>) : List<Pair<Int, Type>> =
+  match qs {
+    [] => [];
+    [q, ...qrest] =>
+      match fresh {
+        [] => [];
+        [f, ...frest] =>
+          [Pair(q, TyVar(f))] ++ zip_t_pairs(qrest, frest)
+      }
+  }
+
+fn zip_e_pairs(qs: List<Int>, fresh: List<Int>) : List<Pair<Int, EffRow>> =
+  match qs {
+    [] => [];
+    [q, ...qrest] =>
+      match fresh {
+        [] => [];
+        [f, ...frest] =>
+          [Pair(q, EffRow([], Some(f)))] ++ zip_e_pairs(qrest, frest)
+      }
+  }
+
+# ---------- inference ----------
+
+fn lookup_env(
+  env: List<Pair<String, Scheme>>,
+  name: String
+) : Option<Scheme> =
+  match env {
+    []                    => None;
+    [Pair(k, v), ...rest] =>
+      if k == name then Some(v) else lookup_env(rest, name)
+  }
+
+# infer returns (inferred type, ambient effects, updated sub, updated counter).
+# The ambient effects are what evaluating this expression actually does:
+# the union of every latent effect from every function call in the
+# expression. ELam alone evaluates to PURE ambient effects (creating a
+# closure is pure); the body's effects become the closure's latent.
+fn infer(
+  e: Expr,
+  env: List<Pair<String, Scheme>>,
+  s: Sub,
+  next: Int
+) : Result<(Type, EffRow, Sub, Int), String> =
+  match e {
+    EInt(_)  => Ok((TyInt,  pure_eff(), s, next));
+    EBool(_) => Ok((TyBool, pure_eff(), s, next));
+    EVar(name) =>
+      match lookup_env(env, name) {
+        None      => Err("type: unbound variable: " ++ name);
+        Some(sch) =>
+          match instantiate(sch, next) {
+            (t, n1) => Ok((t, pure_eff(), s, n1))
+          }
+      };
+    EAdd(a, b) =>
+      bind_result(infer(a, env, s, next), fn(r1: (Type, EffRow, Sub, Int)) ->
+        match r1 { (ta, ea, s1, n1) =>
+          bind_result(unify(ta, TyInt, s1, n1), fn(r2: (Sub, Int)) ->
+            match r2 { (s2, n2) =>
+              bind_result(infer(b, env, s2, n2), fn(r3: (Type, EffRow, Sub, Int)) ->
+                match r3 { (tb, eb, s3, n3) =>
+                  bind_result(unify(tb, TyInt, s3, n3), fn(r4: (Sub, Int)) ->
+                    match r4 { (s4, n4) =>
+                      let combined : EffRow = eff_union_via(s4, ea, eb) in
+                      Ok((TyInt, combined, s4, n4))
+                    })
+                })
+            })
+        });
+    ELt(a, b) =>
+      bind_result(infer(a, env, s, next), fn(r1: (Type, EffRow, Sub, Int)) ->
+        match r1 { (ta, ea, s1, n1) =>
+          bind_result(unify(ta, TyInt, s1, n1), fn(r2: (Sub, Int)) ->
+            match r2 { (s2, n2) =>
+              bind_result(infer(b, env, s2, n2), fn(r3: (Type, EffRow, Sub, Int)) ->
+                match r3 { (tb, eb, s3, n3) =>
+                  bind_result(unify(tb, TyInt, s3, n3), fn(r4: (Sub, Int)) ->
+                    match r4 { (s4, n4) =>
+                      let combined : EffRow = eff_union_via(s4, ea, eb) in
+                      Ok((TyBool, combined, s4, n4))
+                    })
+                })
+            })
+        });
+    EIf(c, th, el) =>
+      bind_result(infer(c, env, s, next), fn(r1: (Type, EffRow, Sub, Int)) ->
+        match r1 { (tc, ec, s1, n1) =>
+          bind_result(unify(tc, TyBool, s1, n1), fn(r2: (Sub, Int)) ->
+            match r2 { (s2, n2) =>
+              bind_result(infer(th, env, s2, n2),
+                          fn(r3: (Type, EffRow, Sub, Int)) ->
+                match r3 { (tt, et, s3, n3) =>
+                  bind_result(infer(el, env, s3, n3),
+                              fn(r4: (Type, EffRow, Sub, Int)) ->
+                    match r4 { (te, ee, s4, n4) =>
+                      bind_result(unify(tt, te, s4, n4), fn(r5: (Sub, Int)) ->
+                        match r5 { (s5, n5) =>
+                          let all_eff : EffRow =
+                            eff_union_via(s5, ec, eff_union_via(s5, et, ee)) in
+                          Ok((apply_sub(s5, tt), all_eff, s5, n5))
+                        })
+                    })
+                })
+            })
+        });
+    ELam(x, body) =>
+      # Fresh arg type, then infer body in extended env.
+      # The body's ambient effects become the function's latent effects.
+      # The lambda ITSELF evaluates to pure (creating closures is pure).
+      let arg_ty : Type = TyVar(next) in
+      let env2 : List<Pair<String, Scheme>> =
+        [Pair(x, Scheme([], [], arg_ty))] ++ env in
+      bind_result(infer(body, env2, s, next + 1),
+                  fn(r: (Type, EffRow, Sub, Int)) ->
+        match r { (body_ty, body_eff, s1, n1) =>
+          let fn_ty : Type =
+            TyFn(apply_sub(s1, arg_ty),
+                 apply_sub(s1, body_ty),
+                 apply_sub_eff(s1, body_eff)) in
+          Ok((fn_ty, pure_eff(), s1, n1))
+        });
+    EApp(f, arg) =>
+      bind_result(infer(f, env, s, next), fn(r1: (Type, EffRow, Sub, Int)) ->
+        match r1 { (tf, ef, s1, n1) =>
+          bind_result(infer(arg, env, s1, n1),
+                      fn(r2: (Type, EffRow, Sub, Int)) ->
+            match r2 { (ta, ea, s2, n2) =>
+              # Allocate fresh return type AND fresh effect var (the
+              # function's latent effect). Unify tf with TyFn(ta, R, E).
+              let ret_ty : Type = TyVar(n2) in
+              let latent : EffRow = EffRow([], Some(n2 + 1)) in
+              let expected : Type = TyFn(ta, ret_ty, latent) in
+              bind_result(unify(tf, expected, s2, n2 + 2),
+                          fn(r3: (Sub, Int)) ->
+                match r3 { (s3, n3) =>
+                  let resolved_latent : EffRow =
+                    apply_sub_eff(s3, latent) in
+                  let all_eff : EffRow =
+                    eff_union_via(s3, ef,
+                      eff_union_via(s3, ea, resolved_latent)) in
+                  Ok((apply_sub(s3, ret_ty), all_eff, s3, n3))
+                })
+            })
+        });
+    ELet(x, val, body) =>
+      bind_result(infer(val, env, s, next), fn(r1: (Type, EffRow, Sub, Int)) ->
+        match r1 { (tv, ev, s1, n1) =>
+          # Generalize the val's type over free vars not in env.
+          let resolved_tv : Type = apply_sub(s1, tv) in
+          let resolved_env : List<Pair<String, Scheme>> =
+            apply_sub_env(s1, env) in
+          let sch : Scheme = generalize(resolved_env, resolved_tv) in
+          let env2 : List<Pair<String, Scheme>> =
+            [Pair(x, sch)] ++ env in
+          bind_result(infer(body, env2, s1, n1),
+                      fn(r2: (Type, EffRow, Sub, Int)) ->
+            match r2 { (tb, eb, s2, n2) =>
+              let combined : EffRow = eff_union_via(s2, ev, eb) in
+              Ok((tb, combined, s2, n2))
+            })
+        })
+  }
+
+# Union two effect rows AFTER substitution. Concrete labels join (set
+# union); tail vars are handled by row-unification with a fresh var if
+# both rows have different tail vars.
+#
+# Simple version: if both rows are concrete (no tail var), just union
+# labels. If exactly one has a tail var, the union has the union of
+# concrete labels and that tail var. If both have tail vars, we punt
+# to a fresh var that combines (by calling unify_eff lazily — but for
+# union, simpler: if same var, OK; else we lose precision but bind one
+# to extend the other).
+fn eff_union_via(s: Sub, e1: EffRow, e2: EffRow) : EffRow =
+  let r1 : EffRow = apply_sub_eff(s, e1) in
+  let r2 : EffRow = apply_sub_eff(s, e2) in
+  match r1 {
+    EffRow(c1, v1) =>
+      match r2 {
+        EffRow(c2, v2) =>
+          let new_c : List<String> = str_union(c1, c2) in
+          match v1 {
+            None    => EffRow(new_c, v2);
+            Some(a) =>
+              match v2 {
+                None    => EffRow(new_c, Some(a));
+                Some(b) =>
+                  # If same var, OK; else prefer one (the inferer will
+                  # later unify them at call sites if needed).
+                  if a == b then EffRow(new_c, Some(a))
+                  else EffRow(new_c, Some(a))
+              }
+          }
+      }
+  }
+
+# Apply substitution to every scheme in env. For schemes, we must NOT
+# substitute the bound variables — they're rigid within the scheme. We
+# call apply_sub_avoid which respects the bound list.
+fn apply_sub_env(
+  s: Sub,
+  env: List<Pair<String, Scheme>>
+) : List<Pair<String, Scheme>> =
+  match env {
+    [] => [];
+    [Pair(k, Scheme(qs_t, qs_e, body)), ...rest] =>
+      # Effect vars in qs_e should also be avoided — but for our purposes,
+      # the body's free vars after substitution are what matter. Since
+      # quantified vars don't appear in the surrounding env (by def of
+      # generalize), substituting through them is safe in this position.
+      let new_body : Type = apply_sub_avoid(s, body, qs_t, qs_e) in
+      [Pair(k, Scheme(qs_t, qs_e, new_body))]
+      ++ apply_sub_env(s, rest)
+  }
+
+fn apply_sub_avoid(
+  s: Sub,
+  t: Type,
+  avoid_t: List<Int>,
+  avoid_e: List<Int>
+) : Type =
+  match s { Sub(s_t, s_e) =>
+    match t {
+      TyInt    => TyInt;
+      TyBool   => TyBool;
+      TyVar(n) =>
+        if int_in(avoid_t, n) then TyVar(n)
+        else
+          match lookup_t_sub(s_t, n) {
+            None     => TyVar(n);
+            Some(t2) => apply_sub_avoid(s, t2, avoid_t, avoid_e)
+          };
+      TyFn(a, b, e) =>
+        TyFn(apply_sub_avoid(s, a, avoid_t, avoid_e),
+             apply_sub_avoid(s, b, avoid_t, avoid_e),
+             apply_eff_sub_avoid(s_e, e, avoid_e))
+    }
+  }
+
+fn apply_eff_sub_avoid(
+  s_e: List<Pair<Int, EffRow>>,
+  r: EffRow,
+  avoid: List<Int>
+) : EffRow =
+  match r {
+    EffRow(c, None)    => EffRow(c, None);
+    EffRow(c, Some(n)) =>
+      if int_in(avoid, n) then EffRow(c, Some(n))
+      else
+        match lookup_e_sub(s_e, n) {
+          None         => EffRow(c, Some(n));
+          Some(target) =>
+            match apply_eff_sub_avoid(s_e, target, avoid) {
+              EffRow(c2, v2) => EffRow(str_union(c, c2), v2)
+            }
+        }
+  }
+
+# Run inference and resolve the final type + ambient effects.
+fn run_infer(
+  e: Expr,
+  initial_env: List<Pair<String, Scheme>>,
+  start_id: Int
+) : Result<(Type, EffRow), String> =
+  bind_result(infer(e, initial_env, empty_sub(), start_id),
+              fn(r: (Type, EffRow, Sub, Int)) ->
+    match r { (t, eff, s, _) =>
+      Ok((apply_sub(s, t), apply_sub_eff_full(s, eff)))
+    })
+
+fn apply_sub_eff_full(s: Sub, r: EffRow) : EffRow =
+  match s { Sub(_, s_e) => apply_eff_sub(s_e, r) }
+
+# ---------- display ----------
+
+fn show_type(t: Type) : String =
+  match t {
+    TyInt         => "Int";
+    TyBool        => "Bool";
+    TyVar(n)      => "t" ++ int_to_string(n);
+    TyFn(a, b, e) =>
+      "(" ++ show_type(a) ++ " -> " ++ show_type(b) ++ show_eff(e) ++ ")"
+  }
+
+fn show_eff(r: EffRow) : String =
+  match r {
+    EffRow([], None)    => "";
+    EffRow(c, None)     => " !{" ++ join_str(c) ++ "}";
+    EffRow([], Some(n)) => " !{e" ++ int_to_string(n) ++ "}";
+    EffRow(c, Some(n))  =>
+      " !{" ++ join_str(c) ++ "; e" ++ int_to_string(n) ++ "}"
+  }
+
+fn join_str(xs: List<String>) : String =
+  fold(xs, "", fn(acc: String, s: String) ->
+    if string_length(acc) == 0 then s
+    else acc ++ ", " ++ s)
+
+# ---------- demos ----------
+
+# Initial env: one effectful builtin.
+#   tick : (Int) -> Int !{IO}
+# Used to demonstrate that effects propagate via application.
+fn initial_env() : (List<Pair<String, Scheme>>, Int) =
+  let tick_scheme : Scheme =
+    Scheme([], [],
+      TyFn(TyInt, TyInt, EffRow(["IO"], None))) in
+  ([Pair("tick", tick_scheme)], 0)
+
+fn show_result(e: Expr) : String =
+  match initial_env() { (env, start) =>
+    match run_infer(e, env, start) {
+      Ok((t, eff)) => show_type(t) ++ show_eff(eff);
+      Err(msg)     => "ERROR: " ++ msg
+    }
+  }
+
+fn report(desc: String, e: Expr) : String !{IO} =
+  print(desc ++ "  ==>  " ++ show_result(e))
+
+let _ : String = print("--- eff_infer.glass: Hindley-Milner + effect polymorphism ---")
+
+# Pure
+let _ : String = report("42",
+  EInt(42))
+let _ : String = report("true",
+  EBool(true))
+let _ : String = report("1 + 2",
+  EAdd(EInt(1), EInt(2)))
+let _ : String = report("fn(x) -> x + 1",
+  ELam("x", EAdd(EVar("x"), EInt(1))))
+let _ : String = report("fn(x) -> x",
+  ELam("x", EVar("x")))
+let _ : String = report("let id = fn(x) -> x in id(42)",
+  ELet("id", ELam("x", EVar("x")),
+    EApp(EVar("id"), EInt(42))))
+
+# Now the EFFECT cases.
+let _ : String = print("--- effect propagation ---")
+let _ : String = report("tick",
+  EVar("tick"))
+let _ : String = report("tick(5)",
+  EApp(EVar("tick"), EInt(5)))
+let _ : String = report("fn(x) -> tick(x)",
+  ELam("x", EApp(EVar("tick"), EVar("x"))))
+let _ : String = report("tick(5) + tick(7)",
+  EAdd(EApp(EVar("tick"), EInt(5)),
+       EApp(EVar("tick"), EInt(7))))
+let _ : String = report("let f = fn(x) -> tick(x) in f(5)",
+  ELet("f", ELam("x", EApp(EVar("tick"), EVar("x"))),
+    EApp(EVar("f"), EInt(5))))
+
+let _ : String = print("--- effect polymorphism via higher-order ---")
+# apply = fn(f) -> fn(x) -> f(x) — effect-polymorphic in f's latent effect.
+# Applied to tick, the resulting effect should propagate.
+let _ : String = report("fn(f) -> fn(x) -> f(x)",
+  ELam("f", ELam("x", EApp(EVar("f"), EVar("x")))))
+let _ : String = report("let apply = fn(f) -> fn(x) -> f(x) in apply(tick)(5)",
+  ELet("apply",
+    ELam("f", ELam("x", EApp(EVar("f"), EVar("x")))),
+    EApp(EApp(EVar("apply"), EVar("tick")), EInt(5))))
+let _ : String = report(
+  "let apply = fn(f) -> fn(x) -> f(x) in apply(fn(n) -> n + 1)(5)",
+  ELet("apply",
+    ELam("f", ELam("x", EApp(EVar("f"), EVar("x")))),
+    EApp(EApp(EVar("apply"),
+              ELam("n", EAdd(EVar("n"), EInt(1)))),
+         EInt(5))))
+
+# let-polymorphism: id used at TWO different types AND effects
+let _ : String = report(
+  "let id = fn(x) -> x in id(tick)(5)",
+  ELet("id", ELam("x", EVar("x")),
+    EApp(EApp(EVar("id"), EVar("tick")), EInt(5))))
+
+# Pure higher-order — should stay pure
+let _ : String = report(
+  "let twice = fn(f) -> fn(x) -> f(f(x)) in twice(fn(n) -> n + 1)(5)",
+  ELet("twice",
+    ELam("f", ELam("x", EApp(EVar("f"), EApp(EVar("f"), EVar("x"))))),
+    EApp(EApp(EVar("twice"),
+              ELam("n", EAdd(EVar("n"), EInt(1)))),
+         EInt(5))))
+
+# Polymorphic twice with effectful function
+let _ : String = report(
+  "let twice = fn(f) -> fn(x) -> f(f(x)) in twice(tick)(5)",
+  ELet("twice",
+    ELam("f", ELam("x", EApp(EVar("f"), EApp(EVar("f"), EVar("x"))))),
+    EApp(EApp(EVar("twice"), EVar("tick")), EInt(5))))
+
+let _ : String = print("--- errors ---")
+let _ : String = report("unbound",
+  EVar("unbound"))
+let _ : String = report("1 + true",
+  EAdd(EInt(1), EBool(true)))
+let _ : String = report("if 5 then 1 else 2",
+  EIf(EInt(5), EInt(1), EInt(2)))

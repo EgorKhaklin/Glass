@@ -1,0 +1,3984 @@
+# =============================================================================
+# v0.8.5 demo: prism.glass — source → type + value, the v1.0 shape, in Glass.
+#
+# Each component has been proven independently in earlier releases:
+#   v0.8.2  bootstrap.glass : tokens → AST → value
+#   v0.8.3  bootstrap.glass extended; !{File} integration
+#   v0.8.4  infer.glass     : Hindley-Milner inference
+#
+# This file is the assembly. One Glass program. Source goes in, a typed
+# value comes out:
+#
+#   source : String
+#         → tokens : List<Token>     (lexer)
+#         → ast    : Expr            (recursive-descent parser)
+#         → type   : Type            (Algorithm W, let-polymorphism)
+#         → value  : Value           (call-by-value with closures)
+#
+# Pure Glass. glass.py runs this file but the SEMANTICS of every stage
+# are Glass-defined here. The grammar is small (typed λ-calc, the same
+# scope as infer.glass) — what matters is that the components compose.
+#
+# v1.0 is scaling this to Glass's full grammar plus carrying refinements
+# and effects through every stage. The remaining work is volume, not
+# new algorithmic depth.
+# =============================================================================
+
+# --- Data ---------------------------------------------------------------
+
+type Token =
+  | TInt(Int)
+  | TIdent(String)
+  | TStr(String)
+  | TTrue
+  | TFalse
+  | TPlus
+  | TPlusPlus
+  | TMinus
+  | TStar
+  | TLt
+  | TGt
+  | TLe
+  | TGe
+  | TEq
+  | TArrow
+  | TLBracket
+  | TRBracket
+  | TEllipsis
+  | TIf
+  | TThen
+  | TElse
+  | TLet
+  | TIn
+  | TFn
+  | TRec
+  | TLParen
+  | TRParen
+  | TLBrace
+  | TRBrace
+  | TColon
+  | TComma
+  | TDot
+  | TPipe
+  | TFatArrow
+  | TSemi
+  | TBang
+  | TMatch
+  | TType
+  | TEnd
+
+type Type =
+  | TyInt
+  | TyBool
+  | TyStr
+  | TyVar(Int)
+  | TyFn(Type, Type, EffRow)
+  | TyRec(List<Pair<String, Type>>)
+  | TyAdt(String, List<Type>)
+  | TyTuple(List<Type>)
+
+# An effect row: concrete labels plus an optional tail row variable.
+# EffRow(["IO"], None)    = !{IO}              (closed)
+# EffRow([], None)        = pure
+# EffRow(["IO"], Some(3)) = !{IO; e3}          (open: IO and possibly more)
+# EffRow([], Some(3))     = !{e3}              (fully polymorphic)
+type EffRow = | EffRow(List<String>, Option<Int>)
+
+# Two kinds of quantified variables in a Scheme: type vars and effect vars.
+type Scheme = | Scheme(List<Int>, List<Int>, Type)
+
+# Combined substitution: type-var bindings AND effect-var bindings.
+type Sub = | Sub(List<Pair<Int, Type>>, List<Pair<Int, EffRow>>)
+
+type Pattern =
+  | PWild
+  | PVar(String)
+  | PCtor(String, List<Pattern>)
+  | PTuple(List<Pattern>)
+  | PInt(Int)
+  | PBool(Bool)
+  | PStr(String)
+
+type Expr =
+  | EInt(Int)
+  | EBool(Bool)
+  | EStr(String)
+  | EVar(String)
+  | EAdd(Expr, Expr)
+  | ESub(Expr, Expr)
+  | EMul(Expr, Expr)
+  | EConcat(Expr, Expr)
+  | ELt(Expr, Expr)
+  | EGt(Expr, Expr)
+  | ELe(Expr, Expr)
+  | EGe(Expr, Expr)
+  | EIf(Expr, Expr, Expr)
+  | ELam(String, Expr)
+  | EApp(Expr, Expr)
+  | ELet(String, Expr, Expr)
+  | ELetRec(String, Expr, Expr)
+  | ERec(List<Pair<String, Expr>>)
+  | EField(Expr, String)
+  | ECtor(String, List<Expr>)
+  | EMatch(Expr, List<Pair<Pattern, Expr>>)
+  | ETuple(List<Expr>)
+
+# A constructor declaration: name and list of argument types.
+type CtorDecl = | CtorDecl(String, List<Type>)
+
+# A type declaration: ADT name, type parameter names, and constructors.
+# Example: type Option<A> = | None | Some(A) →
+#   TypeDecl("Option", ["A"], [CtorDecl("None", []), CtorDecl("Some", [TyAdt("A", [])])])
+type TypeDecl = | TypeDecl(String, List<String>, List<CtorDecl>)
+
+# A top-level function declaration:
+# Example: fn add(x: Int, y: Int) : Int = x + y desugars to
+#   FnDecl("add", TyFn(TyInt, TyFn(TyInt, TyInt, pure), pure),
+#                 ELam("x", ELam("y", EAdd(EVar("x"), EVar("y")))))
+# All multi-param fns are pre-desugared at parse time into nested lambdas.
+type FnDecl = | FnDecl(String, Type, Expr)
+
+# A program: zero or more type declarations, zero or more fn declarations,
+# followed by one main expression. All top-level fns are mutually visible.
+type Program = | Program(List<TypeDecl>, List<FnDecl>, Expr)
+
+type Value =
+  | VInt(Int)
+  | VBool(Bool)
+  | VStr(String)
+  | VClos(String, Expr, List<Pair<String, Value>>)
+  | VRecClos(String, String, Expr, List<Pair<String, Value>>)
+  | VMutRecClos(String, Expr, List<FnDecl>, List<Pair<String, Value>>)
+  | VRec(List<Pair<String, Value>>)
+  | VCtor(String, List<Value>)
+  | VTuple(List<Value>)
+  | VBuiltin(String, Int, List<Value>)
+
+
+# --- Lexer --------------------------------------------------------------
+
+fn is_digit(c: String) : Bool = string_contains("0123456789", c)
+
+fn is_alpha(c: String) : Bool =
+  string_contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_", c)
+
+fn is_alnum(c: String) : Bool =
+  if is_alpha(c) then true else is_digit(c)
+
+fn is_space(c: String) : Bool =
+  if c == " "  then true
+  else if c == "\t" then true
+  else c == "\n"
+
+fn char_at(s: String, i: Int) : String = substring(s, i, i + 1)
+
+fn digit_value(c: String) : Int =
+  match string_index_of("0123456789", c) {
+    None    => 0;
+    Some(d) => d
+  }
+
+fn skip_ws(s: String, i: Int) : Int =
+  if i >= string_length(s) then i
+  else if is_space(char_at(s, i)) then skip_ws(s, i + 1)
+  else if char_at(s, i) == "#" then skip_ws(s, skip_to_eol(s, i))
+  else i
+
+# Advance to (and including) the next newline. Returns the index AFTER
+# the newline, or the end of input if no newline is found.
+fn skip_to_eol(s: String, i: Int) : Int =
+  if i >= string_length(s) then i
+  else if char_at(s, i) == "\n" then i + 1
+  else skip_to_eol(s, i + 1)
+
+fn read_int(s: String, i: Int, acc: Int) : (Int, Int) =
+  if i >= string_length(s) then (acc, i)
+  else
+    let c : String = char_at(s, i) in
+    if is_digit(c) then read_int(s, i + 1, acc * 10 + digit_value(c))
+    else (acc, i)
+
+fn read_ident(s: String, i: Int, acc: String) : (String, Int) =
+  if i >= string_length(s) then (acc, i)
+  else
+    let c : String = char_at(s, i) in
+    if is_alnum(c) then read_ident(s, i + 1, acc ++ c)
+    else (acc, i)
+
+# Read a string literal starting after the opening quote. Returns the
+# string content and the index past the closing quote. Does NOT support
+# escapes; that's a v1.0+ polish item.
+fn read_string(s: String, i: Int, acc: String) : (Token, Int) =
+  if i >= string_length(s) then (TStr(acc), i)
+  else
+    let c : String = char_at(s, i) in
+    if c == "\""
+      then (TStr(acc), i + 1)
+      else read_string(s, i + 1, acc ++ c)
+
+fn classify_word(s: String) : Token =
+  if s == "if"    then TIf
+  else if s == "then"  then TThen
+  else if s == "else"  then TElse
+  else if s == "let"   then TLet
+  else if s == "in"    then TIn
+  else if s == "fn"    then TFn
+  else if s == "rec"   then TRec
+  else if s == "true"  then TTrue
+  else if s == "false" then TFalse
+  else if s == "match" then TMatch
+  else if s == "type"  then TType
+  else TIdent(s)
+
+fn next_token(s: String, i: Int) : (Token, Int) =
+  let j : Int = skip_ws(s, i) in
+  if j >= string_length(s) then (TEnd, j)
+  else
+    let c : String = char_at(s, j) in
+    if is_digit(c) then
+      match read_int(s, j, 0) {
+        (n, k) => (TInt(n), k)
+      }
+    else if is_alpha(c) then
+      match read_ident(s, j, "") {
+        (id, k) => (classify_word(id), k)
+      }
+    else if c == "+" then
+      if char_at(s, j + 1) == "+" then (TPlusPlus, j + 2)
+      else (TPlus, j + 1)
+    else if c == "*" then (TStar,   j + 1)
+    else if c == "\"" then read_string(s, j + 1, "")
+    else if c == "<" then
+      if char_at(s, j + 1) == "=" then (TLe, j + 2)
+      else (TLt, j + 1)
+    else if c == ">" then
+      if char_at(s, j + 1) == "=" then (TGe, j + 2)
+      else (TGt, j + 1)
+    else if c == "=" then
+      if char_at(s, j + 1) == ">" then (TFatArrow, j + 2)
+      else (TEq, j + 1)
+    else if c == "(" then (TLParen, j + 1)
+    else if c == ")" then (TRParen, j + 1)
+    else if c == "{" then (TLBrace, j + 1)
+    else if c == "}" then (TRBrace, j + 1)
+    else if c == "[" then (TLBracket, j + 1)
+    else if c == "]" then (TRBracket, j + 1)
+    else if c == ":" then (TColon,  j + 1)
+    else if c == "," then (TComma,  j + 1)
+    else if c == "." then
+      if char_at(s, j + 1) == "." then
+        if char_at(s, j + 2) == "." then (TEllipsis, j + 3)
+        else (TDot, j + 1)
+      else (TDot, j + 1)
+    else if c == "|" then (TPipe,   j + 1)
+    else if c == ";" then (TSemi,   j + 1)
+    else if c == "!" then (TBang,   j + 1)
+    else if c == "-" then
+      if char_at(s, j + 1) == ">" then (TArrow, j + 2)
+      else (TMinus, j + 1)
+    else (TEnd, j)
+
+fn tokenize_at(s: String, i: Int) : List<Token> =
+  match next_token(s, i) {
+    (TEnd, _) => [];
+    (t, k)    => [t] ++ tokenize_at(s, k)
+  }
+
+fn tokenize(s: String) : List<Token> = tokenize_at(s, 0)
+
+
+# --- Parser -------------------------------------------------------------
+
+fn peek_tok(ts: List<Token>) : Token =
+  match ts { [] => TEnd; [t, ...rest] => t }
+
+fn rest_tok(ts: List<Token>) : List<Token> =
+  match ts { [] => []; [_, ...r] => r }
+
+fn parse_atom(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  match peek_tok(ts) {
+    TInt(n)      => Ok((EInt(n),       rest_tok(ts)));
+    TStr(s)      => Ok((EStr(s),       rest_tok(ts)));
+    TTrue        => Ok((EBool(true),   rest_tok(ts)));
+    TFalse       => Ok((EBool(false),  rest_tok(ts)));
+    TIdent(name) =>
+      if is_uppercase_first(name)
+        then parse_ctor_call(name, rest_tok(ts))
+        else Ok((EVar(name), rest_tok(ts)));
+    TLParen      => parse_paren(rest_tok(ts));
+    TLBrace      => parse_record(rest_tok(ts));
+    TLBracket    => parse_list_literal(rest_tok(ts));
+    TIf          => parse_if(rest_tok(ts));
+    TLet         => parse_let(rest_tok(ts));
+    TFn          => parse_fn(rest_tok(ts));
+    TMatch       => parse_match(rest_tok(ts));
+    TEnd         => Err("parse: unexpected end of input");
+    TPlus        => Err("parse: unexpected + in atom");
+    TMinus       => Err("parse: unexpected - in atom");
+    TStar        => Err("parse: unexpected * in atom");
+    TPlusPlus    => Err("parse: unexpected ++ in atom");
+    TLt          => Err("parse: unexpected < in atom");
+    TGt          => Err("parse: unexpected > in atom");
+    TLe          => Err("parse: unexpected <= in atom");
+    TGe          => Err("parse: unexpected >= in atom");
+    TEq          => Err("parse: unexpected = in atom");
+    TArrow       => Err("parse: unexpected -> in atom");
+    TFatArrow    => Err("parse: unexpected => in atom");
+    TRParen      => Err("parse: unexpected ) in atom");
+    TRBrace      => Err("parse: unexpected } in atom");
+    TRBracket    => Err("parse: unexpected ] in atom");
+    TColon       => Err("parse: unexpected : in atom");
+    TComma       => Err("parse: unexpected , in atom");
+    TDot         => Err("parse: unexpected . in atom");
+    TPipe        => Err("parse: unexpected | in atom");
+    TSemi        => Err("parse: unexpected ; in atom");
+    TBang        => Err("parse: unexpected ! in atom");
+    TEllipsis    => Err("parse: unexpected ... in atom");
+    TIn          => Err("parse: unexpected 'in' in atom");
+    TThen        => Err("parse: unexpected 'then' in atom");
+    TElse        => Err("parse: unexpected 'else' in atom");
+    TRec         => Err("parse: unexpected 'rec' in atom");
+    TType        => Err("parse: unexpected 'type' in atom");
+    _            => Err("parse: unexpected token in atom")
+  }
+
+# Is the first character of an identifier uppercase? Used to distinguish
+# constructor names from variable names at parse time.
+fn is_uppercase_first(s: String) : Bool =
+  string_contains("ABCDEFGHIJKLMNOPQRSTUVWXYZ", substring(s, 0, 1))
+
+# Constructor call: name has been consumed; check for `(args)` after.
+fn parse_ctor_call(
+  name: String,
+  ts: List<Token>
+) : Result<(Expr, List<Token>), String> =
+  match peek_tok(ts) {
+    TLParen =>
+      bind_result(parse_expr_list(rest_tok(ts), []),
+                  fn(p: (List<Expr>, List<Token>)) ->
+        match p { (args, rest) =>
+          Ok((ECtor(name, args), rest))
+        });
+    _ => Ok((ECtor(name, []), ts))
+  }
+
+# Parse comma-separated expressions until ')'
+fn parse_expr_list(
+  ts: List<Token>,
+  acc: List<Expr>
+) : Result<(List<Expr>, List<Token>), String> =
+  match peek_tok(ts) {
+    TRParen => Ok((acc, rest_tok(ts)));  # empty arg list
+    _ =>
+      bind_result(parse_expr(ts), fn(p: (Expr, List<Token>)) ->
+        match p { (e, rest) =>
+          let new_acc : List<Expr> = acc ++ [e] in
+          match peek_tok(rest) {
+            TComma  => parse_expr_list(rest_tok(rest), new_acc);
+            TRParen => Ok((new_acc, rest_tok(rest)));
+            _       => Err("parse: expected ',' or ')'")
+          }
+        })
+  }
+
+# Parse: match expr { pattern => body; pattern => body; ... }
+# The `match` keyword has been consumed.
+fn parse_match(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  bind_result(parse_expr(ts), fn(p1: (Expr, List<Token>)) ->
+    match p1 { (scrut, after_scrut) =>
+      match peek_tok(after_scrut) {
+        TLBrace =>
+          bind_result(parse_match_arms(rest_tok(after_scrut), []),
+                      fn(p2: (List<Pair<Pattern, Expr>>, List<Token>)) ->
+            match p2 { (arms, after_arms) =>
+              Ok((EMatch(scrut, arms), after_arms))
+            });
+        _ => Err("parse: expected '{' after match scrutinee")
+      }
+    })
+
+fn parse_match_arms(
+  ts: List<Token>,
+  acc: List<Pair<Pattern, Expr>>
+) : Result<(List<Pair<Pattern, Expr>>, List<Token>), String> =
+  bind_result(parse_pattern(ts), fn(pp: (Pattern, List<Token>)) ->
+    match pp { (p, after_p) =>
+      match peek_tok(after_p) {
+        TFatArrow =>
+          bind_result(parse_expr(rest_tok(after_p)),
+                      fn(pe: (Expr, List<Token>)) ->
+            match pe { (body, after_body) =>
+              let new_acc : List<Pair<Pattern, Expr>> =
+                acc ++ [Pair(p, body)] in
+              match peek_tok(after_body) {
+                TSemi   => parse_match_arms(rest_tok(after_body), new_acc);
+                TRBrace => Ok((new_acc, rest_tok(after_body)));
+                _       => Err("parse: expected ';' or '}' after match arm")
+              }
+            });
+        _ => Err("parse: expected '=>' after pattern")
+      }
+    })
+
+# Parse one pattern: _, x (var), Name (nullary ctor), Name(pat, pat, ...)
+fn parse_pattern(ts: List<Token>) : Result<(Pattern, List<Token>), String> =
+  match peek_tok(ts) {
+    TIdent(name) =>
+      if name == "_" then Ok((PWild, rest_tok(ts)))
+      else if is_uppercase_first(name) then
+        parse_ctor_pattern(name, rest_tok(ts))
+      else
+        Ok((PVar(name), rest_tok(ts)));
+    TInt(n)  => Ok((PInt(n),  rest_tok(ts)));
+    TTrue    => Ok((PBool(true),  rest_tok(ts)));
+    TFalse   => Ok((PBool(false), rest_tok(ts)));
+    TStr(s)  => Ok((PStr(s),  rest_tok(ts)));
+    TLParen =>
+      bind_result(parse_pattern(rest_tok(ts)), fn(p1: (Pattern, List<Token>)) ->
+        match p1 { (first, after_first) =>
+          match peek_tok(after_first) {
+            TComma =>
+              bind_result(parse_tuple_pattern_rest(rest_tok(after_first), [first]),
+                          fn(p2: (List<Pattern>, List<Token>)) ->
+                match p2 { (pats, rest) =>
+                  Ok((PTuple(pats), rest))
+                });
+            TRParen => Ok((first, rest_tok(after_first)));
+            _ => Err("parse: expected , or ) in pattern")
+          }
+        });
+    TLBracket =>
+      parse_list_pattern(rest_tok(ts));
+    _ => Err("parse: expected pattern")
+  }
+
+# Parse `[]`, `[p1, p2, ...]`, or `[p1, p2, ...pN, ...rest]`.
+# Desugars to Nil/Cons constructor patterns.
+fn parse_list_pattern(ts: List<Token>) : Result<(Pattern, List<Token>), String> =
+  match peek_tok(ts) {
+    TRBracket => Ok((PCtor("Nil", []), rest_tok(ts)));
+    _ => parse_list_pattern_elems(ts, [])
+  }
+
+fn parse_list_pattern_elems(
+  ts: List<Token>,
+  acc: List<Pattern>
+) : Result<(Pattern, List<Token>), String> =
+  bind_result(parse_pattern(ts), fn(p: (Pattern, List<Token>)) ->
+    match p { (pat, after) =>
+      let new_acc : List<Pattern> = acc ++ [pat] in
+      match peek_tok(after) {
+        TComma =>
+          # Check if next token is `...` for rest binding
+          match peek_tok(rest_tok(after)) {
+            TEllipsis =>
+              # Parse the rest pattern (must be a variable or wildcard)
+              bind_result(parse_pattern(rest_tok(rest_tok(after))),
+                          fn(p2: (Pattern, List<Token>)) ->
+                match p2 { (rest_pat, after_rest) =>
+                  match peek_tok(after_rest) {
+                    TRBracket =>
+                      Ok((build_cons_pattern_chain(new_acc, rest_pat),
+                          rest_tok(after_rest)));
+                    _ => Err("parse: expected ] after rest pattern")
+                  }
+                });
+            _ => parse_list_pattern_elems(rest_tok(after), new_acc)
+          };
+        TRBracket =>
+          # No rest binding; tail is Nil
+          Ok((build_cons_pattern_chain(new_acc, PCtor("Nil", [])),
+              rest_tok(after)));
+        _ => Err("parse: expected , or ] in list pattern")
+      }
+    })
+
+fn build_cons_pattern_chain(elems: List<Pattern>, tail: Pattern) : Pattern =
+  match elems {
+    [] => tail;
+    [p, ...rest] => PCtor("Cons", [p, build_cons_pattern_chain(rest, tail)])
+  }
+
+fn parse_tuple_pattern_rest(
+  ts: List<Token>,
+  acc: List<Pattern>
+) : Result<(List<Pattern>, List<Token>), String> =
+  bind_result(parse_pattern(ts), fn(p: (Pattern, List<Token>)) ->
+    match p { (pat, after) =>
+      let new_acc : List<Pattern> = acc ++ [pat] in
+      match peek_tok(after) {
+        TComma  => parse_tuple_pattern_rest(rest_tok(after), new_acc);
+        TRParen => Ok((new_acc, rest_tok(after)));
+        _       => Err("parse: expected , or ) in tuple pattern")
+      }
+    })
+
+fn parse_ctor_pattern(
+  name: String,
+  ts: List<Token>
+) : Result<(Pattern, List<Token>), String> =
+  match peek_tok(ts) {
+    TLParen =>
+      bind_result(parse_pattern_list(rest_tok(ts), []),
+                  fn(p: (List<Pattern>, List<Token>)) ->
+        match p { (subs, rest) =>
+          Ok((PCtor(name, subs), rest))
+        });
+    _ => Ok((PCtor(name, []), ts))
+  }
+
+fn parse_pattern_list(
+  ts: List<Token>,
+  acc: List<Pattern>
+) : Result<(List<Pattern>, List<Token>), String> =
+  match peek_tok(ts) {
+    TRParen => Ok((acc, rest_tok(ts)));
+    _ =>
+      bind_result(parse_pattern(ts), fn(p: (Pattern, List<Token>)) ->
+        match p { (pat, rest) =>
+          let new_acc : List<Pattern> = acc ++ [pat] in
+          match peek_tok(rest) {
+            TComma  => parse_pattern_list(rest_tok(rest), new_acc);
+            TRParen => Ok((new_acc, rest_tok(rest)));
+            _       => Err("parse: expected ',' or ')' in pattern list")
+          }
+        })
+  }
+
+fn parse_paren(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  bind_result(parse_expr(ts), fn(p: (Expr, List<Token>)) ->
+    match p {
+      (e, after) =>
+        match peek_tok(after) {
+          TRParen => Ok((e, rest_tok(after)));
+          TComma =>
+            # Tuple: collect more elements
+            bind_result(parse_tuple_rest(rest_tok(after), [e]),
+                        fn(p2: (List<Expr>, List<Token>)) ->
+              match p2 { (elems, after_elems) =>
+                Ok((ETuple(elems), after_elems))
+              });
+          _       => Err("parse: expected ) or , in parenthesized expression")
+        }
+    })
+
+fn parse_tuple_rest(
+  ts: List<Token>,
+  acc: List<Expr>
+) : Result<(List<Expr>, List<Token>), String> =
+  bind_result(parse_expr(ts), fn(p: (Expr, List<Token>)) ->
+    match p { (e, after) =>
+      let new_acc : List<Expr> = acc ++ [e] in
+      match peek_tok(after) {
+        TComma  => parse_tuple_rest(rest_tok(after), new_acc);
+        TRParen => Ok((new_acc, rest_tok(after)));
+        _       => Err("parse: expected , or ) in tuple")
+      }
+    })
+
+# Parse `[]`, `[e1, e2, ...eN]`, or `[e1, e2, ...tail_expr]` (spread).
+# Desugars to a chain of Cons calls ending in Nil (or the tail expr).
+fn parse_list_literal(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  match peek_tok(ts) {
+    TRBracket => Ok((ECtor("Nil", []), rest_tok(ts)));
+    _ =>
+      bind_result(parse_list_elems(ts, []),
+                  fn(p: (List<Expr>, Expr, List<Token>)) ->
+        match p { (elems, tail, after) =>
+          Ok((build_cons_chain(elems, tail), after))
+        })
+  }
+
+fn parse_list_elems(
+  ts: List<Token>,
+  acc: List<Expr>
+) : Result<(List<Expr>, Expr, List<Token>), String> =
+  bind_result(parse_expr(ts), fn(p: (Expr, List<Token>)) ->
+    match p { (e, after) =>
+      let new_acc : List<Expr> = acc ++ [e] in
+      match peek_tok(after) {
+        TComma =>
+          match peek_tok(rest_tok(after)) {
+            TEllipsis =>
+              # `..., ...tail]`: tail expression replaces Nil
+              bind_result(parse_expr(rest_tok(rest_tok(after))),
+                          fn(p2: (Expr, List<Token>)) ->
+                match p2 { (tail_expr, after_tail) =>
+                  match peek_tok(after_tail) {
+                    TRBracket => Ok((new_acc, tail_expr, rest_tok(after_tail)));
+                    _ => Err("parse: expected ] after spread expr")
+                  }
+                });
+            _ => parse_list_elems(rest_tok(after), new_acc)
+          };
+        TRBracket => Ok((new_acc, ECtor("Nil", []), rest_tok(after)));
+        _         => Err("parse: expected , or ] in list literal")
+      }
+    })
+
+fn build_cons_chain(elems: List<Expr>, tail: Expr) : Expr =
+  match elems {
+    [] => tail;
+    [e, ...rest] => ECtor("Cons", [e, build_cons_chain(rest, tail)])
+  }
+
+fn parse_if(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  bind_result(parse_expr(ts), fn(p1: (Expr, List<Token>)) ->
+    match p1 {
+      (cond, after_c) =>
+        match peek_tok(after_c) {
+          TThen =>
+            bind_result(parse_expr(rest_tok(after_c)),
+                        fn(p2: (Expr, List<Token>)) ->
+              match p2 {
+                (tb, after_t) =>
+                  match peek_tok(after_t) {
+                    TElse =>
+                      bind_result(parse_expr(rest_tok(after_t)),
+                                  fn(p3: (Expr, List<Token>)) ->
+                        match p3 {
+                          (eb, after_e) => Ok((EIf(cond, tb, eb), after_e))
+                        });
+                    _ => Err("parse: expected else")
+                  }
+              });
+          _ => Err("parse: expected then")
+        }
+    })
+
+fn parse_let(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  match peek_tok(ts) {
+    TRec => parse_let_inner(rest_tok(ts), true);
+    _    => parse_let_inner(ts, false)
+  }
+
+fn parse_let_inner(
+  ts: List<Token>,
+  is_rec: Bool
+) : Result<(Expr, List<Token>), String> =
+  match peek_tok(ts) {
+    TIdent(name) =>
+      let after_name : List<Token> = rest_tok(ts) in
+      # Allow optional `: Type` annotation between name and `=`.
+      bind_result(skip_optional_let_type(after_name),
+                  fn(after_ann: List<Token>) ->
+        match peek_tok(after_ann) {
+          TEq =>
+            bind_result(parse_expr(rest_tok(after_ann)),
+                        fn(p1: (Expr, List<Token>)) ->
+              match p1 {
+                (val, after_val) =>
+                  match peek_tok(after_val) {
+                    TIn =>
+                      bind_result(parse_expr(rest_tok(after_val)),
+                                  fn(p2: (Expr, List<Token>)) ->
+                        match p2 {
+                          (body, after_body) =>
+                            if is_rec
+                              then Ok((ELetRec(name, val, body), after_body))
+                              else Ok((ELet(name, val, body), after_body))
+                        });
+                    _ => Err("parse: expected 'in'")
+                  }
+              });
+          _ => Err("parse: expected '=' after let name")
+        });
+    _ => Err("parse: expected identifier after let")
+  }
+
+# If the next token is `:`, skip the type annotation. Type annotations
+# in `let` are informational — the inferred type drives unification.
+fn skip_optional_let_type(ts: List<Token>) : Result<List<Token>, String> =
+  match peek_tok(ts) {
+    TColon =>
+      bind_result(parse_type(rest_tok(ts)), fn(p: (Type, List<Token>)) ->
+        match p { (_, after) => Ok(after) });
+    _ => Ok(ts)
+  }
+
+fn parse_fn(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  match peek_tok(ts) {
+    TLParen =>
+      let after_lp : List<Token> = rest_tok(ts) in
+      match peek_tok(after_lp) {
+        TIdent(name) =>
+          let after_name : List<Token> = rest_tok(after_lp) in
+          match peek_tok(after_name) {
+            TRParen =>
+              let after_rp : List<Token> = rest_tok(after_name) in
+              match peek_tok(after_rp) {
+                TArrow =>
+                  bind_result(parse_expr(rest_tok(after_rp)),
+                              fn(p: (Expr, List<Token>)) ->
+                    match p {
+                      (body, after_body) =>
+                        Ok((ELam(name, body), after_body))
+                    });
+                _ => Err("parse: expected '->' after fn parameter")
+              };
+            _ => Err("parse: expected ')' after fn parameter")
+          };
+        _ => Err("parse: expected identifier as fn parameter")
+      };
+    _ => Err("parse: expected '(' after fn")
+  }
+
+fn parse_app_loop(e: Expr, ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  match peek_tok(ts) {
+    TLParen =>
+      bind_result(parse_expr(rest_tok(ts)), fn(p: (Expr, List<Token>)) ->
+        match p {
+          (arg, after_arg) =>
+            match peek_tok(after_arg) {
+              TRParen => parse_app_loop(EApp(e, arg), rest_tok(after_arg));
+              TComma =>
+                # Multi-arg call: f(a, b, c) is sugar for f(a)(b)(c).
+                # We've already applied the first arg; loop on the rest.
+                parse_app_loop_args(EApp(e, arg), rest_tok(after_arg));
+              _       => Err("parse: expected ')' in function call")
+            }
+        });
+    TDot =>
+      match peek_tok(rest_tok(ts)) {
+        TIdent(field) =>
+          parse_app_loop(EField(e, field), rest_tok(rest_tok(ts)));
+        _ => Err("parse: expected field name after '.'")
+      };
+    _ => Ok((e, ts))
+  }
+
+# Continue collecting more args in a multi-arg call. Each arg becomes a
+# separate EApp around the accumulated expr.
+fn parse_app_loop_args(e: Expr, ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  bind_result(parse_expr(ts), fn(p: (Expr, List<Token>)) ->
+    match p {
+      (arg, after_arg) =>
+        match peek_tok(after_arg) {
+          TRParen => parse_app_loop(EApp(e, arg), rest_tok(after_arg));
+          TComma  => parse_app_loop_args(EApp(e, arg), rest_tok(after_arg));
+          _       => Err("parse: expected , or ) in multi-arg call")
+        }
+    })
+
+# Parses { name: expr, name: expr, ... } — the open brace already consumed.
+fn parse_record(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  match peek_tok(ts) {
+    TRBrace => Ok((ERec([]), rest_tok(ts)));  # empty record
+    _ => parse_record_fields(ts, [])
+  }
+
+fn parse_record_fields(
+  ts: List<Token>,
+  acc: List<Pair<String, Expr>>
+) : Result<(Expr, List<Token>), String> =
+  match peek_tok(ts) {
+    TIdent(name) =>
+      let after_name : List<Token> = rest_tok(ts) in
+      match peek_tok(after_name) {
+        TColon =>
+          bind_result(parse_expr(rest_tok(after_name)),
+                      fn(p: (Expr, List<Token>)) ->
+            match p {
+              (value, after_value) =>
+                let new_acc : List<Pair<String, Expr>> =
+                  acc ++ [Pair(name, value)] in
+                match peek_tok(after_value) {
+                  TComma  => parse_record_fields(rest_tok(after_value), new_acc);
+                  TRBrace => Ok((ERec(new_acc), rest_tok(after_value)));
+                  _       => Err("parse: expected ',' or '}' in record")
+                }
+            });
+        _ => Err("parse: expected ':' after field name in record")
+      };
+    _ => Err("parse: expected field name in record literal")
+  }
+
+fn parse_postfix(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  bind_result(parse_atom(ts), fn(p: (Expr, List<Token>)) ->
+    match p { (e, after) => parse_app_loop(e, after) })
+
+fn parse_mul_rest(left: Expr, ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  match peek_tok(ts) {
+    TStar =>
+      bind_result(parse_postfix(rest_tok(ts)), fn(p: (Expr, List<Token>)) ->
+        match p { (right, after) => parse_mul_rest(EMul(left, right), after) });
+    _ => Ok((left, ts))
+  }
+
+fn parse_mul(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  bind_result(parse_postfix(ts), fn(p: (Expr, List<Token>)) ->
+    match p { (left, after) => parse_mul_rest(left, after) })
+
+fn parse_add_rest(left: Expr, ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  match peek_tok(ts) {
+    TPlus =>
+      bind_result(parse_mul(rest_tok(ts)), fn(p: (Expr, List<Token>)) ->
+        match p { (right, after) => parse_add_rest(EAdd(left, right), after) });
+    TMinus =>
+      bind_result(parse_mul(rest_tok(ts)), fn(p: (Expr, List<Token>)) ->
+        match p { (right, after) => parse_add_rest(ESub(left, right), after) });
+    TPlusPlus =>
+      bind_result(parse_mul(rest_tok(ts)), fn(p: (Expr, List<Token>)) ->
+        match p { (right, after) => parse_add_rest(EConcat(left, right), after) });
+    _ => Ok((left, ts))
+  }
+
+fn parse_add(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  bind_result(parse_mul(ts), fn(p: (Expr, List<Token>)) ->
+    match p { (left, after) => parse_add_rest(left, after) })
+
+fn parse_compare(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  bind_result(parse_add(ts), fn(p: (Expr, List<Token>)) ->
+    match p {
+      (left, after_left) =>
+        match peek_tok(after_left) {
+          TLt =>
+            bind_result(parse_add(rest_tok(after_left)),
+                        fn(p2: (Expr, List<Token>)) ->
+              match p2 {
+                (right, after_right) => Ok((ELt(left, right), after_right))
+              });
+          TGt =>
+            bind_result(parse_add(rest_tok(after_left)),
+                        fn(p2: (Expr, List<Token>)) ->
+              match p2 {
+                (right, after_right) => Ok((EGt(left, right), after_right))
+              });
+          TLe =>
+            bind_result(parse_add(rest_tok(after_left)),
+                        fn(p2: (Expr, List<Token>)) ->
+              match p2 {
+                (right, after_right) => Ok((ELe(left, right), after_right))
+              });
+          TGe =>
+            bind_result(parse_add(rest_tok(after_left)),
+                        fn(p2: (Expr, List<Token>)) ->
+              match p2 {
+                (right, after_right) => Ok((EGe(left, right), after_right))
+              });
+          _ => Ok((left, after_left))
+        }
+    })
+
+fn parse_expr(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  parse_compare(ts)
+
+# Parse a full program: zero or more declarations (type or fn), then one
+# expression. fn declarations and type declarations can be interleaved.
+fn parse_program(src: String) : Result<Program, String> =
+  parse_decls_then_expr(tokenize(src), [], [])
+
+fn parse_decls_then_expr(
+  ts: List<Token>,
+  type_acc: List<TypeDecl>,
+  fn_acc: List<FnDecl>
+) : Result<Program, String> =
+  match peek_tok(ts) {
+    TType =>
+      bind_result(parse_type_decl(rest_tok(ts)),
+                  fn(p: (TypeDecl, List<Token>)) ->
+        match p { (decl, rest) =>
+          parse_decls_then_expr(rest, type_acc ++ [decl], fn_acc)
+        });
+    TFn =>
+      # Decide: is this a top-level `fn name(...) ...` or a lambda
+      # `fn(x) -> ...`? Top-level fn is followed by IDENTIFIER then `(`.
+      # Lambda is followed directly by `(`. Peek 2 tokens ahead.
+      match peek_tok(rest_tok(ts)) {
+        TIdent(_) =>
+          bind_result(parse_fn_decl(rest_tok(ts)),
+                      fn(p: (FnDecl, List<Token>)) ->
+            match p { (decl, rest) =>
+              parse_decls_then_expr(rest, type_acc, fn_acc ++ [decl])
+            });
+        _ => parse_main_expr(ts, type_acc, fn_acc)
+      };
+    _ => parse_main_expr(ts, type_acc, fn_acc)
+  }
+
+fn parse_main_expr(
+  ts: List<Token>,
+  type_acc: List<TypeDecl>,
+  fn_acc: List<FnDecl>
+) : Result<Program, String> =
+  match peek_tok(ts) {
+    TLet =>
+      # `let name [: T] = value` could be either a top-level statement
+      # (no `in`, rest of program is the body) or an inline let-in
+      # expression (with `in`). Disambiguate by peeking after the value.
+      bind_result(parse_top_let_stmt(rest_tok(ts)),
+                  fn(p: (String, Expr, List<Token>)) ->
+        match p { (name, value, after_val) =>
+          match peek_tok(after_val) {
+            TIn =>
+              # Inline `let ... in body`. Parse body, expect end of input.
+              bind_result(parse_expr(rest_tok(after_val)),
+                          fn(p2: (Expr, List<Token>)) ->
+                match p2 { (body, after_body) =>
+                  match peek_tok(after_body) {
+                    TEnd => Ok(Program(type_acc, fn_acc, ELet(name, value, body)));
+                    _    => Err("parse: extra tokens after let-in expression")
+                  }
+                });
+            _ =>
+              # Top-level let statement: the body is the rest of the program.
+              bind_result(parse_main_expr(after_val, type_acc, fn_acc),
+                          fn(prog: Program) ->
+                match prog { Program(td, fd, body) =>
+                  Ok(Program(td, fd, ELet(name, value, body)))
+                })
+          }
+        });
+    _ =>
+      bind_result(parse_expr(ts), fn(p: (Expr, List<Token>)) ->
+        match p {
+          (e, leftover) =>
+            match peek_tok(leftover) {
+              TEnd => Ok(Program(type_acc, fn_acc, e));
+              _    => Err("parse: extra tokens after expression")
+            }
+        })
+  }
+
+# Parse a top-level `let name [: Type] = expr` (no `in`). Returns
+# (name, value_expr, remaining_tokens).
+fn parse_top_let_stmt(ts: List<Token>) : Result<(String, Expr, List<Token>), String> =
+  match peek_tok(ts) {
+    TIdent(name) =>
+      let after_name : List<Token> = rest_tok(ts) in
+      bind_result(skip_optional_let_type(after_name),
+                  fn(after_ann: List<Token>) ->
+        match peek_tok(after_ann) {
+          TEq =>
+            bind_result(parse_expr(rest_tok(after_ann)),
+                        fn(p: (Expr, List<Token>)) ->
+              match p { (val, after_val) =>
+                Ok((name, val, after_val))
+              });
+          _ => Err("parse: expected '=' in top-level let")
+        });
+    _ => Err("parse: expected name in top-level let")
+  }
+
+# Parse `name(arg1: T1, arg2: T2, ...) : RetTy = body`.
+# The `fn` keyword has been consumed.
+# Multi-arg fns desugar to nested lambdas.
+fn parse_fn_decl(ts: List<Token>) : Result<(FnDecl, List<Token>), String> =
+  match peek_tok(ts) {
+    TIdent(name) =>
+      let after_name : List<Token> = rest_tok(ts) in
+      match peek_tok(after_name) {
+        TLParen =>
+          bind_result(parse_fn_params(rest_tok(after_name), []),
+                      fn(p1: (List<Pair<String, Type>>, List<Token>)) ->
+            match p1 { (params, after_params) =>
+              match peek_tok(after_params) {
+                TColon =>
+                  bind_result(parse_type(rest_tok(after_params)),
+                              fn(p2: (Type, List<Token>)) ->
+                    match p2 { (ret_ty, after_ret) =>
+                      # Optional effect annotation: `!{...}`.
+                      bind_result(parse_optional_effect(after_ret),
+                                  fn(pe: (EffRow, List<Token>)) ->
+                        match pe { (fn_eff, after_eff) =>
+                          match peek_tok(after_eff) {
+                            TEq =>
+                              bind_result(parse_expr(rest_tok(after_eff)),
+                                          fn(p3: (Expr, List<Token>)) ->
+                                match p3 { (body, after_body) =>
+                                  let fn_ty : Type = build_fn_type(params, ret_ty, fn_eff) in
+                                  let fn_body : Expr = build_fn_body(params, body) in
+                                  Ok((FnDecl(name, fn_ty, fn_body), after_body))
+                                });
+                            _ => Err("parse: fn decl: expected = after return type")
+                          }
+                        })
+                    });
+                _ => Err("parse: fn decl: expected : after params")
+              }
+            });
+        _ => Err("parse: fn decl: expected ( after name")
+      };
+    _ => Err("parse: fn decl: expected name after fn")
+  }
+
+# Parse optional `!{Label1, Label2, ...}` after a return type. Returns
+# the parsed effect row (or pure_eff() if no `!` is present).
+fn parse_optional_effect(ts: List<Token>) : Result<(EffRow, List<Token>), String> =
+  match peek_tok(ts) {
+    TBang =>
+      match peek_tok(rest_tok(ts)) {
+        TLBrace => parse_effect_labels(rest_tok(rest_tok(ts)), []);
+        _ => Err("parse: expected { after !")
+      };
+    _ => Ok((pure_eff(), ts))
+  }
+
+# Parse the contents of `{Label1, Label2, ...}` until `}`. Returns the
+# effect row. (We don't yet parse row variables; only concrete labels.)
+fn parse_effect_labels(
+  ts: List<Token>,
+  acc: List<String>
+) : Result<(EffRow, List<Token>), String> =
+  match peek_tok(ts) {
+    TRBrace => Ok((EffRow(acc, None), rest_tok(ts)));
+    TIdent(name) =>
+      let new_acc : List<String> = acc ++ [name] in
+      match peek_tok(rest_tok(ts)) {
+        TComma  => parse_effect_labels(rest_tok(rest_tok(ts)), new_acc);
+        TRBrace => Ok((EffRow(new_acc, None), rest_tok(rest_tok(ts))));
+        _ => Err("parse: expected , or } in effect row")
+      };
+    _ => Err("parse: expected effect label or }")
+  }
+
+# Parse `arg1: T1, arg2: T2, ...)` — closing paren consumed.
+fn parse_fn_params(
+  ts: List<Token>,
+  acc: List<Pair<String, Type>>
+) : Result<(List<Pair<String, Type>>, List<Token>), String> =
+  match peek_tok(ts) {
+    TRParen => Ok((acc, rest_tok(ts)));
+    TIdent(name) =>
+      match peek_tok(rest_tok(ts)) {
+        TColon =>
+          bind_result(parse_type(rest_tok(rest_tok(ts))),
+                      fn(p: (Type, List<Token>)) ->
+            match p { (ty, after_ty) =>
+              let new_acc : List<Pair<String, Type>> = acc ++ [Pair(name, ty)] in
+              match peek_tok(after_ty) {
+                TComma  => parse_fn_params(rest_tok(after_ty), new_acc);
+                TRParen => Ok((new_acc, rest_tok(after_ty)));
+                _       => Err("parse: fn params: expected , or )")
+              }
+            });
+        _ => Err("parse: fn params: expected : after name")
+      };
+    _ => Err("parse: fn params: expected name or )")
+  }
+
+# Build the curried function type from params + return + effect.
+# (a: T1, b: T2) : R !{IO} becomes T1 -> T2 -> R !{IO}.
+# The effect annotation lives on the FINAL (innermost) arrow — applying
+# all args produces a result with that effect; partial application is pure.
+fn build_fn_type(
+  params: List<Pair<String, Type>>,
+  ret_ty: Type,
+  fn_eff: EffRow
+) : Type =
+  match params {
+    [] => ret_ty;
+    [Pair(_, t), ...rest] =>
+      match rest {
+        [] => TyFn(t, ret_ty, fn_eff);
+        _  => TyFn(t, build_fn_type(rest, ret_ty, fn_eff), pure_eff())
+      }
+  }
+
+# Build the nested-lambda body from params + body.
+# (a, b) and body=expr  becomes  fn(a) -> fn(b) -> expr
+fn build_fn_body(params: List<Pair<String, Type>>, body: Expr) : Expr =
+  match params {
+    [] => body;
+    [Pair(name, _), ...rest] =>
+      ELam(name, build_fn_body(rest, body))
+  }
+
+# Parse a type decl: `Name = ...` or `Name<A, B> = ...`
+# The `type` keyword has been consumed.
+fn parse_type_decl(ts: List<Token>) : Result<(TypeDecl, List<Token>), String> =
+  match peek_tok(ts) {
+    TIdent(adt_name) =>
+      let after_name : List<Token> = rest_tok(ts) in
+      bind_result(parse_optional_params(after_name),
+                  fn(p: (List<String>, List<Token>)) ->
+        match p { (params, after_params) =>
+          match peek_tok(after_params) {
+            TEq => parse_ctor_decls(rest_tok(after_params), [], adt_name, params);
+            _ => Err("parse: expected '=' in type declaration")
+          }
+        });
+    _ => Err("parse: expected type name after 'type'")
+  }
+
+# Optional `<A, B, C>` after a type name (in declarations).
+fn parse_optional_params(ts: List<Token>) : Result<(List<String>, List<Token>), String> =
+  match peek_tok(ts) {
+    TLt => parse_param_list(rest_tok(ts), []);
+    _   => Ok(([], ts))
+  }
+
+fn parse_param_list(
+  ts: List<Token>,
+  acc: List<String>
+) : Result<(List<String>, List<Token>), String> =
+  match peek_tok(ts) {
+    TIdent(name) =>
+      let new_acc : List<String> = acc ++ [name] in
+      match peek_tok(rest_tok(ts)) {
+        TComma => parse_param_list(rest_tok(rest_tok(ts)), new_acc);
+        TGt    => Ok((new_acc, rest_tok(rest_tok(ts))));
+        _      => Err("parse: expected ',' or '>' in parameter list")
+      };
+    _ => Err("parse: expected parameter name")
+  }
+
+fn parse_ctor_decls(
+  ts: List<Token>,
+  acc: List<CtorDecl>,
+  adt_name: String,
+  params: List<String>
+) : Result<(TypeDecl, List<Token>), String> =
+  match peek_tok(ts) {
+    TPipe =>
+      bind_result(parse_ctor_decl(rest_tok(ts)),
+                  fn(p: (CtorDecl, List<Token>)) ->
+        match p { (cd, rest) =>
+          parse_ctor_decls(rest, acc ++ [cd], adt_name, params)
+        });
+    _ =>
+      match acc {
+        [] => Err("parse: type declaration needs at least one constructor");
+        _  => Ok((TypeDecl(adt_name, params, acc), ts))
+      }
+  }
+
+# Parse one constructor decl: `Name` or `Name(Type, Type, ...)`
+# The leading `|` has been consumed.
+fn parse_ctor_decl(ts: List<Token>) : Result<(CtorDecl, List<Token>), String> =
+  match peek_tok(ts) {
+    TIdent(name) =>
+      let after_name : List<Token> = rest_tok(ts) in
+      match peek_tok(after_name) {
+        TLParen =>
+          bind_result(parse_type_list(rest_tok(after_name), []),
+                      fn(p: (List<Type>, List<Token>)) ->
+            match p { (tys, rest) =>
+              Ok((CtorDecl(name, tys), rest))
+            });
+        _ => Ok((CtorDecl(name, []), after_name))
+      };
+    _ => Err("parse: expected constructor name")
+  }
+
+# Parse comma-separated types until ')'
+fn parse_type_list(
+  ts: List<Token>,
+  acc: List<Type>
+) : Result<(List<Type>, List<Token>), String> =
+  bind_result(parse_type(ts), fn(p: (Type, List<Token>)) ->
+    match p { (t, rest) =>
+      let new_acc : List<Type> = acc ++ [t] in
+      match peek_tok(rest) {
+        TComma  => parse_type_list(rest_tok(rest), new_acc);
+        TRParen => Ok((new_acc, rest_tok(rest)));
+        _       => Err("parse: expected ',' or ')' in type list")
+      }
+    })
+
+# Parse one type: Int, Bool, an ADT name, or a parameterized ADT
+# (Name<arg, arg>). Type parameters declared in the surrounding type
+# decl are emitted as TyAdt(paramName, []) here; build_ctor_env later
+# substitutes them with proper type variables.
+fn parse_type(ts: List<Token>) : Result<(Type, List<Token>), String> =
+  bind_result(parse_type_atom(ts), fn(p: (Type, List<Token>)) ->
+    match p { (t, after) =>
+      # Check for -> to extend into a function type
+      match peek_tok(after) {
+        TArrow =>
+          bind_result(parse_type(rest_tok(after)),
+                      fn(p2: (Type, List<Token>)) ->
+            match p2 { (ret, after_ret) =>
+              # Optional effect annotation on this arrow
+              bind_result(parse_optional_effect(after_ret),
+                          fn(pe: (EffRow, List<Token>)) ->
+                match pe { (eff, after_eff) =>
+                  Ok((TyFn(t, ret, eff), after_eff))
+                })
+            });
+        _ => Ok((t, after))
+      }
+    })
+
+# Parse a type atom (not extended by -> at the top level).
+fn parse_type_atom(ts: List<Token>) : Result<(Type, List<Token>), String> =
+  match peek_tok(ts) {
+    TIdent(name) =>
+      if name == "Int" then Ok((TyInt, rest_tok(ts)))
+      else if name == "Bool" then Ok((TyBool, rest_tok(ts)))
+      else if name == "String" then Ok((TyStr, rest_tok(ts)))
+      else parse_type_args(name, rest_tok(ts));
+    TLParen =>
+      bind_result(parse_type(rest_tok(ts)), fn(p: (Type, List<Token>)) ->
+        match p { (first, after_first) =>
+          match peek_tok(after_first) {
+            TComma =>
+              bind_result(parse_tuple_type_rest(rest_tok(after_first), [first]),
+                          fn(p2: (List<Type>, List<Token>)) ->
+                match p2 { (tys, rest) =>
+                  Ok((TyTuple(tys), rest))
+                });
+            TRParen => Ok((first, rest_tok(after_first)));
+            _ => Err("parse: expected , or ) in type")
+          }
+        });
+    _ => Err("parse: expected type name")
+  }
+
+fn parse_tuple_type_rest(
+  ts: List<Token>,
+  acc: List<Type>
+) : Result<(List<Type>, List<Token>), String> =
+  bind_result(parse_type(ts), fn(p: (Type, List<Token>)) ->
+    match p { (t, after) =>
+      let new_acc : List<Type> = acc ++ [t] in
+      match peek_tok(after) {
+        TComma  => parse_tuple_type_rest(rest_tok(after), new_acc);
+        TRParen => Ok((new_acc, rest_tok(after)));
+        _       => Err("parse: expected , or ) in tuple type")
+      }
+    })
+
+# After consuming a type name, check for an angle-bracket parameter list.
+fn parse_type_args(
+  name: String,
+  ts: List<Token>
+) : Result<(Type, List<Token>), String> =
+  match peek_tok(ts) {
+    TLt =>
+      bind_result(parse_type_arg_list(rest_tok(ts), []),
+                  fn(p: (List<Type>, List<Token>)) ->
+        match p { (args, rest) =>
+          Ok((TyAdt(name, args), rest))
+        });
+    _ => Ok((TyAdt(name, []), ts))
+  }
+
+fn parse_type_arg_list(
+  ts: List<Token>,
+  acc: List<Type>
+) : Result<(List<Type>, List<Token>), String> =
+  bind_result(parse_type(ts), fn(p: (Type, List<Token>)) ->
+    match p { (t, rest) =>
+      let new_acc : List<Type> = acc ++ [t] in
+      match peek_tok(rest) {
+        TComma => parse_type_arg_list(rest_tok(rest), new_acc);
+        TGt    => Ok((new_acc, rest_tok(rest)));
+        _      => Err("parse: expected ',' or '>' in type args")
+      }
+    })
+
+
+# --- HM machinery: substitutions, free vars, occurs, unification --------
+
+fn int_in(xs: List<Int>, n: Int) : Bool =
+  match xs {
+    []           => false;
+    [x, ...rest] => if x == n then true else int_in(rest, n)
+  }
+
+fn int_union(a: List<Int>, b: List<Int>) : List<Int> =
+  match a {
+    [] => b;
+    [x, ...rest] =>
+      if int_in(b, x) then int_union(rest, b)
+      else [x] ++ int_union(rest, b)
+  }
+
+fn int_diff(a: List<Int>, b: List<Int>) : List<Int> =
+  match a {
+    [] => [];
+    [x, ...rest] =>
+      if int_in(b, x) then int_diff(rest, b)
+      else [x] ++ int_diff(rest, b)
+  }
+
+# String set operations (for effect labels).
+fn str_in(xs: List<String>, s: String) : Bool =
+  match xs {
+    []           => false;
+    [x, ...rest] => if x == s then true else str_in(rest, s)
+  }
+
+fn str_union(xs: List<String>, ys: List<String>) : List<String> =
+  match ys {
+    []           => xs;
+    [y, ...rest] =>
+      if str_in(xs, y) then str_union(xs, rest)
+      else str_union(xs ++ [y], rest)
+  }
+
+fn str_diff(xs: List<String>, ys: List<String>) : List<String> =
+  match xs {
+    []           => [];
+    [x, ...rest] =>
+      if str_in(ys, x) then str_diff(rest, ys)
+      else [x] ++ str_diff(rest, ys)
+  }
+
+fn str_subset(xs: List<String>, ys: List<String>) : Bool =
+  match xs {
+    []           => true;
+    [x, ...rest] =>
+      if str_in(ys, x) then str_subset(rest, ys) else false
+  }
+
+fn str_eq_set(xs: List<String>, ys: List<String>) : Bool =
+  if str_subset(xs, ys) then str_subset(ys, xs) else false
+
+# Effect-row helpers.
+fn empty_sub() : Sub = Sub([], [])
+
+fn pure_eff() : EffRow = EffRow([], None)
+
+fn fresh_eff_var(next: Int) : (EffRow, Int) =
+  (EffRow([], Some(next)), next + 1)
+
+fn lookup_t_sub(s: List<Pair<Int, Type>>, n: Int) : Option<Type> =
+  match s {
+    []                    => None;
+    [Pair(k, v), ...rest] => if k == n then Some(v) else lookup_t_sub(rest, n)
+  }
+
+fn lookup_e_sub(s: List<Pair<Int, EffRow>>, n: Int) : Option<EffRow> =
+  match s {
+    []                    => None;
+    [Pair(k, v), ...rest] => if k == n then Some(v) else lookup_e_sub(rest, n)
+  }
+
+# Apply both substitutions to a Type. Effect annotations on TyFn use the
+# effect sub; type variables use the type sub. Substitutions are followed
+# transitively.
+fn apply_sub(s: Sub, t: Type) : Type =
+  match s { Sub(s_t, s_e) =>
+    match t {
+      TyInt    => TyInt;
+      TyBool   => TyBool;
+      TyStr    => TyStr;
+      TyVar(n) =>
+        match lookup_t_sub(s_t, n) {
+          None     => TyVar(n);
+          Some(t2) => apply_sub(s, t2)
+        };
+      TyFn(a, b, e) =>
+        TyFn(apply_sub(s, a),
+             apply_sub(s, b),
+             apply_eff_sub(s_e, e));
+      TyRec(fs)  => TyRec(apply_sub_rec_fields(s, fs));
+      TyAdt(n, args) => TyAdt(n, apply_sub_list(s, args));
+      TyTuple(ts) => TyTuple(apply_sub_list(s, ts))
+    }
+  }
+
+# Apply effect substitution to an EffRow. The bound row's labels join
+# (set union) with the row's concrete labels; the tail picks up the
+# bound row's tail.
+fn apply_eff_sub(s_e: List<Pair<Int, EffRow>>, r: EffRow) : EffRow =
+  match r {
+    EffRow(c, None)    => EffRow(c, None);
+    EffRow(c, Some(n)) =>
+      match lookup_e_sub(s_e, n) {
+        None         => EffRow(c, Some(n));
+        Some(target) =>
+          match apply_eff_sub(s_e, target) {
+            EffRow(c2, v2) => EffRow(str_union(c, c2), v2)
+          }
+      }
+  }
+
+fn apply_sub_eff(s: Sub, r: EffRow) : EffRow =
+  match s { Sub(_, s_e) => apply_eff_sub(s_e, r) }
+
+fn apply_sub_rec_fields(
+  s: Sub,
+  fs: List<Pair<String, Type>>
+) : List<Pair<String, Type>> =
+  match fs {
+    []                    => [];
+    [Pair(k, v), ...rest] =>
+      [Pair(k, apply_sub(s, v))] ++ apply_sub_rec_fields(s, rest)
+  }
+
+fn apply_sub_list(s: Sub, ts: List<Type>) : List<Type> =
+  match ts {
+    [] => [];
+    [t, ...rest] => [apply_sub(s, t)] ++ apply_sub_list(s, rest)
+  }
+
+# Apply sub, avoiding rigid (quantified) type and effect variables.
+fn apply_sub_avoid(
+  s: Sub,
+  t: Type,
+  avoid_t: List<Int>,
+  avoid_e: List<Int>
+) : Type =
+  match s { Sub(s_t, s_e) =>
+    match t {
+      TyInt    => TyInt;
+      TyBool   => TyBool;
+      TyStr    => TyStr;
+      TyVar(n) =>
+        if int_in(avoid_t, n) then TyVar(n)
+        else match lookup_t_sub(s_t, n) {
+          None     => TyVar(n);
+          Some(t2) => apply_sub_avoid(s, t2, avoid_t, avoid_e)
+        };
+      TyFn(a, b, e) =>
+        TyFn(apply_sub_avoid(s, a, avoid_t, avoid_e),
+             apply_sub_avoid(s, b, avoid_t, avoid_e),
+             apply_eff_sub_avoid(s_e, e, avoid_e));
+      TyRec(fs) => TyRec(apply_sub_avoid_rec(s, fs, avoid_t, avoid_e));
+      TyAdt(n, args) =>
+        TyAdt(n, apply_sub_avoid_list(s, args, avoid_t, avoid_e));
+      TyTuple(ts) =>
+        TyTuple(apply_sub_avoid_list(s, ts, avoid_t, avoid_e))
+    }
+  }
+
+fn apply_eff_sub_avoid(
+  s_e: List<Pair<Int, EffRow>>,
+  r: EffRow,
+  avoid: List<Int>
+) : EffRow =
+  match r {
+    EffRow(c, None)    => EffRow(c, None);
+    EffRow(c, Some(n)) =>
+      if int_in(avoid, n) then EffRow(c, Some(n))
+      else
+        match lookup_e_sub(s_e, n) {
+          None         => EffRow(c, Some(n));
+          Some(target) =>
+            match apply_eff_sub_avoid(s_e, target, avoid) {
+              EffRow(c2, v2) => EffRow(str_union(c, c2), v2)
+            }
+        }
+  }
+
+fn apply_sub_avoid_rec(
+  s: Sub,
+  fs: List<Pair<String, Type>>,
+  avoid_t: List<Int>,
+  avoid_e: List<Int>
+) : List<Pair<String, Type>> =
+  match fs {
+    []                    => [];
+    [Pair(k, v), ...rest] =>
+      [Pair(k, apply_sub_avoid(s, v, avoid_t, avoid_e))]
+      ++ apply_sub_avoid_rec(s, rest, avoid_t, avoid_e)
+  }
+
+fn apply_sub_avoid_list(
+  s: Sub,
+  ts: List<Type>,
+  avoid_t: List<Int>,
+  avoid_e: List<Int>
+) : List<Type> =
+  match ts {
+    [] => [];
+    [t, ...rest] =>
+      [apply_sub_avoid(s, t, avoid_t, avoid_e)]
+      ++ apply_sub_avoid_list(s, rest, avoid_t, avoid_e)
+  }
+
+# Free type vars in a type.
+fn free_vars(t: Type) : List<Int> =
+  match t {
+    TyInt      => [];
+    TyBool     => [];
+    TyStr      => [];
+    TyVar(n)   => [n];
+    TyFn(a, b, _) => int_union(free_vars(a), free_vars(b));
+    TyRec(fs)  => free_vars_rec(fs);
+    TyAdt(_, args) => free_vars_list(args);
+    TyTuple(ts) => free_vars_list(ts)
+  }
+
+fn free_vars_rec(fs: List<Pair<String, Type>>) : List<Int> =
+  match fs {
+    []                    => [];
+    [Pair(_, v), ...rest] => int_union(free_vars(v), free_vars_rec(rest))
+  }
+
+fn free_vars_list(ts: List<Type>) : List<Int> =
+  match ts {
+    [] => [];
+    [t, ...rest] => int_union(free_vars(t), free_vars_list(rest))
+  }
+
+# Free effect vars in a type (looks at every TyFn's effect annotation).
+fn free_eff_vars(t: Type) : List<Int> =
+  match t {
+    TyInt      => [];
+    TyBool     => [];
+    TyStr      => [];
+    TyVar(_)   => [];
+    TyFn(a, b, e) =>
+      int_union(int_union(free_eff_vars(a), free_eff_vars(b)),
+                free_eff_vars_row(e));
+    TyRec(fs)  => free_eff_vars_rec(fs);
+    TyAdt(_, args) => free_eff_vars_list(args);
+    TyTuple(ts) => free_eff_vars_list(ts)
+  }
+
+fn free_eff_vars_row(r: EffRow) : List<Int> =
+  match r {
+    EffRow(_, None)    => [];
+    EffRow(_, Some(n)) => [n]
+  }
+
+fn free_eff_vars_rec(fs: List<Pair<String, Type>>) : List<Int> =
+  match fs {
+    [] => [];
+    [Pair(_, v), ...rest] => int_union(free_eff_vars(v), free_eff_vars_rec(rest))
+  }
+
+fn free_eff_vars_list(ts: List<Type>) : List<Int> =
+  match ts {
+    [] => [];
+    [t, ...rest] => int_union(free_eff_vars(t), free_eff_vars_list(rest))
+  }
+
+# Free type vars across env (used for generalization).
+fn free_vars_env(env: List<Pair<String, Scheme>>, s: Sub) : List<Int> =
+  match env {
+    [] => [];
+    [Pair(_, sch), ...rest] =>
+      match sch {
+        Scheme(qs_t, qs_e, body) =>
+          int_union(
+            free_vars(apply_sub_avoid(s, body, qs_t, qs_e)),
+            free_vars_env(rest, s)
+          )
+      }
+  }
+
+# Free effect vars across env (used for effect generalization).
+fn free_eff_vars_env(env: List<Pair<String, Scheme>>, s: Sub) : List<Int> =
+  match env {
+    [] => [];
+    [Pair(_, sch), ...rest] =>
+      match sch {
+        Scheme(qs_t, qs_e, body) =>
+          int_union(
+            free_eff_vars(apply_sub_avoid(s, body, qs_t, qs_e)),
+            free_eff_vars_env(rest, s)
+          )
+      }
+  }
+
+fn occurs_in(n: Int, t: Type) : Bool =
+  match t {
+    TyVar(m)   => m == n;
+    TyFn(a, b, _) => if occurs_in(n, a) then true else occurs_in(n, b);
+    TyRec(fs)  => occurs_in_rec(n, fs);
+    TyAdt(_, args) => occurs_in_list(n, args);
+    TyTuple(ts) => occurs_in_list(n, ts);
+    _         => false
+  }
+
+fn occurs_in_rec(n: Int, fs: List<Pair<String, Type>>) : Bool =
+  match fs {
+    [] => false;
+    [Pair(_, v), ...rest] =>
+      if occurs_in(n, v) then true else occurs_in_rec(n, rest)
+  }
+
+fn occurs_in_list(n: Int, ts: List<Type>) : Bool =
+  match ts {
+    [] => false;
+    [t, ...rest] =>
+      if occurs_in(n, t) then true else occurs_in_list(n, rest)
+  }
+
+fn occurs(n: Int, t: Type, s: Sub) : Bool =
+  occurs_in(n, apply_sub(s, t))
+
+# Unification — threads (Sub, counter) through, since unify_eff may
+# generate fresh row variables.
+fn unify(t1: Type, t2: Type, s: Sub, next: Int)
+    : Result<(Sub, Int), String> =
+  unify_rec(apply_sub(s, t1), apply_sub(s, t2), s, next)
+
+fn unify_rec(t1: Type, t2: Type, s: Sub, next: Int)
+    : Result<(Sub, Int), String> =
+  match t1 {
+    TyVar(n) =>
+      match t2 {
+        TyVar(m) =>
+          if n == m then Ok((s, next))
+          else bind_t_var(n, t2, s, next);
+        _ =>
+          if occurs(n, t2, s)
+            then Err("type: occurs check failed for t" ++ int_to_string(n))
+            else bind_t_var(n, t2, s, next)
+      };
+    TyInt =>
+      match t2 {
+        TyInt    => Ok((s, next));
+        TyVar(_) => unify_rec(t2, t1, s, next);
+        _       => Err("type: can't unify Int with " ++ show_type(t2))
+      };
+    TyBool =>
+      match t2 {
+        TyBool   => Ok((s, next));
+        TyVar(_) => unify_rec(t2, t1, s, next);
+        _       => Err("type: can't unify Bool with " ++ show_type(t2))
+      };
+    TyStr =>
+      match t2 {
+        TyStr    => Ok((s, next));
+        TyVar(_) => unify_rec(t2, t1, s, next);
+        _       => Err("type: can't unify String with " ++ show_type(t2))
+      };
+    TyFn(a1, b1, e1) =>
+      match t2 {
+        TyFn(a2, b2, e2) =>
+          bind_result(unify(a1, a2, s, next), fn(r1: (Sub, Int)) ->
+            match r1 { (s1, n1) =>
+              bind_result(unify(b1, b2, s1, n1), fn(r2: (Sub, Int)) ->
+                match r2 { (s2, n2) =>
+                  unify_eff(e1, e2, s2, n2)
+                })
+            });
+        TyVar(_) => unify_rec(t2, t1, s, next);
+        _       => Err("type: can't unify function with " ++ show_type(t2))
+      };
+    TyRec(fs1) =>
+      match t2 {
+        TyRec(fs2) =>
+          if len(fs1) == len(fs2)
+            then unify_rec_fields(fs1, fs2, s, next)
+            else Err("type: record sizes differ");
+        TyVar(_) => unify_rec(t2, t1, s, next);
+        _       => Err("type: can't unify record with " ++ show_type(t2))
+      };
+    TyAdt(n1, args1) =>
+      match t2 {
+        TyAdt(n2, args2) =>
+          if n1 == n2 then
+            if len(args1) == len(args2)
+              then unify_type_list(args1, args2, s, next)
+              else Err("type: arity mismatch for " ++ n1)
+          else Err("type: can't unify " ++ n1 ++ " with " ++ n2);
+        TyVar(_) => unify_rec(t2, t1, s, next);
+        _       => Err("type: can't unify " ++ n1 ++ " with " ++ show_type(t2))
+      };
+    TyTuple(ts1) =>
+      match t2 {
+        TyTuple(ts2) =>
+          if len(ts1) == len(ts2)
+            then unify_type_list(ts1, ts2, s, next)
+            else Err("type: tuple sizes differ");
+        TyVar(_) => unify_rec(t2, t1, s, next);
+        _ => Err("type: can't unify tuple with " ++ show_type(t2))
+      }
+  }
+
+fn bind_t_var(n: Int, t: Type, s: Sub, next: Int)
+    : Result<(Sub, Int), String> =
+  match s { Sub(s_t, s_e) =>
+    Ok((Sub([Pair(n, t)] ++ s_t, s_e), next))
+  }
+
+fn bind_e_var(n: Int, r: EffRow, s: Sub, next: Int)
+    : Result<(Sub, Int), String> =
+  match s { Sub(s_t, s_e) =>
+    Ok((Sub(s_t, [Pair(n, r)] ++ s_e), next))
+  }
+
+# Row unification with the five Rémy-style cases (see eff_infer.glass).
+fn unify_eff(e1: EffRow, e2: EffRow, s: Sub, next: Int)
+    : Result<(Sub, Int), String> =
+  let r1 : EffRow = apply_sub_eff(s, e1) in
+  let r2 : EffRow = apply_sub_eff(s, e2) in
+  match r1 {
+    EffRow(c1, v1) =>
+      match r2 {
+        EffRow(c2, v2) =>
+          match v1 {
+            None =>
+              match v2 {
+                None =>
+                  if str_eq_set(c1, c2) then Ok((s, next))
+                  else Err("eff: rows differ: !{" ++ join_str_csv(c1)
+                           ++ "} vs !{" ++ join_str_csv(c2) ++ "}");
+                Some(b) =>
+                  if str_subset(c2, c1)
+                    then bind_e_var(b, EffRow(str_diff(c1, c2), None), s, next)
+                    else Err("eff: rigid row cannot subsume open row")
+              };
+            Some(a) =>
+              match v2 {
+                None =>
+                  if str_subset(c1, c2)
+                    then bind_e_var(a, EffRow(str_diff(c2, c1), None), s, next)
+                    else Err("eff: rigid row cannot subsume open row");
+                Some(b) =>
+                  if a == b then
+                    if str_eq_set(c1, c2) then Ok((s, next))
+                    else Err("eff: rows with same tail differ")
+                  else
+                    let g : Int = next in
+                    bind_result(
+                      bind_e_var(a, EffRow(str_diff(c2, c1), Some(g)),
+                                 s, next + 1),
+                      fn(r: (Sub, Int)) ->
+                        match r { (s1, n1) =>
+                          bind_e_var(b, EffRow(str_diff(c1, c2), Some(g)),
+                                     s1, n1)
+                        })
+              }
+          }
+      }
+  }
+
+fn join_str_csv(xs: List<String>) : String =
+  fold(xs, "", fn(acc: String, s: String) ->
+    if string_length(acc) == 0 then s
+    else acc ++ ", " ++ s)
+
+fn unify_rec_fields(
+  fs1: List<Pair<String, Type>>,
+  fs2: List<Pair<String, Type>>,
+  s: Sub,
+  next: Int
+) : Result<(Sub, Int), String> =
+  match fs1 {
+    [] => Ok((s, next));
+    [Pair(name, ty1), ...rest] =>
+      match lookup_field_ty(fs2, name) {
+        None      => Err("type: record missing field " ++ name);
+        Some(ty2) =>
+          bind_result(unify(ty1, ty2, s, next), fn(r: (Sub, Int)) ->
+            match r { (s1, n1) =>
+              unify_rec_fields(rest, fs2, s1, n1)
+            })
+      }
+  }
+
+fn lookup_field_ty(
+  fs: List<Pair<String, Type>>,
+  name: String
+) : Option<Type> =
+  match fs {
+    []                    => None;
+    [Pair(k, v), ...rest] =>
+      if k == name then Some(v) else lookup_field_ty(rest, name)
+  }
+
+fn unify_type_list(
+  ts1: List<Type>,
+  ts2: List<Type>,
+  s: Sub,
+  next: Int
+) : Result<(Sub, Int), String> =
+  match ts1 {
+    [] => Ok((s, next));
+    [t1, ...rest1] =>
+      match ts2 {
+        [] => Err("type: arity mismatch in type list");
+        [t2, ...rest2] =>
+          bind_result(unify(t1, t2, s, next), fn(r: (Sub, Int)) ->
+            match r { (s1, n1) =>
+              unify_type_list(rest1, rest2, s1, n1)
+            })
+      }
+  }
+
+# Allocate fresh type vars for each quantified ID.
+fn fresh_for_t_vars(qs: List<Int>, next: Int)
+    : (List<Pair<Int, Type>>, Int) =
+  match qs {
+    [] => ([], next);
+    [q, ...rest] =>
+      match fresh_for_t_vars(rest, next + 1) {
+        (sub, n) => ([Pair(q, TyVar(next))] ++ sub, n)
+      }
+  }
+
+# Allocate fresh effect vars for each quantified ID.
+fn fresh_for_e_vars(qs: List<Int>, next: Int)
+    : (List<Pair<Int, EffRow>>, Int) =
+  match qs {
+    [] => ([], next);
+    [q, ...rest] =>
+      match fresh_for_e_vars(rest, next + 1) {
+        (sub, n) => ([Pair(q, EffRow([], Some(next)))] ++ sub, n)
+      }
+  }
+
+# Instantiate refreshes BOTH type vars and effect vars at every lookup.
+fn instantiate(sch: Scheme, next: Int) : (Type, Int) =
+  match sch {
+    Scheme(qs_t, qs_e, body) =>
+      match fresh_for_t_vars(qs_t, next) {
+        (sub_t, n1) =>
+          match fresh_for_e_vars(qs_e, n1) {
+            (sub_e, n2) =>
+              (apply_sub(Sub(sub_t, sub_e), body), n2)
+          }
+      }
+  }
+
+# Generalize quantifies over BOTH free type vars AND free effect vars
+# not pinned by the env.
+fn generalize(env_tvs: List<Int>, env_evs: List<Int>, t: Type) : Scheme =
+  Scheme(int_diff(free_vars(t), env_tvs),
+         int_diff(free_eff_vars(t), env_evs),
+         t)
+
+fn lookup_ty_env(env: List<Pair<String, Scheme>>, name: String) : Option<Scheme> =
+  match env {
+    [] => None;
+    [Pair(k, v), ...rest] =>
+      if k == name then Some(v) else lookup_ty_env(rest, name)
+  }
+
+# ---------- Exhaustiveness checking ----------
+#
+# Given a match's patterns and the scrutinee's resolved type, verify
+# that the arms cover every constructor of the scrutinee's ADT (or have
+# a wildcard/var catch-all).
+#
+# Approach: recover "which constructors belong to ADT X" by walking the
+# type env — every constructor scheme's body, after peeling TyFn, ends
+# in a TyAdt(name, _). Collect the constructors whose final ADT matches
+# the scrutinee's ADT name.
+
+fn ctors_of_adt(env: List<Pair<String, Scheme>>, adt_name: String) : List<String> =
+  match env {
+    [] => [];
+    [Pair(name, sch), ...rest] =>
+      match sch {
+        Scheme(_, _, body) =>
+          if ctor_belongs_to(body, adt_name)
+            then [name] ++ ctors_of_adt(rest, adt_name)
+            else ctors_of_adt(rest, adt_name)
+      }
+  }
+
+fn ctor_belongs_to(body: Type, adt_name: String) : Bool =
+  match body {
+    TyAdt(name, _) => name == adt_name;
+    TyFn(_, b, _)  => ctor_belongs_to(b, adt_name);
+    _              => false
+  }
+
+fn arm_patterns(arms: List<Pair<Pattern, Expr>>) : List<Pattern> =
+  match arms {
+    [] => [];
+    [Pair(p, _), ...rest] => [p] ++ arm_patterns(rest)
+  }
+
+fn has_wildcard_pattern(ps: List<Pattern>) : Bool =
+  match ps {
+    [] => false;
+    [p, ...rest] =>
+      match p {
+        PWild     => true;
+        PVar(_)   => true;
+        PTuple(_) => true;
+        _         => has_wildcard_pattern(rest)
+      }
+  }
+
+fn covered_ctor_names(ps: List<Pattern>) : List<String> =
+  match ps {
+    [] => [];
+    [p, ...rest] =>
+      match p {
+        PCtor(name, _) => [name] ++ covered_ctor_names(rest);
+        _              => covered_ctor_names(rest)
+      }
+  }
+
+# Check that every name in `needed` appears in `have`. Returns the list
+# of missing names (empty if exhaustive).
+fn missing_ctors(needed: List<String>, have: List<String>) : List<String> =
+  match needed {
+    [] => [];
+    [n, ...rest] =>
+      if str_in(have, n) then missing_ctors(rest, have)
+      else [n] ++ missing_ctors(rest, have)
+  }
+
+fn check_exhaustive(
+  patterns: List<Pattern>,
+  scrut_ty: Type,
+  env: List<Pair<String, Scheme>>
+) : Result<Bool, String> =
+  if has_wildcard_pattern(patterns) then Ok(true)
+  else
+    match scrut_ty {
+      TyAdt(name, _) =>
+        let all_ctors : List<String> = ctors_of_adt(env, name) in
+        let covered : List<String> = covered_ctor_names(patterns) in
+        let missing : List<String> = missing_ctors(all_ctors, covered) in
+        match missing {
+          [] => Ok(true);
+          _  => Err("match not exhaustive on " ++ name
+                    ++ ": missing " ++ join_str_csv(missing))
+        };
+      _ => Ok(true)
+    }
+
+# Algorithm W with effect polymorphism. Returns:
+#   (inferred type, ambient effects, updated sub, updated counter).
+# The AMBIENT effects of an expression are the effects produced by
+# evaluating it — the union of every latent effect from every function
+# call. ELam alone evaluates to pure ambient (creating a closure is pure);
+# the body's ambient becomes the closure's latent.
+fn infer(
+  e: Expr,
+  env: List<Pair<String, Scheme>>,
+  s: Sub,
+  next: Int
+) : Result<(Type, EffRow, Sub, Int), String> =
+  match e {
+    EInt(_)  => Ok((TyInt,  pure_eff(), s, next));
+    EBool(_) => Ok((TyBool, pure_eff(), s, next));
+    EStr(_)  => Ok((TyStr,  pure_eff(), s, next));
+
+    EVar(name) =>
+      match lookup_ty_env(env, name) {
+        None      => Err("type: unbound variable: " ++ name);
+        Some(sch) =>
+          match instantiate(sch, next) {
+            (t, new_next) => Ok((t, pure_eff(), s, new_next))
+          }
+      };
+
+    EAdd(a, b) =>
+      bind_result(infer(a, env, s, next), fn(r1: (Type, EffRow, Sub, Int)) ->
+        match r1 { (ta, ea, s1, n1) =>
+          bind_result(unify(ta, TyInt, s1, n1), fn(r2: (Sub, Int)) ->
+            match r2 { (s2, n2) =>
+              bind_result(infer(b, env, s2, n2),
+                          fn(r3: (Type, EffRow, Sub, Int)) ->
+                match r3 { (tb, eb, s3, n3) =>
+                  bind_result(unify(tb, TyInt, s3, n3), fn(r4: (Sub, Int)) ->
+                    match r4 { (s4, n4) =>
+                      Ok((TyInt, eff_union_via(s4, ea, eb), s4, n4))
+                    })
+                })
+            })
+        });
+
+    ESub(a, b) =>
+      bind_result(infer(a, env, s, next), fn(r1: (Type, EffRow, Sub, Int)) ->
+        match r1 { (ta, ea, s1, n1) =>
+          bind_result(unify(ta, TyInt, s1, n1), fn(r2: (Sub, Int)) ->
+            match r2 { (s2, n2) =>
+              bind_result(infer(b, env, s2, n2),
+                          fn(r3: (Type, EffRow, Sub, Int)) ->
+                match r3 { (tb, eb, s3, n3) =>
+                  bind_result(unify(tb, TyInt, s3, n3), fn(r4: (Sub, Int)) ->
+                    match r4 { (s4, n4) =>
+                      Ok((TyInt, eff_union_via(s4, ea, eb), s4, n4))
+                    })
+                })
+            })
+        });
+
+    EMul(a, b) =>
+      bind_result(infer(a, env, s, next), fn(r1: (Type, EffRow, Sub, Int)) ->
+        match r1 { (ta, ea, s1, n1) =>
+          bind_result(unify(ta, TyInt, s1, n1), fn(r2: (Sub, Int)) ->
+            match r2 { (s2, n2) =>
+              bind_result(infer(b, env, s2, n2),
+                          fn(r3: (Type, EffRow, Sub, Int)) ->
+                match r3 { (tb, eb, s3, n3) =>
+                  bind_result(unify(tb, TyInt, s3, n3), fn(r4: (Sub, Int)) ->
+                    match r4 { (s4, n4) =>
+                      Ok((TyInt, eff_union_via(s4, ea, eb), s4, n4))
+                    })
+                })
+            })
+        });
+
+    EConcat(a, b) =>
+      bind_result(infer(a, env, s, next), fn(r1: (Type, EffRow, Sub, Int)) ->
+        match r1 { (ta, ea, s1, n1) =>
+          bind_result(unify(ta, TyStr, s1, n1), fn(r2: (Sub, Int)) ->
+            match r2 { (s2, n2) =>
+              bind_result(infer(b, env, s2, n2),
+                          fn(r3: (Type, EffRow, Sub, Int)) ->
+                match r3 { (tb, eb, s3, n3) =>
+                  bind_result(unify(tb, TyStr, s3, n3), fn(r4: (Sub, Int)) ->
+                    match r4 { (s4, n4) =>
+                      Ok((TyStr, eff_union_via(s4, ea, eb), s4, n4))
+                    })
+                })
+            })
+        });
+
+    ELt(a, b) =>
+      bind_result(infer(a, env, s, next), fn(r1: (Type, EffRow, Sub, Int)) ->
+        match r1 { (ta, ea, s1, n1) =>
+          bind_result(unify(ta, TyInt, s1, n1), fn(r2: (Sub, Int)) ->
+            match r2 { (s2, n2) =>
+              bind_result(infer(b, env, s2, n2),
+                          fn(r3: (Type, EffRow, Sub, Int)) ->
+                match r3 { (tb, eb, s3, n3) =>
+                  bind_result(unify(tb, TyInt, s3, n3), fn(r4: (Sub, Int)) ->
+                    match r4 { (s4, n4) =>
+                      Ok((TyBool, eff_union_via(s4, ea, eb), s4, n4))
+                    })
+                })
+            })
+        });
+
+    EGt(a, b) =>
+      bind_result(infer(a, env, s, next), fn(r1: (Type, EffRow, Sub, Int)) ->
+        match r1 { (ta, ea, s1, n1) =>
+          bind_result(unify(ta, TyInt, s1, n1), fn(r2: (Sub, Int)) ->
+            match r2 { (s2, n2) =>
+              bind_result(infer(b, env, s2, n2),
+                          fn(r3: (Type, EffRow, Sub, Int)) ->
+                match r3 { (tb, eb, s3, n3) =>
+                  bind_result(unify(tb, TyInt, s3, n3), fn(r4: (Sub, Int)) ->
+                    match r4 { (s4, n4) =>
+                      Ok((TyBool, eff_union_via(s4, ea, eb), s4, n4))
+                    })
+                })
+            })
+        });
+
+    ELe(a, b) =>
+      bind_result(infer(a, env, s, next), fn(r1: (Type, EffRow, Sub, Int)) ->
+        match r1 { (ta, ea, s1, n1) =>
+          bind_result(unify(ta, TyInt, s1, n1), fn(r2: (Sub, Int)) ->
+            match r2 { (s2, n2) =>
+              bind_result(infer(b, env, s2, n2),
+                          fn(r3: (Type, EffRow, Sub, Int)) ->
+                match r3 { (tb, eb, s3, n3) =>
+                  bind_result(unify(tb, TyInt, s3, n3), fn(r4: (Sub, Int)) ->
+                    match r4 { (s4, n4) =>
+                      Ok((TyBool, eff_union_via(s4, ea, eb), s4, n4))
+                    })
+                })
+            })
+        });
+
+    EGe(a, b) =>
+      bind_result(infer(a, env, s, next), fn(r1: (Type, EffRow, Sub, Int)) ->
+        match r1 { (ta, ea, s1, n1) =>
+          bind_result(unify(ta, TyInt, s1, n1), fn(r2: (Sub, Int)) ->
+            match r2 { (s2, n2) =>
+              bind_result(infer(b, env, s2, n2),
+                          fn(r3: (Type, EffRow, Sub, Int)) ->
+                match r3 { (tb, eb, s3, n3) =>
+                  bind_result(unify(tb, TyInt, s3, n3), fn(r4: (Sub, Int)) ->
+                    match r4 { (s4, n4) =>
+                      Ok((TyBool, eff_union_via(s4, ea, eb), s4, n4))
+                    })
+                })
+            })
+        });
+
+    EIf(c, t, e_b) =>
+      bind_result(infer(c, env, s, next), fn(r1: (Type, EffRow, Sub, Int)) ->
+        match r1 { (tc, ec, s1, n1) =>
+          bind_result(unify(tc, TyBool, s1, n1), fn(r2: (Sub, Int)) ->
+            match r2 { (s2, n2) =>
+              bind_result(infer(t, env, s2, n2),
+                          fn(r3: (Type, EffRow, Sub, Int)) ->
+                match r3 { (tt, et, s3, n3) =>
+                  bind_result(infer(e_b, env, s3, n3),
+                              fn(r4: (Type, EffRow, Sub, Int)) ->
+                    match r4 { (te, ee, s4, n4) =>
+                      bind_result(unify(tt, te, s4, n4),
+                                  fn(r5: (Sub, Int)) ->
+                        match r5 { (s5, n5) =>
+                          let all_eff : EffRow =
+                            eff_union_via(s5, ec, eff_union_via(s5, et, ee)) in
+                          Ok((apply_sub(s5, tt), all_eff, s5, n5))
+                        })
+                    })
+                })
+            })
+        });
+
+    ELam(x, body) =>
+      # Body's ambient effects become the function's latent effect.
+      # The lambda itself evaluates to PURE — creating a closure has
+      # no side effects.
+      let a : Type = TyVar(next) in
+      let env2 : List<Pair<String, Scheme>> =
+        [Pair(x, Scheme([], [], a))] ++ env in
+      bind_result(infer(body, env2, s, next + 1),
+                  fn(r: (Type, EffRow, Sub, Int)) ->
+        match r { (tb, eb, s1, n) =>
+          let fn_ty : Type =
+            TyFn(apply_sub(s1, a),
+                 apply_sub(s1, tb),
+                 apply_sub_eff(s1, eb)) in
+          Ok((fn_ty, pure_eff(), s1, n))
+        });
+
+    EApp(f, arg) =>
+      bind_result(infer(f, env, s, next), fn(r1: (Type, EffRow, Sub, Int)) ->
+        match r1 { (tf, ef, s1, n1) =>
+          bind_result(infer(arg, env, s1, n1),
+                      fn(r2: (Type, EffRow, Sub, Int)) ->
+            match r2 { (ta, ea, s2, n2) =>
+              # Fresh return type and fresh effect var (the latent).
+              let result : Type = TyVar(n2) in
+              let latent : EffRow = EffRow([], Some(n2 + 1)) in
+              let expected : Type = TyFn(ta, result, latent) in
+              bind_result(unify(tf, expected, s2, n2 + 2),
+                          fn(r3: (Sub, Int)) ->
+                match r3 { (s3, n3) =>
+                  let resolved_latent : EffRow =
+                    apply_sub_eff(s3, latent) in
+                  let all_eff : EffRow =
+                    eff_union_via(s3, ef,
+                      eff_union_via(s3, ea, resolved_latent)) in
+                  Ok((apply_sub(s3, result), all_eff, s3, n3))
+                })
+            })
+        });
+
+    ELet(x, val, body) =>
+      bind_result(infer(val, env, s, next),
+                  fn(r1: (Type, EffRow, Sub, Int)) ->
+        match r1 { (tv, ev, s1, n1) =>
+          let env_tvs : List<Int> = free_vars_env(env, s1) in
+          let env_evs : List<Int> = free_eff_vars_env(env, s1) in
+          let resolved : Type = apply_sub(s1, tv) in
+          let sch : Scheme = generalize(env_tvs, env_evs, resolved) in
+          let env2 : List<Pair<String, Scheme>> =
+            [Pair(x, sch)] ++ env in
+          bind_result(infer(body, env2, s1, n1),
+                      fn(r2: (Type, EffRow, Sub, Int)) ->
+            match r2 { (tb, eb, s2, n2) =>
+              Ok((tb, eff_union_via(s2, ev, eb), s2, n2))
+            })
+        });
+
+    ELetRec(x, val, body) =>
+      # Recursive let. Allocate a fresh tvar for x BEFORE inferring val,
+      # so val can reference x. After unification, generalize and bind
+      # x with the generalized scheme for the body.
+      let self_ty : Type = TyVar(next) in
+      let env_with_self : List<Pair<String, Scheme>> =
+        [Pair(x, Scheme([], [], self_ty))] ++ env in
+      bind_result(infer(val, env_with_self, s, next + 1),
+                  fn(r1: (Type, EffRow, Sub, Int)) ->
+        match r1 { (tv, ev, s1, n1) =>
+          bind_result(unify(self_ty, tv, s1, n1), fn(r2: (Sub, Int)) ->
+            match r2 { (s2, n2) =>
+              let env_tvs : List<Int> = free_vars_env(env, s2) in
+              let env_evs : List<Int> = free_eff_vars_env(env, s2) in
+              let resolved : Type = apply_sub(s2, tv) in
+              let sch : Scheme = generalize(env_tvs, env_evs, resolved) in
+              let env2 : List<Pair<String, Scheme>> =
+                [Pair(x, sch)] ++ env in
+              bind_result(infer(body, env2, s2, n2),
+                          fn(r3: (Type, EffRow, Sub, Int)) ->
+                match r3 { (tb, eb, s3, n3) =>
+                  Ok((tb, eff_union_via(s3, ev, eb), s3, n3))
+                })
+            })
+        });
+
+    ERec(fields) =>
+      bind_result(infer_record_fields(fields, env, s, next, pure_eff()),
+                  fn(r: (List<Pair<String, Type>>, EffRow, Sub, Int)) ->
+        match r { (fts, eff, s1, n1) =>
+          Ok((TyRec(fts), eff, s1, n1))
+        });
+
+    EField(rec, name) =>
+      bind_result(infer(rec, env, s, next),
+                  fn(r1: (Type, EffRow, Sub, Int)) ->
+        match r1 { (tr, er, s1, n1) =>
+          let resolved : Type = apply_sub(s1, tr) in
+          match resolved {
+            TyRec(fs) =>
+              match lookup_field_ty(fs, name) {
+                None     => Err("type: record has no field " ++ name);
+                Some(ft) => Ok((ft, er, s1, n1))
+              };
+            TyVar(_) =>
+              let result : Type = TyVar(n1) in
+              let expected : Type = TyRec([Pair(name, result)]) in
+              bind_result(unify(resolved, expected, s1, n1 + 1),
+                          fn(r2: (Sub, Int)) ->
+                match r2 { (s2, n2) =>
+                  Ok((apply_sub(s2, result), er, s2, n2))
+                });
+            _ => Err("type: field access on non-record " ++ show_type(resolved))
+          }
+        });
+
+    ECtor(name, args) =>
+      match lookup_ty_env(env, name) {
+        None      => Err("type: unknown constructor: " ++ name);
+        Some(sch) =>
+          match instantiate(sch, next) {
+            (t_ctor, n1) =>
+              apply_ctor_args(t_ctor, args, env, s, n1, pure_eff())
+          }
+      };
+
+    EMatch(scrut, arms) =>
+      bind_result(infer(scrut, env, s, next),
+                  fn(r1: (Type, EffRow, Sub, Int)) ->
+        match r1 { (ts, es, s1, n1) =>
+          let resolved_scrut : Type = apply_sub(s1, ts) in
+          bind_result(check_exhaustive(arm_patterns(arms), resolved_scrut, env),
+                      fn(_: Bool) ->
+            let result_ty : Type = TyVar(n1) in
+            infer_match_arms(arms, ts, result_ty, env, s1, n1 + 1, es))
+        });
+
+    ETuple(elems) =>
+      bind_result(infer_tuple_elems(elems, env, s, next, pure_eff()),
+                  fn(r: (List<Type>, EffRow, Sub, Int)) ->
+        match r { (ts, eff, s1, n1) =>
+          Ok((TyTuple(ts), eff, s1, n1))
+        })
+  }
+
+# Infer a list of expressions, threading effects and accumulating types.
+fn infer_tuple_elems(
+  elems: List<Expr>,
+  env: List<Pair<String, Scheme>>,
+  s: Sub,
+  next: Int,
+  acc_eff: EffRow
+) : Result<(List<Type>, EffRow, Sub, Int), String> =
+  match elems {
+    [] => Ok(([], acc_eff, s, next));
+    [e, ...rest] =>
+      bind_result(infer(e, env, s, next),
+                  fn(r1: (Type, EffRow, Sub, Int)) ->
+        match r1 { (te, ee, s1, n1) =>
+          bind_result(infer_tuple_elems(rest, env, s1, n1,
+                                          eff_union_via(s1, acc_eff, ee)),
+                      fn(r2: (List<Type>, EffRow, Sub, Int)) ->
+            match r2 { (rest_ts, e2, s2, n2) =>
+              Ok(([te] ++ rest_ts, e2, s2, n2))
+            })
+        })
+  }
+
+# Union two effect rows after substitution. Concrete labels join (set
+# union); tail vars are handled gracefully: if same var, kept; if
+# different vars, we prefer one (the inferer will unify them at call
+# sites if precision is needed).
+fn eff_union_via(s: Sub, e1: EffRow, e2: EffRow) : EffRow =
+  let r1 : EffRow = apply_sub_eff(s, e1) in
+  let r2 : EffRow = apply_sub_eff(s, e2) in
+  match r1 {
+    EffRow(c1, v1) =>
+      match r2 {
+        EffRow(c2, v2) =>
+          let new_c : List<String> = str_union(c1, c2) in
+          match v1 {
+            None    => EffRow(new_c, v2);
+            Some(a) =>
+              match v2 {
+                None    => EffRow(new_c, Some(a));
+                Some(b) =>
+                  if a == b then EffRow(new_c, Some(a))
+                  else EffRow(new_c, Some(a))
+              }
+          }
+      }
+  }
+
+# Apply a constructor's curried type to a list of arg expressions,
+# accumulating ambient effects from each arg evaluation.
+fn apply_ctor_args(
+  t_ctor: Type,
+  args: List<Expr>,
+  env: List<Pair<String, Scheme>>,
+  s: Sub,
+  next: Int,
+  acc_eff: EffRow
+) : Result<(Type, EffRow, Sub, Int), String> =
+  match args {
+    [] => Ok((apply_sub(s, t_ctor), acc_eff, s, next));
+    [arg, ...rest] =>
+      let resolved : Type = apply_sub(s, t_ctor) in
+      match resolved {
+        TyFn(arg_ty, result_ty, _) =>
+          bind_result(infer(arg, env, s, next),
+                      fn(r: (Type, EffRow, Sub, Int)) ->
+            match r { (ta, ea, s1, n1) =>
+              bind_result(unify(ta, arg_ty, s1, n1), fn(r2: (Sub, Int)) ->
+                match r2 { (s2, n2) =>
+                  apply_ctor_args(result_ty, rest, env, s2, n2,
+                                  eff_union_via(s2, acc_eff, ea))
+                })
+            });
+        _ => Err("type: too many arguments to constructor")
+      }
+  }
+
+fn infer_match_arms(
+  arms: List<Pair<Pattern, Expr>>,
+  scrut_ty: Type,
+  result_ty: Type,
+  env: List<Pair<String, Scheme>>,
+  s: Sub,
+  next: Int,
+  acc_eff: EffRow
+) : Result<(Type, EffRow, Sub, Int), String> =
+  match arms {
+    [] => Ok((apply_sub(s, result_ty), acc_eff, s, next));
+    [Pair(p, body), ...rest] =>
+      bind_result(check_pattern(p, scrut_ty, env, s, next),
+                  fn(r: (List<Pair<String, Scheme>>, Sub, Int)) ->
+        match r { (env_arm, s1, n1) =>
+          bind_result(infer(body, env_arm, s1, n1),
+                      fn(r2: (Type, EffRow, Sub, Int)) ->
+            match r2 { (tb, eb, s2, n2) =>
+              bind_result(unify(tb, result_ty, s2, n2), fn(r3: (Sub, Int)) ->
+                match r3 { (s3, n3) =>
+                  infer_match_arms(rest, scrut_ty, result_ty, env, s3, n3,
+                                   eff_union_via(s3, acc_eff, eb))
+                })
+            })
+        })
+  }
+
+# Patterns themselves have no expression evaluation, so no effects.
+fn check_pattern(
+  p: Pattern,
+  scrut_ty: Type,
+  env: List<Pair<String, Scheme>>,
+  s: Sub,
+  next: Int
+) : Result<(List<Pair<String, Scheme>>, Sub, Int), String> =
+  match p {
+    PWild => Ok((env, s, next));
+    PVar(x) =>
+      Ok(([Pair(x, Scheme([], [], scrut_ty))] ++ env, s, next));
+    PInt(_) =>
+      bind_result(unify(scrut_ty, TyInt, s, next), fn(r: (Sub, Int)) ->
+        match r { (s1, n1) => Ok((env, s1, n1)) });
+    PBool(_) =>
+      bind_result(unify(scrut_ty, TyBool, s, next), fn(r: (Sub, Int)) ->
+        match r { (s1, n1) => Ok((env, s1, n1)) });
+    PStr(_) =>
+      bind_result(unify(scrut_ty, TyStr, s, next), fn(r: (Sub, Int)) ->
+        match r { (s1, n1) => Ok((env, s1, n1)) });
+    PCtor(name, sub_pats) =>
+      match lookup_ty_env(env, name) {
+        None => Err("type: unknown constructor in pattern: " ++ name);
+        Some(sch) =>
+          match instantiate(sch, next) {
+            (t_ctor, n1) =>
+              check_ctor_pattern(t_ctor, sub_pats, scrut_ty, env, s, n1)
+          }
+      };
+    PTuple(sub_pats) =>
+      let arity : Int = len(sub_pats) in
+      let fresh_ids : List<Int> = range(next, next + arity) in
+      let fresh_tvs : List<Type> = ids_to_tvars(fresh_ids) in
+      let expected : Type = TyTuple(fresh_tvs) in
+      bind_result(unify(scrut_ty, expected, s, next + arity),
+                  fn(r: (Sub, Int)) ->
+        match r { (s1, n1) =>
+          check_tuple_patterns(sub_pats, fresh_tvs, env, s1, n1)
+        })
+  }
+
+fn check_tuple_patterns(
+  pats: List<Pattern>,
+  tys: List<Type>,
+  env: List<Pair<String, Scheme>>,
+  s: Sub,
+  next: Int
+) : Result<(List<Pair<String, Scheme>>, Sub, Int), String> =
+  match pats {
+    [] => Ok((env, s, next));
+    [p, ...rest_pats] =>
+      match tys {
+        [] => Err("type: tuple arity mismatch");
+        [t, ...rest_tys] =>
+          bind_result(check_pattern(p, t, env, s, next),
+                      fn(r: (List<Pair<String, Scheme>>, Sub, Int)) ->
+            match r { (env1, s1, n1) =>
+              check_tuple_patterns(rest_pats, rest_tys, env1, s1, n1)
+            })
+      }
+  }
+
+fn check_ctor_pattern(
+  t_ctor: Type,
+  sub_pats: List<Pattern>,
+  scrut_ty: Type,
+  env: List<Pair<String, Scheme>>,
+  s: Sub,
+  next: Int
+) : Result<(List<Pair<String, Scheme>>, Sub, Int), String> =
+  match sub_pats {
+    [] =>
+      bind_result(unify(t_ctor, scrut_ty, s, next), fn(r: (Sub, Int)) ->
+        match r { (s1, n1) => Ok((env, s1, n1)) });
+    [sub_p, ...rest_pats] =>
+      let resolved : Type = apply_sub(s, t_ctor) in
+      match resolved {
+        TyFn(arg_ty, result_ty, _) =>
+          bind_result(check_pattern(sub_p, arg_ty, env, s, next),
+                      fn(r: (List<Pair<String, Scheme>>, Sub, Int)) ->
+            match r { (env1, s1, n1) =>
+              check_ctor_pattern(result_ty, rest_pats, scrut_ty, env1, s1, n1)
+            });
+        _ => Err("type: too many sub-patterns in constructor pattern")
+      }
+  }
+
+fn infer_record_fields(
+  fields: List<Pair<String, Expr>>,
+  env: List<Pair<String, Scheme>>,
+  s: Sub,
+  next: Int,
+  acc_eff: EffRow
+) : Result<(List<Pair<String, Type>>, EffRow, Sub, Int), String> =
+  match fields {
+    [] => Ok(([], acc_eff, s, next));
+    [Pair(k, v), ...rest] =>
+      bind_result(infer(v, env, s, next),
+                  fn(r1: (Type, EffRow, Sub, Int)) ->
+        match r1 { (tv, ev, s1, n1) =>
+          bind_result(infer_record_fields(rest, env, s1, n1,
+                                           eff_union_via(s1, acc_eff, ev)),
+                      fn(r2: (List<Pair<String, Type>>, EffRow, Sub, Int)) ->
+            match r2 { (rest_fts, e2, s2, n2) =>
+              Ok(([Pair(k, tv)] ++ rest_fts, e2, s2, n2))
+            })
+        })
+  }
+
+fn run_infer(e: Expr, init_env: List<Pair<String, Scheme>>, start: Int)
+    : Result<(Type, EffRow), String> =
+  bind_result(infer(e, init_env, empty_sub(), start),
+              fn(r: (Type, EffRow, Sub, Int)) ->
+    match r { (t, eff, s, _) =>
+      Ok((apply_sub(s, t), close_top_eff(apply_sub_eff(s, eff))))
+    })
+
+# Close a top-level open row: if no concrete effects accumulated, the
+# expression is pure; if the tail var was never bound, hide it (it
+# would be a no-op variable cluttering the display).
+fn close_top_eff(r: EffRow) : EffRow =
+  match r {
+    EffRow(c, None)    => EffRow(c, None);
+    EffRow(c, Some(_)) => EffRow(c, None)
+  }
+
+fn show_type(t: Type) : String =
+  match t {
+    TyInt      => "Int";
+    TyBool     => "Bool";
+    TyStr      => "String";
+    TyVar(n)   => "t" ++ int_to_string(n);
+    TyFn(a, b, e) =>
+      "(" ++ show_type(a) ++ " -> " ++ show_type(b) ++ show_eff(e) ++ ")";
+    TyRec(fs)  => "{ " ++ show_type_fields(fs) ++ " }";
+    TyAdt(n, args) => if len(args) == 0 then n else n ++ "<" ++ show_type_args(args) ++ ">";
+    TyTuple(ts) => "(" ++ show_type_args(ts) ++ ")"
+  }
+
+fn show_eff(r: EffRow) : String =
+  match r {
+    EffRow([], None)    => "";
+    EffRow(c, None)     => " !{" ++ join_str_csv(c) ++ "}";
+    EffRow([], Some(n)) => " !{e" ++ int_to_string(n) ++ "}";
+    EffRow(c, Some(n))  =>
+      " !{" ++ join_str_csv(c) ++ "; e" ++ int_to_string(n) ++ "}"
+  }
+
+fn show_type_fields(fs: List<Pair<String, Type>>) : String =
+  fold(fs, "", fn(acc: String, p: Pair<String, Type>) ->
+    match p {
+      Pair(k, v) =>
+        if string_length(acc) == 0
+          then k ++ ": " ++ show_type(v)
+          else acc ++ ", " ++ k ++ ": " ++ show_type(v)
+    })
+
+fn show_type_args(ts: List<Type>) : String =
+  fold(ts, "", fn(acc: String, t: Type) ->
+    if string_length(acc) == 0 then show_type(t)
+    else acc ++ ", " ++ show_type(t))
+
+
+# --- Evaluator ----------------------------------------------------------
+
+fn lookup_val_env(env: List<Pair<String, Value>>, name: String) : Option<Value> =
+  match env {
+    [] => None;
+    [Pair(k, v), ...rest] =>
+      if k == name then Some(v) else lookup_val_env(rest, name)
+  }
+
+fn eval_int_bin(
+  a: Expr, b: Expr,
+  env: List<Pair<String, Value>>,
+  mk: (Int, Int) -> Value
+) : Result<Value, String> !{IO, File} =
+  bind_result(eval(a, env), fn(va: Value) ->
+    bind_result(eval(b, env), fn(vb: Value) ->
+      match va {
+        VInt(x) =>
+          match vb {
+            VInt(y) => Ok(mk(x, y));
+            _       => Err("eval: rhs not Int")
+          };
+        _ => Err("eval: lhs not Int")
+      }))
+
+# Note: when the inferer accepts a program, eval CAN'T produce most of
+# these errors — they're caught at type-check time. We still return
+# Result for the unbound-variable case and for the (theoretically
+# impossible) shape mismatches.
+fn eval(e: Expr, env: List<Pair<String, Value>>) : Result<Value, String> !{IO, File} =
+  match e {
+    EInt(n)  => Ok(VInt(n));
+    EBool(b) => Ok(VBool(b));
+    EStr(s)  => Ok(VStr(s));
+
+    EVar(name) =>
+      match lookup_val_env(env, name) {
+        None    => Err("eval: unbound: " ++ name);
+        Some(v) => Ok(v)
+      };
+
+    EAdd(a, b) => eval_int_bin(a, b, env, fn(x: Int, y: Int) -> VInt(x + y));
+    ESub(a, b) => eval_int_bin(a, b, env, fn(x: Int, y: Int) -> VInt(x - y));
+    EMul(a, b) => eval_int_bin(a, b, env, fn(x: Int, y: Int) -> VInt(x * y));
+    EConcat(a, b) =>
+      bind_result(eval(a, env), fn(va: Value) ->
+        bind_result(eval(b, env), fn(vb: Value) ->
+          match va {
+            VStr(sa) =>
+              match vb {
+                VStr(sb) => Ok(VStr(sa ++ sb));
+                _ => Err("eval: ++ rhs not a string")
+              };
+            _ => Err("eval: ++ lhs not a string")
+          }));
+    ELt(a, b)  => eval_int_bin(a, b, env, fn(x: Int, y: Int) -> VBool(x < y));
+    EGt(a, b)  => eval_int_bin(a, b, env, fn(x: Int, y: Int) -> VBool(y < x));
+    ELe(a, b)  => eval_int_bin(a, b, env, fn(x: Int, y: Int) -> VBool(if y < x then false else true));
+    EGe(a, b)  => eval_int_bin(a, b, env, fn(x: Int, y: Int) -> VBool(if x < y then false else true));
+
+    EIf(c, t, e_b) =>
+      bind_result(eval(c, env), fn(vc: Value) ->
+        match vc {
+          VBool(b) => if b then eval(t, env) else eval(e_b, env);
+          _        => Err("eval: if condition not Bool")
+        });
+
+    ELet(name, value, body) =>
+      bind_result(eval(value, env), fn(v: Value) ->
+        eval(body, [Pair(name, v)] ++ env));
+
+    ELetRec(name, value, body) =>
+      # Recursive let: only meaningful when value is a lambda. We
+      # transform `let rec f = fn(x) -> ...` into a VRecClos that
+      # carries its own name. At application time, the closure binds
+      # its own name in the call env so recursive calls resolve.
+      match value {
+        ELam(param, lambda_body) =>
+          let rec_clos : Value =
+            VRecClos(name, param, lambda_body, env) in
+          eval(body, [Pair(name, rec_clos)] ++ env);
+        _ =>
+          # Non-lambda values: treat like regular let. (True recursive
+          # values would require thunks; we don't support that.)
+          bind_result(eval(value, env), fn(v: Value) ->
+            eval(body, [Pair(name, v)] ++ env))
+      };
+
+    ELam(name, body) => Ok(VClos(name, body, env));
+
+    EApp(f, arg) =>
+      bind_result(eval(f, env), fn(vf: Value) ->
+        bind_result(eval(arg, env), fn(varg: Value) ->
+          match vf {
+            VClos(param, body, clos_env) =>
+              eval(body, [Pair(param, varg)] ++ clos_env);
+            VRecClos(rec_name, param, body, clos_env) =>
+              eval(body,
+                   [Pair(param, varg), Pair(rec_name, vf)] ++ clos_env);
+            VMutRecClos(_, body_expr, all_decls, outer_env) =>
+              # Build env: top-level fns + outer env (with builtins & ctors).
+              let sibling_env : List<Pair<String, Value>> =
+                build_mutrec_env_at(all_decls, outer_env) ++ outer_env in
+              bind_result(eval(body_expr, sibling_env), fn(actual_clos: Value) ->
+                match actual_clos {
+                  VClos(param, body, clos_env) =>
+                    eval(body, [Pair(param, varg)] ++ clos_env);
+                  _ => Err("eval: top-level fn body did not produce a closure")
+                });
+            VBuiltin(name, arity, acc) =>
+              let new_acc : List<Value> = acc ++ [varg] in
+              if len(new_acc) == arity
+                then apply_builtin(name, new_acc)
+                else Ok(VBuiltin(name, arity, new_acc));
+            _ => Err("eval: not a function")
+          }));
+
+    ERec(fields) =>
+      bind_result(eval_record_fields(fields, env), fn(vfs: List<Pair<String, Value>>) ->
+        Ok(VRec(vfs)));
+
+    EField(rec, name) =>
+      bind_result(eval(rec, env), fn(vr: Value) ->
+        match vr {
+          VRec(fs) =>
+            match lookup_field_val(fs, name) {
+              None    => Err("eval: record has no field " ++ name);
+              Some(v) => Ok(v)
+            };
+          _ => Err("eval: field access on non-record")
+        });
+
+    ECtor(name, args) =>
+      bind_result(eval_args(args, env), fn(vs: List<Value>) ->
+        Ok(VCtor(name, vs)));
+
+    EMatch(scrut, arms) =>
+      bind_result(eval(scrut, env), fn(v: Value) ->
+        eval_match_arms(v, arms, env));
+
+    ETuple(elems) =>
+      bind_result(eval_args(elems, env), fn(vs: List<Value>) ->
+        Ok(VTuple(vs)))
+  }
+
+fn eval_args(
+  args: List<Expr>,
+  env: List<Pair<String, Value>>
+) : Result<List<Value>, String> !{IO, File} =
+  match args {
+    [] => Ok([]);
+    [a, ...rest] =>
+      bind_result(eval(a, env), fn(v: Value) ->
+        bind_result(eval_args(rest, env), fn(vs: List<Value>) ->
+          Ok([v] ++ vs)))
+  }
+
+# Build the env containing VMutRecClos for every top-level fn decl.
+# Each closure carries the FULL list of siblings PLUS the outer env
+# (so it can see builtins, ctors, etc. when its body is evaluated).
+fn build_mutrec_env(
+  decls: List<FnDecl>,
+  outer_env: List<Pair<String, Value>>
+) : List<Pair<String, Value>> =
+  build_mutrec_env_at(decls, outer_env)
+
+fn build_mutrec_env_at(
+  remaining: List<FnDecl>,
+  outer_env: List<Pair<String, Value>>
+) : List<Pair<String, Value>> =
+  build_mutrec_env_iter(remaining, remaining, outer_env)
+
+fn build_mutrec_env_iter(
+  remaining: List<FnDecl>,
+  all_decls: List<FnDecl>,
+  outer_env: List<Pair<String, Value>>
+) : List<Pair<String, Value>> =
+  match remaining {
+    [] => [];
+    [d, ...rest] =>
+      match d { FnDecl(name, _, body) =>
+        [Pair(name, VMutRecClos(name, body, all_decls, outer_env))]
+        ++ build_mutrec_env_iter(rest, all_decls, outer_env)
+      }
+  }
+
+# Apply a host primitive by name with fully-collected args.
+# Each builtin trusts its arity (validated by the curry logic in EApp).
+fn apply_builtin(name: String, args: List<Value>) : Result<Value, String> !{IO, File} =
+  if name == "string_length" then
+    match args {
+      [v, ...rest] =>
+        match v {
+          VStr(s) => Ok(VInt(string_length(s)));
+          _ => Err("eval: string_length: not a string")
+        };
+      _ => Err("eval: string_length: bad args")
+    }
+  else if name == "char_at" then
+    match args {
+      [v1, v2, ...rest] =>
+        match v1 {
+          VStr(s) =>
+            match v2 {
+              VInt(i) =>
+                if i < 0 then Err("eval: char_at: negative index")
+                else if i >= string_length(s) then Err("eval: char_at: out of range")
+                else Ok(VStr(char_at(s, i)));
+              _ => Err("eval: char_at: index not Int")
+            };
+          _ => Err("eval: char_at: target not String")
+        };
+      _ => Err("eval: char_at: bad args")
+    }
+  else if name == "int_to_str" then
+    match args {
+      [v, ...rest] =>
+        match v {
+          VInt(n) => Ok(VStr(int_to_string(n)));
+          _ => Err("eval: int_to_str: not an int")
+        };
+      _ => Err("eval: int_to_str: bad args")
+    }
+  else if name == "string_eq" then
+    match args {
+      [v1, v2, ...rest] =>
+        match v1 {
+          VStr(a) =>
+            match v2 {
+              VStr(b) => Ok(VBool(a == b));
+              _ => Err("eval: string_eq: rhs not String")
+            };
+          _ => Err("eval: string_eq: lhs not String")
+        };
+      _ => Err("eval: string_eq: bad args")
+    }
+  else if name == "print" then
+    match args {
+      [v, ...rest] =>
+        match v {
+          VStr(s) => Ok(VStr(print(s)));
+          _ => Err("eval: print: not a string")
+        };
+      _ => Err("eval: print: bad args")
+    }
+  else if name == "read_file" then
+    match args {
+      [v, ...rest] =>
+        match v {
+          VStr(path) =>
+            match read_file(path) {
+              Ok(content) => Ok(VStr(content));
+              Err(msg) => Err("read_file: " ++ msg)
+            };
+          _ => Err("eval: read_file: not a string")
+        };
+      _ => Err("eval: read_file: bad args")
+    }
+  else
+    Err("eval: unknown builtin: " ++ name)
+
+fn eval_match_arms(
+  v: Value,
+  arms: List<Pair<Pattern, Expr>>,
+  env: List<Pair<String, Value>>
+) : Result<Value, String> !{IO, File} =
+  match arms {
+    [] => Err("eval: no pattern matched");
+    [Pair(p, body), ...rest] =>
+      match match_pattern(v, p) {
+        None        => eval_match_arms(v, rest, env);
+        Some(binds) => eval(body, binds ++ env)
+      }
+  }
+
+# Try to match a value against a pattern. Returns Some(bindings) if
+# the pattern matches, None if it doesn't.
+fn match_pattern(
+  v: Value,
+  p: Pattern
+) : Option<List<Pair<String, Value>>> =
+  match p {
+    PWild   => Some([]);
+    PVar(x) => Some([Pair(x, v)]);
+    PInt(n) =>
+      match v {
+        VInt(m) => if n == m then Some([]) else None;
+        _ => None
+      };
+    PBool(b) =>
+      match v {
+        VBool(c) => if b == c then Some([]) else None;
+        _ => None
+      };
+    PStr(s) =>
+      match v {
+        VStr(t) => if s == t then Some([]) else None;
+        _ => None
+      };
+    PCtor(name, sub_pats) =>
+      match v {
+        VCtor(name2, sub_vals) =>
+          if name == name2 then
+            if len(sub_pats) == len(sub_vals)
+              then match_patterns(sub_vals, sub_pats)
+              else None
+          else None;
+        _ => None
+      };
+    PTuple(sub_pats) =>
+      match v {
+        VTuple(sub_vals) =>
+          if len(sub_pats) == len(sub_vals)
+            then match_patterns(sub_vals, sub_pats)
+            else None;
+        _ => None
+      }
+  }
+
+# Match a list of sub-values against a list of sub-patterns,
+# collecting bindings.
+fn match_patterns(
+  vs: List<Value>,
+  ps: List<Pattern>
+) : Option<List<Pair<String, Value>>> =
+  match vs {
+    [] =>
+      match ps {
+        [] => Some([]);
+        _  => None
+      };
+    [v, ...vrest] =>
+      match ps {
+        [] => None;
+        [p, ...prest] =>
+          match match_pattern(v, p) {
+            None     => None;
+            Some(bs) =>
+              match match_patterns(vrest, prest) {
+                None      => None;
+                Some(bs2) => Some(bs ++ bs2)
+              }
+          }
+      }
+  }
+
+fn eval_record_fields(
+  fields: List<Pair<String, Expr>>,
+  env: List<Pair<String, Value>>
+) : Result<List<Pair<String, Value>>, String> !{IO, File} =
+  match fields {
+    []                    => Ok([]);
+    [Pair(k, e), ...rest] =>
+      bind_result(eval(e, env), fn(v: Value) ->
+        bind_result(eval_record_fields(rest, env),
+                    fn(rest_vs: List<Pair<String, Value>>) ->
+          Ok([Pair(k, v)] ++ rest_vs)))
+  }
+
+fn lookup_field_val(
+  fs: List<Pair<String, Value>>,
+  name: String
+) : Option<Value> =
+  match fs {
+    []                    => None;
+    [Pair(k, v), ...rest] =>
+      if k == name then Some(v) else lookup_field_val(rest, name)
+  }
+
+fn show_value(v: Value) : String =
+  match v {
+    VInt(n)              => int_to_string(n);
+    VBool(b)             => if b then "true" else "false";
+    VStr(s)              => "\"" ++ s ++ "\"";
+    VClos(_, _, _)       => "<closure>";
+    VRecClos(_, _, _, _) => "<rec-closure>";
+    VMutRecClos(name, _, _, _) => "<top-fn: " ++ name ++ ">";
+    VBuiltin(name, _, _) => "<builtin: " ++ name ++ ">";
+    VRec(fs)             => "{ " ++ show_value_fields(fs) ++ " }";
+    VCtor(name, args) =>
+      if is_list_value(v) then "[" ++ show_list_value(v) ++ "]"
+      else if len(args) == 0 then name
+      else name ++ "(" ++ show_value_list(args) ++ ")";
+    VTuple(vs) => "(" ++ show_value_list(vs) ++ ")"
+  }
+
+# A value is a list if it's Nil or Cons(_, list).
+fn is_list_value(v: Value) : Bool =
+  match v {
+    VCtor(name, args) =>
+      if name == "Nil" then true
+      else if name == "Cons" then
+        match args {
+          [_, t, ...rest] => is_list_value(t);
+          _ => false
+        }
+      else false;
+    _ => false
+  }
+
+# Render a list value (assumed is_list_value) as comma-separated elements.
+fn show_list_value(v: Value) : String =
+  match v {
+    VCtor(name, args) =>
+      if name == "Nil" then ""
+      else if name == "Cons" then
+        match args {
+          [h, t, ...rest] =>
+            if is_nil(t) then show_value(h)
+            else show_value(h) ++ ", " ++ show_list_value(t);
+          _ => ""
+        }
+      else "";
+    _ => ""
+  }
+
+fn is_nil(v: Value) : Bool =
+  match v {
+    VCtor(name, args) =>
+      if name == "Nil" then true else false;
+    _ => false
+  }
+
+fn show_value_list(vs: List<Value>) : String =
+  fold(vs, "", fn(acc: String, v: Value) ->
+    if string_length(acc) == 0 then show_value(v)
+    else acc ++ ", " ++ show_value(v))
+
+fn show_value_fields(fs: List<Pair<String, Value>>) : String =
+  fold(fs, "", fn(acc: String, p: Pair<String, Value>) ->
+    match p {
+      Pair(k, v) =>
+        if string_length(acc) == 0
+          then k ++ ": " ++ show_value(v)
+          else acc ++ ", " ++ k ++ ": " ++ show_value(v)
+    })
+
+
+# --- The pipeline: source → (type, value) -------------------------------
+
+# This is the v1.0 shape. Each stage's Result is threaded through; any
+# failure surfaces with a stage prefix ("parse:", "type:", "eval:") so
+# the user knows WHICH stage rejected the program.
+# Build the initial type env from type declarations. Each constructor
+# becomes a (name, scheme) binding. For a generic ADT like
+#   type Option<A> = | None | Some(A)
+# fresh type variables are allocated for each parameter, and constructor
+# argument types that reference the parameter (parsed as TyAdt("A", []))
+# are replaced with the corresponding TyVar. The returned counter tells
+# the inferer where to start allocating fresh vars from.
+fn build_ctor_env(decls: List<TypeDecl>) : (List<Pair<String, Scheme>>, Int) =
+  build_ctor_env_at(decls, 0)
+
+fn build_ctor_env_at(
+  decls: List<TypeDecl>,
+  next: Int
+) : (List<Pair<String, Scheme>>, Int) =
+  match decls {
+    [] => ([], next);
+    [TypeDecl(adt_name, params, ctors), ...rest] =>
+      let n_params : Int = len(params) in
+      let param_ids : List<Int> = range(next, next + n_params) in
+      let param_tys : List<Type> = ids_to_tvars(param_ids) in
+      let local_env : List<Pair<String, Scheme>> =
+        ctor_env_for(adt_name, ctors, params, param_tys, param_ids) in
+      match build_ctor_env_at(rest, next + n_params) {
+        (rest_env, final_next) => (local_env ++ rest_env, final_next)
+      }
+  }
+
+fn ids_to_tvars(ids: List<Int>) : List<Type> =
+  match ids {
+    [] => [];
+    [i, ...rest] => [TyVar(i)] ++ ids_to_tvars(rest)
+  }
+
+fn ctor_env_for(
+  adt_name: String,
+  ctors: List<CtorDecl>,
+  params: List<String>,
+  param_tys: List<Type>,
+  param_ids: List<Int>
+) : List<Pair<String, Scheme>> =
+  match ctors {
+    [] => [];
+    [CtorDecl(ctor_name, arg_tys), ...rest] =>
+      let result_ty : Type = TyAdt(adt_name, param_tys) in
+      let resolved_args : List<Type> =
+        resolve_param_refs(arg_tys, params, param_tys) in
+      let ctor_ty : Type = build_ctor_type(resolved_args, result_ty) in
+      [Pair(ctor_name, Scheme(param_ids, [], ctor_ty))]
+      ++ ctor_env_for(adt_name, rest, params, param_tys, param_ids)
+  }
+
+# Walk through arg types and replace TyAdt("A", []) refs (where "A" is a
+# declared type parameter) with the parameter's TyVar.
+fn resolve_param_refs(
+  arg_tys: List<Type>,
+  params: List<String>,
+  param_tys: List<Type>
+) : List<Type> =
+  match arg_tys {
+    [] => [];
+    [t, ...rest] =>
+      [resolve_param(t, params, param_tys)]
+      ++ resolve_param_refs(rest, params, param_tys)
+  }
+
+fn resolve_param(
+  t: Type,
+  params: List<String>,
+  param_tys: List<Type>
+) : Type =
+  match t {
+    TyInt      => TyInt;
+    TyBool     => TyBool;
+    TyStr      => TyStr;
+    TyVar(n)   => TyVar(n);
+    TyFn(a, b, e) =>
+      TyFn(resolve_param(a, params, param_tys),
+           resolve_param(b, params, param_tys),
+           e);
+    TyRec(fs)  =>
+      TyRec(resolve_rec_param(fs, params, param_tys));
+    TyAdt(name, args) =>
+      match lookup_param(name, params, param_tys) {
+        Some(tv) => tv;
+        None     => TyAdt(name, resolve_param_refs(args, params, param_tys))
+      };
+    TyTuple(ts) =>
+      TyTuple(resolve_param_refs(ts, params, param_tys))
+  }
+
+fn resolve_rec_param(
+  fs: List<Pair<String, Type>>,
+  params: List<String>,
+  param_tys: List<Type>
+) : List<Pair<String, Type>> =
+  match fs {
+    [] => [];
+    [Pair(k, v), ...rest] =>
+      [Pair(k, resolve_param(v, params, param_tys))]
+      ++ resolve_rec_param(rest, params, param_tys)
+  }
+
+fn lookup_param(
+  name: String,
+  params: List<String>,
+  param_tys: List<Type>
+) : Option<Type> =
+  match params {
+    [] => None;
+    [p, ...prest] =>
+      match param_tys {
+        [] => None;
+        [t, ...trest] =>
+          if p == name then Some(t)
+          else lookup_param(name, prest, trest)
+      }
+  }
+
+# Build a curried function type from arg-types and the final result.
+# build_ctor_type([Int, Bool], TyAdt("X", []))  ==  TyFn(Int, TyFn(Bool, TyAdt("X", [])))
+fn build_ctor_type(arg_tys: List<Type>, result: Type) : Type =
+  match arg_tys {
+    [] => result;
+    [t, ...rest] => TyFn(t, build_ctor_type(rest, result), pure_eff())
+  }
+
+# Build the initial type and value envs, including the demo effectful
+# builtin "tick". tick has type (Int) -> Int !{IO}; at runtime it's just
+# the identity function (the effect annotation is what the inferer cares
+# about — eval doesn't actually do IO).
+fn initial_envs(decls: List<TypeDecl>)
+    : (List<Pair<String, Scheme>>, List<Pair<String, Value>>, Int) =
+  let tick_scheme : Scheme =
+    Scheme([], [], TyFn(TyInt, TyInt, EffRow(["IO"], None))) in
+  let tick_value : Value = VClos("x", EVar("x"), []) in
+  # Pre-declare the built-in `type List<A> = | Nil | Cons(A, List<A>)`.
+  let list_param_ty : Type = TyVar(0) in
+  let list_adt : Type = TyAdt("List", [list_param_ty]) in
+  let nil_scheme : Scheme =
+    Scheme([0], [], list_adt) in
+  let cons_scheme : Scheme =
+    Scheme([0], [],
+      TyFn(list_param_ty, TyFn(list_adt, list_adt, pure_eff()), pure_eff())) in
+  # String inspection builtins. Pure (no effects).
+  # string_length : String -> Int
+  let strlen_scheme : Scheme =
+    Scheme([], [], TyFn(TyStr, TyInt, pure_eff())) in
+  # char_at : String -> Int -> String   (curried; returns single-char string)
+  let char_at_scheme : Scheme =
+    Scheme([], [],
+      TyFn(TyStr, TyFn(TyInt, TyStr, pure_eff()), pure_eff())) in
+  # int_to_str : Int -> String
+  let int_to_str_scheme : Scheme =
+    Scheme([], [], TyFn(TyInt, TyStr, pure_eff())) in
+  # string_eq : String -> String -> Bool
+  let string_eq_scheme : Scheme =
+    Scheme([], [],
+      TyFn(TyStr, TyFn(TyStr, TyBool, pure_eff()), pure_eff())) in
+  # print : String -> String !{IO}
+  let print_scheme : Scheme =
+    Scheme([], [], TyFn(TyStr, TyStr, EffRow(["IO"], None))) in
+  # read_file : String -> String !{File}
+  let read_file_scheme : Scheme =
+    Scheme([], [], TyFn(TyStr, TyStr, EffRow(["File"], None))) in
+  let builtin_ty_env : List<Pair<String, Scheme>> =
+    [Pair("tick", tick_scheme),
+     Pair("Nil",  nil_scheme),
+     Pair("Cons", cons_scheme),
+     Pair("string_length", strlen_scheme),
+     Pair("char_at",       char_at_scheme),
+     Pair("int_to_str",    int_to_str_scheme),
+     Pair("string_eq",     string_eq_scheme),
+     Pair("print",         print_scheme),
+     Pair("read_file",     read_file_scheme)] in
+  let builtin_val_env : List<Pair<String, Value>> =
+    [Pair("tick", tick_value),
+     Pair("string_length", VBuiltin("string_length", 1, [])),
+     Pair("char_at",       VBuiltin("char_at",       2, [])),
+     Pair("int_to_str",    VBuiltin("int_to_str",    1, [])),
+     Pair("string_eq",     VBuiltin("string_eq",     2, [])),
+     Pair("print",         VBuiltin("print",         1, [])),
+     Pair("read_file",     VBuiltin("read_file",     1, []))] in
+  match build_ctor_env_at(decls, 1) {
+    (ctor_env, next) =>
+      (builtin_ty_env ++ ctor_env, builtin_val_env, next)
+  }
+
+# This is the v1.0 shape. Each stage's Result is threaded through; any
+# failure surfaces with a stage prefix ("parse:", "type:", "eval:") so
+# the user knows WHICH stage rejected the program. The compile result
+# now includes the inferred ambient EFFECT alongside the type.
+fn compile(src: String) : Result<(Type, EffRow, Value), String> !{IO, File} =
+  bind_result(parse_program(src), fn(prog: Program) ->
+    match prog { Program(type_decls, fn_decls, e) =>
+      match initial_envs(type_decls) {
+        (ty_env, val_env, start_id) =>
+          # Add top-level fn declarations to both envs.
+          # Type env: each fn's full type, generalized.
+          # Val env: VMutRecClos so the fns can reference each other.
+          let fn_ty_env : List<Pair<String, Scheme>> =
+            build_fn_ty_env(fn_decls) in
+          let fn_val_env : List<Pair<String, Value>> =
+            build_mutrec_env(fn_decls, val_env) in
+          let full_ty_env : List<Pair<String, Scheme>> = fn_ty_env ++ ty_env in
+          let full_val_env : List<Pair<String, Value>> = fn_val_env ++ val_env in
+          # First, type-check each fn body matches its declared type.
+          bind_result(check_fn_decls(fn_decls, full_ty_env, start_id),
+                      fn(checked_id: Int) ->
+            bind_result(run_infer(e, full_ty_env, checked_id),
+                        fn(p: (Type, EffRow)) ->
+              match p { (t, eff) =>
+                bind_result(eval(e, full_val_env), fn(v: Value) ->
+                  Ok((t, eff, v)))
+              }))
+      }
+    })
+
+# Build the type env extension from fn decls: each fn's name maps to
+# a generalized scheme over its declared type.
+fn build_fn_ty_env(decls: List<FnDecl>) : List<Pair<String, Scheme>> =
+  match decls {
+    [] => [];
+    [d, ...rest] =>
+      match d { FnDecl(name, fn_ty, _) =>
+        # Generalize the fn type. The scheme quantifies any free type
+        # variables in fn_ty. For now, fns are monomorphic at top level
+        # (no polymorphism); we can extend this later.
+        let sch : Scheme = Scheme([], [], fn_ty) in
+        [Pair(name, sch)] ++ build_fn_ty_env(rest)
+      }
+  }
+
+# Type-check each fn body matches its declared type.
+fn check_fn_decls(
+  decls: List<FnDecl>,
+  ty_env: List<Pair<String, Scheme>>,
+  next: Int
+) : Result<Int, String> =
+  match decls {
+    [] => Ok(next);
+    [d, ...rest] =>
+      match d { FnDecl(name, fn_ty, body) =>
+        # Infer the body in the env containing all fn signatures.
+        bind_result(infer(body, ty_env, empty_sub(), next),
+                    fn(r: (Type, EffRow, Sub, Int)) ->
+          match r { (inferred_ty, _, s1, n1) =>
+            # Unify the inferred type with the declared type.
+            bind_result(unify(inferred_ty, fn_ty, s1, n1),
+                        fn(r2: (Sub, Int)) ->
+              match r2 { (_, n2) =>
+                check_fn_decls(rest, ty_env, n2)
+              })
+          })
+      }
+  }
+
+fn empty_sub() : Sub = Sub([], [])
+
+
+# --- Demo ---------------------------------------------------------------
+
+fn report(src: String) : String !{IO, File} =
+  let outcome : String =
+    match compile(src) {
+      Err(msg)        => "ERROR: " ++ msg;
+      Ok((t, eff, v)) => show_value(v) ++ " : " ++ show_type(t) ++ show_eff(eff)
+    } in
+  print(src ++ "  ==>  " ++ outcome)
+
+let _ : String = print("--- prism.glass: source → type + value, pure Glass ---")
+
+let _ : String = report("42")
+let _ : String = report("true")
+let _ : String = report("1 + 2")
+let _ : String = report("3 < 5")
+let _ : String = report("if 3 < 5 then 100 else 200")
+let _ : String = report("let x = 5 in x + x")
+let _ : String = report("fn(x) -> x + 1")
+let _ : String = report("(fn(x) -> x + 1)(10)")
+let _ : String = report("let f = fn(x) -> x + 1 in f(10)")
+
+# The HM key tests — polymorphism made concrete.
+let _ : String = report("let id = fn(x) -> x in id(7)")
+let _ : String = report("let id = fn(x) -> x in if id(true) then id(1) else id(2)")
+let _ : String = report("let add = fn(x) -> fn(y) -> x + y in add(3)(4)")
+let _ : String = report("let twice = fn(f) -> fn(x) -> f(f(x)) in twice(fn(n) -> n + 1)(5)")
+let _ : String = report("let const = fn(x) -> fn(y) -> x in const(42)(true)")
+
+# v0.8.6 — records throughout the pipeline.
+let _ : String = print("--- records ---")
+let _ : String = report("{ x: 1, y: 2 }")
+let _ : String = report("{ a: 1, b: true, c: 100 }")
+let _ : String = report("{ x: 42 }.x")
+let _ : String = report("let r = { x: 7, y: 9 } in r.x + r.y")
+let _ : String = report("(fn(r) -> r.x)({ x: 100 })")
+let _ : String = report("let getX = fn(r) -> r.x in getX({ x: 1 }) + getX({ x: 41 })")
+let _ : String = report("{ outer: { inner: 99 } }.outer.inner")
+let _ : String = report("if true then { x: 1 } else { x: 2 }")
+
+# v0.8.7 — user-defined sum types with pattern matching, end-to-end.
+let _ : String = print("--- sum types and pattern matching ---")
+let _ : String = report("type Color = | Red | Green | Blue
+Red")
+let _ : String = report("type Color = | Red | Green | Blue
+match Green { Red => 1; Green => 2; Blue => 3 }")
+let _ : String = report("type Opt = | None | Some(Int)
+Some(42)")
+let _ : String = report("type Opt = | None | Some(Int)
+match Some(7) { None => 0; Some(x) => x + 100 }")
+let _ : String = report("type Pair = | Pair(Int, Bool)
+match Pair(42, true) { Pair(n, b) => if b then n else 0 }")
+let _ : String = report("type Opt = | None | Some(Int)
+let unwrap = fn(o) -> match o { None => 0; Some(x) => x } in
+unwrap(Some(42)) + unwrap(None)")
+let _ : String = report("type IntList = | Nil | Cons(Int, IntList)
+match Cons(1, Cons(2, Cons(3, Nil))) { Nil => 0; Cons(h, _) => h }")
+let _ : String = report("type Shape = | Circle(Int) | Square(Int) | Triangle(Int, Int, Int)
+let perimeter = fn(s) -> match s {
+  Circle(r) => r + r + r + r + r + r;
+  Square(side) => side + side + side + side;
+  Triangle(a, b, c) => a + b + c
+} in perimeter(Square(5)) + perimeter(Circle(2))")
+
+# Errors with sum types
+let _ : String = print("--- sum-type errors ---")
+let _ : String = report("UnknownCtor")
+let _ : String = report("type X = | A | B
+match A { A => 1 }")  # not exhaustive — missing B
+let _ : String = report("type X = | A | B
+match A { A => 1; B => true }")  # arms disagree on type
+let _ : String = report("type X = | A | B | C
+match A { A => 1; B => 2 }")  # not exhaustive — missing C
+let _ : String = report("type Opt = | None | Some(Int)
+match Some(5) { Some(x) => x }")  # not exhaustive — missing None
+let _ : String = report("type Opt = | None | Some(Int)
+match Some(5) { _ => 0 }")  # exhaustive via wildcard
+
+# v0.8.8 — generic ADTs (parametric polymorphism for sum types).
+let _ : String = print("--- generic ADTs ---")
+let _ : String = report("type Option<A> = | None | Some(A)
+Some(42)")
+let _ : String = report("type Option<A> = | None | Some(A)
+Some(true)")
+let _ : String = report("type Option<A> = | None | Some(A)
+match Some(7) { None => 0; Some(x) => x + 100 }")
+let _ : String = report("type Pair<A, B> = | Pair(A, B)
+Pair(42, true)")
+let _ : String = report("type Pair<A, B> = | Pair(A, B)
+match Pair(7, false) { Pair(n, b) => if b then n else n + 100 }")
+let _ : String = report("type Result<A, E> = | Ok(A) | Err(E)
+let unwrap_or = fn(r) -> fn(default) -> match r {
+  Ok(x)  => x;
+  Err(_) => default
+} in unwrap_or(Ok(42))(0) + unwrap_or(Err(true))(99)")
+let _ : String = report("type List<A> = | Nil | Cons(A, List<A>)
+match Cons(1, Cons(2, Cons(3, Nil))) { Nil => 0; Cons(h, _) => h }")
+let _ : String = report("type Option<A> = | None | Some(A)
+let map_opt = fn(o) -> fn(f) -> match o {
+  None    => None;
+  Some(x) => Some(f(x))
+} in
+match map_opt(Some(5))(fn(n) -> n + 100) {
+  None    => 0;
+  Some(x) => x
+}")
+
+# v0.8.10 — effect polymorphism integrated into the v1.0 pipeline.
+# The pure-Glass HM inferer now tracks effect rows alongside types,
+# with Rémy-style row unification. `tick` is an effectful builtin in
+# the initial env: tick : (Int) -> Int !{IO}.
+let _ : String = print("--- effect polymorphism ---")
+let _ : String = report("tick(5)")
+let _ : String = report("fn(x) -> tick(x)")
+let _ : String = report("tick(5) + tick(7)")
+let _ : String = report("let f = fn(x) -> tick(x) in f(10)")
+let _ : String = report("fn(f) -> fn(x) -> f(x)")
+let _ : String = report("let apply = fn(f) -> fn(x) -> f(x) in apply(tick)(5)")
+let _ : String = report("let apply = fn(f) -> fn(x) -> f(x) in apply(fn(n) -> n + 1)(5)")
+let _ : String = report("let id = fn(x) -> x in id(tick)(5)")
+let _ : String = report("let twice = fn(f) -> fn(x) -> f(f(x)) in twice(tick)(5)")
+let _ : String = report("let twice = fn(f) -> fn(x) -> f(f(x)) in twice(fn(n) -> n + 1)(5)")
+
+# v0.9.1 — recursion via `let rec`. The language can now express real
+# recursive computations — fold, map, filter, sum over recursive ADTs.
+let _ : String = print("--- recursion ---")
+let _ : String = report("let rec sum = fn(xs) -> match xs {
+  [] => 0;
+  [h, ...t] => h + sum(t)
+} in sum([1, 2, 3, 4])")
+let _ : String = report("let rec length = fn(xs) -> match xs {
+  [] => 0;
+  [_, ...t] => 1 + length(t)
+} in length([10, 20, 30])")
+let _ : String = report("let rec map = fn(f) -> fn(xs) -> match xs {
+  [] => [];
+  [h, ...t] => [f(h), ...map(f)(t)]
+} in
+let rec sum = fn(xs) -> match xs {
+  [] => 0;
+  [h, ...t] => h + sum(t)
+} in
+sum(map(fn(n) -> n + 100)([1, 2, 3]))")
+let _ : String = report("let rec append = fn(xs) -> fn(ys) -> match xs {
+  [] => ys;
+  [h, ...t] => [h, ...append(t)(ys)]
+} in
+let rec sum = fn(xs) -> match xs {
+  [] => 0;
+  [h, ...t] => h + sum(t)
+} in
+sum(append([1, 2])([10, 20, 30]))")
+# Recursion preserves effect polymorphism
+let _ : String = report("let rec map = fn(f) -> fn(xs) -> match xs {
+  [] => [];
+  [h, ...t] => [f(h), ...map(f)(t)]
+} in
+let rec sum = fn(xs) -> match xs {
+  [] => 0;
+  [h, ...t] => h + sum(t)
+} in
+sum(map(tick)([1, 2, 3]))")
+
+# v0.9.2 — subtraction, tuples, and tuple patterns.
+let _ : String = print("--- subtraction ---")
+let _ : String = report("5 - 3")
+let _ : String = report("10 - 3 - 2")
+let _ : String = report("let rec sum_to = fn(n) -> if n < 1 then 0 else n + sum_to(n - 1) in sum_to(10)")
+let _ : String = report("let rec count_down = fn(n) -> if n < 1 then 0 else 1 + count_down(n - 1) in count_down(7)")
+let _ : String = report("let rec sum_squares = fn(n) -> if n < 1 then 0 else (n + n + n) + sum_squares(n - 1) in sum_squares(4)")
+
+let _ : String = print("--- tuples ---")
+let _ : String = report("(1, true)")
+let _ : String = report("(1, 2, 3)")
+let _ : String = report("((1, 2), (3, 4))")
+let _ : String = report("let p = (10, 20) in match p { (a, b) => a + b }")
+let _ : String = report("let swap = fn(p) -> match p { (a, b) => (b, a) } in swap((1, 2))")
+let _ : String = report("let p = (1, true, 100) in match p { (a, _, c) => a + c }")
+let _ : String = report("let f = fn(x) -> (tick(x), x + 1) in match f(5) { (a, b) => a + b }")
+let _ : String = report("let swap = fn(p) -> match p { (a, b) => (b, a) } in match swap((true, 42)) { (a, b) => b }")
+let _ : String = report("match ((1, 2), 3) { ((a, b), c) => a + b + c }")
+# Recursion + tuples: compute (sum, length) of a list in one pass
+let _ : String = report("let rec stats = fn(xs) -> match xs {
+  [] => (0, 0);
+  [h, ...t] => match stats(t) { (s, n) => (s + h, n + 1) }
+} in
+match stats([10, 20, 30, 40]) { (s, n) => s - n }")
+
+# v0.9.3 — multiplication, comparisons (>, <=, >=), and list literals.
+let _ : String = print("--- multiplication & comparisons ---")
+let _ : String = report("3 * 4")
+let _ : String = report("2 + 3 * 4")          # precedence: 14
+let _ : String = report("(2 + 3) * 4")        # parens override
+let _ : String = report("let rec fact = fn(n) -> if n <= 1 then 1 else n * fact(n - 1) in fact(6)")
+let _ : String = report("5 > 3")
+let _ : String = report("5 <= 5")
+let _ : String = report("3 >= 5")
+let _ : String = report("if 10 > 5 then 1 else 0")
+
+let _ : String = print("--- list literals ---")
+let _ : String = report("[]")
+let _ : String = report("[1, 2, 3]")
+let _ : String = report("[1, 2, 3, 4, 5]")
+let _ : String = report("[[1, 2], [3, 4], [5]]")  # list of lists
+let _ : String = report("match [1, 2, 3] { [] => 0; [h, ...t] => h }")
+let _ : String = report("match [1, 2, 3] { [] => 0; [a, b, c] => a + b + c }")
+let _ : String = report("let rec sum_sq = fn(xs) -> match xs {
+  [] => 0;
+  [h, ...t] => h * h + sum_sq(t)
+} in sum_sq([1, 2, 3, 4])")
+# Recursion + list literals + multiplication: factorial via the list [n, n-1, ..., 1]
+let _ : String = report("let rec from_one = fn(n) -> if n < 1 then [] else [n, ...from_one(n - 1)] in
+let rec product = fn(xs) -> match xs {
+  [] => 1;
+  [h, ...t] => h * product(t)
+} in product(from_one(5))")
+# Effects through list operations
+let _ : String = report("let rec map = fn(f) -> fn(xs) -> match xs {
+  [] => [];
+  [h, ...t] => [f(h), ...map(f)(t)]
+} in
+let rec sum = fn(xs) -> match xs {
+  [] => 0;
+  [h, ...t] => h + sum(t)
+} in
+sum(map(tick)([100, 200, 300]))")
+
+# v0.9.4 — strings as a first-class type. The fundamental missing piece
+# for Stage 3 self-host: prism.glass's own source code is a String, and
+# without TyStr/VStr/EStr, prism.glass cannot interpret programs that
+# manipulate strings. This is the foundation.
+let _ : String = print("--- strings ---")
+let _ : String = report("\"hello\"")
+let _ : String = report("\"hello, \" ++ \"world\"")
+let _ : String = report("let g = \"glass\" in g ++ \" v0.9.4\"")
+# Strings are first-class: can be in tuples, lists, records.
+let _ : String = report("(\"a\", 1, true)")
+let _ : String = report("[\"alpha\", \"beta\", \"gamma\"]")
+let _ : String = report("{ name: \"prism\", version: \"v0.9.4\" }")
+# Strings flow through generic ADTs.
+let _ : String = report("[\"a\", \"b\"] ++ \"c\"")  # type error: list ++ string
+let _ : String = report("let rec concat_all = fn(xs) -> match xs {
+  [] => \"\";
+  [h, ...t] => h ++ concat_all(t)
+} in concat_all([\"Glass \", \"is \", \"strings.\"])")
+# String-returning function inferred polymorphically? No — return type concrete.
+let _ : String = report("fn(s) -> s ++ \"!\"")
+# String access pattern: use match on field
+let _ : String = report("let r = { msg: \"hello\", n: 7 } in r.msg ++ \" world\"")
+
+# String-inspection builtins — the bridge to Stage 3. These let
+# prism.glass programs read their own input character-by-character,
+# which is the foundation of a tokenizer.
+let _ : String = print("--- string builtins ---")
+let _ : String = report("string_length(\"hello\")")
+let _ : String = report("string_length(\"\")")
+let _ : String = report("char_at(\"abc\")(0)")
+let _ : String = report("char_at(\"abc\")(2)")
+let _ : String = report("int_to_str(42)")
+let _ : String = report("int_to_str(0 - 17)")
+let _ : String = report("string_eq(\"foo\")(\"foo\")")
+let _ : String = report("string_eq(\"foo\")(\"bar\")")
+# Composition: render a number as a string and concatenate.
+let _ : String = report("\"answer = \" ++ int_to_str(6 * 7)")
+# Recursion over a string, character by character.
+let _ : String = report("let rec count_a = fn(s) -> fn(i) ->
+  if i >= string_length(s) then 0
+  else if string_eq(char_at(s)(i))(\"a\") then 1 + count_a(s)(i + 1)
+  else count_a(s)(i + 1)
+in count_a(\"banana, apricot, avocado\")(0)")
+# A miniature tokenizer-shaped function: explode a string into a list of chars
+let _ : String = report("let rec all_chars = fn(s) -> fn(i) ->
+  if i >= string_length(s) then []
+  else [char_at(s)(i), ...all_chars(s)(i + 1)]
+in all_chars(\"glass\")(0)")
+
+# THE STAGE 3 PROOF OF CONCEPT: a real tokenizer running inside
+# prism.glass, which is itself running on glass.py. This is two
+# levels of interpretation deep: glass.py interprets prism.glass,
+# which interprets a tokenizer that reads characters from a string.
+# If we had top-level fn decls, prism.glass could interpret prism.glass.
+let _ : String = report("
+type Token = | TNum(Int) | TPlus | TMinus | TLParen | TRParen | TBad(String)
+
+let is_digit_char = fn(c) ->
+  if string_eq(c)(\"0\") then true
+  else if string_eq(c)(\"1\") then true
+  else if string_eq(c)(\"2\") then true
+  else if string_eq(c)(\"3\") then true
+  else if string_eq(c)(\"4\") then true
+  else if string_eq(c)(\"5\") then true
+  else if string_eq(c)(\"6\") then true
+  else if string_eq(c)(\"7\") then true
+  else if string_eq(c)(\"8\") then true
+  else if string_eq(c)(\"9\") then true
+  else false
+in
+
+let digit_val = fn(c) ->
+  if string_eq(c)(\"0\") then 0
+  else if string_eq(c)(\"1\") then 1
+  else if string_eq(c)(\"2\") then 2
+  else if string_eq(c)(\"3\") then 3
+  else if string_eq(c)(\"4\") then 4
+  else if string_eq(c)(\"5\") then 5
+  else if string_eq(c)(\"6\") then 6
+  else if string_eq(c)(\"7\") then 7
+  else if string_eq(c)(\"8\") then 8
+  else 9
+in
+
+let rec read_num = fn(s) -> fn(i) -> fn(acc) ->
+  if i >= string_length(s) then (acc, i)
+  else if is_digit_char(char_at(s)(i)) then
+    read_num(s)(i + 1)(acc * 10 + digit_val(char_at(s)(i)))
+  else (acc, i)
+in
+
+let rec tokenize = fn(s) -> fn(i) ->
+  if i >= string_length(s) then []
+  else
+    let c = char_at(s)(i) in
+    if string_eq(c)(\" \") then tokenize(s)(i + 1)
+    else if string_eq(c)(\"+\") then [TPlus, ...tokenize(s)(i + 1)]
+    else if string_eq(c)(\"-\") then [TMinus, ...tokenize(s)(i + 1)]
+    else if string_eq(c)(\"(\") then [TLParen, ...tokenize(s)(i + 1)]
+    else if string_eq(c)(\")\") then [TRParen, ...tokenize(s)(i + 1)]
+    else if is_digit_char(c) then
+      match read_num(s)(i)(0) { (n, j) => [TNum(n), ...tokenize(s)(j)] }
+    else
+      [TBad(c), ...tokenize(s)(i + 1)]
+in
+
+tokenize(\"12 + 34 - (5)\")(0)
+")
+
+# v0.9.5 — comments and top-level fn declarations.
+let _ : String = print("--- comments ---")
+let _ : String = report("# this is a comment
+# another one
+42 + 1  # trailing comment
+# more comments")
+let _ : String = report("let # comment in expression
+  x = 10 in # tail comment
+  x * x # answer
+")
+
+let _ : String = print("--- top-level fn declarations ---")
+# Simplest mutual case
+let _ : String = report("fn f(x: Int) : Int = g(x)
+fn g(x: Int) : Int = x + 1
+f(10)")
+# Single-arg fn
+let _ : String = report("fn double(x: Int) : Int = x * 2
+double(21)")
+
+# Two-arg fn (desugars to curried)
+let _ : String = report("fn add(x: Int, y: Int) : Int = x + y
+add(3)(4)")
+
+# Recursive top-level fn
+let _ : String = report("fn fact(n: Int) : Int = if n <= 1 then 1 else n * fact(n - 1)
+fact(6)")
+
+# Mutual recursion — even/odd, the canonical test
+let _ : String = report("fn is_even(n: Int) : Bool = if n <= 0 then true else is_odd(n - 1)
+fn is_odd(n: Int) : Bool = if n <= 0 then false else is_even(n - 1)
+is_even(10)")
+
+let _ : String = report("fn is_even(n: Int) : Bool = if n <= 0 then true else is_odd(n - 1)
+fn is_odd(n: Int) : Bool = if n <= 0 then false else is_even(n - 1)
+is_odd(7)")
+
+# Multiple top-level fns calling each other
+let _ : String = report("fn double(x: Int) : Int = x * 2
+fn quad(x: Int) : Int = double(double(x))
+quad(5)")
+
+# fn decl with comments interleaved
+let _ : String = report("# the answer
+fn answer(_: Int) : Int = 42  # always
+answer(0)")
+
+# fn decl + type decl
+let _ : String = report("type Tree = | Leaf | Node(Int, Tree, Tree)
+fn size(t: Tree) : Int = match t {
+  Leaf => 0;
+  Node(_, l, r) => 1 + size(l) + size(r)
+}
+size(Node(1, Node(2, Leaf, Leaf), Node(3, Leaf, Node(4, Leaf, Leaf))))")
+
+# THE STAGE 3 PROOF: a small program written in the EXACT prism.glass-
+# style surface — top-level fn decls, type decl, comments, strings,
+# multi-arg fns, pattern matching, mutual recursion — running inside
+# prism.glass. This is the shape of self-host.
+let _ : String = report("
+# A tiny calculator: parse + evaluate a string like \"1+2+3\".
+# Two top-level fns calling each other (mutual recursion).
+type Tok = | Num(Int) | Op(String) | End
+
+fn digit(c: String) : Bool =
+  if string_eq(c)(\"0\") then true
+  else if string_eq(c)(\"1\") then true
+  else if string_eq(c)(\"2\") then true
+  else if string_eq(c)(\"3\") then true
+  else if string_eq(c)(\"4\") then true
+  else if string_eq(c)(\"5\") then true
+  else if string_eq(c)(\"6\") then true
+  else if string_eq(c)(\"7\") then true
+  else if string_eq(c)(\"8\") then true
+  else if string_eq(c)(\"9\") then true
+  else false
+
+fn dval(c: String) : Int =
+  if string_eq(c)(\"0\") then 0
+  else if string_eq(c)(\"1\") then 1
+  else if string_eq(c)(\"2\") then 2
+  else if string_eq(c)(\"3\") then 3
+  else if string_eq(c)(\"4\") then 4
+  else if string_eq(c)(\"5\") then 5
+  else if string_eq(c)(\"6\") then 6
+  else if string_eq(c)(\"7\") then 7
+  else if string_eq(c)(\"8\") then 8
+  else 9
+
+# Read a number from position i, accumulating. Returns (value, new_pos).
+fn read_num(s: String, i: Int, acc: Int) : (Int, Int) =
+  if i >= string_length(s) then (acc, i)
+  else if digit(char_at(s)(i)) then
+    read_num(s, i + 1, acc * 10 + dval(char_at(s)(i)))
+  else (acc, i)
+
+# Top-level evaluator: take a string, return its computed value.
+# Calls read_num. Uses string_eq for op dispatch.
+fn calc(s: String, i: Int, acc: Int) : Int =
+  if i >= string_length(s) then acc
+  else if digit(char_at(s)(i)) then
+    match read_num(s, i, 0) { (n, j) => calc(s, j, acc + n) }
+  else calc(s, i + 1, acc)
+
+calc(\"100 + 23 + 4 + 5\", 0, 0)
+")
+
+let _ : String = print("--- top-level let statements ---")
+# Simple sequence of top-level lets
+let _ : String = report("
+let x = 10
+let y = 20
+x + y
+")
+# Multiple lets with computed values
+let _ : String = report("
+let a = 1
+let b = a + 1
+let c = b + a
+a + b + c
+")
+# Lets binding fns
+let _ : String = report("
+fn add(x: Int, y: Int) : Int = x + y
+let one = 1
+let two = add(one, one)
+let three = add(two, one)
+three * three
+")
+# Discard binding with `_`
+let _ : String = report("
+let _ = 42
+let x = 100
+x
+")
+# With type annotations
+let _ : String = report("
+let x : Int = 7
+let y : Int = x * x
+y
+")
+# Strings + top-level lets
+let _ : String = report("
+let greeting = \"hello\"
+let name = \"glass\"
+greeting ++ \", \" ++ name
+")
+
+# THE STAGE 3 SHOWPIECE: a mini interpreter for an expression language
+# with int literals, +/-/*, variables, and let-bindings. Written in
+# prism.glass's exact surface syntax — top-level type decl, multiple
+# top-level fn decls (mutually recursive via eval_expr), pattern
+# matching on ADTs and tuples, generic List manipulation. This is
+# what Stage 3 self-host looks like in practice.
+let _ : String = report("
+# A tiny expression language
+type Expr = | EInt(Int)
+            | EAdd(Expr, Expr)
+            | ESub(Expr, Expr)
+            | EMul(Expr, Expr)
+            | EVar(String)
+            | ELet(String, Expr, Expr)
+
+# Environment lookup. Returns 0 if not found (no error handling
+# in this tiny demo — we trust the input).
+fn lookup(env: List<(String, Int)>, name: String) : Int =
+  match env {
+    [] => 0;
+    [(k, v), ...rest] =>
+      if string_eq(k)(name) then v else lookup(rest, name)
+  }
+
+# Evaluator: takes an Expr and an env, returns the integer value.
+fn eval_expr(e: Expr, env: List<(String, Int)>) : Int =
+  match e {
+    EInt(n) => n;
+    EAdd(a, b) => eval_expr(a, env) + eval_expr(b, env);
+    ESub(a, b) => eval_expr(a, env) - eval_expr(b, env);
+    EMul(a, b) => eval_expr(a, env) * eval_expr(b, env);
+    EVar(name) => lookup(env, name);
+    ELet(name, value, body) =>
+      let v = eval_expr(value, env) in
+      eval_expr(body, [(name, v), ...env])
+  }
+
+# Test: let x = 10 in x * (x - 3)  ==>  70
+let prog = ELet(\"x\", EInt(10),
+                EMul(EVar(\"x\"), ESub(EVar(\"x\"), EInt(3))))
+eval_expr(prog, [])
+")
+
+# v0.9.6 — `print` builtin and effect annotations in fn signatures.
+let _ : String = print("--- print + effect annotations ---")
+# Inferred IO from print call
+let _ : String = report("print(\"hello from inside prism.glass\")")
+# Function with explicit !{IO} annotation
+let _ : String = report("
+fn greet(name: String) : String !{IO} = print(\"hi, \" ++ name)
+greet(\"world\")
+")
+# Mixed effects: pure fn calling another pure fn
+let _ : String = report("
+fn double(x: Int) : Int = x * 2
+fn quad(x: Int) : Int = double(double(x))
+quad(7)
+")
+# Effectful + pure composition
+let _ : String = report("
+fn shout(s: String) : String !{IO} = print(s ++ \"!\")
+fn loud(s: String) : String !{IO} = shout(shout(s))
+loud(\"hey\")
+")
+# Pattern: print intermediate, return final
+let _ : String = report("
+fn compute(x: Int) : Int !{IO} =
+  let _ = print(\"computing for \" ++ int_to_str(x)) in
+  x * x + 1
+compute(7)
+")
+
+# THE DEFINITIVE STAGE 3 TEST: a substantial Glass program — using
+# almost every feature prism.glass supports — passed through compile().
+# This is two interpretation levels: glass.py runs prism.glass, which
+# runs compile() on a string of Glass source, which lexes / parses /
+# type-checks / evaluates the inner program. The inner program builds
+# and walks a binary tree, exercising recursion, ADTs, generics,
+# tuples, pattern matching, and arithmetic.
+let _ : String = report("type Tree = | Leaf | Node(Int, Tree, Tree)
+fn size(t: Tree) : Int =
+  match t {
+    Leaf => 0;
+    Node(_, l, r) => 1 + size(l) + size(r)
+  }
+size(Node(1, Node(2, Leaf, Leaf), Node(3, Leaf, Leaf)))")
+
+let _ : String = report("(1, 2)")
+let _ : String = report("let x = 1 in (x, x)")
+let _ : String = report("type Tree<A> = | Leaf | Node(A, Tree<A>, Tree<A>)
+fn insert(t: Tree<Int>, x: Int) : Tree<Int> =
+  match t {
+    Leaf => Node(x, Leaf, Leaf);
+    Node(v, l, r) =>
+      if x < v then Node(v, insert(l, x), r)
+      else Node(v, l, insert(r, x))
+  }
+fn size(t: Tree<Int>) : Int =
+  match t {
+    Leaf => 0;
+    Node(_, l, r) => 1 + size(l) + size(r)
+  }
+fn sum_tree(t: Tree<Int>) : Int =
+  match t {
+    Leaf => 0;
+    Node(v, l, r) => v + sum_tree(l) + sum_tree(r)
+  }
+fn build_tree(xs: List<Int>) : Tree<Int> =
+  match xs {
+    [] => Leaf;
+    [h, ...t] => insert(build_tree(t), h)
+  }
+let t = build_tree([5, 2, 8, 1, 9, 3, 7]) in
+(size(t), sum_tree(t))
+")
+
+# The mini.glass program in prism.glass surface syntax — a small
+# Hindley-Milner-style interpreter for an expression language. Tests
+# whether prism.glass can parse + type + eval substantial Glass-style
+# code with multiple ADTs, recursive fns, generic types, and Result
+# monad chaining. This is the empirical Stage-3 step.
+let _ : String = report("
+# Declare Pair and Result (host has them built-in; prism.glass doesn't yet)
+type Pair<A, B> = | Pair(A, B)
+type Result<A, B> = | Ok(A) | Err(B)
+
+# AST and runtime values
+type Expr = | EInt(Int) | EBool(Bool) | EVar(String)
+            | EAdd(Expr, Expr) | EMul(Expr, Expr) | ELt(Expr, Expr)
+            | EIf(Expr, Expr, Expr) | ELet(String, Expr, Expr)
+            | EFn(String, Expr) | EApp(Expr, Expr)
+
+type Value = | VInt(Int) | VBool(Bool)
+             | VClos(String, Expr, List<Pair<String, Value>>)
+
+# Environment lookup using Result monad
+fn lookup(env: List<Pair<String, Value>>, name: String) : Result<Value, String> =
+  match env {
+    [] => Err(\"unbound: \" ++ name);
+    [Pair(k, v), ...rest] =>
+      if string_eq(k)(name) then Ok(v) else lookup(rest, name)
+  }
+
+# Result monad bind — chain Result-returning operations.
+fn bind_result(r: Result<Value, String>, k: (Value) -> Result<Value, String>) : Result<Value, String> =
+  match r {
+    Err(e) => Err(e);
+    Ok(v) => k(v)
+  }
+
+# The evaluator. Mutually recursive with itself (deeply via eval_args
+# for EApp). Uses bind_result for Result-monad chaining.
+fn eval(e: Expr, env: List<Pair<String, Value>>) : Result<Value, String> =
+  match e {
+    EInt(n) => Ok(VInt(n));
+    EBool(b) => Ok(VBool(b));
+    EVar(x) => lookup(env, x);
+    EAdd(a, b) =>
+      bind_result(eval(a, env), fn(va) ->
+        bind_result(eval(b, env), fn(vb) ->
+          match va {
+            VInt(x) =>
+              match vb {
+                VInt(y) => Ok(VInt(x + y));
+                _ => Err(\"add: rhs not Int\")
+              };
+            _ => Err(\"add: lhs not Int\")
+          }));
+    EMul(a, b) =>
+      bind_result(eval(a, env), fn(va) ->
+        bind_result(eval(b, env), fn(vb) ->
+          match va {
+            VInt(x) =>
+              match vb {
+                VInt(y) => Ok(VInt(x * y));
+                _ => Err(\"mul: rhs not Int\")
+              };
+            _ => Err(\"mul: lhs not Int\")
+          }));
+    ELt(a, b) =>
+      bind_result(eval(a, env), fn(va) ->
+        bind_result(eval(b, env), fn(vb) ->
+          match va {
+            VInt(x) =>
+              match vb {
+                VInt(y) => Ok(VBool(x < y));
+                _ => Err(\"lt: rhs not Int\")
+              };
+            _ => Err(\"lt: lhs not Int\")
+          }));
+    EIf(c, t, e2) =>
+      bind_result(eval(c, env), fn(vc) ->
+        match vc {
+          VBool(b) => if b then eval(t, env) else eval(e2, env);
+          _ => Err(\"if: cond not Bool\")
+        });
+    ELet(x, v, body) =>
+      bind_result(eval(v, env), fn(vv) ->
+        eval(body, [Pair(x, vv), ...env]));
+    EFn(x, body) => Ok(VClos(x, body, env));
+    EApp(f, a) =>
+      bind_result(eval(f, env), fn(vf) ->
+        bind_result(eval(a, env), fn(va) ->
+          match vf {
+            VClos(p, body, cenv) =>
+              eval(body, [Pair(p, va), ...cenv]);
+            _ => Err(\"app: not a function\")
+          }))
+  }
+
+# Test program: (fn(x) -> x * x + 1)(5)
+let prog = EApp(EFn(\"x\", EAdd(EMul(EVar(\"x\"), EVar(\"x\")), EInt(1))), EInt(5)) in
+eval(prog, [])
+")
+
+# v0.9.8 — literal patterns: PBool, PInt, PStr inside match arms.
+let _ : String = print("--- literal patterns ---")
+let _ : String = report("match 5 { 0 => \"zero\"; 1 => \"one\"; _ => \"many\" }")
+let _ : String = report("match true { true => 1; false => 0 }")
+let _ : String = report("match \"foo\" { \"foo\" => 1; \"bar\" => 2; _ => 0 }")
+# Literal inside a constructor
+let _ : String = report("type Cell = | Empty | Filled(Int)
+match Filled(0) { Filled(0) => \"zero cell\"; Filled(_) => \"nonzero cell\"; Empty => \"empty\" }")
+let _ : String = report("type Cell = | Empty | Filled(Int)
+match Filled(42) { Filled(0) => \"zero cell\"; Filled(_) => \"nonzero cell\"; Empty => \"empty\" }")
+# A FizzBuzz-style with literal patterns
+let _ : String = report("fn classify(n: Int) : String =
+  match n {
+    0 => \"zero\";
+    1 => \"one\";
+    2 => \"two\";
+    _ => \"many\"
+  }
+classify(2) ++ \", \" ++ classify(99)")
+
+# Errors with sum types
+let _ : String = print("--- sum-type errors ---")
+let _ : String = report("1 + ")               # parse error
+let _ : String = report("undefined")          # type error (unbound)
+let _ : String = report("1 + true")           # type error (mismatch)
+let _ : String = report("if 5 then 1 else 2") # type error (cond not Bool)
+let _ : String = report("fn(x) -> x(x)")      # type error (occurs check)
+let _ : String = report("{ x: 1 }.missing")   # type error (no such field)
+let _ : String = report("(fn(r) -> r.x)({ y: 1 })")  # type error (wrong record shape)
+
+
+# v0.9.8 — the Stage-3 capstone demo. Read a Glass source file from
+# disk via the `read_file` builtin (effect !{File}), then compile it
+# through prism.glass's own compile pipeline. Two levels deep:
+# glass.py runs prism.glass, which loads tiny.glass from disk and
+# parses + types + evaluates it.
+let _ : String = print("--- read + compile from disk ---")
+let _ : String = match read_file("examples/stage3/tiny.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/stage3/tiny.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("compile error: " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+let _ : String = match read_file("examples/stage3/poly.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/stage3/poly.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("compile error: " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+
+# What this file proves: the v1.0 shape composes. A single Glass program
+# takes a string of source code and produces a typed value. Each stage
+# (lexer, parser, inferer, evaluator) was proven in earlier releases;
+# this file is the assembly that demonstrates they work together.
+#
+# v1.0 is scaling the grammar (more constructs), the type system (more
+# kinds, effects, refinements), and the runtime (more builtins, ADTs)
+# without changing this overall shape. The pipeline is established;
+# the remaining work is volume.

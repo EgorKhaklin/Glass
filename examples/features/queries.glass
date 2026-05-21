@@ -1,0 +1,96 @@
+# =============================================================================
+# v0.8 demo: queries — SQL-in-spirit data manipulation in pure Glass.
+#
+# Records (v0.8) replace the positional tuple representation. Compare:
+#   v0.6/v0.7:  (Int, String, Int, String)  — positional, no field names
+#   v0.8:       User { id, name, age, country }
+#
+# This isn't ergonomics for its own sake. The shift makes the data flow
+# legible: when a fn signature says `: List<User>`, the reader knows what
+# the columns are by name; when a query selects `user.country`, the
+# intent is at the use site. That's transparency at the data level, in
+# the same way effects are transparency at the operation level.
+# =============================================================================
+
+type User = {
+  id: Int,
+  name: String,
+  age: Int,
+  country: String
+}
+
+# A "table" of users.
+let users : List<User> = [
+  User { id: 1, name: "Alice",   age: 30, country: "US" },
+  User { id: 2, name: "Bob",     age: 17, country: "US" },
+  User { id: 3, name: "Carol",   age: 45, country: "UK" },
+  User { id: 4, name: "Dan",     age: 12, country: "US" },
+  User { id: 5, name: "Eve",     age: 28, country: "UK" },
+  User { id: 6, name: "Frank",   age: 62, country: "DE" },
+  User { id: 7, name: "Grace",   age: 19, country: "US" },
+  User { id: 8, name: "Heidi",   age: 55, country: "UK" }
+]
+
+# --- "SELECT name FROM users WHERE age >= 18" ------------------------------
+
+fn adult_names(table: List<User>) : List<String> =
+  table
+    |> filter(fn(u: User) -> u.age >= 18)
+    |> map(fn(u: User) -> u.name)
+
+# --- "SELECT name FROM users WHERE country = 'US' AND age >= 21" -----------
+
+fn us_drinking_age(table: List<User>) : List<String> =
+  table
+    |> filter(fn(u: User) -> u.age >= 21)
+    |> filter(fn(u: User) -> u.country == "US")
+    |> map(fn(u: User) -> u.name)
+
+# --- "SELECT COUNT(*) FROM users GROUP BY country" -------------------------
+
+fn bump(counts: List<(String, Int)>, country: String) : List<(String, Int)> =
+  match counts {
+    [] => [(country, 1)];
+    [(c, n), ...rest] =>
+      if c == country
+        then [(c, n + 1)] ++ rest
+        else [(c, n)] ++ bump(rest, country)
+  }
+
+fn count_by_country(table: List<User>) : List<(String, Int)> =
+  fold(table, [], fn(acc: List<(String, Int)>, u: User) -> bump(acc, u.country))
+
+# --- Display ---------------------------------------------------------------
+
+fn show_names(label: String, names: List<String>) : String !{IO} =
+  let _ : String = print(label ++ ":") in
+  fold(names, "  ", fn(acc: String, n: String) -> acc ++ n ++ "  ")
+
+fn show_count_row(row: (String, Int)) : String =
+  match row { (c, n) => "  " ++ c ++ " = " ++ int_to_string(n) }
+
+# --- Run the queries -------------------------------------------------------
+
+let r1 : List<String> = adult_names(users)
+let _ : String = print(show_names("adults", r1))
+
+let r2 : List<String> = us_drinking_age(users)
+let _ : String = print(show_names("US 21+", r2))
+
+let r3 : List<(String, Int)> = count_by_country(users)
+let _ : String = print("count by country:")
+
+fn print_country_counts(rows: List<(String, Int)>) : List<String> !{IO} =
+  map(rows, fn(row: (String, Int)) -> print(show_count_row(row)))
+
+let _ : List<String> = print_country_counts(r3)
+
+# Reflection: compare the v0.7 version of this file. The query lambdas
+# went from
+#   fn(row: (Int, String, Int, String)) ->
+#     match row { (_, _, age, _) => age >= 18 }
+# to
+#   fn(u: User) -> u.age >= 18
+# That's the gap records close. The query READS like a query now —
+# project by name, not by position. The data shape and the query shape
+# match.

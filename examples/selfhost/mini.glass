@@ -1,0 +1,168 @@
+# =============================================================================
+# Glass-mini: a small functional language, interpreted by Glass.
+#
+# v0.3: rewritten using the prelude's polymorphic bind_result. What was
+# four-deep nested match in v0.2 is now linear chains of binds.
+# =============================================================================
+
+# ---- AST -------------------------------------------------------------------
+
+type Expr =
+  | EInt(Int)
+  | EBool(Bool)
+  | EVar(String)
+  | EAdd(Expr, Expr)
+  | EMul(Expr, Expr)
+  | ELt(Expr, Expr)
+  | EIf(Expr, Expr, Expr)
+  | ELet(String, Expr, Expr)
+  | EFn(String, Expr)
+  | EApp(Expr, Expr)
+
+# ---- Runtime values --------------------------------------------------------
+
+type Value =
+  | VInt(Int)
+  | VBool(Bool)
+  | VClos(String, Expr, List<Pair<String, Value>>)
+
+# ---- Environment lookup ----------------------------------------------------
+
+fn lookup(env: List<Pair<String, Value>>, name: String) : Option<Value> =
+  match env {
+    [] => None;
+    [Pair(k, v), ...rest] =>
+      if k == name then Some(v) else lookup(rest, name)
+  }
+
+# ---- Typed coercions -------------------------------------------------------
+
+fn as_int(v: Value) : Result<Int, String> =
+  match v {
+    VInt(n)        => Ok(n);
+    VBool(_)       => Err("expected Int, got Bool");
+    VClos(_, _, _) => Err("expected Int, got function")
+  }
+
+fn as_bool(v: Value) : Result<Bool, String> =
+  match v {
+    VBool(b)       => Ok(b);
+    VInt(_)        => Err("expected Bool, got Int");
+    VClos(_, _, _) => Err("expected Bool, got function")
+  }
+
+# ---- Numeric binop helper --------------------------------------------------
+#
+# eval_intbin(a, b, env, mk) evaluates a and b, coerces both to Int,
+# then applies mk to the resulting (x, y) -> Value. The four binds replace
+# what was 16 lines of nested match per binop in v0.2.
+
+fn eval_intbin(
+  a: Expr,
+  b: Expr,
+  env: List<Pair<String, Value>>,
+  mk: (Int, Int) -> Value
+) : Result<Value, String> =
+  bind_result(eval(a, env), fn(va: Value) ->
+    bind_result(eval(b, env), fn(vb: Value) ->
+      bind_result(as_int(va), fn(x: Int) ->
+        bind_result(as_int(vb), fn(y: Int) ->
+          Ok(mk(x, y))))))
+
+# ---- The interpreter -------------------------------------------------------
+
+fn eval(e: Expr, env: List<Pair<String, Value>>) : Result<Value, String> =
+  match e {
+    EInt(n)   => Ok(VInt(n));
+    EBool(b)  => Ok(VBool(b));
+
+    EVar(name) =>
+      match lookup(env, name) {
+        None    => Err("unbound variable: " ++ name);
+        Some(v) => Ok(v)
+      };
+
+    EAdd(a, b) => eval_intbin(a, b, env, fn(x: Int, y: Int) -> VInt(x + y));
+    EMul(a, b) => eval_intbin(a, b, env, fn(x: Int, y: Int) -> VInt(x * y));
+    ELt(a, b)  => eval_intbin(a, b, env, fn(x: Int, y: Int) -> VBool(x < y));
+
+    EIf(c, t, f) =>
+      bind_result(eval(c, env), fn(vc: Value) ->
+        bind_result(as_bool(vc), fn(cond: Bool) ->
+          if cond then eval(t, env) else eval(f, env)));
+
+    ELet(name, val_e, body) =>
+      bind_result(eval(val_e, env), fn(v: Value) ->
+        eval(body, [Pair(name, v)] ++ env));
+
+    EFn(param, body) =>
+      Ok(VClos(param, body, env));
+
+    EApp(fe, xe) =>
+      bind_result(eval(fe, env), fn(vf: Value) ->
+        bind_result(eval(xe, env), fn(vx: Value) ->
+          match vf {
+            VClos(param, body, clos_env) =>
+              eval(body, [Pair(param, vx)] ++ clos_env);
+            VInt(_)  => Err("can't apply Int as a function");
+            VBool(_) => Err("can't apply Bool as a function")
+          }))
+  }
+
+# ---- Display ---------------------------------------------------------------
+
+fn show_value(v: Value) : String =
+  match v {
+    VInt(n)        => int_to_string(n);
+    VBool(b)       => if b then "true" else "false";
+    VClos(_, _, _) => "<function>"
+  }
+
+fn show_result(r: Result<Value, String>) : String =
+  match r {
+    Ok(v)   => "= " ++ show_value(v);
+    Err(m)  => "! error: " ++ m
+  }
+
+fn run(label: String, e: Expr) : String =
+  label ++ "  " ++ show_result(eval(e, []))
+
+# ---- Test programs ---------------------------------------------------------
+
+let prog1 : Expr =
+  ELet("x", EInt(5),
+    ELet("y", EInt(7),
+      EAdd(EVar("x"), EMul(EVar("y"), EInt(2)))))
+
+let prog2 : Expr =
+  EApp(EFn("z", EVar("z")), EInt(42))
+
+let prog3 : Expr =
+  ELet("add",
+    EFn("a", EFn("b", EAdd(EVar("a"), EVar("b")))),
+    EApp(EApp(EVar("add"), EInt(3)), EInt(4)))
+
+let prog4 : Expr =
+  EIf(ELt(EInt(5), EInt(10)), EInt(1), EInt(0))
+
+let prog5 : Expr =
+  ELet("id", EFn("x", EVar("x")),
+    ELet("twice",
+      EFn("f", EFn("y", EApp(EVar("f"), EApp(EVar("f"), EVar("y"))))),
+      EApp(EApp(EVar("twice"),
+                EFn("n", EAdd(EVar("n"), EInt(10)))),
+           EInt(5))))
+
+let prog6 : Expr =
+  EAdd(EInt(1), EVar("undefined"))
+
+let prog7 : Expr =
+  EApp(EInt(5), EInt(3))
+
+let _ = print(run("prog1 (let x,y in x+y*2):    ", prog1))
+let _ = print(run("prog2 ((fn(z)=z)(42)):       ", prog2))
+let _ = print(run("prog3 (curried add 3+4):     ", prog3))
+let _ = print(run("prog4 (if 5<10 then 1 else 0):", prog4))
+let _ = print(run("prog5 (twice +10 of 5):      ", prog5))
+let _ = print(run("prog6 (unbound var):         ", prog6))
+let _ = print(run("prog7 (apply Int):           ", prog7))

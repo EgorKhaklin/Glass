@@ -1,0 +1,3 @@
+# The smallest Glass program: bind a name, then print it.
+let greeting : String = "Hello from Glass."
+let _ = print(greeting)

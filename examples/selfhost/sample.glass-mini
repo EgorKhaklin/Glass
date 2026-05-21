@@ -1,0 +1,4 @@
+let compose = fn(f) -> fn(g) -> fn(x) -> f(g(x)) in
+let inc = fn(n) -> n + 1 in
+let dbl = fn(n) -> n * 2 in
+compose(inc)(dbl)(10)

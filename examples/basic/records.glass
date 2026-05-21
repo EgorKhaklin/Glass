@@ -1,0 +1,170 @@
+# =============================================================================
+# v0.8 demo: records — structured data with effects and refinements.
+#
+# Records make data shape legible at every use site. Combined with effect
+# tracking and refinement types, a Glass signature carries the complete
+# trust model: what data flows in, what trust assumptions hold, what
+# side-effects can occur.
+#
+# This file models a small AI-mediated action pipeline. Each step has a
+# distinct trust property visible in its signature:
+#
+#   parse:     !{Inference}        — touches a model, output untrusted
+#   validate:  pure                — establishes a trust boundary on output
+#   authorize: pure                — policy check against permissions
+#   execute:   !{IO}               — writes to the world
+#
+# A reader auditing this code answers "what touches what?" from the
+# signatures alone. No source-grepping, no runtime tracing.
+# =============================================================================
+
+# --- The data shapes -----------------------------------------------------
+
+type RawRequest = {
+  user_id: Int,
+  prompt: String
+}
+
+# What we extract from the model's response. The type describes the SHAPE,
+# not the trustworthiness — confidence stays in the record so downstream
+# code can reason about it explicitly.
+type ParsedAction = {
+  verb: String,
+  target: String,
+  confidence: Int
+}
+
+type Permissions = {
+  user_id: Int,
+  may_read: Bool,
+  may_write: Bool
+}
+
+type AuditEntry = {
+  user_id: Int,
+  verb: String,
+  target: String,
+  outcome: String
+}
+
+# --- The pipeline --------------------------------------------------------
+
+# Touch the model. Signature declares !{Inference}; callers inherit and
+# must declare it. Output is just a String — we do not pretend the model
+# returned structure.
+fn parse_with_model(req: RawRequest) : String !{Inference} =
+  model_call(req.prompt)
+
+# Build structured data from the response. In a real impl this would parse
+# JSON, validate against a schema, and so on. The mock returns a fixed
+# record. The POINT is the boundary: everything from here forward sees
+# ParsedAction, not String.
+fn structure(response: String, user_id: Int) : ParsedAction =
+  ParsedAction { verb: "read", target: "doc-42", confidence: 85 }
+
+# Validate. Confidence below 70 means we refuse. Errors are values.
+fn validate(action: ParsedAction) : Result<ParsedAction, String> =
+  if action.confidence >= 70
+    then Ok(action)
+    else Err("confidence too low: " ++ int_to_string(action.confidence))
+
+# Authorize. The verb selects which permission to check.
+fn authorize(
+  action: ParsedAction,
+  perms: Permissions
+) : Result<ParsedAction, String> =
+  if action.verb == "read" then
+    if perms.may_read then Ok(action) else Err("read not permitted")
+  else if action.verb == "write" then
+    if perms.may_write then Ok(action) else Err("write not permitted")
+  else
+    Err("unknown verb: " ++ action.verb)
+
+# Execute. The actual effect.
+fn execute(action: ParsedAction, user_id: Int) : AuditEntry !{IO} =
+  let _ : String = print(
+    "[" ++ action.verb ++ "] " ++ action.target ++
+    " (confidence " ++ int_to_string(action.confidence) ++ ")"
+  ) in
+  AuditEntry {
+    user_id: user_id,
+    verb: action.verb,
+    target: action.target,
+    outcome: "ok"
+  }
+
+# --- The end-to-end pipeline --------------------------------------------
+
+# Result-monad composition. bind_result is effect-polymorphic (v0.7);
+# the inner lambda has !{IO} because execute does, so bind_result
+# inherits !{IO}. parse_with_model contributes !{Inference} via the
+# outer let. The declared effect row !{IO, Inference} is exactly the
+# accumulation Glass computes — declaration and reality agree.
+fn process(
+  req: RawRequest,
+  perms: Permissions
+) : Result<AuditEntry, String> !{IO, Inference} =
+  let response : String = parse_with_model(req) in
+  let action : ParsedAction = structure(response, req.user_id) in
+  bind_result(validate(action), fn(v: ParsedAction) ->
+    bind_result(authorize(v, perms), fn(a: ParsedAction) ->
+      Ok(execute(a, req.user_id))))
+
+# --- Demo ---------------------------------------------------------------
+
+let alice_perms : Permissions = Permissions {
+  user_id: 1, may_read: true, may_write: false
+}
+
+let req1 : RawRequest = RawRequest {
+  user_id: 1, prompt: "show me document 42"
+}
+
+let result : Result<AuditEntry, String> = process(req1, alice_perms)
+
+fn report(r: Result<AuditEntry, String>) : String !{IO} =
+  match r {
+    Ok(entry) => print("ok: " ++ entry.verb ++ " -> " ++ entry.outcome);
+    Err(msg)  => print("error: " ++ msg)
+  }
+
+let _ : String = report(result)
+
+
+# A second case: a request alice isn't authorized for.
+let req2 : RawRequest = RawRequest {
+  user_id: 1, prompt: "delete the database"
+}
+# structure() always returns "read doc-42" in this mock, so this still
+# succeeds. In a real system it would route differently. The point of
+# the demo is the type/effect skeleton, not the model's intelligence.
+let r2 : Result<AuditEntry, String> = process(req2, alice_perms)
+let _  : String = report(r2)
+
+
+# What this demonstrates that wasn't possible in v0.7:
+#
+#   - Field access at use sites: action.verb, perms.may_read, req.user_id
+#     instead of opaque positional destructuring.
+#
+#   - Records as the natural type for inter-stage data — every stage
+#     declares which record it produces, which makes the data flow
+#     visible without reading bodies.
+#
+#   - Composition with the v0.7 features works without ceremony:
+#     bind_result still effect-polymorphic, !{Inference} still composes
+#     with !{IO}, refinement-checked let bindings still work over
+#     record types.
+#
+# What this gestures at that's still to come:
+#
+#   - Refinement types directly on record fields ("confidence must be
+#     >= 0 and <= 100") — works syntactically in v0.8 but the
+#     auto-validation story is post-v0.8.
+#
+#   - The Pane query layer (see LANG.md): given records like User
+#     above, queries become first-class instead of map/filter chains.
+#
+#   - SMT discharge of refinements (v0.9 with the OCaml host migration):
+#     if confidence is statically known to be 85, the validate() check
+#     can be eliminated at compile time.

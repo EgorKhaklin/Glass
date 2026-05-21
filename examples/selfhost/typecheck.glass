@@ -1,0 +1,361 @@
+# =============================================================================
+# v0.8 demo: typecheck.glass — a typed lambda calculus type checker, in Glass.
+#
+# This is the seed of Glass-in-Glass at v1.0. mini.glass showed Glass can
+# express an INTERPRETER for a small functional language; this file extends
+# the demonstration to a TYPE CHECKER. Each Glass release that adds a
+# feature grows this file in lockstep: when the host language gets records,
+# the checker gets records. The eventual destination is a typecheck.glass
+# that handles all of Glass — that's v1.0.
+#
+# What this file covers in v0.8:
+#   Int, Bool, monomorphic function types, RECORDS WITH NAMED FIELDS.
+# What it does NOT cover (yet):
+#   polymorphism, sum types, effects, refinements, strings, lists.
+# Each gap is a future commit.
+# =============================================================================
+
+# --- The object language: types and expressions -------------------------
+
+# Types include records: a list of (name, type) pairs. The IR uses
+# structural records (no nominal type binding); upgrading to nominal
+# records is its own milestone (requires a type-declaration form in the
+# object language).
+type Type =
+  | TInt
+  | TBool
+  | TFn(Type, Type)
+  | TRec(List<Pair<String, Type>>)
+
+# Expressions: literals, variables, arithmetic, comparison, if, typed
+# lambdas, application, let-bindings, AND record literals + field access.
+type Expr =
+  | EInt(Int)
+  | EBool(Bool)
+  | EVar(String)
+  | EAdd(Expr, Expr)
+  | ELt(Expr, Expr)
+  | EIf(Expr, Expr, Expr)
+  | ELam(String, Type, Expr)
+  | EApp(Expr, Expr)
+  | ELet(String, Expr, Expr)
+  | ERec(List<Pair<String, Expr>>)
+  | EField(Expr, String)
+
+
+# --- Helpers -------------------------------------------------------------
+
+fn lookup_pair(fs: List<Pair<String, Type>>, name: String) : Option<Type> =
+  match fs {
+    [] => None;
+    [Pair(k, v), ...rest] =>
+      if k == name then Some(v) else lookup_pair(rest, name)
+  }
+
+# A ⊆ B at the type level: every (name, type) in A appears in B with the
+# same type. Combined with same-length, this is structural record equality.
+fn all_fields_match(
+  a: List<Pair<String, Type>>,
+  b: List<Pair<String, Type>>
+) : Bool =
+  match a {
+    [] => true;
+    [Pair(k, v), ...rest] =>
+      match lookup_pair(b, k) {
+        None     => false;
+        Some(v2) => if type_eq(v, v2) then all_fields_match(rest, b) else false
+      }
+  }
+
+# Structural type equality. For TRec: same set of (name, type) pairs,
+# order-independent (records are unordered field maps semantically).
+fn type_eq(a: Type, b: Type) : Bool =
+  match a {
+    TInt        => match b { TInt => true; _ => false };
+    TBool       => match b { TBool => true; _ => false };
+    TFn(p1, r1) => match b {
+      TFn(p2, r2) =>
+        if type_eq(p1, p2) then type_eq(r1, r2) else false;
+      _ => false
+    };
+    TRec(fs1) => match b {
+      TRec(fs2) =>
+        if len(fs1) == len(fs2)
+          then all_fields_match(fs1, fs2)
+          else false;
+      _ => false
+    }
+  }
+
+fn both_int(a: Type, b: Type) : Bool =
+  if type_eq(a, TInt) then type_eq(b, TInt) else false
+
+# Format a type for error messages.
+fn format_field_list_t(fs: List<Pair<String, Type>>) : String =
+  fold(fs, "", fn(acc: String, p: Pair<String, Type>) ->
+    match p {
+      Pair(k, v) =>
+        if string_length(acc) == 0
+          then k ++ ": " ++ format_type(v)
+          else acc ++ ", " ++ k ++ ": " ++ format_type(v)
+    })
+
+fn format_type(t: Type) : String =
+  match t {
+    TInt      => "Int";
+    TBool     => "Bool";
+    TFn(p, r) => "(" ++ format_type(p) ++ " -> " ++ format_type(r) ++ ")";
+    TRec(fs)  => "{ " ++ format_field_list_t(fs) ++ " }"
+  }
+
+# Format an expression so test output is self-describing. Manual ASTs
+# are tedious to read; the printer turns them back into something close
+# to surface syntax.
+fn format_field_list_e(fs: List<Pair<String, Expr>>) : String =
+  fold(fs, "", fn(acc: String, p: Pair<String, Expr>) ->
+    match p {
+      Pair(k, v) =>
+        if string_length(acc) == 0
+          then k ++ ": " ++ format_expr(v)
+          else acc ++ ", " ++ k ++ ": " ++ format_expr(v)
+    })
+
+fn format_expr(e: Expr) : String =
+  match e {
+    EInt(n)             => int_to_string(n);
+    EBool(b)            => if b then "true" else "false";
+    EVar(s)             => s;
+    EAdd(a, b)          => format_expr(a) ++ " + " ++ format_expr(b);
+    ELt(a, b)           => format_expr(a) ++ " < " ++ format_expr(b);
+    EIf(c, t, x)        => "if " ++ format_expr(c)
+                        ++ " then " ++ format_expr(t)
+                        ++ " else " ++ format_expr(x);
+    ELam(n, t, body)    => "fn(" ++ n ++ ": " ++ format_type(t) ++ ") -> "
+                        ++ format_expr(body);
+    EApp(f, a)          => format_expr(f) ++ "(" ++ format_expr(a) ++ ")";
+    ELet(n, v, body)    => "let " ++ n ++ " = " ++ format_expr(v)
+                        ++ " in " ++ format_expr(body);
+    ERec(fs)            => "{ " ++ format_field_list_e(fs) ++ " }";
+    EField(r, n)        => format_expr(r) ++ "." ++ n
+  }
+
+fn lookup_ty(env: List<Pair<String, Type>>, name: String) : Option<Type> =
+  match env {
+    [] => None;
+    [Pair(k, v), ...rest] =>
+      if k == name then Some(v) else lookup_ty(rest, name)
+  }
+
+
+# --- The type checker ----------------------------------------------------
+
+# Type-check each field of a record literal, threading Result through.
+fn check_rec_fields(
+  fields: List<Pair<String, Expr>>,
+  env: List<Pair<String, Type>>
+) : Result<List<Pair<String, Type>>, String> =
+  match fields {
+    [] => Ok([]);
+    [Pair(k, v), ...rest] =>
+      bind_result(check(v, env), fn(tv: Type) ->
+        bind_result(check_rec_fields(rest, env),
+                    fn(trest: List<Pair<String, Type>>) ->
+          Ok([Pair(k, tv)] ++ trest)))
+  }
+
+fn check(e: Expr, env: List<Pair<String, Type>>) : Result<Type, String> =
+  match e {
+    EInt(_)  => Ok(TInt);
+    EBool(_) => Ok(TBool);
+
+    EVar(name) =>
+      match lookup_ty(env, name) {
+        None    => Err("unbound variable: " ++ name);
+        Some(t) => Ok(t)
+      };
+
+    EAdd(a, b) =>
+      bind_result(check(a, env), fn(ta: Type) ->
+        bind_result(check(b, env), fn(tb: Type) ->
+          if both_int(ta, tb)
+            then Ok(TInt)
+            else Err("EAdd: operands must be Int, got "
+                   ++ format_type(ta) ++ " and " ++ format_type(tb))));
+
+    ELt(a, b) =>
+      bind_result(check(a, env), fn(ta: Type) ->
+        bind_result(check(b, env), fn(tb: Type) ->
+          if both_int(ta, tb)
+            then Ok(TBool)
+            else Err("ELt: operands must be Int")));
+
+    EIf(c, t_branch, e_branch) =>
+      bind_result(check(c, env), fn(tc: Type) ->
+        if type_eq(tc, TBool)
+          then bind_result(check(t_branch, env), fn(tt: Type) ->
+                 bind_result(check(e_branch, env), fn(te: Type) ->
+                   if type_eq(tt, te)
+                     then Ok(tt)
+                     else Err("EIf: branches differ — then is "
+                            ++ format_type(tt) ++ ", else is "
+                            ++ format_type(te))))
+          else Err("EIf: condition must be Bool, got " ++ format_type(tc)));
+
+    ELam(name, param_ty, body) =>
+      let new_env : List<Pair<String, Type>> = [Pair(name, param_ty)] ++ env in
+      bind_result(check(body, new_env), fn(body_ty: Type) ->
+        Ok(TFn(param_ty, body_ty)));
+
+    EApp(f, arg) =>
+      bind_result(check(f, env), fn(tf: Type) ->
+        bind_result(check(arg, env), fn(targ: Type) ->
+          match tf {
+            TFn(t_param, t_ret) =>
+              if type_eq(t_param, targ)
+                then Ok(t_ret)
+                else Err("EApp: arg type mismatch — fn expects "
+                       ++ format_type(t_param) ++ ", got "
+                       ++ format_type(targ));
+            _ => Err("EApp: not a function — applying " ++ format_type(tf))
+          }));
+
+    ELet(name, value, body) =>
+      bind_result(check(value, env), fn(tv: Type) ->
+        let new_env : List<Pair<String, Type>> = [Pair(name, tv)] ++ env in
+        check(body, new_env));
+
+    # v0.8 additions: record literal and field projection.
+
+    ERec(fields) =>
+      bind_result(check_rec_fields(fields, env),
+                  fn(tfs: List<Pair<String, Type>>) ->
+        Ok(TRec(tfs)));
+
+    EField(rec, name) =>
+      bind_result(check(rec, env), fn(tr: Type) ->
+        match tr {
+          TRec(fs) =>
+            match lookup_pair(fs, name) {
+              None    => Err("EField: record has no field " ++ name);
+              Some(t) => Ok(t)
+            };
+          _ => Err("EField: not a record — got " ++ format_type(tr))
+        })
+  }
+
+
+# --- Sample programs in the object language -----------------------------
+
+let p1 : Expr = EInt(42)
+
+let p2 : Expr = EIf(EBool(true), EInt(1), EInt(2))
+
+let p3 : Expr = ELet("x", EInt(5), EAdd(EVar("x"), EInt(3)))
+
+let p4 : Expr = EApp(
+  ELam("x", TInt, EAdd(EVar("x"), EInt(1))),
+  EInt(5)
+)
+
+let p5 : Expr = EApp(
+  ELam("x", TInt, EAdd(EVar("x"), EInt(1))),
+  EBool(true)
+)
+
+let p6 : Expr = EIf(EInt(5), EInt(1), EInt(2))
+
+let p7 : Expr = EIf(EBool(true), EInt(1), EBool(true))
+
+let p8 : Expr = EVar("x")
+
+let p9 : Expr = EApp(
+  ELam("f", TFn(TInt, TInt), EApp(EVar("f"), EInt(3))),
+  ELam("x", TInt, EAdd(EVar("x"), EVar("x")))
+)
+
+let p10 : Expr = EApp(
+  ELam("f", TFn(TInt, TInt), EApp(EVar("f"), EInt(3))),
+  EInt(42)
+)
+
+# v0.8 sample programs: records in the IR.
+
+# 11.  { x: 42, ok: true }
+let p11 : Expr = ERec([
+  Pair("x",  EInt(42)),
+  Pair("ok", EBool(true))
+])
+
+# 12.  { x: 42, ok: true }.x  ==> Int
+let p12 : Expr = EField(p11, "x")
+
+# 13.  { x: 42 }.missing  ==> error
+let p13 : Expr = EField(ERec([Pair("x", EInt(1))]), "missing")
+
+# 14.  fn(r: {a: Int}) -> r.a + 1
+let p14 : Expr = ELam(
+  "r",
+  TRec([Pair("a", TInt)]),
+  EAdd(EField(EVar("r"), "a"), EInt(1))
+)
+
+# 15.  (fn(r: {a: Int}) -> r.a + 1)({ a: 7 })  ==> Int
+let p15 : Expr = EApp(p14, ERec([Pair("a", EInt(7))]))
+
+# 16.  (fn(r: {a: Int}) -> r.a + 1)({ b: 7 })  ==> error (wrong field shape)
+let p16 : Expr = EApp(p14, ERec([Pair("b", EInt(7))]))
+
+# 17.  applying record to a number — not a function
+let p17 : Expr = EField(EInt(5), "anything")
+
+
+# --- Report --------------------------------------------------------------
+
+fn report(e: Expr, r: Result<Type, String>) : String !{IO} =
+  let src : String = format_expr(e) in
+  match r {
+    Ok(t)    => print(src ++ "  ==>  " ++ format_type(t));
+    Err(msg) => print(src ++ "  ==>  ERROR: " ++ msg)
+  }
+
+let empty_env : List<Pair<String, Type>> = []
+
+let _ : String = report(p1,  check(p1,  empty_env))
+let _ : String = report(p2,  check(p2,  empty_env))
+let _ : String = report(p3,  check(p3,  empty_env))
+let _ : String = report(p4,  check(p4,  empty_env))
+let _ : String = report(p5,  check(p5,  empty_env))
+let _ : String = report(p6,  check(p6,  empty_env))
+let _ : String = report(p7,  check(p7,  empty_env))
+let _ : String = report(p8,  check(p8,  empty_env))
+let _ : String = report(p9,  check(p9,  empty_env))
+let _ : String = report(p10, check(p10, empty_env))
+let _ : String = report(p11, check(p11, empty_env))
+let _ : String = report(p12, check(p12, empty_env))
+let _ : String = report(p13, check(p13, empty_env))
+let _ : String = report(p14, check(p14, empty_env))
+let _ : String = report(p15, check(p15, empty_env))
+let _ : String = report(p16, check(p16, empty_env))
+let _ : String = report(p17, check(p17, empty_env))
+
+
+# What this iteration moves forward, beyond v0.7:
+#
+#   - The IR now has records — the v0.8 feature lands in the self-hoster
+#     within one release. The pattern repeats every version: the host
+#     adds a feature, the typechecker grows to recognize it. This is how
+#     v1.0 self-hosting becomes tractable, one feature at a time.
+#
+#   - format_expr replaces the hand-written test labels. The reports now
+#     show ACTUAL surface syntax for the program being checked. This is
+#     half a parser (AST → text); the other half (text → AST) is a
+#     future milestone.
+#
+# What's left for full Glass-in-Glass at v1.0:
+#
+#   - Polymorphism — TVar, unification, generalization at let bindings.
+#     This is the next big lift; everything before it has been mechanical.
+#   - Sum types (general ADTs, not just the fixed Type and Expr of this file).
+#   - Effects, refinements, tuples, strings, lists, the prelude.
+#   - A parser, so source files can be checked directly instead of
+#     constructing ASTs by hand.

@@ -1,0 +1,98 @@
+# =============================================================================
+# v0.4 demo: refinement types in a cryptography-adjacent setting.
+#
+# Cryptographic primitives live or die by domain constraints: the modulus
+# must be positive, the exponent non-negative, the nonce must not have been
+# used before. Most type systems express these as comments or runtime
+# `assert` calls scattered through the implementation. Glass refinement
+# types put them in the signature where they belong — visible at every
+# call site, enforced at every entry.
+#
+# In v0.4 the predicates run as runtime checks. In v0.5, when an SMT solver
+# joins the type checker, they'll be statically discharged where possible.
+# The syntax stays the same; only the locus of enforcement shifts.
+#
+# Future-tech note: this is also the foundation for post-quantum-relevant
+# code. Lattice schemes need bounds on coefficients; signature schemes need
+# non-zero nonces and one-time-use guarantees; isogeny schemes need element
+# membership predicates. Refinement types express all of these directly.
+# Linear types (a later milestone) will handle the one-time-use part.
+# =============================================================================
+
+# ---- Modular arithmetic primitives ----------------------------------------
+
+# Reduce x mod m without using % (Glass v0.4 has no native mod operator).
+fn modulo(x: Int where (x >= 0), m: Int where (m > 0)) : Int =
+  x - (x / m) * m
+
+# Modular addition. The predicate `m > 0` rules out the most common bug:
+# accidentally passing a zero modulus.
+fn mod_add(
+  a: Int where (a >= 0),
+  b: Int where (b >= 0),
+  m: Int where (m > 0)
+) : Int =
+  modulo(a + b, m)
+
+fn mod_mul(
+  a: Int where (a >= 0),
+  b: Int where (b >= 0),
+  m: Int where (m > 0)
+) : Int =
+  modulo(a * b, m)
+
+# Modular exponentiation by repeated squaring.
+# - base must fit in [0, m)
+# - exp must be non-negative (no "inverse" in this v0.4 demo)
+# - m > 1 because m=1 makes the whole ring trivial
+fn mod_pow(
+  base: Int where (base >= 0),
+  exp:  Int where (exp >= 0),
+  m:    Int where (m > 1)
+) : Int =
+  if exp == 0 then 1
+  else
+    let half : Int = mod_pow(base, exp / 2, m) in
+    let sq : Int = mod_mul(half, half, m) in
+    if (exp / 2) * 2 == exp
+      then sq
+      else mod_mul(sq, base, m)
+
+# ---- A tiny Fermat-style primality probe ----------------------------------
+#
+# Real Miller-Rabin needs random witnesses (effects, v0.5). This is the
+# deterministic single-witness Fermat test: if a^(p-1) mod p != 1 for some
+# 0 < a < p, then p is composite.
+
+fn fermat_probe(
+  witness: Int where (witness >= 1),
+  p: Int where (p > 2)
+) : Bool =
+  mod_pow(witness, p - 1, p) == 1
+
+# ---- Demonstration --------------------------------------------------------
+
+# Legitimate calls
+let r1 : Int = mod_add(5, 7, 11)
+let r2 : Int = mod_pow(3, 5, 13)
+let _ = print("(5 + 7) mod 11      = " ++ int_to_string(r1))
+let _ = print("3^5 mod 13          = " ++ int_to_string(r2))
+
+# Fermat probes against known primes and composites.
+# 13 is prime: witnesses pass.
+# 15 is composite: witness 2 fails (2^14 mod 15 = 4 != 1).
+let p13_w2 : Bool = fermat_probe(2, 13)
+let p13_w3 : Bool = fermat_probe(3, 13)
+let p15_w2 : Bool = fermat_probe(2, 15)
+let _ = print("fermat 13 / witness 2 -> " ++ if p13_w2 then "prime-ish" else "composite")
+let _ = print("fermat 13 / witness 3 -> " ++ if p13_w3 then "prime-ish" else "composite")
+let _ = print("fermat 15 / witness 2 -> " ++ if p15_w2 then "prime-ish" else "composite")
+
+# The refinement system catches domain errors at the call boundary.
+# Uncomment any of these to see the runtime refinement violation:
+#
+#   let bad1 : Int = mod_add(5, 0 - 3, 11)   # b >= 0 violated
+#   let bad2 : Int = mod_pow(2, 5, 1)        # m > 1 violated
+#   let bad3 : Bool = fermat_probe(0, 13)    # witness >= 1 violated
+#
+# Each shows up as: "refinement violated: <name> = <value> fails predicate (...)"

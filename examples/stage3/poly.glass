@@ -1,0 +1,20 @@
+type Tree<A> = | Leaf | Node(A, Tree<A>, Tree<A>)
+
+fn depth(t: Tree<Int>) : Int =
+  match t {
+    Leaf => 0;
+    Node(_, l, r) =>
+      let dl = depth(l) in
+      let dr = depth(r) in
+      if dl < dr then 1 + dr else 1 + dl
+  }
+
+fn sum_tree(t: Tree<Int>) : Int =
+  match t {
+    Leaf => 0;
+    Node(v, l, r) => v + sum_tree(l) + sum_tree(r)
+  }
+
+let t = Node(7, Node(3, Leaf, Node(5, Leaf, Leaf)), Node(11, Leaf, Leaf))
+let result = depth(t) * sum_tree(t)
+result

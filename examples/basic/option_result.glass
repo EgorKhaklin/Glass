@@ -1,0 +1,60 @@
+# v0.1 demo: sum types, Option, Result, exhaustive matching.
+#
+# This is the Rust influence made concrete. Where v0.0.1 had no way to
+# represent "might fail" except by convention, Glass now has Option<T> and
+# Result<T, E> in the prelude. Match expressions must cover every constructor
+# or include a wildcard — non-exhaustive matches are a type error.
+
+# Safe division: returns Option<Int> so callers must handle the zero case.
+fn safe_div(a: Int, b: Int) : Option<Int> =
+  if b == 0 then None
+  else Some(a / b)
+
+# Pattern matching forces every caller to handle both branches.
+fn show_div(a: Int, b: Int) : String =
+  match safe_div(a, b) {
+    None      => int_to_string(a) ++ " / " ++ int_to_string(b) ++ " is undefined";
+    Some(q)   => int_to_string(a) ++ " / " ++ int_to_string(b) ++ " = " ++ int_to_string(q)
+  }
+
+let _ = print(show_div(10, 2))
+let _ = print(show_div(10, 0))
+let _ = print(show_div(7, 3))
+
+# Result<T, E> for richer error info.
+fn parse_positive(n: Int) : Result<Int, String> =
+  if n < 0 then Err("negative numbers are rejected")
+  else if n == 0 then Err("zero is rejected")
+  else Ok(n)
+
+fn show_parse(n: Int) : String =
+  match parse_positive(n) {
+    Ok(v)   => "got " ++ int_to_string(v);
+    Err(msg) => "error: " ++ msg
+  }
+
+let _ = print(show_parse(42))
+let _ = print(show_parse(0))
+let _ = print(show_parse(-3))
+
+# A recursive sum type: binary trees of integers.
+type IntTree =
+  | Leaf
+  | Node(IntTree, Int, IntTree)
+
+# Sum the tree. The match is exhaustive across both constructors; the
+# checker will reject a version that forgets either case.
+fn tree_sum(t: IntTree) : Int =
+  match t {
+    Leaf            => 0;
+    Node(l, v, r)   => tree_sum(l) + v + tree_sum(r)
+  }
+
+let sample : IntTree =
+  Node(
+    Node(Leaf, 1, Node(Leaf, 2, Leaf)),
+    3,
+    Node(Leaf, 4, Leaf)
+  )
+
+let _ = print("tree sum = " ++ int_to_string(tree_sum(sample)))

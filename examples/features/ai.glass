@@ -1,0 +1,108 @@
+# =============================================================================
+# v0.7 demo: ai.glass — effects for AI model calls.
+#
+# Glass treats every call into an external model — LLM, classifier, vision
+# system — as an effect labeled !{Inference}. Same machinery as !{IO} and
+# !{Random}: visible at every call site, propagated through call chains,
+# auditable at a glance from the type signature.
+#
+# Why this matters. A post-AI codebase will have model calls scattered
+# throughout. Knowing which functions touch a model — and which don't —
+# is exactly what auditors, debuggers, and tooling need to reason about
+# program behavior. Effect typing makes that question answerable from
+# signatures alone, with no source-grepping or runtime tracing.
+#
+# Model output is untrusted by default. Refinement types describe the
+# postcondition a Glass program needs the output to satisfy. The boundary
+# between "what the model returned" and "what the program is willing to
+# work with" becomes a type-system fact.
+# =============================================================================
+
+# --- The simplest case ---------------------------------------------------
+
+# A pure-data wrapper around model_call. Signature alone tells the reader:
+# this fn touches a model. Nothing else.
+fn ask(prompt: String) : String !{Inference} = model_call(prompt)
+
+
+# --- Effect composition --------------------------------------------------
+
+# ask + print = !{IO, Inference}. The reader of the signature now knows
+# everything that can happen when this fn is called: an external model is
+# invoked AND something gets written to the world. Two effects, both
+# visible, no surprises.
+fn ask_and_show(prompt: String) : String !{IO, Inference} =
+  let answer : String = model_call(prompt) in
+  print("answer: " ++ answer)
+
+
+# --- Trust boundary: refinement-checked model output --------------------
+
+# Model output is untrusted. Wrap it in a refinement that states the
+# postcondition Glass code expects. If the model returns something that
+# violates the refinement, the program raises at the boundary — not 50
+# functions later when an empty string triggers a confusing crash.
+#
+# The refinement is the contract. The model is the supplier. Glass enforces.
+fn ask_nonempty(prompt: String) : String !{Inference} =
+  let answer : String where (string_length(answer) >= 1) = model_call(prompt) in
+  answer
+
+
+# --- Effect-polymorphic batching ----------------------------------------
+
+# map is effect-polymorphic, so batching a model call across a list of
+# prompts gives !{Inference} automatically. No new abstraction needed.
+# The same primitive works whether the callback is pure, !{IO}, !{Random},
+# or !{Inference}.
+fn batch_ask(prompts: List<String>) : List<String> !{Inference} =
+  map(prompts, fn(p: String) -> model_call(p))
+
+
+# --- A pipeline ---------------------------------------------------------
+
+# Compose: ask the model, prefix the answer, print it.
+# Effects accumulate to !{IO, Inference}.
+fn pipeline(prompt: String) : String !{IO, Inference} =
+  let raw : String = model_call(prompt) in
+  let tagged : String = "[verified] " ++ raw in
+  print(tagged)
+
+
+# --- Run the demo --------------------------------------------------------
+
+let r1 : String = ask("the simplest case")
+let _  : String = print("ask:        " ++ r1)
+
+let _  : String = ask_and_show("compose IO with Inference")
+
+let r3 : String = ask_nonempty("nonempty-by-refinement")
+let _  : String = print("refined:    " ++ r3)
+
+let r4 : List<String> = batch_ask(["alpha", "beta", "gamma"])
+let _  : String = print("batch[0]:   " ++ match r4 {
+  []               => "(empty)";
+  [first, ...rest] => first
+})
+
+let _  : String = pipeline("the full pipeline")
+
+
+# Notes for the reader:
+#
+# - !{Inference} is just a label. Glass doesn't ship an LLM backend. The
+#   model_call built-in is a mock that prefixes its input with "[model]:".
+#   In a real deployment, model_call dispatches to whatever inference
+#   provider the runtime is wired to. The TYPE-LEVEL story is the part
+#   that's load-bearing.
+#
+# - Why refinement-types-on-output instead of structured parsing? Because
+#   refinements compose with effects. The signature of ask_nonempty says
+#   exactly: "this fn calls a model AND its result is nonempty." A schema
+#   library could check the second half but not the first; refinements
+#   put both in one place.
+#
+# - Why a separate effect label instead of overloading IO? Because the
+#   audit questions are different. "Did this code call a model?" is
+#   answered by inspecting !{Inference} occurrences. "Did this code
+#   write to the world?" is !{IO}. Conflating them loses signal.
