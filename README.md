@@ -89,7 +89,7 @@ Three levels of interpretation in a single invocation:
   if (2 + 3) < (4 * 5) then (10 + 7) else 0
     │
     ▼
-  17
+   17
 ```
 
 Same answers as glass.py would give. The chain composes. See [`docs/migration.md`](docs/migration.md) for the full assessment of where Glass stands on the migration off Python.
@@ -117,7 +117,7 @@ An algebraic data type for polynomial expressions, a recursive `diff` that mirro
 **Propositional logic prover** ([`examples/showcase/prover.glass`](examples/showcase/prover.glass))
 
 ```
-Excluded middle    :  (P ∨ ¬P)                            ⟶   TAUTOLOGY
+Excluded middle    :  (P ∨ ¬P)                             ⟶   TAUTOLOGY
 Non-contradiction  :  ¬(P ∧ ¬P)                            ⟶   TAUTOLOGY
 Modus ponens       :  (((P → Q) ∧ P) → Q)                  ⟶   TAUTOLOGY
 Contraposition     :  ((P → Q) ↔ (¬Q → ¬P))                ⟶   TAUTOLOGY
