@@ -1,0 +1,168 @@
+# =============================================================================
+# A truth-table-based decision procedure for propositional logic, in Glass.
+#
+# Given a formula in classical propositional logic — built from variables,
+# negation, conjunction, disjunction, and implication — this program decides
+# whether it's a tautology, a contradiction, or satisfiable-but-contingent.
+#
+# The whole prover is one recursive `eval_formula` plus enumeration over all
+# possible assignments to the variables. ~150 lines of Glass.
+# =============================================================================
+
+# ---- Formulas ---------------------------------------------------------------
+
+type Formula =
+  | Var(String)
+  | Not(Formula)
+  | And(Formula, Formula)
+  | Or(Formula, Formula)
+  | Implies(Formula, Formula)
+  | Iff(Formula, Formula)
+  | T          # the constant true
+  | F          # the constant false
+
+# An assignment maps variable names to truth values.
+type Binding = | Bind(String, Bool)
+type Env = | EEmpty | ECons(Binding, Env)
+
+# ---- Variable lookup --------------------------------------------------------
+
+fn lookup(env: Env, name: String) : Bool =
+  match env {
+    EEmpty                          => false;
+    ECons(Bind(k, v), rest)         =>
+      if k == name then v else lookup(rest, name)
+  }
+
+# ---- Evaluate a formula under an assignment --------------------------------
+
+fn eval_formula(f: Formula, env: Env) : Bool =
+  match f {
+    T              => true;
+    F              => false;
+    Var(name)      => lookup(env, name);
+    Not(g)         => if eval_formula(g, env) then false else true;
+    And(g, h)      => if eval_formula(g, env) then eval_formula(h, env) else false;
+    Or(g, h)       => if eval_formula(g, env) then true else eval_formula(h, env);
+    Implies(g, h)  => if eval_formula(g, env) then eval_formula(h, env) else true;
+    Iff(g, h)      => eval_formula(g, env) == eval_formula(h, env)
+  }
+
+# ---- Free variables --------------------------------------------------------
+
+fn member(xs: List<String>, x: String) : Bool =
+  match xs {
+    []         => false;
+    [h, ...t]  => if h == x then true else member(t, x)
+  }
+
+fn union(xs: List<String>, ys: List<String>) : List<String> =
+  match ys {
+    []         => xs;
+    [h, ...t]  => if member(xs, h) then union(xs, t) else union([h] ++ xs, t)
+  }
+
+fn free_vars(f: Formula) : List<String> =
+  match f {
+    T              => [];
+    F              => [];
+    Var(name)      => [name];
+    Not(g)         => free_vars(g);
+    And(g, h)      => union(free_vars(g), free_vars(h));
+    Or(g, h)       => union(free_vars(g), free_vars(h));
+    Implies(g, h)  => union(free_vars(g), free_vars(h));
+    Iff(g, h)      => union(free_vars(g), free_vars(h))
+  }
+
+# ---- All assignments to a list of variables --------------------------------
+
+fn all_envs(vars: List<String>) : List<Env> =
+  match vars {
+    []        => [EEmpty];
+    [v, ...rest] =>
+      let sub = all_envs(rest) in
+      append(map(sub, fn(e: Env) -> ECons(Bind(v, true),  e)),
+             map(sub, fn(e: Env) -> ECons(Bind(v, false), e)))
+  }
+
+fn append<A>(xs: List<A>, ys: List<A>) : List<A> =
+  match xs {
+    []        => ys;
+    [h, ...t] => [h] ++ append(t, ys)
+  }
+
+# ---- The decision procedure ------------------------------------------------
+
+type Verdict = | Tautology | Contradiction | Contingent
+
+fn decide(f: Formula) : Verdict =
+  let envs = all_envs(free_vars(f)) in
+  let results = map(envs, fn(e: Env) -> eval_formula(f, e)) in
+  let all_true = fold(results, true,  fn(acc: Bool, x: Bool) -> if acc then x else false) in
+  let any_true = fold(results, false, fn(acc: Bool, x: Bool) -> if acc then true else x) in
+  if all_true then Tautology
+  else if any_true then Contingent
+  else Contradiction
+
+fn show_verdict(v: Verdict) : String =
+  match v {
+    Tautology     => "TAUTOLOGY (always true)";
+    Contradiction => "CONTRADICTION (always false)";
+    Contingent    => "CONTINGENT (sometimes true)"
+  }
+
+# ---- Pretty-printer --------------------------------------------------------
+
+fn show(f: Formula) : String =
+  match f {
+    T              => "⊤";
+    F              => "⊥";
+    Var(name)      => name;
+    Not(g)         => "¬" ++ show(g);
+    And(g, h)      => "(" ++ show(g) ++ " ∧ " ++ show(h) ++ ")";
+    Or(g, h)       => "(" ++ show(g) ++ " ∨ " ++ show(h) ++ ")";
+    Implies(g, h)  => "(" ++ show(g) ++ " → " ++ show(h) ++ ")";
+    Iff(g, h)      => "(" ++ show(g) ++ " ↔ " ++ show(h) ++ ")"
+  }
+
+fn report(label: String, f: Formula) : String !{IO} =
+  print(label ++ ":  " ++ show(f) ++ "   ⟶   " ++ show_verdict(decide(f)))
+
+# ---- Demonstrations: the classics ------------------------------------------
+
+# Law of excluded middle: P ∨ ¬P   — TAUTOLOGY
+let lem = Or(Var("P"), Not(Var("P")))
+let _ = report("Excluded middle    ", lem)
+
+# Law of non-contradiction: ¬(P ∧ ¬P)   — TAUTOLOGY
+let lnc = Not(And(Var("P"), Not(Var("P"))))
+let _ = report("Non-contradiction  ", lnc)
+
+# Modus ponens: ((P → Q) ∧ P) → Q   — TAUTOLOGY
+let mp = Implies(And(Implies(Var("P"), Var("Q")), Var("P")), Var("Q"))
+let _ = report("Modus ponens       ", mp)
+
+# Contraposition: (P → Q) ↔ (¬Q → ¬P)   — TAUTOLOGY
+let cp = Iff(Implies(Var("P"), Var("Q")),
+             Implies(Not(Var("Q")), Not(Var("P"))))
+let _ = report("Contraposition     ", cp)
+
+# De Morgan: ¬(P ∧ Q) ↔ (¬P ∨ ¬Q)   — TAUTOLOGY
+let dm = Iff(Not(And(Var("P"), Var("Q"))),
+             Or(Not(Var("P")), Not(Var("Q"))))
+let _ = report("De Morgan          ", dm)
+
+# A bare contradiction: P ∧ ¬P   — CONTRADICTION
+let con = And(Var("P"), Not(Var("P")))
+let _ = report("Bare contradiction ", con)
+
+# Affirming the consequent (an invalid argument): ((P → Q) ∧ Q) → P  — CONTINGENT
+let atc = Implies(And(Implies(Var("P"), Var("Q")), Var("Q")), Var("P"))
+let _ = report("Affirm consequent  ", atc)
+
+# A trickier tautology: ((P → Q) ∧ (Q → R)) → (P → R)  — hypothetical syllogism
+let hs = Implies(And(Implies(Var("P"), Var("Q")), Implies(Var("Q"), Var("R"))),
+                 Implies(Var("P"), Var("R")))
+let _ = report("Hypothetical syllog", hs)
+
+"done"

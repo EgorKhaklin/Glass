@@ -1,5 +1,5 @@
 """
-Glass v1.0 — reference implementation.
+Glass v4.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 import sys
 import re
+import subprocess
 
 sys.setrecursionlimit(20000)
 
@@ -69,6 +70,7 @@ TOKEN_SPEC = [
     ("EQ",       r"=="),
     ("NEQ",      r"!="),
     ("BANG",     r"!"),
+    ("QMARK",    r"\?"),
     ("LT",       r"<"),
     ("GT",       r">"),
     ("ASSIGN",   r"="),
@@ -530,7 +532,7 @@ class Parser:
             params = self.parse_params(accept_refinement=True)
             self.eat("RPAREN")
             self.eat("COLON")
-            ret = self.parse_type()
+            ret = self.parse_type(accept_refinement=True)
             # Optional effect set after the return type: `: T !{IO, Random}`
             # or `: T !{IO, E}` where E is an effect-row variable bound by
             # the fn's type parameters. To put effects on a returned fn
@@ -792,6 +794,25 @@ class Parser:
 
     def parse_let_in(self) -> LetIn:
         self.eat("let")
+        # `let* PAT = EXPR in BODY` — Result-bind sugar (v2.4).
+        if self.peek().kind == "STAR":
+            self.eat("STAR")
+            return self._parse_let_star_in()
+        # `let? PAT = EXPR in BODY` — Option-bind sugar (v2.5).
+        if self.peek().kind == "QMARK":
+            self.eat("QMARK")
+            return self._parse_let_qmark_in()
+        # `let PAT = EXPR in BODY` where PAT is a tuple/list/ctor pattern (v2.7).
+        # Identifier-only lets keep the traditional LetIn path so let-polymorphism
+        # generalization still applies. Other patterns desugar to Match.
+        if self.peek().kind in ("LPAREN", "LBRACK"):
+            return self._parse_let_pattern_in()
+        # Uppercase-leading IDENT followed by ASSIGN means the user wrote a
+        # constructor pattern (e.g. `let Pair(a, b) = ...`). Desugar to Match.
+        if (self.peek().kind == "IDENT"
+            and self.peek().value
+            and self.peek().value[0].isupper()):
+            return self._parse_let_pattern_in()
         name = self.eat("IDENT").value
         ann: Ty | None = None
         if self.accept("COLON"):
@@ -801,6 +822,71 @@ class Parser:
         self.eat("in")
         body = self.parse_expr()
         return LetIn(name=name, ann=ann, value=value, body=body)
+
+    def _parse_let_pattern_in(self):
+        """Parse `let PAT = EXPR in BODY` where PAT is not a bare identifier.
+
+        Desugars to: match EXPR { PAT => BODY }
+        Type-checker enforces exhaustiveness, so non-exhaustive patterns
+        (like `let Some(x) = optional in ...`) get a compile-time warning
+        from the same machinery that handles match.
+        """
+        pat = self.parse_pattern()
+        self.eat("ASSIGN")
+        value = self.parse_expr()
+        self.eat("in")
+        body = self.parse_expr()
+        return Match(scrutinee=value, arms=[(pat, body)])
+
+    def _let_star_counter(self) -> int:
+        n = getattr(self, "_ls_counter", 0)
+        self._ls_counter = n + 1
+        return n
+
+    def _parse_let_star_in(self):
+        """Parse `let* PAT = EXPR in BODY` and desugar to a Match.
+
+        The desugar pulls in `Ok`/`Err` constructors; the user must already
+        be writing inside a function whose return type is `Result<_, _>` for
+        the resulting expression to type-check.
+        """
+        pat = self.parse_pattern()
+        self.eat("ASSIGN")
+        value = self.parse_expr()
+        self.eat("in")
+        body = self.parse_expr()
+        n = self._let_star_counter()
+        err_name = f"__star_err_{n}"
+        ok_name = f"__star_ok_{n}"
+        err_pat = Pattern("ctor", value="Err",
+                          args=[Pattern("ident", value=err_name)])
+        err_body = Call(fn=Ident(name="Err"), args=[Ident(name=err_name)])
+        ok_pat = Pattern("ctor", value="Ok",
+                         args=[Pattern("ident", value=ok_name)])
+        ok_body = Match(scrutinee=Ident(name=ok_name), arms=[(pat, body)])
+        return Match(scrutinee=value, arms=[(err_pat, err_body), (ok_pat, ok_body)])
+
+    def _parse_let_qmark_in(self):
+        """Parse `let? PAT = EXPR in BODY` and desugar to a Match.
+
+        Mirror of `let*` for Option. The enclosing context must have an
+        Option<_> result type for the desugared `None` arm to type-check.
+        """
+        pat = self.parse_pattern()
+        self.eat("ASSIGN")
+        value = self.parse_expr()
+        self.eat("in")
+        body = self.parse_expr()
+        n = self._let_star_counter()
+        some_name = f"__qmark_some_{n}"
+        # Arm 1: None => None  (None is a zero-arg ctor, used as a value)
+        none_pat = Pattern("ctor", value="None", args=[])
+        none_body = Ident(name="None")
+        # Arm 2: Some(__qmark_some_N) => match __qmark_some_N { PAT => BODY }
+        some_pat = Pattern("ctor", value="Some",
+                           args=[Pattern("ident", value=some_name)])
+        some_body = Match(scrutinee=Ident(name=some_name), arms=[(pat, body)])
+        return Match(scrutinee=value, arms=[(none_pat, none_body), (some_pat, some_body)])
 
     def parse_lambda(self) -> Lambda:
         self.eat("fn")
@@ -945,6 +1031,26 @@ def builtin_types() -> dict[str, Ty]:
             (TyString(),),
             TyADT("Result", (TyString(), TyString())),
             EffectRow(frozenset({"File"})),
+        ),
+        # v3.13 — write a String to disk. Result<Int, String> where Ok wraps
+        # the byte count written and Err carries the OS error message.
+        # Effect: !{File}, same as read_file.
+        "write_file":     TyFn(
+            (TyString(), TyString()),
+            TyADT("Result", (TyInt(), TyString())),
+            EffectRow(frozenset({"File"})),
+        ),
+        # v3.13 — invoke an external command. Takes (cmd, args) where args
+        # is a List<String>. On success returns Ok((exit_code, stdout, stderr));
+        # on failure (file-not-found, etc.) returns Err(message). The tuple
+        # in Ok lets demos inspect all three outputs separately.
+        # Effect: !{Process} — a new, distinct effect from File so the
+        # type signature makes process-spawning visible at every call site.
+        "run_command":    TyFn(
+            (TyString(), TyList(TyString())),
+            TyADT("Result",
+                  (TyTuple((TyInt(), TyString(), TyString())), TyString())),
+            EffectRow(frozenset({"Process"})),
         ),
         "int_to_string":  TyFn((TyInt(),), TyString()),
     }
@@ -1258,6 +1364,10 @@ class TypeChecker:
         # when an effectful fn is invoked. check_fn_body verifies that the
         # accumulated row is a subset of the declared row.
         self.current_effects: EffectRow = PURE
+        # Map from fn name -> FnDecl, populated during signature registration.
+        # Used by static refinement discharge to recover param names from a
+        # bare Ident call site.
+        self.fn_decls: dict[str, FnDecl] = {}
         # Effect-substitution dict shared across a single body's checking
         # (so the same row var, bound at one call site, propagates to others).
         self.eff_subst: dict[str, EffectRow] = {}
@@ -1319,6 +1429,7 @@ class TypeChecker:
         # d.effects is already an EffectRow built by the parser.
         fn_ty = TyFn(tuple(p[1] for p in d.params), d.ret, d.effects)
         self.env[d.name] = fn_ty
+        self.fn_decls[d.name] = d
 
     def check_fn_body(self, d: FnDecl) -> None:
         """Pass 2 of fn checking: check the body against the (already-registered)
@@ -1636,18 +1747,48 @@ class TypeChecker:
             )
         subst: dict[str, Ty] = {}
         rigid_eff = self.current_rigid_eff()
-        for formal, actual_expr in zip(ft.params, e.args):
+        # Static refinement discharge: for each refinement-typed param, try to
+        # prove the predicate at compile time given a constant-foldable arg.
+        # Records the set of arg indices that were statically discharged so
+        # the evaluator can skip the runtime check.
+        discharged: set[int] = set()
+        # Try to recover param names from the AST if e.fn is a known Ident
+        # pointing at a fn decl. Otherwise use positional default names.
+        param_names = self._recover_param_names(e.fn, len(ft.params))
+        for idx, (formal, actual_expr) in enumerate(zip(ft.params, e.args)):
             actual = self.infer(actual_expr, env)
             if not unify(formal, actual, subst, self.eff_subst, rigid_eff):
                 expected = resolve(formal, subst, self.eff_subst)
                 raise TypeError_(f"arg type mismatch: expected {expected}, got {actual}")
-        # Calling this fn causes its (post-substitution) effects to be added
-        # to the surrounding scope's effect row. Effect-row variables in
-        # ft.effects may have been bound during arg unification — resolve
-        # before extending.
+            # Static discharge attempt — only if the (resolved) formal has refinements.
+            resolved_formal = resolve(formal, subst, self.eff_subst)
+            if isinstance(resolved_formal, TyRefine):
+                pname = param_names[idx] if idx < len(param_names) else f"_arg{idx}"
+                status, detail = try_static_discharge(
+                    resolved_formal, actual_expr, pname, actual_ty=actual,
+                )
+                if status == "fail":
+                    raise TypeError_(
+                        f"refinement violated at compile time: {detail}"
+                    )
+                if status == "ok":
+                    discharged.add(idx)
+        # Attach to the Call node so eval_expr can skip runtime checks
+        # for these positions.
+        if discharged:
+            e.discharged_args = discharged
         call_effects = resolve_effects(ft.effects, self.eff_subst)
         self.current_effects = extend_effects(self.current_effects, call_effects)
         return resolve(ft.ret, subst, self.eff_subst)
+
+    def _recover_param_names(self, fn_expr: Node, arity: int) -> list[str]:
+        """Best-effort: if the call is a direct ident referencing a fn decl,
+        return that fn's parameter names. Otherwise empty (fallback names used)."""
+        if isinstance(fn_expr, Ident):
+            decl = self.fn_decls.get(fn_expr.name)
+            if decl is not None and len(decl.params) == arity:
+                return [p[0] for p in decl.params]
+        return []
 
     def check_match(self, e: Match, env: dict[str, Ty]) -> Ty:
         st = self.infer(e.scrutinee, env)
@@ -1848,10 +1989,13 @@ class RecordV(Value):
 @dataclass
 class FnV(Value):
     """A user-defined function value. params carries (name, declared_type)
-    so the interpreter can run refinement checks at call boundaries."""
+    so the interpreter can run refinement checks at call boundaries.
+    ret is the declared return type, carried so refinements on returns
+    can be checked at every exit point (v1.3)."""
     params: list[tuple[str, Ty]]
     body: Node
     env: dict[str, Value]
+    ret: Ty | None = None
     def __str__(self):
         names = ", ".join(p for p, _ in self.params)
         return f"<fn({names})>"
@@ -1937,6 +2081,57 @@ def builtin_values() -> dict[str, Value]:
                 return ADTValue(ctor="Ok", args=[StringV(f.read())])
         except (OSError, IOError) as e:
             return ADTValue(ctor="Err", args=[StringV(str(e))])
+    def b_write_file(path, content):
+        # !{File} effect. Returns Result<Int, String> — Ok wraps byte count.
+        # v3.13 addition. Pairs with read_file to enable Glass-side build
+        # pipelines (write generated C source to disk, then compile it).
+        try:
+            data = content.v
+            with open(path.v, "w") as f:
+                n = f.write(data)
+            return ADTValue(ctor="Ok", args=[IntV(n if n is not None else len(data))])
+        except (OSError, IOError) as e:
+            return ADTValue(ctor="Err", args=[StringV(str(e))])
+    def b_run_command(cmd, args):
+        # !{Process} effect. Invokes the external program `cmd` with
+        # arguments `args` (a List<String>). Returns Result with a
+        # 3-tuple on success (exit_code, stdout, stderr). v3.13 addition.
+        # This is what closes the loop on Stage 5: prism interprets
+        # quartz_min, which produces C; write_file persists it;
+        # run_command invokes cc, then the resulting binary.
+        try:
+            argv = [cmd.v]
+            # args is a ListV of StringV values.
+            for a in args.items:
+                if not isinstance(a, StringV):
+                    return ADTValue(
+                        ctor="Err",
+                        args=[StringV(f"run_command: arg list must be List<String>, got {type(a).__name__}")],
+                    )
+                argv.append(a.v)
+            proc = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                check=False,
+                # 30s ceiling — long enough for cc on small files,
+                # short enough to avoid runaway children.
+                timeout=30,
+            )
+            return ADTValue(
+                ctor="Ok",
+                args=[TupleV([
+                    IntV(proc.returncode),
+                    StringV(proc.stdout),
+                    StringV(proc.stderr),
+                ])],
+            )
+        except FileNotFoundError as e:
+            return ADTValue(ctor="Err", args=[StringV(f"command not found: {cmd.v}")])
+        except subprocess.TimeoutExpired:
+            return ADTValue(ctor="Err", args=[StringV(f"timeout: {cmd.v}")])
+        except (OSError, ValueError) as e:
+            return ADTValue(ctor="Err", args=[StringV(str(e))])
     def b_itos(n): return StringV(str(n.v))
     def b_model_call(prompt):
         # Mock: a real backend would dispatch to an LLM, classifier, etc.
@@ -1959,29 +2154,340 @@ def builtin_values() -> dict[str, Value]:
         "substring":        BuiltinV("substring", b_substring),
         "string_index_of":  BuiltinV("string_index_of", b_string_index_of),
         "read_file":        BuiltinV("read_file", b_read_file),
+        "write_file":       BuiltinV("write_file", b_write_file),
+        "run_command":      BuiltinV("run_command", b_run_command),
         "int_to_string":    BuiltinV("int_to_string", b_itos),
     }
 
 
-def apply_fn(f: Value, args: list[Value]) -> Value:
-    if isinstance(f, BuiltinV):
-        return f.fn(*args)
-    if isinstance(f, FnV):
+def apply_fn(
+    f: Value,
+    args: list[Value],
+    skip_refinement_indices: set[int] | None = None,
+) -> Value:
+    # v1.7 perf: dispatch by type identity, not isinstance. FnV is by far
+    # the hottest case so it goes first; BuiltinV and CtorV follow.
+    t = type(f)
+    if t is FnV:
         if len(args) != len(f.params):
             raise RuntimeError(f"arity mismatch calling {f}")
-        new_env = {**f.env}
-        for (p, t), a in zip(f.params, args):
-            new_env[p] = a
-            # Refinement check: predicate evaluates with all already-bound
-            # params in scope, including earlier params (so a refinement on
-            # `b` can reference `a`).
-            check_refinement_runtime(p, t, a, new_env)
-        return eval_expr(f.body, new_env)
-    if isinstance(f, CtorV):
+        # dict.copy() avoids the kwargs-unpacking overhead of {**f.env}.
+        new_env = f.env.copy()
+        skip = skip_refinement_indices
+        if skip is None:
+            for (p, t_p), a in zip(f.params, args):
+                new_env[p] = a
+                check_refinement_runtime(p, t_p, a, new_env)
+        else:
+            for idx, ((p, t_p), a) in enumerate(zip(f.params, args)):
+                new_env[p] = a
+                if idx not in skip:
+                    check_refinement_runtime(p, t_p, a, new_env)
+        result = eval_expr(f.body, new_env)
+        # Return-refinement check (v1.3). If the declared return type carries
+        # a refinement, the predicate references `result` and is evaluated in
+        # an env where `result` maps to the just-computed return value, with
+        # all params still in scope.
+        if f.ret is not None and type(f.ret) is TyRefine:
+            new_env["result"] = result
+            check_refinement_runtime("result", f.ret, result, new_env)
+        return result
+    if t is BuiltinV:
+        return f.fn(*args)
+    if t is CtorV:
         if len(args) != f.arity:
             raise RuntimeError(f"ctor {f.name} expects {f.arity} args, got {len(args)}")
         return ADTValue(ctor=f.name, args=list(args))
     raise RuntimeError(f"not callable: {f}")
+
+
+def _ast_equal(a: Node, b: Node) -> bool:
+    """Structural equality of two predicate ASTs. Recognises the subset of
+    expressions that try_const_eval handles: literals, Ident, BinOp, If.
+    Anything else falls through to False, which is conservative (no
+    discharge) rather than unsound."""
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, IntLit):    return a.value == b.value
+    if isinstance(a, BoolLit):   return a.value == b.value
+    if isinstance(a, StringLit): return a.value == b.value
+    if isinstance(a, Ident):     return a.name == b.name
+    if isinstance(a, BinOp):
+        return a.op == b.op and _ast_equal(a.lhs, b.lhs) and _ast_equal(a.rhs, b.rhs)
+    if isinstance(a, If):
+        return (_ast_equal(a.cond, b.cond) and
+                _ast_equal(a.then_b, b.then_b) and
+                _ast_equal(a.else_b, b.else_b))
+    return False
+
+
+def _alpha_rename(e: Node, old: str, new: str) -> Node:
+    """Return a copy of e with every Ident(old) renamed to Ident(new)."""
+    if isinstance(e, Ident):
+        return Ident(new) if e.name == old else e
+    if isinstance(e, BinOp):
+        return BinOp(op=e.op,
+                     lhs=_alpha_rename(e.lhs, old, new),
+                     rhs=_alpha_rename(e.rhs, old, new))
+    if isinstance(e, If):
+        return If(cond=_alpha_rename(e.cond, old, new),
+                  then_b=_alpha_rename(e.then_b, old, new),
+                  else_b=_alpha_rename(e.else_b, old, new))
+    return e  # IntLit / BoolLit / StringLit / anything else — no binders inside
+
+
+def predicate_alpha_equiv(p1: Node, n1: str, p2: Node, n2: str) -> bool:
+    """True iff p1 (with binder n1) and p2 (with binder n2) are structurally
+    identical after renaming both binders to the same fresh name."""
+    fresh = "__alpha_fresh__"
+    return _ast_equal(_alpha_rename(p1, n1, fresh), _alpha_rename(p2, n2, fresh))
+
+
+def _extract_comparison(pred: Node, binder: str) -> tuple[str, int] | None:
+    """If pred is a comparison of `binder` against an integer constant,
+    return (op, k) where the comparison is `binder op k` (variable on left).
+    Returns None if pred isn't a recognised simple comparison.
+
+    Recognises both `binder OP const` and `const OP binder` (flipping the
+    operator when the binder is on the right)."""
+    if not isinstance(pred, BinOp):
+        return None
+    if pred.op not in ("<", ">", "<=", ">=", "==", "!="):
+        return None
+    # Try lhs = binder, rhs = const-foldable
+    if isinstance(pred.lhs, Ident) and pred.lhs.name == binder:
+        rhs_val = try_const_eval(pred.rhs)
+        if isinstance(rhs_val, IntV):
+            return (pred.op, rhs_val.v)
+    # Try lhs = const, rhs = binder (flip operator)
+    if isinstance(pred.rhs, Ident) and pred.rhs.name == binder:
+        lhs_val = try_const_eval(pred.lhs)
+        if isinstance(lhs_val, IntV):
+            flip = {"<": ">", ">": "<", "<=": ">=", ">=": "<=",
+                    "==": "==", "!=": "!="}
+            return (flip[pred.op], lhs_val.v)
+    return None
+
+
+def _comparison_implies(op1: str, k1: int, op2: str, k2: int) -> bool:
+    """Does (n op1 k1) imply (n op2 k2)?
+
+    Both refer to the same variable n; constants are on the right. Uses
+    set-inclusion semantics over integer arithmetic:
+
+      > k      = [k+1, ∞)
+      >= k     = [k,   ∞)
+      < k      = (-∞,  k-1]
+      <= k     = (-∞,  k  ]
+      == k     = {k}
+      != k     = Z \\ {k}
+
+    Returns True iff the first set is a subset of the second."""
+
+    def satisfies(op: str, k: int, v: int) -> bool:
+        if op == "<":  return v < k
+        if op == ">":  return v > k
+        if op == "<=": return v <= k
+        if op == ">=": return v >= k
+        if op == "==": return v == k
+        if op == "!=": return v != k
+        return False
+
+    # n == k1: singleton set. Check whether k1 itself satisfies op2/k2.
+    if op1 == "==":
+        return satisfies(op2, k2, k1)
+
+    # n == k2 would require S1 to be {k2}; only possible if op1 was ==
+    # (already handled above).
+    if op2 == "==":
+        return False
+
+    # n != k1: domain is Z \ {k1}. Almost no useful implications other
+    # than the same predicate (which alpha-equiv would have caught).
+    if op1 == "!=":
+        return op2 == "!=" and k1 == k2
+
+    # Conclusion is "n != k2": S1 must exclude k2.
+    if op2 == "!=":
+        if op1 == ">":  return k2 <= k1   # (k1, ∞) excludes k2 iff k2 <= k1
+        if op1 == ">=": return k2 <  k1
+        if op1 == "<":  return k2 >= k1
+        if op1 == "<=": return k2 >  k1
+        return False
+
+    # Both ops are in {<, >, <=, >=}. Convert to canonical bounds.
+    # For >, >= : set has a lower bound only (extends to +∞).
+    # For <, <= : set has an upper bound only (extends to -∞).
+    if op1 in (">", ">=") and op2 in (">", ">="):
+        low1 = k1 + 1 if op1 == ">" else k1
+        low2 = k2 + 1 if op2 == ">" else k2
+        return low1 >= low2
+    if op1 in ("<", "<=") and op2 in ("<", "<="):
+        high1 = k1 - 1 if op1 == "<" else k1
+        high2 = k2 - 1 if op2 == "<" else k2
+        return high1 <= high2
+    # Mixed direction (one bounded below, one bounded above): the first
+    # set is unbounded in the direction the second set restricts, so the
+    # subset relation can't hold (for nonempty integer types).
+    return False
+
+
+def predicate_implies(p1: Node, n1: str, p2: Node, n2: str) -> bool:
+    """Does (p1 with binder n1) imply (p2 with binder n2)?
+
+    Currently handles the case where both predicates are simple
+    comparisons of their binder against an integer constant. Anything
+    more complex (compound predicates, non-integer comparisons, calls)
+    falls through to False — the sound conservative default."""
+    c1 = _extract_comparison(p1, n1)
+    c2 = _extract_comparison(p2, n2)
+    if c1 is None or c2 is None:
+        return False
+    return _comparison_implies(c1[0], c1[1], c2[0], c2[1])
+
+
+def try_const_eval(e: Node, env: dict[str, Value] | None = None) -> Value | None:
+    """Best-effort constant evaluator. Returns a Value if `e` is purely
+    constant (or constant given the optional env), None otherwise.
+
+    Supports integer literals, bool literals, string literals, arithmetic
+    BinOp on integers, comparison BinOp returning bool, and If with a
+    constant condition. Identifiers resolve only if their binding is in
+    env (used for chains like let-in over constants).
+
+    This is intentionally simple — it covers the cases where the user
+    writes a literal or a small constant expression at a call site, which
+    is the common pattern that motivates static refinement discharge.
+    Anything else returns None (fall back to runtime check)."""
+    env = env or {}
+    if isinstance(e, IntLit):    return IntV(e.value)
+    if isinstance(e, BoolLit):   return BoolV(e.value)
+    if isinstance(e, StringLit): return StringV(e.value)
+    if isinstance(e, Ident):
+        return env.get(e.name)
+    if isinstance(e, BinOp):
+        l = try_const_eval(e.lhs, env)
+        r = try_const_eval(e.rhs, env)
+        if l is None or r is None:
+            return None
+        op = e.op
+        if isinstance(l, IntV) and isinstance(r, IntV):
+            if op == "+":  return IntV(l.v + r.v)
+            if op == "-":  return IntV(l.v - r.v)
+            if op == "*":  return IntV(l.v * r.v)
+            if op == "/" and r.v != 0:  return IntV(l.v // r.v)
+            if op == "<":  return BoolV(l.v <  r.v)
+            if op == ">":  return BoolV(l.v >  r.v)
+            if op == "<=": return BoolV(l.v <= r.v)
+            if op == ">=": return BoolV(l.v >= r.v)
+            if op == "==": return BoolV(l.v == r.v)
+            if op == "!=": return BoolV(l.v != r.v)
+        if isinstance(l, BoolV) and isinstance(r, BoolV):
+            if op == "==": return BoolV(l.v == r.v)
+            if op == "!=": return BoolV(l.v != r.v)
+        if isinstance(l, StringV) and isinstance(r, StringV):
+            if op == "==": return BoolV(l.v == r.v)
+            if op == "!=": return BoolV(l.v != r.v)
+            if op == "++": return StringV(l.v + r.v)
+        return None
+    if isinstance(e, If):
+        c = try_const_eval(e.cond, env)
+        if isinstance(c, BoolV):
+            return try_const_eval(e.then_b if c.v else e.else_b, env)
+        return None
+    return None
+
+
+# Static discharge tally — populated by try_static_discharge so we can
+# print a summary at the end of a run (or use it for diagnostics).
+_discharge_stats: dict[str, int] = {"ok": 0, "fail": 0, "unknown": 0}
+
+
+def try_static_discharge(
+    ty: Ty,
+    actual_expr: Node,
+    bind_name: str,
+    actual_ty: Ty | None = None,
+) -> tuple[str, str]:
+    """Attempt to discharge a refinement at compile time.
+
+    Returns one of:
+        ('ok',      detail)  — refinement provably satisfied; skip runtime check.
+        ('fail',    detail)  — refinement provably violated; raise compile error.
+        ('unknown', '')      — can't determine statically; runtime check stays.
+
+    Two strategies tried, in order:
+
+    1. CONSTANT-FOLD DISCHARGE. If the actual_expr is constant-foldable to
+       a value V, substitute V into the predicate and try to fold it. If
+       it folds to True, ok. To False, fail. Otherwise unknown.
+
+    2. SUBSUMPTION DISCHARGE. If the actual_ty (the inferred type of the
+       actual expression) itself carries a refinement whose predicate is
+       alpha-equivalent to the formal refinement's predicate, ok.
+       This is what enables refinement composition through call chains:
+       `fn abs(n: Int) : Int where (result >= 0) = ...`
+       feeding into
+       `fn sqrt_floor(n: Int where (n >= 0)) : Int = ...`
+       discharges at compile time because `result >= 0` and `n >= 0` are
+       the same predicate up to binder rename.
+    """
+    # Strategy 1: constant-fold discharge.
+    actual_value = try_const_eval(actual_expr)
+    if actual_value is not None:
+        detail = ""
+        chain = ty
+        while isinstance(chain, TyRefine):
+            pred_value = try_const_eval(chain.pred, {bind_name: actual_value})
+            if pred_value is None or not isinstance(pred_value, BoolV):
+                # Fall through to strategy 2.
+                actual_value = None
+                break
+            if not pred_value.v:
+                _discharge_stats["fail"] += 1
+                return ("fail", f"{bind_name} = {actual_value} fails predicate ({pp_expr(chain.pred)})")
+            detail = f"{bind_name} = {actual_value} satisfies ({pp_expr(chain.pred)})"
+            chain = chain.base
+        else:
+            # Loop completed without break: all layers discharged.
+            _discharge_stats["ok"] += 1
+            return ("ok", detail)
+    # Strategy 2: subsumption discharge against actual_ty's refinement chain.
+    if actual_ty is not None:
+        # Collect all (binder, pred) pairs from the actual type's refinement
+        # chain. The binder for a return-type refinement is "result" (the
+        # convention used by apply_fn). For nested chains we can't recover
+        # the binder name in full generality, but in practice every
+        # refinement we propagate from a call's return uses "result".
+        actual_preds: list[tuple[str, Node]] = []
+        at = actual_ty
+        while isinstance(at, TyRefine):
+            actual_preds.append(("result", at.pred))
+            at = at.base
+        # For each formal refinement layer, check if any actual predicate
+        # subsumes it. Subsumption proven by alpha-equivalence OR by
+        # comparison-implication (v1.4). If every formal layer is matched,
+        # discharge.
+        all_matched = True
+        chain = ty
+        while isinstance(chain, TyRefine):
+            matched = False
+            for (an, ap) in actual_preds:
+                if predicate_alpha_equiv(chain.pred, bind_name, ap, an):
+                    matched = True
+                    break
+                if predicate_implies(ap, an, chain.pred, bind_name):
+                    matched = True
+                    break
+            if not matched:
+                all_matched = False
+                break
+            chain = chain.base
+        if all_matched and isinstance(ty, TyRefine):
+            _discharge_stats["ok"] += 1
+            return ("ok", f"refinement subsumed via return-type")
+    _discharge_stats["unknown"] += 1
+    return ("unknown", "")
 
 
 def check_refinement_runtime(
@@ -1991,11 +2497,14 @@ def check_refinement_runtime(
     env: dict[str, Value],
 ) -> None:
     """If ty (or its base chain) is a refinement, evaluate the predicate
-    with bind_name -> value in env. Raise on violation."""
-    while isinstance(ty, TyRefine):
+    with bind_name -> value in env. Raise on violation.
+
+    v1.7 perf: type(ty) is TyRefine bypasses isinstance, and the most
+    common case (non-refined type) returns immediately."""
+    while type(ty) is TyRefine:
         # bind_name must already be in env (caller's responsibility).
         result = eval_expr(ty.pred, env)
-        if not (isinstance(result, BoolV) and result.v):
+        if not (type(result) is BoolV and result.v):
             raise RuntimeError(
                 f"refinement violated: {bind_name} = {value} fails "
                 f"predicate ({pp_expr(ty.pred)})"
@@ -2004,54 +2513,63 @@ def check_refinement_runtime(
 
 
 def eval_expr(e: Node, env: dict[str, Value]) -> Value:
-    if isinstance(e, IntLit):    return IntV(e.value)
-    if isinstance(e, StringLit): return StringV(e.value)
-    if isinstance(e, BoolLit):   return BoolV(e.value)
-    if isinstance(e, ListLit):
-        return ListV([eval_expr(it, env) for it in e.items])
-    if isinstance(e, TupleLit):
-        return TupleV([eval_expr(it, env) for it in e.items])
-    if isinstance(e, RecordLit):
-        return RecordV(
-            name=e.name,
-            fields={fname: eval_expr(fval, env) for fname, fval in e.fields},
-        )
-    if isinstance(e, FieldAccess):
-        rec = eval_expr(e.record, env)
-        if not isinstance(rec, RecordV):
-            raise RuntimeError(f"field access on non-record value: {rec}")
-        if e.field not in rec.fields:
-            raise RuntimeError(f"record {rec.name} has no field {e.field!r}")
-        return rec.fields[e.field]
-    if isinstance(e, Ident):
+    # v1.7 perf: dispatch with `type(e) is X` rather than `isinstance`. AST
+    # nodes aren't subclassed, so identity comparison is equivalent and
+    # ~3x faster than the isinstance call. Branches are ordered by
+    # observed frequency on prism.glass: Ident, Call, BinOp, If are the
+    # hot path.
+    t = type(e)
+    if t is Ident:
         if e.name not in env:
             raise RuntimeError(f"unbound at runtime: {e.name}")
         return env[e.name]
-    if isinstance(e, BinOp):
-        return eval_binop(e, env)
-    if isinstance(e, Call):
+    if t is Call:
         f = eval_expr(e.fn, env)
         args = [eval_expr(a, env) for a in e.args]
-        return apply_fn(f, args)
-    if isinstance(e, If):
+        # If the type checker statically discharged any refinement at this
+        # call site, pass that to apply_fn so the runtime check is skipped.
+        skip = getattr(e, "discharged_args", None)
+        return apply_fn(f, args, skip_refinement_indices=skip)
+    if t is BinOp:
+        return eval_binop(e, env)
+    if t is If:
         c = eval_expr(e.cond, env)
         return eval_expr(e.then_b if c.v else e.else_b, env)
-    if isinstance(e, LetIn):
+    if t is IntLit:    return IntV(e.value)
+    if t is StringLit: return StringV(e.value)
+    if t is BoolLit:   return BoolV(e.value)
+    if t is LetIn:
         v = eval_expr(e.value, env)
         new_env = {**env, e.name: v}
         if e.ann is not None:
             check_refinement_runtime(e.name, e.ann, v, new_env)
         return eval_expr(e.body, new_env)
-    if isinstance(e, Lambda):
-        return FnV(params=list(e.params), body=e.body, env=env)
-    if isinstance(e, Match):
+    if t is Match:
         scrut = eval_expr(e.scrutinee, env)
         for pat, body in e.arms:
             ok, bindings = pat_match(pat, scrut)
             if ok:
                 return eval_expr(body, {**env, **bindings})
         raise RuntimeError("non-exhaustive match")
-    raise RuntimeError(f"cannot eval {type(e).__name__}")
+    if t is Lambda:
+        return FnV(params=list(e.params), body=e.body, env=env, ret=e.ret)
+    if t is ListLit:
+        return ListV([eval_expr(it, env) for it in e.items])
+    if t is TupleLit:
+        return TupleV([eval_expr(it, env) for it in e.items])
+    if t is RecordLit:
+        return RecordV(
+            name=e.name,
+            fields={fname: eval_expr(fval, env) for fname, fval in e.fields},
+        )
+    if t is FieldAccess:
+        rec = eval_expr(e.record, env)
+        if not isinstance(rec, RecordV):
+            raise RuntimeError(f"field access on non-record value: {rec}")
+        if e.field not in rec.fields:
+            raise RuntimeError(f"record {rec.name} has no field {e.field!r}")
+        return rec.fields[e.field]
+    raise RuntimeError(f"cannot eval {t.__name__}")
 
 
 def eval_binop(e: BinOp, env: dict[str, Value]) -> Value:
@@ -2063,8 +2581,8 @@ def eval_binop(e: BinOp, env: dict[str, Value]) -> Value:
     if op == "*":  return IntV(lv.v * rv.v)
     if op == "/":  return IntV(lv.v // rv.v)
     if op == "++":
-        if isinstance(lv, StringV): return StringV(lv.v + rv.v)
-        if isinstance(lv, ListV):   return ListV(lv.items + rv.items)
+        if type(lv) is StringV: return StringV(lv.v + rv.v)
+        if type(lv) is ListV:   return ListV(lv.items + rv.items)
     if op == "<":  return BoolV(lv.v < rv.v)
     if op == ">":  return BoolV(lv.v > rv.v)
     if op == "<=": return BoolV(lv.v <= rv.v)
@@ -2075,19 +2593,23 @@ def eval_binop(e: BinOp, env: dict[str, Value]) -> Value:
 
 
 def _eq(a: Value, b: Value) -> bool:
-    if isinstance(a, (IntV, StringV, BoolV)) and isinstance(b, (IntV, StringV, BoolV)):
+    # v1.7 perf: type identity comparison
+    ta = type(a)
+    tb = type(b)
+    if ta is not tb: return False
+    if ta is IntV or ta is StringV or ta is BoolV:
         return a.v == b.v
-    if isinstance(a, ListV) and isinstance(b, ListV):
+    if ta is ListV:
         if len(a.items) != len(b.items): return False
         return all(_eq(x, y) for x, y in zip(a.items, b.items))
-    if isinstance(a, ADTValue) and isinstance(b, ADTValue):
+    if ta is ADTValue:
         if a.ctor != b.ctor: return False
         if len(a.args) != len(b.args): return False
         return all(_eq(x, y) for x, y in zip(a.args, b.args))
-    if isinstance(a, TupleV) and isinstance(b, TupleV):
+    if ta is TupleV:
         if len(a.items) != len(b.items): return False
         return all(_eq(x, y) for x, y in zip(a.items, b.items))
-    if isinstance(a, RecordV) and isinstance(b, RecordV):
+    if ta is RecordV:
         if a.name != b.name: return False
         if set(a.fields.keys()) != set(b.fields.keys()): return False
         return all(_eq(a.fields[k], b.fields[k]) for k in a.fields)
@@ -2095,23 +2617,13 @@ def _eq(a: Value, b: Value) -> bool:
 
 
 def pat_match(p: Pattern, v: Value) -> tuple[bool, dict[str, Value]]:
-    if p.kind == "wild": return True, {}
-    if p.kind == "ident": return True, {p.value: v}
-    if p.kind == "int":   return (isinstance(v, IntV) and v.v == p.value), {}
-    if p.kind == "string":return (isinstance(v, StringV) and v.v == p.value), {}
-    if p.kind == "bool":  return (isinstance(v, BoolV) and v.v == p.value), {}
-    if p.kind == "nil":
-        return (isinstance(v, ListV) and len(v.items) == 0), {}
-    if p.kind == "cons":
-        if not (isinstance(v, ListV) and len(v.items) >= 1):
-            return False, {}
-        h_ok, h_b = pat_match(p.head, v.items[0])
-        if not h_ok: return False, {}
-        t_ok, t_b = pat_match(p.tail, ListV(v.items[1:]))
-        if not t_ok: return False, {}
-        return True, {**h_b, **t_b}
-    if p.kind == "ctor":
-        if not (isinstance(v, ADTValue) and v.ctor == p.value):
+    # v1.7 perf: type(v) is X is ~3x faster than isinstance(v, X) and
+    # the dispatch fires millions of times during prism.glass execution.
+    k = p.kind
+    if k == "wild": return True, {}
+    if k == "ident": return True, {p.value: v}
+    if k == "ctor":
+        if type(v) is not ADTValue or v.ctor != p.value:
             return False, {}
         args = p.args or []
         if len(args) != len(v.args):
@@ -2122,18 +2634,32 @@ def pat_match(p: Pattern, v: Value) -> tuple[bool, dict[str, Value]]:
             if not ok: return False, {}
             bindings.update(b)
         return True, bindings
-    if p.kind == "tuple":
-        if not (isinstance(v, TupleV) and len(v.items) == len(p.args or [])):
+    if k == "cons":
+        if type(v) is not ListV or len(v.items) < 1:
             return False, {}
+        h_ok, h_b = pat_match(p.head, v.items[0])
+        if not h_ok: return False, {}
+        t_ok, t_b = pat_match(p.tail, ListV(v.items[1:]))
+        if not t_ok: return False, {}
+        h_b.update(t_b)
+        return True, h_b
+    if k == "nil":
+        return (type(v) is ListV and len(v.items) == 0), {}
+    if k == "int":    return (type(v) is IntV and v.v == p.value), {}
+    if k == "string": return (type(v) is StringV and v.v == p.value), {}
+    if k == "bool":   return (type(v) is BoolV and v.v == p.value), {}
+    if k == "tuple":
         args = p.args or []
+        if type(v) is not TupleV or len(v.items) != len(args):
+            return False, {}
         bindings = {}
         for sub_p, sub_v in zip(args, v.items):
             ok, b = pat_match(sub_p, sub_v)
             if not ok: return False, {}
             bindings.update(b)
         return True, bindings
-    if p.kind == "record":
-        if not (isinstance(v, RecordV) and v.name == p.value):
+    if k == "record":
+        if type(v) is not RecordV or v.name != p.value:
             return False, {}
         field_names: list[str] = p.args or []
         bindings = {}
@@ -2245,7 +2771,7 @@ def install_decl(
             elif is_repl:
                 print(f"  : {checker.env['_']} = {env[d.name]}")
     elif isinstance(d, FnDecl):
-        fv = FnV(params=list(d.params), body=d.body, env=env)
+        fv = FnV(params=list(d.params), body=d.body, env=env, ret=d.ret)
         env[d.name] = fv
         fv.env = env
         if verbose:
@@ -2280,7 +2806,7 @@ def install_program(
             # No runtime binding — record values are built via RecordLit.
         elif isinstance(d, FnDecl):
             checker.register_fn_signature(d)
-            fv = FnV(params=list(d.params), body=d.body, env=env)
+            fv = FnV(params=list(d.params), body=d.body, env=env, ret=d.ret)
             env[d.name] = fv
             fv.env = env  # closure references shared env dict
     # Pass 2: check fn bodies and run let decls in source order.
@@ -2325,23 +2851,168 @@ def run_source(src: str, verbose: bool = False) -> None:
     install_program(decls, checker, env, verbose=verbose)
 
 
+def _is_incomplete_input_error(ex: Exception) -> bool:
+    """Heuristic: is this parse error one that more input would fix?
+    Used by the REPL to decide whether to keep reading or surface the
+    error. Errors about unexpected END or expected-but-missing tokens
+    typically mean the user hasn't finished typing."""
+    msg = str(ex)
+    incomplete_markers = (
+        "unexpected END",
+        "unexpected end of input",
+        "unexpected token EOF",
+        "expected RBRACE",
+        "expected RBRACKET",
+        "expected RPAREN",
+        "expected then",
+        "expected else",
+        "expected in",
+        "expected =>",
+        "expected IDENT",
+    )
+    return any(m in msg for m in incomplete_markers)
+
+
+def _repl_help() -> str:
+    return """\
+Commands:
+  :help              Show this message.
+  :quit  / :q        Exit the REPL (or press Ctrl-D).
+  :reset             Clear all definitions and start fresh.
+  :type EXPR         Show the type of EXPR without evaluating.
+  :env               List currently bound names.
+  :load PATH         Read a .glass file and install its declarations.
+
+Anything else is parsed as Glass: an expression, a let, a fn, or a type.
+Multi-line input is supported — keep typing while the prompt shows '...'.
+"""
+
+
 def repl() -> None:
-    print("Glass v1.0 — REPL.  Ctrl-D to exit.")
-    checker, env = make_runtime()
-    while True:
+    """Interactive Glass REPL with multi-line input, commands, persistent
+    environment, and (if available) readline history + editing.
+
+    Reads input until the parser accepts; if the parser fails with an
+    'incomplete input' error (looking for `then`, `RBRACE`, etc.), the
+    REPL keeps reading. Top-level identifiers stay in scope across
+    iterations."""
+    # Try to enable readline for history + line editing.
+    try:
+        import readline  # noqa: F401  (just importing enables it on POSIX)
+        import atexit
+        import os
+        histfile = os.path.expanduser("~/.glass_history")
         try:
-            line = input("glass> ").strip()
+            readline.read_history_file(histfile)
+        except (OSError, FileNotFoundError):
+            pass
+        atexit.register(lambda: _save_history(histfile))
+    except ImportError:
+        pass
+
+    print("Glass v4.0 — interactive REPL")
+    print("Type :help for commands, :quit to exit.")
+    print()
+
+    checker, env = make_runtime()
+    # Snapshot the initial env so :env can show only user-added names.
+    initial_names = set(checker.env.keys())
+    buffer: list[str] = []
+
+    while True:
+        prompt = "glass> " if not buffer else "    ... "
+        try:
+            line = input(prompt)
         except EOFError:
             print()
             return
-        if not line: continue
+        except KeyboardInterrupt:
+            print("\n  (interrupted)")
+            buffer.clear()
+            continue
+
+        # ----- handle :commands when no buffer is pending -----
+        if not buffer:
+            stripped = line.strip()
+            if stripped in (":quit", ":q"):
+                return
+            if stripped == ":help":
+                print(_repl_help())
+                continue
+            if stripped == ":reset":
+                checker, env = make_runtime()
+                initial_names = set(checker.env.keys())
+                print("  (environment reset)")
+                continue
+            if stripped == ":env":
+                user_names = sorted(
+                    n for n in checker.env
+                    if n not in initial_names and not n.startswith("_")
+                )
+                if user_names:
+                    for n in user_names:
+                        print(f"  {n} : {checker.env[n]}")
+                else:
+                    print("  (no user-defined bindings)")
+                continue
+            if stripped.startswith(":type "):
+                expr_src = stripped[6:].strip()
+                try:
+                    tokens = tokenize(expr_src)
+                    p = Parser(tokens)
+                    node = p.parse_expr()
+                    ty = checker.infer(node, checker.env)
+                    print(f"  {expr_src} : {ty}")
+                except Exception as ex:
+                    print(f"  ! {type(ex).__name__}: {ex}")
+                continue
+            if stripped.startswith(":load "):
+                path = stripped[6:].strip()
+                try:
+                    with open(path) as fh:
+                        src = fh.read()
+                    decls = Parser(tokenize(src)).parse_program()
+                    install_program(decls, checker, env, verbose=True)
+                except Exception as ex:
+                    print(f"  ! {type(ex).__name__}: {ex}")
+                continue
+            if stripped.startswith(":"):
+                print(f"  unknown command: {stripped}.  Try :help.")
+                continue
+
+        # ----- accumulate input and try to parse -----
+        buffer.append(line)
+        src = "\n".join(buffer)
+        if not src.strip():
+            buffer.clear()
+            continue
+
         try:
-            tokens = tokenize(line)
+            tokens = tokenize(src)
             decls = Parser(tokens).parse_program()
+        except (SyntaxError, TypeError_, RuntimeError) as ex:
+            if _is_incomplete_input_error(ex):
+                # Keep accumulating; the user is mid-input.
+                continue
+            print(f"  ! {type(ex).__name__}: {ex}")
+            buffer.clear()
+            continue
+
+        # Parsed cleanly — try to type-check + install each decl.
+        buffer.clear()
+        try:
             for d in decls:
                 install_decl(d, checker, env, verbose=True, is_repl=True)
         except (SyntaxError, TypeError_, RuntimeError) as ex:
             print(f"  ! {type(ex).__name__}: {ex}")
+
+
+def _save_history(path: str) -> None:
+    try:
+        import readline
+        readline.write_history_file(path)
+    except Exception:
+        pass
 
 
 def main() -> None:

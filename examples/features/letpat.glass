@@ -1,0 +1,48 @@
+# =============================================================================
+# letpat.glass — pattern destructuring in plain `let` (v2.7+).
+#
+# Before v2.7, plain `let X = ... in body` required `X` to be a simple
+# identifier. Tuple destructuring only worked in `let*` and `let?`. Every
+# Glass program returning a tuple paid a `match { (a, b) => ... }` tax.
+#
+# v2.7 closes that. The dispatch in parse_let detects LPAREN / LBRACK /
+# uppercase-IDENT and parses the right-hand side as a pattern, desugaring
+# to `match expr { PAT => body }`.
+#
+# Exhaustiveness is enforced by the standard match checker — non-exhaustive
+# patterns (like `let Some(x) = optional in ...`) get a compile-time error
+# from the same machinery that handles `match`.
+# =============================================================================
+
+# Tuple destructuring at the top of a fn body.
+fn sum_pair(p: (Int, Int)) : Int =
+  let (a, b) = p in
+  a + b
+
+# Nested tuple patterns.
+fn flatten_triple(p: (Int, (Int, Int))) : Int =
+  let (x, (y, z)) = p in
+  x + y + z
+
+# Pattern-let chained with another let — destructure first, compute, return.
+fn rescale_pair(p: (Int, Int), factor: Int) : (Int, Int) =
+  let (a, b) = p in
+  let new_a = a * factor in
+  let new_b = b * factor in
+  (new_a, new_b)
+
+# Pattern-let on the result of another function call.
+fn step(n: Int) : (Int, Int) = (n, n * 2)
+
+fn compose_steps(n: Int) : Int =
+  let (a, b) = step(n) in
+  let (c, d) = step(b) in
+  a + b + c + d
+
+let r1 = sum_pair((10, 20))                  # 30
+let r2 = flatten_triple((1, (2, 3)))         # 6
+let r3 = rescale_pair((4, 5), 10)            # (40, 50)
+let r4 = compose_steps(2)                    # 2+4+4+8 = 18
+
+# r1, r2, r4 are Int; r3 is a tuple — print them inline
+r4

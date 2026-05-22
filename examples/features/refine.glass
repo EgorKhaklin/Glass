@@ -1,0 +1,33 @@
+# =============================================================================
+# refine.glass — refinement types with const-fold discharge (v2.12).
+#
+# A refinement type T where (pred) attaches a Bool predicate that must
+# hold of every inhabitant. The predicate is a regular Glass expression
+# that references the binder name (the fn parameter). At call sites,
+# prism checks the refinement statically when the argument is a literal:
+# substitute the literal into the predicate, evaluate, accept or reject.
+#
+# v2.12 ships chunk 1: const-fold discharge only. Non-literal arguments
+# defer (and don't yet generate a runtime check — that's chunk 2 of the
+# refinement port). The static check is sufficient for many useful cases
+# like "this constant fits in this range" or "this string isn't empty".
+# =============================================================================
+
+# A function with a refined argument. d must satisfy (d != 0).
+fn safe_add(n: Int, d: Int where (d != 0)) : Int = n + d
+
+# A function with a tighter refinement.
+fn pos_add(n: Int, d: Int where (d > 0)) : Int = n + d
+
+# A string refinement.
+fn nonempty(s: String where (s != "")) : String = s ++ "!"
+
+# Each call passes a literal that satisfies the predicate. prism's
+# const-fold discharge proves the predicate at compile time.
+let demo : (Int, Int, String) = (
+  safe_add(10, 5),     # 15  (5 != 0 ✓)
+  pos_add(100, 7),     # 107 (7 > 0 ✓)
+  nonempty("hello")    # "hello!" ("hello" != "" ✓)
+)
+
+demo

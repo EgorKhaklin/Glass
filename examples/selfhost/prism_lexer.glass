@@ -1,0 +1,323 @@
+# =============================================================================
+# v0.8.5 demo: prism.glass — source → type + value, the v1.0 shape, in Glass.
+#
+# Each component has been proven independently in earlier releases:
+#   v0.8.2  bootstrap.glass : tokens → AST → value
+#   v0.8.3  bootstrap.glass extended; !{File} integration
+#   v0.8.4  infer.glass     : Hindley-Milner inference
+#
+# This file is the assembly. One Glass program. Source goes in, a typed
+# value comes out:
+#
+#   source : String
+#         → tokens : List<Token>     (lexer)
+#         → ast    : Expr            (recursive-descent parser)
+#         → type   : Type            (Algorithm W, let-polymorphism)
+#         → value  : Value           (call-by-value with closures)
+#
+# Pure Glass. glass.py runs this file but the SEMANTICS of every stage
+# are Glass-defined here. The grammar is small (typed λ-calc, the same
+# scope as infer.glass) — what matters is that the components compose.
+#
+# v1.0 is scaling this to Glass's full grammar plus carrying refinements
+# and effects through every stage. The remaining work is volume, not
+# new algorithmic depth.
+# =============================================================================
+
+# --- Data ---------------------------------------------------------------
+
+type Token =
+  | TInt(Int)
+  | TIdent(String)
+  | TStr(String)
+  | TTrue
+  | TFalse
+  | TPlus
+  | TPlusPlus
+  | TMinus
+  | TStar
+  | TLt
+  | TGt
+  | TLe
+  | TGe
+  | TEq
+  | TEqEq
+  | TNeq
+  | TArrow
+  | TLBracket
+  | TRBracket
+  | TEllipsis
+  | TIf
+  | TThen
+  | TElse
+  | TLet
+  | TIn
+  | TFn
+  | TRec
+  | TLParen
+  | TRParen
+  | TLBrace
+  | TRBrace
+  | TColon
+  | TComma
+  | TDot
+  | TPipe
+  | TFatArrow
+  | TSemi
+  | TBang
+  | TQmark
+  | TMatch
+  | TType
+  | TWhere
+  | TEnd
+
+type Type =
+  | TyInt
+  | TyBool
+  | TyStr
+  | TyVar(Int)
+  | TyFn(Type, Type, EffRow)
+  | TyRec(List<Pair<String, Type>>)
+  | TyAdt(String, List<Type>)
+  | TyTuple(List<Type>)
+  | TyRefine(Type, String, Expr)
+
+# An effect row: concrete labels plus an optional tail row variable.
+# EffRow(["IO"], None)    = !{IO}              (closed)
+# EffRow([], None)        = pure
+# EffRow(["IO"], Some(3)) = !{IO; e3}          (open: IO and possibly more)
+# EffRow([], Some(3))     = !{e3}              (fully polymorphic)
+type EffRow = | EffRow(List<String>, Option<Int>)
+
+# Two kinds of quantified variables in a Scheme: type vars and effect vars.
+type Scheme = | Scheme(List<Int>, List<Int>, Type)
+
+# Combined substitution: type-var bindings AND effect-var bindings.
+type Sub = | Sub(List<Pair<Int, Type>>, List<Pair<Int, EffRow>>)
+
+type Pattern =
+  | PWild
+  | PVar(String)
+  | PCtor(String, List<Pattern>)
+  | PTuple(List<Pattern>)
+  | PInt(Int)
+  | PBool(Bool)
+  | PStr(String)
+
+type Expr =
+  | EInt(Int)
+  | EBool(Bool)
+  | EStr(String)
+  | EVar(String)
+  | EAdd(Expr, Expr)
+  | ESub(Expr, Expr)
+  | EMul(Expr, Expr)
+  | EConcat(Expr, Expr)
+  | ELt(Expr, Expr)
+  | EGt(Expr, Expr)
+  | ELe(Expr, Expr)
+  | EGe(Expr, Expr)
+  | EEq(Expr, Expr)
+  | ENeq(Expr, Expr)
+  | EIf(Expr, Expr, Expr)
+  | ELam(String, Expr)
+  | EApp(Expr, Expr)
+  | ELet(String, Expr, Expr)
+  | ELetRec(String, Expr, Expr)
+  | ERec(List<Pair<String, Expr>>)
+  | ENamedRec(String, List<Pair<String, Expr>>)
+  | EField(Expr, String)
+  | ECtor(String, List<Expr>)
+  | EMatch(Expr, List<Pair<Pattern, Expr>>)
+  | ETuple(List<Expr>)
+
+# A constructor declaration: name and list of argument types.
+type CtorDecl = | CtorDecl(String, List<Type>)
+
+# A type declaration: ADT name, type parameter names, and constructors.
+# Example: type Option<A> = | None | Some(A) →
+#   TypeDecl("Option", ["A"], [CtorDecl("None", []), CtorDecl("Some", [TyAdt("A", [])])])
+type TypeDecl =
+  | TypeDecl(String, List<String>, List<CtorDecl>)
+  | RecordDecl(String, List<String>, List<Pair<String, Type>>)
+
+# A top-level function declaration: name, optional type parameter names,
+# full fn type (including possibly TyAdt("A", []) refs that get resolved
+# at env-build time), and body expression. Multi-param fns are
+# pre-desugared at parse time into nested lambdas.
+# Example: fn id<A>(x: A) : A = x desugars to
+#   FnDecl("id", ["A"], TyFn(TyAdt("A", []), TyAdt("A", []), pure),
+#                       ELam("x", EVar("x")))
+type FnDecl = | FnDecl(String, List<String>, Type, Expr)
+
+# A program: zero or more type declarations, zero or more fn declarations,
+# followed by one main expression. All top-level fns are mutually visible.
+type Program = | Program(List<TypeDecl>, List<FnDecl>, Expr)
+
+type Value =
+  | VInt(Int)
+  | VBool(Bool)
+  | VStr(String)
+  | VClos(String, Expr, List<Pair<String, Value>>)
+  | VRecClos(String, String, Expr, List<Pair<String, Value>>)
+  | VMutRecClos(String, Expr, List<FnDecl>, List<Pair<String, Value>>)
+  | VRec(List<Pair<String, Value>>)
+  | VCtor(String, List<Value>)
+  | VTuple(List<Value>)
+  | VBuiltin(String, Int, List<Value>)
+
+
+# --- Lexer --------------------------------------------------------------
+
+fn is_digit(c: String) : Bool = string_contains("0123456789", c)
+
+fn is_alpha(c: String) : Bool =
+  string_contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_", c)
+
+fn is_alnum(c: String) : Bool =
+  if is_alpha(c) then true else is_digit(c)
+
+fn is_space(c: String) : Bool =
+  if c == " "  then true
+  else if c == "\t" then true
+  else c == "\n"
+
+fn char_at(s: String, i: Int) : String = substring(s, i, i + 1)
+
+fn digit_value(c: String) : Int =
+  match string_index_of("0123456789", c) {
+    None    => 0;
+    Some(d) => d
+  }
+
+fn skip_ws(s: String, i: Int) : Int =
+  if i >= string_length(s) then i
+  else if is_space(char_at(s, i)) then skip_ws(s, i + 1)
+  else if char_at(s, i) == "#" then skip_ws(s, skip_to_eol(s, i))
+  else i
+
+# Advance to (and including) the next newline. Returns the index AFTER
+# the newline, or the end of input if no newline is found.
+fn skip_to_eol(s: String, i: Int) : Int =
+  if i >= string_length(s) then i
+  else if char_at(s, i) == "\n" then i + 1
+  else skip_to_eol(s, i + 1)
+
+fn read_int(s: String, i: Int, acc: Int) : (Int, Int) =
+  if i >= string_length(s) then (acc, i)
+  else
+    let c : String = char_at(s, i) in
+    if is_digit(c) then read_int(s, i + 1, acc * 10 + digit_value(c))
+    else (acc, i)
+
+fn read_ident(s: String, i: Int, acc: String) : (String, Int) =
+  if i >= string_length(s) then (acc, i)
+  else
+    let c : String = char_at(s, i) in
+    if is_alnum(c) then read_ident(s, i + 1, acc ++ c)
+    else (acc, i)
+
+# Read a string literal starting after the opening quote. Returns the
+# string content and the index past the closing quote. Does NOT support
+# escapes; that's a v1.0+ polish item.
+fn read_string(s: String, i: Int, acc: String) : (Token, Int) =
+  if i >= string_length(s) then (TStr(acc), i)
+  else
+    let c : String = char_at(s, i) in
+    if c == "\"" then (TStr(acc), i + 1)
+    else if c == "\\" then
+      # Backslash escape: consume next char and translate
+      if i + 1 >= string_length(s) then (TStr(acc ++ c), i + 1)
+      else
+        let n : String = char_at(s, i + 1) in
+        let esc : String =
+          if n == "\"" then "\""
+          else if n == "\\" then "\\"
+          else if n == "n" then "\n"
+          else if n == "t" then "\t"
+          else if n == "r" then "\r"
+          else n
+        in
+        read_string(s, i + 2, acc ++ esc)
+    else read_string(s, i + 1, acc ++ c)
+
+fn classify_word(s: String) : Token =
+  if s == "if"    then TIf
+  else if s == "then"  then TThen
+  else if s == "else"  then TElse
+  else if s == "let"   then TLet
+  else if s == "in"    then TIn
+  else if s == "fn"    then TFn
+  else if s == "rec"   then TRec
+  else if s == "true"  then TTrue
+  else if s == "false" then TFalse
+  else if s == "match" then TMatch
+  else if s == "type"  then TType
+  else if s == "where" then TWhere
+  else TIdent(s)
+
+fn next_token(s: String, i: Int) : (Token, Int) =
+  let j : Int = skip_ws(s, i) in
+  if j >= string_length(s) then (TEnd, j)
+  else
+    let c : String = char_at(s, j) in
+    if is_digit(c) then
+      match read_int(s, j, 0) {
+        (n, k) => (TInt(n), k)
+      }
+    else if is_alpha(c) then
+      match read_ident(s, j, "") {
+        (id, k) => (classify_word(id), k)
+      }
+    else if c == "+" then
+      if char_at(s, j + 1) == "+" then (TPlusPlus, j + 2)
+      else (TPlus, j + 1)
+    else if c == "*" then (TStar,   j + 1)
+    else if c == "\"" then read_string(s, j + 1, "")
+    else if c == "<" then
+      if char_at(s, j + 1) == "=" then (TLe, j + 2)
+      else (TLt, j + 1)
+    else if c == ">" then
+      if char_at(s, j + 1) == "=" then (TGe, j + 2)
+      else (TGt, j + 1)
+    else if c == "=" then
+      if char_at(s, j + 1) == "=" then (TEqEq, j + 2)
+      else if char_at(s, j + 1) == ">" then (TFatArrow, j + 2)
+      else (TEq, j + 1)
+    else if c == "(" then (TLParen, j + 1)
+    else if c == ")" then (TRParen, j + 1)
+    else if c == "{" then (TLBrace, j + 1)
+    else if c == "}" then (TRBrace, j + 1)
+    else if c == "[" then (TLBracket, j + 1)
+    else if c == "]" then (TRBracket, j + 1)
+    else if c == ":" then (TColon,  j + 1)
+    else if c == "," then (TComma,  j + 1)
+    else if c == "." then
+      if char_at(s, j + 1) == "." then
+        if char_at(s, j + 2) == "." then (TEllipsis, j + 3)
+        else (TDot, j + 1)
+      else (TDot, j + 1)
+    else if c == "|" then (TPipe,   j + 1)
+    else if c == ";" then (TSemi,   j + 1)
+    else if c == "!" then
+      if char_at(s, j + 1) == "=" then (TNeq, j + 2)
+      else (TBang,   j + 1)
+    else if c == "?" then (TQmark, j + 1)
+    else if c == "-" then
+      if char_at(s, j + 1) == ">" then (TArrow, j + 2)
+      else (TMinus, j + 1)
+    else (TEnd, j)
+
+fn tokenize_at(s: String, i: Int) : List<Token> =
+  match next_token(s, i) {
+    (TEnd, _) => [];
+    (t, k)    => [t] ++ tokenize_at(s, k)
+  }
+
+fn tokenize(s: String) : List<Token> = tokenize_at(s, 0)
+
+
+# --- Parser -------------------------------------------------------------
+
+# Stage 4.5: tokenize the marker "let x = 5" and return its token count.
+tokenize("let x = 5")

@@ -1,0 +1,39 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Glass
+        run: pip install -e .
+
+      - name: Run regression suite
+        run: python tests/test_glass.py
+
+      - name: Run the self-host capstone
+        run: glass examples/selfhost/prism.glass | tail -5
+
+      - name: Run showcase examples
+        run: |
+          glass examples/showcase/derive.glass | grep -E "⟶" | head
+          glass examples/showcase/prover.glass | grep -E "⟶" | head
+          glass examples/showcase/nash.glass | grep -E "Nash equilibria" | head

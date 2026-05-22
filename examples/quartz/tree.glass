@@ -1,0 +1,30 @@
+# Binary tree height — exercises ADTs with multi-field variants and
+# recursive functions that pattern-match.
+
+type Tree = Leaf | Branch(Int, Tree, Tree)
+
+fn max(a: Int, b: Int) : Int =
+  if a > b then a else b
+
+fn height(t: Tree) : Int =
+  match t {
+    Leaf => 0;
+    Branch(_, l, r) => 1 + max(height(l), height(r))
+  }
+
+# Build a small tree:
+#         3
+#        / \
+#       2   5
+#      / \   \
+#     1  Leaf 7
+#    /
+#   Leaf
+let small : Tree =
+  Branch(3,
+    Branch(2,
+      Branch(1, Leaf, Leaf),
+      Leaf),
+    Branch(5, Leaf, Branch(7, Leaf, Leaf)))
+
+height(small)

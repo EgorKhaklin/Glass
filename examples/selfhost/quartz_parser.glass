@@ -1,0 +1,1688 @@
+# =============================================================================
+# quartz_parser.glass — Source-to-native pipeline, written in Glass (v4.0)
+#
+# Reads a String of source code (full Glass core: arithmetic, identifiers,
+# let, if, fn decls + ECall, ADTs + match, records + field access,
+# strings + ++, generics + multi-type fields + fn return-type tracking)
+# and produces a native binary via Glass-driven cc invocation.
+#
+# v4.0 (this release) adds file-mode dispatch at the bottom: if
+# `/tmp/qp_input.glass` exists, its contents are treated as the source
+# to compile (Stage 5 endpoint). If not, the original 26 hardcoded
+# demo cases run. This split is what lets selfcompile.glass drive an
+# end-to-end self-compile pipeline from a single user-facing script.
+#
+# Feature parity with quartz_min reached in v3.20:
+#   v3.14: integer literals + arithmetic + parentheses
+#   v3.15: identifiers + let bindings
+#   v3.16: top-level fn decls + ECall + if/then/else + comparison
+#   v3.17: ADTs + match expressions + patterns
+#   v3.18: records + field access
+#   v3.19: string literals + ++ concatenation
+#   v3.20: generics + multi-type fields + fn return-type inference
+#   v4.0:  file-mode dispatch + Stage 5 endpoint
+#
+# Limitations carried forward:
+#   - Fn-chain return-type detection (length 2+) needs fixed-point
+#   - String escapes (`\n`, `\t`, `\"`, `\\`) deferred
+#   - Nested generics (`<List<T>>`) close at first `>`
+#   - Field-name uniqueness across records (first-match lookup)
+#   - Nested PCtor sub-patterns still flat only
+# =============================================================================
+
+# --- Token type --------------------------------------------------------------
+
+type Token =
+  | TInt(Int)
+  | TStr(String)
+  | TIdent(String)
+  | TLet
+  | TIn
+  | TFn
+  | TIf
+  | TThen
+  | TElse
+  | TType
+  | TMatch
+  | TEq
+  | TFatArrow
+  | TPlus
+  | TMinus
+  | TStar
+  | TConcat
+  | TLt
+  | TGt
+  | TComma
+  | TSemi
+  | TPipe
+  | TLParen
+  | TRParen
+  | TLBrace
+  | TRBrace
+  | TDot
+  | TColon
+  | TEnd
+
+# --- Quartz Expr type (subset matching quartz_min) ---------------------------
+
+type Expr =
+  | EInt(Int)
+  | EStr(String)
+  | EAdd(Expr, Expr)
+  | ESub(Expr, Expr)
+  | EMul(Expr, Expr)
+  | EConcat(Expr, Expr)
+  | ELt(Expr, Expr)
+  | EGt(Expr, Expr)
+  | EIf(Expr, Expr, Expr)
+  | EVar(String)
+  | ELet(String, Expr, Expr)
+  | ECall(String, Args)
+  | EMatch(Expr, MatchArms)
+  | ERecord(String, Fields)
+  | EField(Expr, String)
+
+# --- Helper ADTs for variable-length lists -----------------------------------
+#
+# Glass's built-in `List<T>` literal syntax is fixed-length only — there
+# is no `Cons` constructor exposed in expression position, so a parser
+# walking an unknown number of arguments can't build a `List<T>`
+# incrementally. Workaround: small custom Cons-style ADTs that the
+# parser builds directly. Codegen walks them the same way it'd walk
+# any other list-shaped recursive structure.
+type Args = | ANil | ACons(Expr, Args)
+type Params = | PNil | PCons(String, Params)
+type FnDecl = | FnDecl(String, Params, Expr)
+type FnDecls = | FDNil | FDCons(FnDecl, FnDecls)
+
+# v3.17 pattern matching + ADT declarations.
+type Pattern =
+  | PWild
+  | PVar(String)
+  | PCtor(String, Patterns)
+
+type Patterns = | PtsNil | PtsCons(Pattern, Patterns)
+
+type MatchArm = | MArm(Pattern, Expr)
+type MatchArms = | MANil | MACons(MatchArm, MatchArms)
+
+# An ADT variant carries a name and an arity (parameter count). v3.17
+# parses parameter type annotations but ignores them at codegen — all
+# payload fields are uniformly long long (matches quartz_min v3.8
+# semantics). v3.18+ may track types properly.
+type Variant = | Variant(String, Int)
+type Variants = | VNil | VCons(Variant, Variants)
+type TypeDecl = | TypeDecl(String, Variants)
+type TypeDecls = | TDNil | TDCons(TypeDecl, TypeDecls)
+
+# v3.18 record declarations + literals. v3.20 extends FieldDef to
+# track the declared field type name — needed for result-type
+# inference on EField (e.g. `p.name` should produce a `%s` printf
+# when `name` is declared as `: String`).
+type FieldDef = | FieldDef(String, String)
+type FieldDefs = | FDfNil | FDfCons(FieldDef, FieldDefs)
+type RecordDecl = | RecordDecl(String, FieldDefs)
+type RecordDecls = | RDNil | RDCons(RecordDecl, RecordDecls)
+
+type Field = | Field(String, Expr)
+type Fields = | FlNil | FlCons(Field, Fields)
+
+# DeclResult lets one parse step return either a TypeDecl or a
+# RecordDecl, so the top-level decls loop can dispatch.
+type DeclResult = | DRType(TypeDecl) | DRRec(RecordDecl)
+
+type Program = | Program(TypeDecls, RecordDecls, FnDecls, Expr)
+
+# --- Lexer helpers -----------------------------------------------------------
+#
+# `string_index_of` returns the position of a character in a known
+# alphabet string — which happens to be exactly the value we want
+# (for digits, the position IS the int value). Cleaner than enumerating
+# 26+ match arms, and a natural use of Glass's symbolic-string facilities.
+
+fn digit_value(c: String) : Int =
+  match string_index_of("0123456789", c) {
+    Some(i) => i;
+    None => 0 - 1
+  }
+
+fn is_digit(c: String) : Bool =
+  digit_value(c) >= 0
+
+# Identifier character classes. We accept ASCII letters (lower and
+# upper) and underscore as identifier starts; identifier continuations
+# also allow digits. Uppercase letters were added in v3.17 to support
+# Glass-style constructor names (Some, None, etc.).
+fn is_alpha(c: String) : Bool =
+  match string_index_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_", c) {
+    Some(_) => true;
+    None => false
+  }
+
+fn is_alnum(c: String) : Bool =
+  if is_alpha(c) then true
+  else is_digit(c)
+
+# Does this identifier start with an uppercase letter? Used to
+# disambiguate constructor calls from function calls at codegen time:
+# `Some(42)` is a ctor, `add(3, 4)` is a fn call. Same parser path
+# (ECall); codegen branches on the case of the leading character.
+fn is_upper_first(s: String) : Bool =
+  if string_length(s) == 0 then false
+  else
+    let c : String = substring(s, 0, 1) in
+    match string_index_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ", c) {
+      Some(_) => true;
+      None => false
+    }
+
+fn is_space(c: String) : Bool =
+  match c {
+    " " => true;
+    _ => false
+  }
+
+# Pull characters off `src` starting at `pos`, returning (int_value,
+# new_pos). Assumes the character at `pos` is a digit (caller checks).
+fn lex_int(src: String, pos: Int, acc: Int) : (Int, Int) =
+  if pos >= string_length(src) then (acc, pos)
+  else
+    let c : String = substring(src, pos, pos + 1) in
+    let d : Int = digit_value(c) in
+    if d >= 0 then lex_int(src, pos + 1, acc * 10 + d)
+    else (acc, pos)
+
+# Pull identifier characters off `src` starting at `start`. Caller
+# checks that src[start] is_alpha. Returns (name, new_pos).
+fn lex_ident(src: String, pos: Int, start: Int) : (String, Int) =
+  if pos >= string_length(src) then (substring(src, start, pos), pos)
+  else
+    let c : String = substring(src, pos, pos + 1) in
+    if is_alnum(c) then lex_ident(src, pos + 1, start)
+    else (substring(src, start, pos), pos)
+
+# Pull characters off `src` starting at `start` up to the next `"`.
+# Caller has consumed the opening `"`; we consume the closing one too.
+# v3.19 limitation: no escape support — strings can't contain `\` or
+# the `"` character. Documented in CHANGELOG.
+fn lex_string(src: String, pos: Int, start: Int) : (String, Int) =
+  if pos >= string_length(src) then (substring(src, start, pos), pos)
+  else
+    let c : String = substring(src, pos, pos + 1) in
+    if c == "\"" then (substring(src, start, pos), pos + 1)
+    else lex_string(src, pos + 1, start)
+
+# Classify an identifier string: keywords get their own tokens.
+fn classify_ident(name: String) : Token =
+  if name == "let" then TLet
+  else if name == "in" then TIn
+  else if name == "fn" then TFn
+  else if name == "if" then TIf
+  else if name == "then" then TThen
+  else if name == "else" then TElse
+  else if name == "type" then TType
+  else if name == "match" then TMatch
+  else TIdent(name)
+
+# Skip ahead over any whitespace. Returns the next position.
+fn skip_ws(src: String, pos: Int) : Int =
+  if pos >= string_length(src) then pos
+  else
+    let c : String = substring(src, pos, pos + 1) in
+    if is_space(c) then skip_ws(src, pos + 1)
+    else pos
+
+# --- Lexer -------------------------------------------------------------------
+#
+# Walks the source string, emitting one Token per call. Returns
+# (Token, new_pos). The caller drives the recursion in `tokenize`.
+
+fn next_token(src: String, pos: Int) : (Token, Int) =
+  let p : Int = skip_ws(src, pos) in
+  if p >= string_length(src) then (TEnd, p)
+  else
+    let c : String = substring(src, p, p + 1) in
+    match c {
+      "+" =>
+        # Peek next char — `++` is TConcat, `+` alone is TPlus.
+        if p + 1 < string_length(src) then
+          let c2 : String = substring(src, p + 1, p + 2) in
+          if c2 == "+" then (TConcat, p + 2)
+          else (TPlus, p + 1)
+        else (TPlus, p + 1);
+      "-" => (TMinus, p + 1);
+      "*" => (TStar, p + 1);
+      "<" => (TLt, p + 1);
+      ">" => (TGt, p + 1);
+      "," => (TComma, p + 1);
+      ";" => (TSemi, p + 1);
+      "|" => (TPipe, p + 1);
+      "(" => (TLParen, p + 1);
+      ")" => (TRParen, p + 1);
+      "{" => (TLBrace, p + 1);
+      "}" => (TRBrace, p + 1);
+      "." => (TDot, p + 1);
+      ":" => (TColon, p + 1);
+      "\"" =>
+        # String literal: consume content until closing ".
+        match lex_string(src, p + 1, p + 1) {
+          (s, p2) => (TStr(s), p2)
+        };
+      "=" =>
+        # Peek next char — `=>` is TFatArrow, `=` alone is TEq.
+        if p + 1 < string_length(src) then
+          let c2 : String = substring(src, p + 1, p + 2) in
+          if c2 == ">" then (TFatArrow, p + 2)
+          else (TEq, p + 1)
+        else (TEq, p + 1);
+      _ =>
+        if is_digit(c) then
+          match lex_int(src, p, 0) {
+            (n, p2) => (TInt(n), p2)
+          }
+        else if is_alpha(c) then
+          match lex_ident(src, p, p) {
+            (name, p2) => (classify_ident(name), p2)
+          }
+        else
+          # Malformed input — yield TEnd to short-circuit.
+          (TEnd, string_length(src))
+    }
+
+# Drive next_token to a fixed limit (no list-cons in Glass expressions,
+# so we walk the source once via recursion and emit each token by
+# threading through a Cons-equivalent via direct AST construction in
+# parse_*).  v3.14 doesn't materialize a token list at all — the
+# parser pulls tokens lazily by calling next_token directly. This
+# avoids the v3.7 list-construction limitation entirely.
+
+# --- Parser ------------------------------------------------------------------
+#
+# Recursive descent with standard precedence, lowest to highest:
+#   expr     = rel
+#   rel      = addsub { ("<" | ">") addsub }
+#   addsub   = term { ("+" | "-") term }
+#   term     = atom { "*" atom }
+#   atom     = TInt | TIdent ("(" args ")")? | "(" expr ")"
+#            | TLet name "=" expr "in" expr
+#            | TIf expr "then" expr "else" expr
+#
+# Each parse_* takes (src, pos) and returns (Expr, new_pos).
+# Left-associative folding is done by passing an accumulator to the
+# *_rest loop helpers.
+
+fn parse_atom(src: String, pos: Int) : (Expr, Int) =
+  match next_token(src, pos) {
+    (tok, p1) =>
+      match tok {
+        TInt(n) => (EInt(n), p1);
+        TStr(s) => (EStr(s), p1);
+        TIdent(name) =>
+          # Peek for an opening paren or brace.
+          #   `name (` → ECall (or ctor; codegen disambiguates)
+          #   `Name {` → ERecord (record literal; requires uppercase
+          #              first letter to avoid colliding with `match e {`,
+          #              which is reached via TMatch keyword instead)
+          #   otherwise → EVar
+          match next_token(src, p1) {
+            (peek_tok, p2) =>
+              match peek_tok {
+                TLParen =>
+                  match parse_args(src, p2) {
+                    (args, p3) => (ECall(name, args), p3)
+                  };
+                TLBrace =>
+                  if is_upper_first(name) then
+                    match parse_record_lit(src, p2) {
+                      (fields, p3) => (ERecord(name, fields), p3)
+                    }
+                  else
+                    (EVar(name), p1);
+                _ => (EVar(name), p1)
+              }
+          };
+        TLet => parse_let(src, p1);
+        TIf => parse_if(src, p1);
+        TMatch => parse_match(src, p1);
+        TLParen =>
+          match parse_expr(src, p1) {
+            (e, p2) =>
+              match next_token(src, p2) {
+                (tok2, p3) =>
+                  match tok2 {
+                    TRParen => (e, p3);
+                    _ => (e, p3)
+                  }
+              }
+          };
+        # Unexpected token in atom position — placeholder.
+        _ => (EInt(0), p1)
+      }
+  }
+
+# Parse the fields of a record literal: `name1: expr1, name2: expr2, ... }`.
+# Caller has already consumed the opening `{`. Consumes the closing `}`.
+fn parse_record_lit(src: String, pos: Int) : (Fields, Int) =
+  # Check for empty record literal { } first.
+  match next_token(src, pos) {
+    (peek_tok, peek_pos) =>
+      match peek_tok {
+        TRBrace => (FlNil, peek_pos);
+        _ =>
+          # Non-empty: parse name : expr, then look for `,` or `}`.
+          match next_token(src, pos) {
+            (name_tok, p1) =>
+              match name_tok {
+                TIdent(fname) =>
+                  match next_token(src, p1) {
+                    (colon_tok, p2) =>
+                      match colon_tok {
+                        TColon =>
+                          match parse_expr(src, p2) {
+                            (val_expr, p3) =>
+                              match next_token(src, p3) {
+                                (sep_tok, p4) =>
+                                  match sep_tok {
+                                    TComma =>
+                                      match parse_record_lit(src, p4) {
+                                        (rest, p5) =>
+                                          (FlCons(Field(fname, val_expr), rest), p5)
+                                      };
+                                    TRBrace =>
+                                      (FlCons(Field(fname, val_expr), FlNil), p4);
+                                    _ =>
+                                      (FlCons(Field(fname, val_expr), FlNil), p3)
+                                  }
+                              }
+                          };
+                        # Missing colon — placeholder
+                        _ => (FlNil, p2)
+                      }
+                  };
+                # First token wasn't an ident — bail.
+                _ => (FlNil, p1)
+              }
+          }
+      }
+  }
+
+# Parse a single pattern at `pos`. Returns (Pattern, new_pos).
+# Patterns:
+#   _              -> PWild
+#   <lowercase>    -> PVar
+#   <Uppercase>    -> PCtor(name, PtsNil)         (nullary ctor)
+#   <Uppercase>(p1, p2, ...) -> PCtor(name, [p1, p2, ...])
+fn parse_pattern(src: String, pos: Int) : (Pattern, Int) =
+  match next_token(src, pos) {
+    (tok, p1) =>
+      match tok {
+        TIdent(name) =>
+          if name == "_" then (PWild, p1)
+          else if is_upper_first(name) then
+            # Peek for ctor args
+            match next_token(src, p1) {
+              (lp_tok, p2) =>
+                match lp_tok {
+                  TLParen =>
+                    match parse_patterns(src, p2) {
+                      (pats, p3) => (PCtor(name, pats), p3)
+                    };
+                  _ => (PCtor(name, PtsNil), p1)
+                }
+            }
+          else (PVar(name), p1);
+        _ => (PWild, p1)
+      }
+  }
+
+# Parse a comma-separated list of patterns terminated by `)`.
+# Consumes the closing `)`.
+fn parse_patterns(src: String, pos: Int) : (Patterns, Int) =
+  match next_token(src, pos) {
+    (peek_tok, peek_pos) =>
+      match peek_tok {
+        TRParen => (PtsNil, peek_pos);
+        _ =>
+          match parse_pattern(src, pos) {
+            (p1, q1) =>
+              match next_token(src, q1) {
+                (sep, q2) =>
+                  match sep {
+                    TComma =>
+                      match parse_patterns(src, q2) {
+                        (rest, q3) => (PtsCons(p1, rest), q3)
+                      };
+                    TRParen => (PtsCons(p1, PtsNil), q2);
+                    _ => (PtsCons(p1, PtsNil), q1)
+                  }
+              }
+          }
+      }
+  }
+
+# Parse a single match arm: `pattern => expr`. Used by parse_match_arms.
+fn parse_match_arm(src: String, pos: Int) : (MatchArm, Int) =
+  match parse_pattern(src, pos) {
+    (pat, p1) =>
+      match next_token(src, p1) {
+        (arrow, p2) =>
+          match arrow {
+            TFatArrow =>
+              match parse_expr(src, p2) {
+                (body, p3) => (MArm(pat, body), p3)
+              };
+            # Missing `=>` — fail gracefully with a placeholder.
+            _ => (MArm(pat, EInt(0)), p2)
+          }
+      }
+  }
+
+# Parse a `;`-separated list of match arms terminated by `}`.
+# Consumes the closing `}`.
+fn parse_match_arms(src: String, pos: Int) : (MatchArms, Int) =
+  match next_token(src, pos) {
+    (peek_tok, peek_pos) =>
+      match peek_tok {
+        TRBrace => (MANil, peek_pos);
+        _ =>
+          match parse_match_arm(src, pos) {
+            (arm, q1) =>
+              match next_token(src, q1) {
+                (sep, q2) =>
+                  match sep {
+                    TSemi =>
+                      # Allow trailing `;}` (empty arm after semi).
+                      match parse_match_arms(src, q2) {
+                        (rest, q3) => (MACons(arm, rest), q3)
+                      };
+                    TRBrace => (MACons(arm, MANil), q2);
+                    _ => (MACons(arm, MANil), q1)
+                  }
+              }
+          }
+      }
+  }
+
+# Parse the rest of a match expression after the `match` token has
+# been consumed. Expects `<scrutinee> { arm1; arm2; ... }`.
+fn parse_match(src: String, pos: Int) : (Expr, Int) =
+  match parse_expr(src, pos) {
+    (scrut, p1) =>
+      match next_token(src, p1) {
+        (lb_tok, p2) =>
+          match lb_tok {
+            TLBrace =>
+              match parse_match_arms(src, p2) {
+                (arms, p3) => (EMatch(scrut, arms), p3)
+              };
+            _ => (EInt(0), p2)
+          }
+      }
+  }
+
+# Parse a single ADT variant: `| Name` or `| Name(Type, Type, ...)`.
+# Returns (Variant, new_pos). Argument type names are accepted but
+# only their COUNT (arity) is recorded; payloads are uniformly
+# long long at codegen.
+fn parse_variant(src: String, pos: Int) : (Variant, Int) =
+  # Expect TPipe
+  match next_token(src, pos) {
+    (pipe_tok, p1) =>
+      match pipe_tok {
+        TPipe =>
+          match next_token(src, p1) {
+            (name_tok, p2) =>
+              match name_tok {
+                TIdent(name) =>
+                  # Peek for argument-type list
+                  match next_token(src, p2) {
+                    (lp_tok, p3) =>
+                      match lp_tok {
+                        TLParen =>
+                          match parse_arg_types(src, p3, 0) {
+                            (arity, p4) => (Variant(name, arity), p4)
+                          };
+                        _ => (Variant(name, 0), p2)
+                      }
+                  };
+                _ => (Variant("anon", 0), p1)
+              }
+          };
+        # No pipe — placeholder (caller should not have called us)
+        _ => (Variant("anon", 0), pos)
+      }
+  }
+
+# Parse a comma-separated list of type annotations (just identifiers
+# here), counting them as we go. Used inside variant payload parens.
+# Consumes the closing `)`. Returns (arity, new_pos).
+fn parse_arg_types(src: String, pos: Int, acc: Int) : (Int, Int) =
+  match next_token(src, pos) {
+    (tok, p1) =>
+      match tok {
+        TRParen => (acc, p1);
+        TIdent(_) =>
+          # Consumed one type name — look for comma or )
+          match next_token(src, p1) {
+            (sep, p2) =>
+              match sep {
+                TComma => parse_arg_types(src, p2, acc + 1);
+                TRParen => (acc + 1, p2);
+                _ => (acc + 1, p1)
+              }
+          };
+        _ => (acc, p1)
+      }
+  }
+
+# Parse zero or more variants for an ADT body. Each variant begins
+# with `|`. Stops when the next token is not a pipe.
+fn parse_variants(src: String, pos: Int) : (Variants, Int) =
+  match next_token(src, pos) {
+    (peek_tok, _) =>
+      match peek_tok {
+        TPipe =>
+          match parse_variant(src, pos) {
+            (v, p1) =>
+              match parse_variants(src, p1) {
+                (rest, p2) => (VCons(v, rest), p2)
+              }
+          };
+        _ => (VNil, pos)
+      }
+  }
+
+# Parse a `type` declaration after the `type` token has been consumed.
+# v3.20: Skip an optional type parameter list `<T>` or `<T, U>` after
+# a type decl name or fn decl name. The params themselves are erased
+# at codegen (uniform `long long` boundary; matches quartz_min v3.5
+# generics-via-type-erasure). Returns the position after the closing
+# `>` if present, or the original pos if the next token isn't `<`.
+#
+# Limitation: nested generics like `<List<T>>` aren't supported — the
+# first `>` closes the list. v3.x extends this if needed.
+fn parse_type_params(src: String, pos: Int) : Int =
+  match next_token(src, pos) {
+    (tok, p1) =>
+      match tok {
+        TLt => skip_to_gt(src, p1);
+        _ => pos
+      }
+  }
+
+fn skip_to_gt(src: String, pos: Int) : Int =
+  match next_token(src, pos) {
+    (tok, p1) =>
+      match tok {
+        TGt => p1;
+        TEnd => pos;
+        _ => skip_to_gt(src, p1)
+      }
+  }
+
+# Expects `<TypeName> = | Ctor(...) | Ctor ...`.
+fn parse_type_decl(src: String, pos: Int) : (DeclResult, Int) =
+  match next_token(src, pos) {
+    (name_tok, p1) =>
+      match name_tok {
+        TIdent(tname) =>
+          # v3.20: skip optional `<T, U, ...>` after the name.
+          let p1b : Int = parse_type_params(src, p1) in
+          match next_token(src, p1b) {
+            (eq_tok, p2) =>
+              match eq_tok {
+                TEq =>
+                  # Peek at the next token to decide ADT vs record.
+                  # `|` opens an ADT variant list; `{` opens a record body.
+                  match next_token(src, p2) {
+                    (body_tok, p3) =>
+                      match body_tok {
+                        TLBrace =>
+                          # Record: `{ name: Type, name: Type }`
+                          # p3 is the position AFTER `{`, ready for fields.
+                          match parse_fielddefs(src, p3) {
+                            (fdefs, p4) =>
+                              (DRRec(RecordDecl(tname, fdefs)), p4)
+                          };
+                        _ =>
+                          # Default: ADT variants — parse_variants
+                          # expects to see `|` and consumes from there.
+                          match parse_variants(src, p2) {
+                            (vars, p3b) =>
+                              (DRType(TypeDecl(tname, vars)), p3b)
+                          }
+                      }
+                  };
+                _ => (DRType(TypeDecl(tname, VNil)), p2)
+              }
+          };
+        _ => (DRType(TypeDecl("anon", VNil)), p1)
+      }
+  }
+
+# Parse field definitions inside a record body: `name: Type, name: Type }`.
+# Caller has consumed the opening `{`. Consumes the closing `}`.
+# Type annotations are tokenized but ignored at codegen — only field
+# NAMES are needed for indexing. Matches quartz_min v3.9 semantics
+# (records as single-variant tagged unions with positional fields).
+fn parse_fielddefs(src: String, pos: Int) : (FieldDefs, Int) =
+  # Check for empty record body `{}` first.
+  match next_token(src, pos) {
+    (peek_tok, peek_pos) =>
+      match peek_tok {
+        TRBrace => (FDfNil, peek_pos);
+        _ =>
+          match next_token(src, pos) {
+            (name_tok, p1) =>
+              match name_tok {
+                TIdent(fname) =>
+                  match next_token(src, p1) {
+                    (colon_tok, p2) =>
+                      match colon_tok {
+                        TColon =>
+                          # v3.20: capture the type token's name instead
+                          # of discarding it. Stored for EField result-type
+                          # inference. Only single-token types supported.
+                          match next_token(src, p2) {
+                            (type_tok, p3) =>
+                              let tname : String =
+                                match type_tok {
+                                  TIdent(t) => t;
+                                  _ => "Int"
+                                } in
+                              match next_token(src, p3) {
+                                (sep_tok, p4) =>
+                                  match sep_tok {
+                                    TComma =>
+                                      match parse_fielddefs(src, p4) {
+                                        (rest, p5) =>
+                                          (FDfCons(FieldDef(fname, tname), rest), p5)
+                                      };
+                                    TRBrace =>
+                                      (FDfCons(FieldDef(fname, tname), FDfNil), p4);
+                                    _ =>
+                                      (FDfCons(FieldDef(fname, tname), FDfNil), p3)
+                                  }
+                              }
+                          };
+                        _ => (FDfNil, p2)
+                      }
+                  };
+                _ => (FDfNil, p1)
+              }
+          }
+      }
+  }
+
+# Parse zero or more top-level type declarations (ADTs and records mixed).
+# Both kinds start with the `type` keyword; the dispatch happens
+# in parse_type_decl. Returns BOTH lists.
+fn parse_type_decls(src: String, pos: Int) : (TypeDecls, RecordDecls, Int) =
+  match next_token(src, pos) {
+    (tok, p1) =>
+      match tok {
+        TType =>
+          match parse_type_decl(src, p1) {
+            (dr, p2) =>
+              match parse_type_decls(src, p2) {
+                (rest_td, rest_rd, p3) =>
+                  match dr {
+                    DRType(td) => (TDCons(td, rest_td), rest_rd, p3);
+                    DRRec(rd)  => (rest_td, RDCons(rd, rest_rd), p3)
+                  }
+              }
+          };
+        _ => (TDNil, RDNil, pos)
+      }
+  }
+
+# Parse the rest of a let expression after the `let` token has been
+# consumed. Expects `<ident> = <expr> in <expr>`.
+fn parse_let(src: String, pos: Int) : (Expr, Int) =
+  match next_token(src, pos) {
+    (name_tok, p1) =>
+      match name_tok {
+        TIdent(name) =>
+          match next_token(src, p1) {
+            (eq_tok, p2) =>
+              match eq_tok {
+                TEq =>
+                  match parse_expr(src, p2) {
+                    (val_expr, p3) =>
+                      match next_token(src, p3) {
+                        (in_tok, p4) =>
+                          match in_tok {
+                            TIn =>
+                              match parse_expr(src, p4) {
+                                (body_expr, p5) =>
+                                  (ELet(name, val_expr, body_expr), p5)
+                              };
+                            _ => (EInt(0), p4)
+                          }
+                      }
+                  };
+                _ => (EInt(0), p2)
+              }
+          };
+        _ => (EInt(0), p1)
+      }
+  }
+
+# Parse the rest of an `if` expression after the `if` token has been
+# consumed. Expects `<expr> then <expr> else <expr>`.
+fn parse_if(src: String, pos: Int) : (Expr, Int) =
+  match parse_expr(src, pos) {
+    (cond, p1) =>
+      match next_token(src, p1) {
+        (then_tok, p2) =>
+          match then_tok {
+            TThen =>
+              match parse_expr(src, p2) {
+                (then_branch, p3) =>
+                  match next_token(src, p3) {
+                    (else_tok, p4) =>
+                      match else_tok {
+                        TElse =>
+                          match parse_expr(src, p4) {
+                            (else_branch, p5) =>
+                              (EIf(cond, then_branch, else_branch), p5)
+                          };
+                        _ => (EInt(0), p4)
+                      }
+                  }
+              };
+            _ => (EInt(0), p2)
+          }
+      }
+  }
+
+# Parse a comma-separated list of expressions terminated by `)`.
+# Builds an Args ADT (because Glass list literals can't be extended
+# incrementally — see notes above). Consumes the closing `)`.
+fn parse_args(src: String, pos: Int) : (Args, Int) =
+  # Empty arg list?
+  match next_token(src, pos) {
+    (peek_tok, peek_pos) =>
+      match peek_tok {
+        TRParen => (ANil, peek_pos);
+        _ =>
+          # Non-empty: parse first arg, then look for comma or `)`.
+          match parse_expr(src, pos) {
+            (arg1, p1) =>
+              match next_token(src, p1) {
+                (sep_tok, p2) =>
+                  match sep_tok {
+                    TComma =>
+                      match parse_args(src, p2) {
+                        (rest, p3) => (ACons(arg1, rest), p3)
+                      };
+                    TRParen => (ACons(arg1, ANil), p2);
+                    _ => (ACons(arg1, ANil), p1)
+                  }
+              }
+          }
+      }
+  }
+
+# Parse a comma-separated list of identifiers terminated by `)`.
+# Builds a Params ADT. Consumes the closing `)`.
+fn parse_params(src: String, pos: Int) : (Params, Int) =
+  match next_token(src, pos) {
+    (first_tok, p1) =>
+      match first_tok {
+        TRParen => (PNil, p1);
+        TIdent(name) =>
+          match next_token(src, p1) {
+            (sep_tok, p2) =>
+              match sep_tok {
+                TComma =>
+                  match parse_params(src, p2) {
+                    (rest, p3) => (PCons(name, rest), p3)
+                  };
+                TRParen => (PCons(name, PNil), p2);
+                _ => (PCons(name, PNil), p1)
+              }
+          };
+        _ => (PNil, p1)
+      }
+  }
+
+# Parse a `fn` declaration after the `fn` token has been consumed.
+# Expects `<ident> ( <params> ) = <expr>`.
+fn parse_fn_decl(src: String, pos: Int) : (FnDecl, Int) =
+  match next_token(src, pos) {
+    (name_tok, p1) =>
+      match name_tok {
+        TIdent(name) =>
+          # v3.20: skip optional `<T, U, ...>` after the fn name.
+          let p1b : Int = parse_type_params(src, p1) in
+          match next_token(src, p1b) {
+            (lparen_tok, p2) =>
+              match lparen_tok {
+                TLParen =>
+                  match parse_params(src, p2) {
+                    (params, p3) =>
+                      match next_token(src, p3) {
+                        (eq_tok, p4) =>
+                          match eq_tok {
+                            TEq =>
+                              match parse_expr(src, p4) {
+                                (body, p5) =>
+                                  (FnDecl(name, params, body), p5)
+                              };
+                            _ => (FnDecl(name, params, EInt(0)), p4)
+                          }
+                      }
+                  };
+                _ => (FnDecl(name, PNil, EInt(0)), p2)
+              }
+          };
+        _ => (FnDecl("anon", PNil, EInt(0)), p1)
+      }
+  }
+
+# Parse zero or more `fn` declarations at the top of the source.
+# Stops when the next token is not `fn`. Returns (FnDecls, pos at
+# the first non-fn token).
+fn parse_fns(src: String, pos: Int) : (FnDecls, Int) =
+  match next_token(src, pos) {
+    (tok, p1) =>
+      match tok {
+        TFn =>
+          match parse_fn_decl(src, p1) {
+            (fd, p2) =>
+              match parse_fns(src, p2) {
+                (rest, p3) => (FDCons(fd, rest), p3)
+              }
+          };
+        _ => (FDNil, pos)
+      }
+  }
+
+# parse_postfix consumes an atom, then loops over postfix field accesses
+# `.field_name`. v3.18 addition. Highest precedence (binds tighter than *).
+fn parse_postfix(src: String, pos: Int) : (Expr, Int) =
+  match parse_atom(src, pos) {
+    (lhs, p1) => parse_postfix_rest(src, lhs, p1)
+  }
+
+fn parse_postfix_rest(src: String, lhs: Expr, pos: Int) : (Expr, Int) =
+  match next_token(src, pos) {
+    (tok, p1) =>
+      match tok {
+        TDot =>
+          match next_token(src, p1) {
+            (name_tok, p2) =>
+              match name_tok {
+                TIdent(fname) => parse_postfix_rest(src, EField(lhs, fname), p2);
+                _ => (lhs, pos)  # malformed; give back
+              }
+          };
+        _ => (lhs, pos)
+      }
+  }
+
+# parse_term consumes a postfix expr, then loops over * operations.
+fn parse_term(src: String, pos: Int) : (Expr, Int) =
+  match parse_postfix(src, pos) {
+    (lhs, p1) => parse_term_rest(src, lhs, p1)
+  }
+
+fn parse_term_rest(src: String, lhs: Expr, pos: Int) : (Expr, Int) =
+  match next_token(src, pos) {
+    (tok, p1) =>
+      match tok {
+        TStar =>
+          match parse_postfix(src, p1) {
+            (rhs, p2) => parse_term_rest(src, EMul(lhs, rhs), p2)
+          };
+        _ => (lhs, pos)
+      }
+  }
+
+# parse_addsub consumes a term, then loops over + - operations.
+fn parse_addsub(src: String, pos: Int) : (Expr, Int) =
+  match parse_term(src, pos) {
+    (lhs, p1) => parse_addsub_rest(src, lhs, p1)
+  }
+
+fn parse_addsub_rest(src: String, lhs: Expr, pos: Int) : (Expr, Int) =
+  match next_token(src, pos) {
+    (tok, p1) =>
+      match tok {
+        TPlus =>
+          match parse_term(src, p1) {
+            (rhs, p2) => parse_addsub_rest(src, EAdd(lhs, rhs), p2)
+          };
+        TMinus =>
+          match parse_term(src, p1) {
+            (rhs, p2) => parse_addsub_rest(src, ESub(lhs, rhs), p2)
+          };
+        TConcat =>
+          # String concatenation at +/- precedence. Glass full syntax
+          # places `++` at the same level as `+` (left-assoc); matching that.
+          match parse_term(src, p1) {
+            (rhs, p2) => parse_addsub_rest(src, EConcat(lhs, rhs), p2)
+          };
+        _ => (lhs, pos)
+      }
+  }
+
+# parse_expr / parse_rel — top-level entry. Lowest precedence
+# (relational) wraps everything else.
+fn parse_expr(src: String, pos: Int) : (Expr, Int) =
+  match parse_addsub(src, pos) {
+    (lhs, p1) => parse_rel_rest(src, lhs, p1)
+  }
+
+fn parse_rel_rest(src: String, lhs: Expr, pos: Int) : (Expr, Int) =
+  match next_token(src, pos) {
+    (tok, p1) =>
+      match tok {
+        TLt =>
+          match parse_addsub(src, p1) {
+            (rhs, p2) => parse_rel_rest(src, ELt(lhs, rhs), p2)
+          };
+        TGt =>
+          match parse_addsub(src, p1) {
+            (rhs, p2) => parse_rel_rest(src, EGt(lhs, rhs), p2)
+          };
+        _ => (lhs, pos)
+      }
+  }
+
+# Top-level parse: zero or more type decls, then zero or more fn decls,
+# then a final expression.
+fn parse_program_source(src: String) : Program =
+  match parse_type_decls(src, 0) {
+    (tds, rds, p0) =>
+      match parse_fns(src, p0) {
+        (fns, p1) =>
+          match parse_expr(src, p1) {
+            (final, _) => Program(tds, rds, fns, final)
+          }
+      }
+  }
+
+# --- Codegen (mini, mirrors quartz_min for the supported subset) -------------
+#
+# Codegen takes a TypeDecls parameter at every level (`decls`). It's
+# needed for two reasons:
+#   1. ECall disambiguation: when a name starts with uppercase and
+#      appears in the registered constructors, emit q_ctor_alloc; else
+#      emit a normal C function call.
+#   2. EMatch tag lookup: pattern PCtor(name, ...) needs the integer
+#      tag for `name`. The tag is the position in a flattened walk of
+#      all variants across all type decls.
+
+# Walk variants in a single TypeDecl looking for `name`. Returns the
+# accumulated index if found; otherwise -1.
+fn lookup_in_variants(vs: Variants, name: String, acc: Int) : Int =
+  match vs {
+    VNil => 0 - 1;
+    VCons(v, rest) =>
+      match v {
+        Variant(cname, _arity) =>
+          if cname == name then acc
+          else lookup_in_variants(rest, name, acc + 1)
+      }
+  }
+
+# Walk type decls flattening variants into a single tag space.
+# Returns the global tag for `name`, or -1 if not found.
+fn lookup_tag(decls: TypeDecls, name: String, base: Int) : Int =
+  match decls {
+    TDNil => 0 - 1;
+    TDCons(td, rest) =>
+      match td {
+        TypeDecl(_tname, vars) =>
+          let local : Int = lookup_in_variants(vars, name, 0) in
+          if local >= 0 then base + local
+          else
+            let count : Int = count_variants(vars, 0) in
+            lookup_tag(rest, name, base + count)
+      }
+  }
+
+fn count_variants(vs: Variants, acc: Int) : Int =
+  match vs {
+    VNil => acc;
+    VCons(_v, rest) => count_variants(rest, acc + 1)
+  }
+
+# Is `name` a constructor known to `decls`? Uppercase + present in
+# the flattened variant list.
+fn is_known_ctor(decls: TypeDecls, name: String) : Bool =
+  if is_upper_first(name) then lookup_tag(decls, name, 0) >= 0
+  else false
+
+# v3.18: Auto-generate TypeDecls from RecordDecls so records share the
+# same tag-allocation + ctor-lookup machinery as ADTs. A record decl
+# `type Point = { x: Int, y: Int }` produces an implicit TypeDecl
+# equivalent to `type Point = | Point(Int, Int)`, and a record literal
+# `Point { x: 3, y: 4 }` becomes equivalent to ECall("Point", [3, 4])
+# at codegen time (after the parser has resolved field order).
+fn count_fielddefs(fdefs: FieldDefs, acc: Int) : Int =
+  match fdefs {
+    FDfNil => acc;
+    FDfCons(_f, rest) => count_fielddefs(rest, acc + 1)
+  }
+
+fn record_to_typedecl(rd: RecordDecl) : TypeDecl =
+  match rd {
+    RecordDecl(name, fdefs) =>
+      let arity : Int = count_fielddefs(fdefs, 0) in
+      TypeDecl(name, VCons(Variant(name, arity), VNil))
+  }
+
+fn records_as_typedecls(rds: RecordDecls) : TypeDecls =
+  match rds {
+    RDNil => TDNil;
+    RDCons(rd, rest) => TDCons(record_to_typedecl(rd), records_as_typedecls(rest))
+  }
+
+fn typedecls_append(a: TypeDecls, b: TypeDecls) : TypeDecls =
+  match a {
+    TDNil => b;
+    TDCons(t, rest) => TDCons(t, typedecls_append(rest, b))
+  }
+
+# Walk a single FieldDefs list looking for `fname`. Returns its
+# 0-based index, or -1 if not found.
+fn lookup_field_idx_in(fdefs: FieldDefs, fname: String, acc: Int) : Int =
+  match fdefs {
+    FDfNil => 0 - 1;
+    FDfCons(fd, rest) =>
+      match fd {
+        FieldDef(n, _tn) =>
+          if n == fname then acc
+          else lookup_field_idx_in(rest, fname, acc + 1)
+      }
+  }
+
+# Walk ALL record decls looking for a field named `fname`. Returns
+# the (record-local) index of the first match, or -1. v3.18 limitation:
+# field names must be globally unique across records, since this
+# lookup doesn't have type info to distinguish two records that
+# both define the same field name.
+fn lookup_field_idx(rds: RecordDecls, fname: String) : Int =
+  match rds {
+    RDNil => 0 - 1;
+    RDCons(rd, rest) =>
+      match rd {
+        RecordDecl(_rname, fdefs) =>
+          let local : Int = lookup_field_idx_in(fdefs, fname, 0) in
+          if local >= 0 then local
+          else lookup_field_idx(rest, fname)
+      }
+  }
+
+# Look up the FieldDefs of a record by record name.
+fn fielddefs_of(rds: RecordDecls, rname: String) : FieldDefs =
+  match rds {
+    RDNil => FDfNil;
+    RDCons(rd, rest) =>
+      match rd {
+        RecordDecl(n, fdefs) =>
+          if n == rname then fdefs
+          else fielddefs_of(rest, rname)
+      }
+  }
+
+# Look up a field expression in a record literal's Fields list by name.
+# Returns EInt(0) as a placeholder if not found (silent failure).
+fn lookup_field_value(fields: Fields, fname: String) : Expr =
+  match fields {
+    FlNil => EInt(0);
+    FlCons(f, rest) =>
+      match f {
+        Field(n, e) =>
+          if n == fname then e
+          else lookup_field_value(rest, fname)
+      }
+  }
+
+# Build an Args list in record-decl order from a record literal's
+# (possibly out-of-order) Fields list. v3.18 lets users write fields
+# in any order; the parser preserves source order, codegen reorders.
+fn fields_to_args_in_order(fdefs: FieldDefs, fields: Fields) : Args =
+  match fdefs {
+    FDfNil => ANil;
+    FDfCons(fd, rest) =>
+      match fd {
+        FieldDef(fname, _tn) =>
+          let val : Expr = lookup_field_value(fields, fname) in
+          ACons(val, fields_to_args_in_order(rest, fields))
+      }
+  }
+
+fn compile_expr(e: Expr, decls: TypeDecls, rdecls: RecordDecls) : String =
+  match e {
+    EInt(n) => int_to_string(n);
+    # v3.19: emit as a C string literal. The lexer rejects ` " ` inside
+    # the value (closes the literal early), so the only chars we'd need
+    # to escape are `\` and newlines. v3.19 documented limitation: no
+    # such chars in string values. Future v3.x: full C-string escaping.
+    EStr(s) => "\"" ++ s ++ "\"";
+    EAdd(a, b) => "(" ++ compile_expr(a, decls, rdecls) ++ " + " ++ compile_expr(b, decls, rdecls) ++ ")";
+    ESub(a, b) => "(" ++ compile_expr(a, decls, rdecls) ++ " - " ++ compile_expr(b, decls, rdecls) ++ ")";
+    EMul(a, b) => "(" ++ compile_expr(a, decls, rdecls) ++ " * " ++ compile_expr(b, decls, rdecls) ++ ")";
+    # v3.19: string concatenation. q_str_concat takes char* arguments;
+    # the intptr_t bridge keeps the calling-convention uniform.
+    EConcat(a, b) =>
+      "q_str_concat((char *)(intptr_t)(" ++ compile_expr(a, decls, rdecls) ++ "), " ++
+                   "(char *)(intptr_t)(" ++ compile_expr(b, decls, rdecls) ++ "))";
+    ELt(a, b)  => "(" ++ compile_expr(a, decls, rdecls) ++ " < " ++ compile_expr(b, decls, rdecls) ++ ")";
+    EGt(a, b)  => "(" ++ compile_expr(a, decls, rdecls) ++ " > " ++ compile_expr(b, decls, rdecls) ++ ")";
+    EIf(c, t, f) =>
+      "(" ++ compile_expr(c, decls, rdecls) ++ " ? " ++ compile_expr(t, decls, rdecls) ++ " : " ++ compile_expr(f, decls, rdecls) ++ ")";
+    EVar(name) => name;
+    ELet(name, v, b) =>
+      "({ long long " ++ name ++ " = (long long)(intptr_t)(" ++
+        compile_expr(v, decls, rdecls) ++ "); " ++ compile_expr(b, decls, rdecls) ++ "; })";
+    ECall(name, args) =>
+      if is_known_ctor(decls, name) then
+        let tag : Int = lookup_tag(decls, name, 0) in
+        let argc : Int = count_args(args, 0) in
+        "q_ctor_alloc(" ++ int_to_string(tag) ++ ", " ++ int_to_string(argc) ++
+          (if argc > 0 then ", " ++ compile_args_str(args, decls, rdecls) else "") ++ ")"
+      else name ++ "(" ++ compile_args_str(args, decls, rdecls) ++ ")";
+    EMatch(scrut, arms) =>
+      "({ q_value_t *_s = (q_value_t *)(intptr_t)(" ++ compile_expr(scrut, decls, rdecls) ++ "); " ++
+        compile_arms(arms, decls, rdecls) ++ "; })";
+    # v3.18: record literal — reorder fields per decl order, then compile
+    # as if it were a ctor call. Auto-generated TypeDecls (in `decls`)
+    # provide the tag and arity.
+    ERecord(name, fields) =>
+      let fdefs : FieldDefs = fielddefs_of(rdecls, name) in
+      let ordered_args : Args = fields_to_args_in_order(fdefs, fields) in
+      compile_expr(ECall(name, ordered_args), decls, rdecls);
+    # v3.18: field access — look up the field's index in any record,
+    # emit `((q_value_t *)expr)->fields[idx]` with the standard
+    # intptr_t bridge.
+    EField(expr, fname) =>
+      let idx : Int = lookup_field_idx(rdecls, fname) in
+      "(((q_value_t *)(intptr_t)(" ++ compile_expr(expr, decls, rdecls) ++ "))->fields[" ++
+        int_to_string(idx) ++ "])"
+  }
+
+fn count_args(args: Args, acc: Int) : Int =
+  match args {
+    ANil => acc;
+    ACons(_x, rest) => count_args(rest, acc + 1)
+  }
+
+fn compile_args_str(args: Args, decls: TypeDecls, rdecls: RecordDecls) : String =
+  match args {
+    ANil => "";
+    ACons(x, ANil) => "(long long)(intptr_t)(" ++ compile_expr(x, decls, rdecls) ++ ")";
+    ACons(x, rest) => "(long long)(intptr_t)(" ++ compile_expr(x, decls, rdecls) ++ "), " ++
+                      compile_args_str(rest, decls, rdecls)
+  }
+
+# Compile a list of match arms as a chained if/else expression.
+# Each arm becomes `if (tag matches) { bindings; body } else (next)`.
+# The final fallthrough yields 0 (no fail-on-non-exhaustive in v3.17).
+fn compile_arms(arms: MatchArms, decls: TypeDecls, rdecls: RecordDecls) : String =
+  match arms {
+    MANil => "0";
+    MACons(arm, rest) =>
+      match arm {
+        MArm(pat, body) =>
+          let test : String = compile_pattern_test(pat, decls) in
+          let binds : String = compile_pattern_bindings(pat, decls) in
+          "(" ++ test ++ ") ? (long long)(intptr_t)({ " ++ binds ++
+            "(long long)(intptr_t)(" ++ compile_expr(body, decls, rdecls) ++ "); }) : " ++
+            compile_arms(rest, decls, rdecls)
+      }
+  }
+
+# Compile a pattern test against scrutinee variable `_s`. Flat patterns
+# only in v3.17 (no nested PCtor sub-patterns). PWild and PVar always
+# match; PCtor matches when `_s->tag == <ctor's tag>`.
+fn compile_pattern_test(pat: Pattern, decls: TypeDecls) : String =
+  match pat {
+    PWild => "1";
+    PVar(_n) => "1";
+    PCtor(name, _pats) =>
+      let tag : Int = lookup_tag(decls, name, 0) in
+      "_s->tag == " ++ int_to_string(tag)
+  }
+
+# Compile any bindings introduced by a pattern. Each sub-pattern in a
+# PCtor's argument list, if it's a PVar, binds the corresponding
+# `_s->fields[i]` to that name.
+fn compile_pattern_bindings(pat: Pattern, _decls: TypeDecls) : String =
+  match pat {
+    PWild => "";
+    PVar(name) => "long long " ++ name ++ " = (long long)(intptr_t)(_s); ";
+    PCtor(_name, pats) => compile_field_bindings(pats, 0)
+  }
+
+# Walk a Patterns list, binding any PVar children to `_s->fields[i]`.
+fn compile_field_bindings(pats: Patterns, i: Int) : String =
+  match pats {
+    PtsNil => "";
+    PtsCons(p, rest) =>
+      match p {
+        PVar(name) =>
+          "long long " ++ name ++ " = _s->fields[" ++ int_to_string(i) ++ "]; " ++
+            compile_field_bindings(rest, i + 1);
+        # PWild or nested patterns: no binding emitted in v3.17.
+        _ => compile_field_bindings(rest, i + 1)
+      }
+  }
+
+fn compile_params_str(params: Params) : String =
+  match params {
+    PNil => "void";
+    PCons(n, PNil) => "long long " ++ n;
+    PCons(n, rest) => "long long " ++ n ++ ", " ++ compile_params_str(rest)
+  }
+
+fn compile_fn_forward(fd: FnDecl) : String =
+  match fd {
+    FnDecl(name, params, _body) =>
+      "long long " ++ name ++ "(" ++ compile_params_str(params) ++ ");"
+  }
+
+fn compile_fn_body(fd: FnDecl, decls: TypeDecls, rdecls: RecordDecls) : String =
+  match fd {
+    FnDecl(name, params, body) =>
+      "long long " ++ name ++ "(" ++ compile_params_str(params) ++
+        ") { return (long long)(intptr_t)(" ++ compile_expr(body, decls, rdecls) ++ "); }"
+  }
+
+fn emit_forwards(fns: FnDecls, nl: String) : String =
+  match fns {
+    FDNil => "";
+    FDCons(f, FDNil) => compile_fn_forward(f);
+    FDCons(f, rest) => compile_fn_forward(f) ++ nl ++ emit_forwards(rest, nl)
+  }
+
+fn emit_bodies(fns: FnDecls, decls: TypeDecls, rdecls: RecordDecls, nl: String) : String =
+  match fns {
+    FDNil => "";
+    FDCons(f, FDNil) => compile_fn_body(f, decls, rdecls);
+    FDCons(f, rest) => compile_fn_body(f, decls, rdecls) ++ nl ++ emit_bodies(rest, decls, rdecls, nl)
+  }
+
+# The q_value_t runtime: a heap cell carrying a tag and a flexible
+# field array.  Emitted ONLY when type decls are present (programs
+# without ADTs stay pure-numeric). Mirrors quartz_min.glass v3.8/v3.12.
+fn emit_runtime(decls: TypeDecls, nl: String) : String =
+  match decls {
+    TDNil => "";
+    _ =>
+      "#include <stdlib.h>" ++ nl ++
+      "typedef struct q_value { long tag; long long fields[8]; } q_value_t;" ++ nl ++
+      "static q_value_t *q_ctor_alloc(long tag, int argc, ...) {" ++ nl ++
+      "    q_value_t *v = (q_value_t *)malloc(sizeof(q_value_t));" ++ nl ++
+      "    v->tag = tag;" ++ nl ++
+      "    va_list ap; va_start(ap, argc);" ++ nl ++
+      "    for (int i = 0; i < argc; i++) v->fields[i] = va_arg(ap, long long);" ++ nl ++
+      "    va_end(ap);" ++ nl ++
+      "    return v;" ++ nl ++
+      "}" ++ nl
+  }
+
+# v3.19: string-concatenation runtime helper. Emitted ONLY when the
+# program uses string ops (EConcat) — checked by walking the AST.
+# Allocates a fresh buffer holding `a ++ b`, NUL-terminated.
+fn emit_str_runtime(nl: String) : String =
+  "#include <string.h>" ++ nl ++
+  "static char *q_str_concat(const char *a, const char *b) {" ++ nl ++
+  "    size_t la = strlen(a), lb = strlen(b);" ++ nl ++
+  "    char *r = (char *)malloc(la + lb + 1);" ++ nl ++
+  "    memcpy(r, a, la); memcpy(r + la, b, lb); r[la + lb] = '\\0';" ++ nl ++
+  "    return r;" ++ nl ++
+  "}" ++ nl
+
+# Does this expression unambiguously produce a String result? Walks
+# the outermost form through binders (let, if, match), follows ECall
+# via fn_returns_string (v3.20), and consults RecordDecls for EField.
+#
+# v3.20 limitation: fn_returns_string does ONE-pass analysis with an
+# FDNil-break to avoid infinite recursion. A fn that calls another
+# string-returning fn (chain length 2+) won't be detected. The common
+# direct case (a fn whose body is a literal `++`) works fine.
+fn is_string_expr(e: Expr, fns: FnDecls, rdecls: RecordDecls) : Bool =
+  match e {
+    EStr(_) => true;
+    EConcat(_, _) => true;
+    ELet(_, _, body) => is_string_expr(body, fns, rdecls);
+    EIf(_, t, _) => is_string_expr(t, fns, rdecls);
+    EMatch(_, arms) => is_string_arms(arms, fns, rdecls);
+    ECall(name, _) => fn_returns_string(name, fns, rdecls);
+    EField(_, fname) =>
+      let tname : String = lookup_field_type(rdecls, fname) in
+      tname == "String";
+    _ => false
+  }
+
+fn is_string_arms(arms: MatchArms, fns: FnDecls, rdecls: RecordDecls) : Bool =
+  match arms {
+    MANil => false;
+    MACons(arm, _rest) =>
+      match arm {
+        MArm(_, body) => is_string_expr(body, fns, rdecls)
+      }
+  }
+
+# Look up a fn by name, evaluate its body's result type. Uses FDNil
+# when recursing into the body to prevent infinite recursion in
+# (self-)recursive fns — see v3.20 limitation above.
+fn fn_returns_string(name: String, fns: FnDecls, rdecls: RecordDecls) : Bool =
+  match fns {
+    FDNil => false;
+    FDCons(fd, rest) =>
+      match fd {
+        FnDecl(fname, _params, body) =>
+          if fname == name then is_string_expr(body, FDNil, rdecls)
+          else fn_returns_string(name, rest, rdecls)
+      }
+  }
+
+# Look up the declared type of a field in any record. Returns the type
+# name (e.g. "Int", "String") or empty string if not found. v3.20:
+# stops at the first record containing the field (same as
+# lookup_field_idx's limitation that field names must be unique).
+fn lookup_field_type(rds: RecordDecls, fname: String) : String =
+  match rds {
+    RDNil => "";
+    RDCons(rd, rest) =>
+      match rd {
+        RecordDecl(_rname, fdefs) =>
+          let local : String = lookup_field_type_in(fdefs, fname) in
+          if string_length(local) > 0 then local
+          else lookup_field_type(rest, fname)
+      }
+  }
+
+fn lookup_field_type_in(fdefs: FieldDefs, fname: String) : String =
+  match fdefs {
+    FDfNil => "";
+    FDfCons(fd, rest) =>
+      match fd {
+        FieldDef(n, t) =>
+          if n == fname then t
+          else lookup_field_type_in(rest, fname)
+      }
+  }
+
+# Does any sub-expression in the program use EConcat? If so, we need
+# the q_str_concat runtime even if the final result is numeric. Walks
+# the entire program AST.
+fn uses_concat_in_expr(e: Expr) : Bool =
+  match e {
+    EConcat(_, _) => true;
+    EAdd(a, b) => if uses_concat_in_expr(a) then true else uses_concat_in_expr(b);
+    ESub(a, b) => if uses_concat_in_expr(a) then true else uses_concat_in_expr(b);
+    EMul(a, b) => if uses_concat_in_expr(a) then true else uses_concat_in_expr(b);
+    ELt(a, b) => if uses_concat_in_expr(a) then true else uses_concat_in_expr(b);
+    EGt(a, b) => if uses_concat_in_expr(a) then true else uses_concat_in_expr(b);
+    EIf(c, t, f) =>
+      if uses_concat_in_expr(c) then true
+      else if uses_concat_in_expr(t) then true
+      else uses_concat_in_expr(f);
+    ELet(_, v, b) =>
+      if uses_concat_in_expr(v) then true else uses_concat_in_expr(b);
+    ECall(_, args) => uses_concat_in_args(args);
+    EMatch(s, arms) =>
+      if uses_concat_in_expr(s) then true else uses_concat_in_arms(arms);
+    ERecord(_, fields) => uses_concat_in_fields(fields);
+    EField(e2, _) => uses_concat_in_expr(e2);
+    _ => false
+  }
+
+fn uses_concat_in_args(args: Args) : Bool =
+  match args {
+    ANil => false;
+    ACons(x, rest) =>
+      if uses_concat_in_expr(x) then true else uses_concat_in_args(rest)
+  }
+
+fn uses_concat_in_arms(arms: MatchArms) : Bool =
+  match arms {
+    MANil => false;
+    MACons(arm, rest) =>
+      match arm {
+        MArm(_, body) =>
+          if uses_concat_in_expr(body) then true
+          else uses_concat_in_arms(rest)
+      }
+  }
+
+fn uses_concat_in_fields(fields: Fields) : Bool =
+  match fields {
+    FlNil => false;
+    FlCons(f, rest) =>
+      match f {
+        Field(_, e) =>
+          if uses_concat_in_expr(e) then true
+          else uses_concat_in_fields(rest)
+      }
+  }
+
+fn uses_concat_in_fns(fns: FnDecls) : Bool =
+  match fns {
+    FDNil => false;
+    FDCons(fd, rest) =>
+      match fd {
+        FnDecl(_, _, body) =>
+          if uses_concat_in_expr(body) then true
+          else uses_concat_in_fns(rest)
+      }
+  }
+
+fn compile_program(prog: Program, nl: String) : String =
+  match prog {
+    Program(decls, rdecls, fns, final) =>
+      let nl_escape : String = "\\" ++ "n" in
+      # v3.18: combine user TypeDecls with auto-generated TypeDecls
+      # from RecordDecls so the existing tag allocation + ctor-lookup
+      # works for both. Records get tags following user-defined ADT
+      # variants, in declaration order.
+      let combined : TypeDecls =
+        typedecls_append(decls, records_as_typedecls(rdecls)) in
+      let stdarg : String =
+        match combined {
+          TDNil => "";
+          _ => "#include <stdarg.h>" ++ nl
+        } in
+      let runtime : String = emit_runtime(combined, nl) in
+      # v3.19: emit string runtime if EConcat appears anywhere in the
+      # program (final expression or any fn body).
+      let uses_concat : Bool =
+        if uses_concat_in_expr(final) then true
+        else uses_concat_in_fns(fns) in
+      let str_runtime : String =
+        if uses_concat then emit_str_runtime(nl) else "" in
+      let forwards : String = emit_forwards(fns, nl) in
+      let bodies : String = emit_bodies(fns, combined, rdecls, nl) in
+      # v3.19: result-type dispatch for printf format. String results
+      # get `%s` and a (char *) cast; numeric results get the v3.18 `%lld`.
+      let result_is_str : Bool = is_string_expr(final, fns, rdecls) in
+      let printf_call : String =
+        if result_is_str then
+          "    printf(\"%s" ++ nl_escape ++ "\", (char *)(intptr_t)_result);"
+        else
+          "    printf(\"%lld" ++ nl_escape ++ "\", _result);" in
+      "#include <stdio.h>" ++ nl ++
+      "#include <stdint.h>" ++ nl ++
+      stdarg ++
+      runtime ++
+      str_runtime ++
+      forwards ++ nl ++
+      bodies ++ nl ++
+      "int main(void) {" ++ nl ++
+      "    long long _result = (long long)(intptr_t)(" ++ compile_expr(final, combined, rdecls) ++ ");" ++ nl ++
+      printf_call ++ nl ++
+      "    return 0;" ++ nl ++
+      "}" ++ nl
+  }
+
+# --- Build pipeline (v3.13 builtins) -----------------------------------------
+
+fn build_and_run(c_source: String, src_path: String, bin_path: String)
+    : Result<String, String> !{File, Process} =
+  match write_file(src_path, c_source) {
+    Err(msg) => Err("write_file: " ++ msg);
+    Ok(_) =>
+      match run_command("cc", [src_path, "-o", bin_path]) {
+        Err(msg) => Err("cc launch: " ++ msg);
+        Ok(triple1) =>
+          match triple1 {
+            (code1, _out1, err1) =>
+              if code1 == 0 then
+                match run_command(bin_path, []) {
+                  Err(msg) => Err("binary launch: " ++ msg);
+                  Ok(triple2) =>
+                    match triple2 {
+                      (code2, out2, _err2) =>
+                        if code2 == 0 then Ok(out2)
+                        else Err("binary exit " ++ int_to_string(code2))
+                    }
+                }
+              else Err("cc exit " ++ int_to_string(code1) ++ ": " ++ err1)
+          }
+      }
+  }
+
+# --- Driver ------------------------------------------------------------------
+
+let nl : String = "
+"
+
+# Parse source strings and run them end-to-end. Cases cover v3.14
+# arithmetic + v3.15 identifiers/let + v3.16 fn decls/ECall/if/comparison.
+let src1 : String = "1 + 2 * 3"                              # → 7   (v3.14)
+let src2 : String = "(1 + 2) * 3"                            # → 9   (v3.14)
+let src3 : String = "10 - 4 - 2"                             # → 4   (v3.14)
+let src4 : String = "2 * 3 + 4 * 5"                          # → 26  (v3.14)
+let src5 : String = "let x = 5 in x + 10"                    # → 15  (v3.15)
+let src6 : String = "let a = 2 in let b = 3 in a * b + 1"    # → 7   (v3.15)
+let src7 : String = "let x = 10 in let y = x - 3 in x * y"   # → 70  (v3.15)
+# v3.16 — fn decls and calls:
+let src8 : String  = "fn twice(x) = x * 2  twice(5)"                          # → 10
+let src9 : String  = "fn add(a, b) = a + b  add(3, 4)"                        # → 7
+let src10 : String = "if 3 < 5 then 100 else 200"                             # → 100
+let src11 : String = "fn fact(n) = if n < 2 then 1 else n * fact(n - 1)  fact(5)"  # → 120
+let src12 : String = "fn sumto(n) = if n < 1 then 0 else n + sumto(n - 1)  sumto(10)"  # → 55
+# v3.17 — ADTs + match:
+let src13 : String =
+  "type Maybe = | Some(Int) | None  match Some(42) { Some(n) => n; None => 0 }"
+  # → 42
+let src14 : String =
+  "type Pair = | Pair(Int, Int)  match Pair(3, 4) { Pair(a, b) => a + b }"
+  # → 7
+let src15 : String =
+  "type Maybe = | Some(Int) | None  fn unwrap(o) = match o { Some(n) => n; None => 0 }  unwrap(Some(99))"
+  # → 99
+# v3.18 — records + field access:
+let src16 : String =
+  "type Point = { x: Int, y: Int }  Point { x: 3, y: 4 }.x"
+  # → 3 (record literal + field access)
+let src17 : String =
+  "type Pair = { a: Int, b: Int }  fn sum(p) = p.a + p.b  sum(Pair { a: 10, b: 20 })"
+  # → 30 (record in fn body)
+let src18 : String =
+  "type Rect = { w: Int, h: Int }  let r = Rect { w: 5, h: 4 } in r.w * r.h"
+  # → 20 (let-bound record + multi-field access)
+# v3.19 — string literals + EConcat:
+let src19 : String = "\"hello\""
+  # → "hello"
+let src20 : String = "\"hello\" ++ \" \" ++ \"world\""
+  # → "hello world"
+let src21 : String = "let g = \"hi\" in g ++ \"!\""
+  # → "hi!"
+let src22 : String = "let a = \"foo\" in let b = \"bar\" in a ++ b ++ \"!\""
+  # → "foobar!"
+# v3.20 — generics + multi-type fields + fn return-type tracking:
+let src23 : String =
+  "type Box<T> = | Box(Int)  match Box(42) { Box(n) => n }"
+  # → 42 (generic type decl; type param erased at codegen)
+let src24 : String =
+  "fn id<T>(x) = x  id(7)"
+  # → 7 (generic fn decl)
+let src25 : String =
+  "fn greet(n) = \"hi, \" ++ n  greet(\"Glass\")"
+  # → "hi, Glass" (fn returns string; result-type inference picks %s)
+let src26 : String =
+  "type Person = { name: String, age: Int }  Person { name: \"Alice\", age: 30 }.name"
+  # → "Alice" (multi-type record; string field access; result-type inference)
+
+fn parse_and_show(label: String, src: String) : String !{File, Process} =
+  let prog : Program = parse_program_source(src) in
+  let c : String = compile_program(prog, nl) in
+  let res : Result<String, String> = build_and_run(
+    c,
+    "/tmp/qp_" ++ label ++ ".c",
+    "/tmp/qp_" ++ label
+  ) in
+  match res {
+    Ok(stdout) => label ++ " (" ++ src ++ ") => " ++ stdout;
+    Err(msg) => label ++ " FAILED: " ++ msg
+  }
+
+# v4.0: file-mode dispatch (Stage 5 endpoint). If /tmp/qp_input.glass
+# exists, treat its contents as a Glass source string, compile it
+# through the same parse → C → cc → binary pipeline as the demos, and
+# print `COMPILED: <stdout>`. If the file doesn't exist, run the 26
+# regression demos as in v3.14–v3.20.
+#
+# This is what makes Stage 5 work end-to-end: selfcompile.glass writes
+# a user program to /tmp/qp_input.glass, invokes glass on this file
+# via run_command, and reads the captured `COMPILED:` line. The whole
+# self-compile pipeline runs from Glass-driven scripts.
+
+let input_attempt : Result<String, String> = read_file("/tmp/qp_input.glass")
+
+let final : String =
+  match input_attempt {
+    Ok(src) =>
+      # File mode: compile the user's source and report.
+      # Self-cleanup: delete the trigger file so subsequent invocations
+      # default to demo mode unless re-written by the caller.
+      let _cleanup : Result<(Int, String, String), String> =
+        run_command("rm", ["/tmp/qp_input.glass"]) in
+      let prog : Program = parse_program_source(src) in
+      let c : String = compile_program(prog, nl) in
+      let res : Result<String, String> =
+        build_and_run(c, "/tmp/qp_main.c", "/tmp/qp_main") in
+      match res {
+        Ok(stdout) => print("COMPILED: " ++ stdout);
+        Err(msg) => print("FAILED: " ++ msg)
+      };
+    Err(_) =>
+      # Demo mode: run the 26 regression demos (v3.14-v3.20).
+      let _p1 : String = print(parse_and_show("a", src1)) in
+      let _p2 : String = print(parse_and_show("b", src2)) in
+      let _p3 : String = print(parse_and_show("c", src3)) in
+      let _p4 : String = print(parse_and_show("d", src4)) in
+      let _p5 : String = print(parse_and_show("e", src5)) in
+      let _p6 : String = print(parse_and_show("f", src6)) in
+      let _p7 : String = print(parse_and_show("g", src7)) in
+      let _p8 : String = print(parse_and_show("h", src8)) in
+      let _p9 : String = print(parse_and_show("i", src9)) in
+      let _p10 : String = print(parse_and_show("j", src10)) in
+      let _p11 : String = print(parse_and_show("k", src11)) in
+      let _p12 : String = print(parse_and_show("l", src12)) in
+      let _p13 : String = print(parse_and_show("m", src13)) in
+      let _p14 : String = print(parse_and_show("n", src14)) in
+      let _p15 : String = print(parse_and_show("o", src15)) in
+      let _p16 : String = print(parse_and_show("p", src16)) in
+      let _p17 : String = print(parse_and_show("q", src17)) in
+      let _p18 : String = print(parse_and_show("r", src18)) in
+      let _p19 : String = print(parse_and_show("s", src19)) in
+      let _p20 : String = print(parse_and_show("t", src20)) in
+      let _p21 : String = print(parse_and_show("u", src21)) in
+      let _p22 : String = print(parse_and_show("v", src22)) in
+      let _p23 : String = print(parse_and_show("w", src23)) in
+      let _p24 : String = print(parse_and_show("x", src24)) in
+      let _p25 : String = print(parse_and_show("y", src25)) in
+      let _p26 : String = print(parse_and_show("z", src26)) in
+      "v4.0 parser pipeline complete (demo mode, 26 cases)"
+  }
+
+final

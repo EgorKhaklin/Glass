@@ -1,0 +1,67 @@
+# =============================================================================
+# letqmark.glass — demonstrating `let?` syntactic sugar for Option threading.
+#
+# Mirror of `let*` (v2.4) for Option<T>. Without sugar, chained Option calls
+# require explicit match-on-Option:
+#
+#   match lookup_a(k) {
+#     None    => None;
+#     Some(a) =>
+#       match lookup_b(a) {
+#         None    => None;
+#         Some(b) => Some(b + 1)
+#       }
+#   }
+#
+# Three lines of ceremony per Some-unwrap. With `let?`:
+#
+#   let? a = lookup_a(k) in
+#   let? b = lookup_b(a) in
+#   Some(b + 1)
+#
+# Pure parse-time desugar. Mirror of let*'s shape but desugars to
+# None/Some constructors instead of Err/Ok. Both runtimes support it.
+# =============================================================================
+
+# A tiny lookup table: list of key-value pairs.
+type Entry = | Entry(String, Int)
+
+fn find(table: List<Entry>, key: String) : Option<Int> =
+  match table {
+    []           => None;
+    [Entry(k, v), ...rest] =>
+      if k == key then Some(v)
+      else find(rest, key)
+  }
+
+# Compose three lookups; short-circuit on the first miss.
+fn sum_three(t: List<Entry>, ka: String, kb: String, kc: String) : Option<Int> =
+  let? a = find(t, ka) in
+  let? b = find(t, kb) in
+  let? c = find(t, kc) in
+  Some(a + b + c)
+
+# Tuple destructuring in let?: any pattern works (mirror of let*).
+fn first_two_then_third(
+  t: List<Entry>,
+  ka: String,
+  kb: String,
+  kc: String
+) : Option<(Int, Int)> =
+  let? a = find(t, ka) in
+  let? b = find(t, kb) in
+  let? c = find(t, kc) in
+  Some((a + b, c))
+
+let table = [
+  Entry("port", 8080),
+  Entry("workers", 4),
+  Entry("timeout", 30)
+]
+
+let r1 = sum_three(table, "port", "workers", "timeout")    # Some(8114)
+let r2 = sum_three(table, "port", "workers", "missing")    # None
+let r3 = first_two_then_third(table, "port", "workers", "timeout")  # Some((8084, 30))
+
+# r1, r3 returned — print the Option<Int> one for the regression check
+r1

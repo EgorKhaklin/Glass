@@ -1,0 +1,726 @@
+# =============================================================================
+# quartz_min.glass — Quartz, written in Glass (v3.12).
+#
+# Sixth iteration of Quartz-in-Glass.
+#   v3.6: arithmetic + comparison + if
+#   v3.7: identifiers, let, fn calls, recursive fns
+#   v3.8: ADTs + pattern matching
+#   v3.9: records + field access
+#   v3.11: strings (EStr, EConcat, String result type)
+#   v3.12: multi-type fields + generics — this release
+#
+# v3.12 closes two roadmap items with one small codegen fix. The
+# v3.9/v3.11 design of "uniform long-long storage with cast-at-use-site"
+# already supports BOTH multi-type fields AND generic functions; only
+# the ctor-arg cast was missing the intptr_t bridge. With that fix:
+#
+#   - ADT fields can hold any type (Int, String, q_value_t*) — the user
+#     just uses the appropriate Expr variant (EInt, EStr, ECtor) in
+#     the ECtor args, and casts at the consumer (EConcat, EAdd, etc.)
+#
+#   - Generic functions work via type erasure: a fn compiled once as
+#     `long long f(long long x)` can be called with Int or String
+#     thanks to the caller-side cast pattern in ECall + the use-site
+#     cast at the result.
+#
+# No new AST variants. No new top-level types. No CType-on-every-field
+# machinery. The boundary discipline that v3.9 introduced for records
+# and v3.11 extended for strings was already enough — v3.12 just
+# completes the pattern at ECtor.
+#
+# Still deferred to future releases:
+#   - String literal escape sequences (EStr emits literal content)
+#   - Bool type as a third CType (would need %d format)
+#   - Nested PCtor patterns (flat patterns still only)
+#   - Refinement types in the compiled output
+# =============================================================================
+
+# --- AST ---------------------------------------------------------------------
+
+# Patterns. PWild matches anything (no binding); PVar binds the scrutinee;
+# PCtor matches a specific constructor and binds its fields via nested
+# patterns (which in v3.8 are limited to PWild/PVar — no nested PCtor).
+type Pattern =
+  | PWild
+  | PVar(String)
+  | PCtor(String, List<Pattern>)
+
+# A match arm: a pattern + the expression to evaluate if it matches.
+type MatchArm = | MArm(Pattern, Expr)
+
+# Expression AST. v3.11 adds EStr (string literal) and EConcat
+# (string concatenation) to the v3.9 set.
+type Expr =
+  | EInt(Int)
+  | EStr(String)
+  | EAdd(Expr, Expr)
+  | ESub(Expr, Expr)
+  | EMul(Expr, Expr)
+  | ELt(Expr, Expr)
+  | EGt(Expr, Expr)
+  | EIf(Expr, Expr, Expr)
+  | EVar(String)
+  | ELet(String, Expr, Expr)
+  | ECall(String, List<Expr>)
+  | ECtor(String, List<Expr>)
+  | EMatch(Expr, List<MatchArm>)
+  | ERecord(String, List<Expr>)
+  | EField(Expr, String, String)
+  | EConcat(Expr, Expr)
+
+# Result type for a Program — determines how the final value gets
+# printed. v3.10 supports Int (printf %lld) and String (printf %s);
+# future v3.x can extend to Bool and other primitives.
+type CType =
+  | CInt
+  | CString
+
+# An ADT variant: constructor name + payload arity. v3.8 represents
+# every payload field as long long; v3.9 will track field types.
+type Variant = | Variant(String, Int)
+
+# An ADT type declaration: name + list of variants. v3.8 ignores the
+# type name in codegen (tags are globally unique); the name is kept
+# for source-level readability and future record support.
+type TypeDecl = | TypeDecl(String, List<Variant>)
+
+# A record type declaration: name + ordered list of field names. v3.9
+# represents records as single-variant ADTs internally — they share the
+# global tag space with ADT variants (records come AFTER all ADT
+# variants in tag ordering).
+type RecordDecl = | RecordDecl(String, List<String>)
+
+# A top-level function declaration. Body may reference the parameters
+# via EVar. v3.9 still keeps fns Int-only (params and return long long).
+type FnDecl = | FnDecl(String, List<String>, Expr)
+
+# A complete program: type decls + record decls + fn decls + final
+# expression + result type. v3.11 adds result_type so compile_program
+# can pick the right printf format (%lld for Int, %s for String).
+type Program = | Program(List<TypeDecl>, List<RecordDecl>, List<FnDecl>, Expr, CType)
+
+# --- Constructor tag lookup --------------------------------------------------
+#
+# Tags are assigned by walking all TypeDecls in source order, giving
+# the i-th constructor across all decls the tag i. No precomputed
+# table — we re-walk on each lookup (compile-time, small programs).
+
+fn lookup_in_variants(name: String, variants: List<Variant>, next_tag: Int) : Int =
+  match variants {
+    [] => 0 - 1;
+    [v, ...rest] =>
+      match v {
+        Variant(v_name, arity) =>
+          if v_name == name then next_tag
+          else lookup_in_variants(name, rest, next_tag + 1)
+      }
+  }
+
+fn count_variants(variants: List<Variant>) : Int =
+  match variants {
+    [] => 0;
+    [_, ...rest] => 1 + count_variants(rest)
+  }
+
+# Find the global tag for `name`. Returns -1 if no TypeDecl has that
+# constructor (which means a typo in the AST — should not happen for
+# programs the host type-checker has accepted).
+fn lookup_tag(name: String, decls: List<TypeDecl>, next_tag: Int) : Int =
+  match decls {
+    [] => 0 - 1;
+    [d, ...rest] =>
+      match d {
+        TypeDecl(_, variants) =>
+          let r : Int = lookup_in_variants(name, variants, next_tag) in
+          if r >= 0 then r
+          else lookup_tag(name, rest, next_tag + count_variants(variants))
+      }
+  }
+
+# --- Record tag + field lookup (v3.9) ----------------------------------------
+#
+# Records share the global tag space with ADT variants. After all
+# TypeDecls are tagged 0..N, RecordDecls get tags N..N+M (one tag per
+# record decl, since records are single-variant ADTs).
+
+# Count total ADT variants across all TypeDecls — used as the starting
+# tag for record tag allocation.
+fn count_type_variants(decls: List<TypeDecl>) : Int =
+  match decls {
+    [] => 0;
+    [d, ...rest] =>
+      match d {
+        TypeDecl(_, vs) => count_variants(vs) + count_type_variants(rest)
+      }
+  }
+
+# Find a record's tag by walking the RecordDecls list. Records get
+# sequential tags starting from `next_tag` (which the caller computes
+# as count_type_variants(typedecls)).
+fn lookup_record_tag(name: String, recs: List<RecordDecl>, next_tag: Int) : Int =
+  match recs {
+    [] => 0 - 1;
+    [r, ...rest] =>
+      match r {
+        RecordDecl(r_name, _) =>
+          if r_name == name then next_tag
+          else lookup_record_tag(name, rest, next_tag + 1)
+      }
+  }
+
+# Find a field's index within an ordered list of field names. Used to
+# resolve `p.x` to `_scrut->fields[<idx>]`.
+fn field_index_in_list(name: String, fields: List<String>, idx: Int) : Int =
+  match fields {
+    [] => 0 - 1;
+    [f, ...rest] =>
+      if f == name then idx
+      else field_index_in_list(name, rest, idx + 1)
+  }
+
+# Find a (record_name, field_name) pair's index. Walks records, then
+# walks fields within the matching record.
+fn lookup_field_index(rec_name: String, field_name: String, recs: List<RecordDecl>) : Int =
+  match recs {
+    [] => 0 - 1;
+    [r, ...rest] =>
+      match r {
+        RecordDecl(r_name, fields) =>
+          if r_name == rec_name then field_index_in_list(field_name, fields, 0)
+          else lookup_field_index(rec_name, field_name, rest)
+      }
+  }
+
+# Count the fields of a record by name. Used to set q_ctor_alloc's
+# num_fields argument for ERecord.
+fn record_arity(rec_name: String, recs: List<RecordDecl>) : Int =
+  match recs {
+    [] => 0 - 1;
+    [r, ...rest] =>
+      match r {
+        RecordDecl(r_name, fields) =>
+          if r_name == rec_name then count_field_names(fields)
+          else record_arity(rec_name, rest)
+      }
+  }
+
+fn count_field_names(fields: List<String>) : Int =
+  match fields {
+    [] => 0;
+    [_, ...rest] => 1 + count_field_names(rest)
+  }
+
+# --- Helpers -----------------------------------------------------------------
+
+# Recursively compile a List<Expr> and join with ", ". Each compiled
+# arg is wrapped in `(long long)(...)` so it fits the variadic
+# q_ctor_alloc's expectation.
+# Recursively compile a List<Expr> and join with ", ". Each compiled
+# arg is wrapped in `(long long)(intptr_t)(...)` so pointer-typed
+# payloads (strings, nested ADTs, records) fit cleanly into the
+# variadic q_ctor_alloc's `long long` slots. For Int payloads the
+# intptr_t cast is a no-op at runtime. v3.12: completes the uniform
+# long-long boundary that v3.9 + v3.11 established for ELet, ECall,
+# and main()'s _result.
+fn compile_args_for_ctor(args: List<Expr>, decls: List<TypeDecl>, recs: List<RecordDecl>) : String =
+  match args {
+    [] => "";
+    [x, ...[]] => "(long long)(intptr_t)(" ++ compile_expr(x, decls, recs) ++ ")";
+    [x, ...rest] => "(long long)(intptr_t)(" ++ compile_expr(x, decls, recs) ++ "), " ++
+                    compile_args_for_ctor(rest, decls, recs)
+  }
+
+# Recursively compile a List<Expr> and join with ", ". Used for ECall —
+# each arg goes through `(long long)(intptr_t)(...)` so pointer-typed
+# values (records, ADT instances) fit cleanly into long long fn params.
+# For Int values the casts are no-ops at runtime; gcc -O2 optimizes
+# them away entirely.
+fn compile_args(args: List<Expr>, decls: List<TypeDecl>, recs: List<RecordDecl>) : String =
+  match args {
+    [] => "";
+    [x, ...[]] => "(long long)(intptr_t)(" ++ compile_expr(x, decls, recs) ++ ")";
+    [x, ...rest] => "(long long)(intptr_t)(" ++ compile_expr(x, decls, recs) ++ "), " ++
+                    compile_args(rest, decls, recs)
+  }
+
+# Count the elements of a List<Expr>. Used to compute ECtor arity.
+fn list_len(args: List<Expr>) : Int =
+  match args {
+    [] => 0;
+    [_, ...rest] => 1 + list_len(rest)
+  }
+
+# --- Pattern compilation -----------------------------------------------------
+
+# Generate a C boolean expression that tests whether the scrutinee
+# `_scrut` matches the pattern. PWild and PVar always match (return "1").
+# PCtor tests the tag.
+fn compile_pattern_test(p: Pattern, decls: List<TypeDecl>) : String =
+  match p {
+    PWild => "1";
+    PVar(_) => "1";
+    PCtor(name, _) =>
+      let tag : Int = lookup_tag(name, decls, 0) in
+      "_scrut->tag == " ++ int_to_string(tag)
+  }
+
+# Emit C declarations that bind pattern variables from the scrutinee
+# `_scrut`. For PVar at top level, binds to the full scrutinee
+# (cast through intptr_t for q_value_t* — v3.8 has no top-level PVar
+# binding in the demos, so we keep it simple as "bind to int64 cast of
+# the scrutinee pointer," which is rarely useful but well-defined).
+fn compile_pattern_bindings(p: Pattern, decls: List<TypeDecl>) : String =
+  match p {
+    PWild => "";
+    PVar(name) =>
+      "long long " ++ name ++ " = (long long)(intptr_t)_scrut;";
+    PCtor(_, sub) => compile_field_bindings(sub, 0)
+  }
+
+# Walk a list of sub-patterns inside a PCtor, emitting `long long`
+# bindings indexed into _scrut->fields[i]. v3.8 only handles PWild
+# and PVar at this level (nested PCtor is rejected silently — the
+# C output will be invalid, but the host type-checker would have
+# already validated patterns; nested PCtor is not produced by the
+# v3.8 demos).
+fn compile_field_bindings(pats: List<Pattern>, idx: Int) : String =
+  match pats {
+    [] => "";
+    [p, ...rest] =>
+      let this_binding : String = compile_field_binding(p, idx) in
+      this_binding ++ " " ++ compile_field_bindings(rest, idx + 1)
+  }
+
+fn compile_field_binding(p: Pattern, idx: Int) : String =
+  match p {
+    PWild => "";
+    PVar(name) =>
+      "long long " ++ name ++ " = (long long)_scrut->fields[" ++ int_to_string(idx) ++ "];";
+    PCtor(_, _) => ""
+  }
+
+# --- Match compilation -------------------------------------------------------
+
+# Emit the if/else chain for a list of match arms. Final fallthrough
+# calls exit(1) — non-exhaustive matches are runtime errors.
+fn compile_arms(arms: List<MatchArm>, decls: List<TypeDecl>, recs: List<RecordDecl>) : String =
+  match arms {
+    [] => "{ fprintf(stderr, \"quartz: non-exhaustive match\"); exit(1); }";
+    [a, ...rest] =>
+      match a {
+        MArm(p, body) =>
+          "if (" ++ compile_pattern_test(p, decls) ++ ") { " ++
+            compile_pattern_bindings(p, decls) ++ " " ++
+            "_result = (long long)(intptr_t)(" ++ compile_expr(body, decls, recs) ++ "); } else " ++
+          compile_arms(rest, decls, recs)
+      }
+  }
+
+# --- Expression compilation --------------------------------------------------
+
+fn compile_expr(e: Expr, decls: List<TypeDecl>, recs: List<RecordDecl>) : String =
+  match e {
+    EInt(n) => int_to_string(n);
+    EStr(s) => "\"" ++ s ++ "\"";
+    EAdd(a, b) => "(" ++ compile_expr(a, decls, recs) ++ " + " ++ compile_expr(b, decls, recs) ++ ")";
+    ESub(a, b) => "(" ++ compile_expr(a, decls, recs) ++ " - " ++ compile_expr(b, decls, recs) ++ ")";
+    EMul(a, b) => "(" ++ compile_expr(a, decls, recs) ++ " * " ++ compile_expr(b, decls, recs) ++ ")";
+    ELt(a, b)  => "(" ++ compile_expr(a, decls, recs) ++ " < " ++ compile_expr(b, decls, recs) ++ ")";
+    EGt(a, b)  => "(" ++ compile_expr(a, decls, recs) ++ " > " ++ compile_expr(b, decls, recs) ++ ")";
+    EIf(c, t, f) =>
+      "(" ++ compile_expr(c, decls, recs) ++ " ? " ++ compile_expr(t, decls, recs) ++ " : " ++ compile_expr(f, decls, recs) ++ ")";
+    EVar(name) => name;
+    ELet(name, v, b) =>
+      "({ long long " ++ name ++ " = (long long)(intptr_t)(" ++ compile_expr(v, decls, recs) ++ "); " ++ compile_expr(b, decls, recs) ++ "; })";
+    ECall(name, args) => name ++ "(" ++ compile_args(args, decls, recs) ++ ")";
+    ECtor(name, args) =>
+      let tag : Int = lookup_tag(name, decls, 0) in
+      let arity : Int = list_len(args) in
+      let args_str : String =
+        if arity > 0 then ", " ++ compile_args_for_ctor(args, decls, recs) else "" in
+      "q_ctor_alloc(" ++ int_to_string(tag) ++ ", " ++ int_to_string(arity) ++ args_str ++ ")";
+    EMatch(scrut, arms) =>
+      "({ q_value_t* _scrut = (q_value_t*)(intptr_t)(" ++ compile_expr(scrut, decls, recs) ++
+      "); long long _result; " ++ compile_arms(arms, decls, recs) ++ " _result; })";
+    ERecord(rec_name, args) =>
+      let type_count : Int = count_type_variants(decls) in
+      let tag : Int = lookup_record_tag(rec_name, recs, type_count) in
+      let arity : Int = list_len(args) in
+      let args_str : String =
+        if arity > 0 then ", " ++ compile_args_for_ctor(args, decls, recs) else "" in
+      "q_ctor_alloc(" ++ int_to_string(tag) ++ ", " ++ int_to_string(arity) ++ args_str ++ ")";
+    EField(rec_expr, rec_name, field_name) =>
+      let idx : Int = lookup_field_index(rec_name, field_name, recs) in
+      "(long long)(((q_value_t*)(intptr_t)(" ++ compile_expr(rec_expr, decls, recs) ++
+      "))->fields[" ++ int_to_string(idx) ++ "])";
+    EConcat(a, b) =>
+      "quartz_str_concat((const char*)(intptr_t)(" ++ compile_expr(a, decls, recs) ++
+      "), (const char*)(intptr_t)(" ++ compile_expr(b, decls, recs) ++ "))"
+  }
+
+# --- Fn declaration compilation ----------------------------------------------
+
+fn compile_params(names: List<String>) : String =
+  match names {
+    [] => "void";
+    [n, ...[]] => "long long " ++ n;
+    [n, ...rest] => "long long " ++ n ++ ", " ++ compile_params(rest)
+  }
+
+fn compile_fn_forward(fd: FnDecl) : String =
+  match fd {
+    FnDecl(name, params, body) =>
+      "long long " ++ name ++ "(" ++ compile_params(params) ++ ");"
+  }
+
+fn compile_fn_body(fd: FnDecl, decls: List<TypeDecl>, recs: List<RecordDecl>) : String =
+  match fd {
+    FnDecl(name, params, body) =>
+      "long long " ++ name ++ "(" ++ compile_params(params) ++ ") { return (long long)(intptr_t)(" ++
+        compile_expr(body, decls, recs) ++ "); }"
+  }
+
+fn emit_forwards(fns: List<FnDecl>, nl: String) : String =
+  match fns {
+    [] => "";
+    [f, ...[]] => compile_fn_forward(f);
+    [f, ...rest] => compile_fn_forward(f) ++ nl ++ emit_forwards(rest, nl)
+  }
+
+fn emit_bodies(fns: List<FnDecl>, decls: List<TypeDecl>, recs: List<RecordDecl>, nl: String) : String =
+  match fns {
+    [] => "";
+    [f, ...[]] => compile_fn_body(f, decls, recs);
+    [f, ...rest] => compile_fn_body(f, decls, recs) ++ nl ++ emit_bodies(rest, decls, recs, nl)
+  }
+
+# --- Runtime helpers ---------------------------------------------------------
+
+# Emit the q_value_t struct + q_ctor_alloc helper. Only emitted when
+# the program declares at least one TypeDecl — otherwise the helpers
+# are dead weight (and reference stdarg.h / stdlib.h needlessly).
+fn runtime_helpers(nl: String) : String =
+  "typedef struct q_value {" ++ nl ++
+  "    int tag;" ++ nl ++
+  "    int num_fields;" ++ nl ++
+  "    long long fields[];" ++ nl ++
+  "} q_value_t;" ++ nl ++
+  "static q_value_t* q_ctor_alloc(int tag, int num_fields, ...) {" ++ nl ++
+  "    q_value_t* v = (q_value_t*)malloc(sizeof(q_value_t) + num_fields * sizeof(long long));" ++ nl ++
+  "    v->tag = tag;" ++ nl ++
+  "    v->num_fields = num_fields;" ++ nl ++
+  "    va_list args;" ++ nl ++
+  "    va_start(args, num_fields);" ++ nl ++
+  "    for (int i = 0; i < num_fields; i++) {" ++ nl ++
+  "        v->fields[i] = va_arg(args, long long);" ++ nl ++
+  "    }" ++ nl ++
+  "    va_end(args);" ++ nl ++
+  "    return v;" ++ nl ++
+  "}" ++ nl
+
+fn has_type_decls(decls: List<TypeDecl>) : Bool =
+  match decls {
+    [] => false;
+    [_, ...[]] => true;
+    [_, ...rest] => true
+  }
+
+fn has_record_decls(recs: List<RecordDecl>) : Bool =
+  match recs {
+    [] => false;
+    [_, ...[]] => true;
+    [_, ...rest] => true
+  }
+
+# The quartz_str_concat runtime helper. Emitted at the top of every C
+# output so EConcat expressions have somewhere to dispatch to. Unused
+# in pure-Int programs, but the cost is ~10 lines and `cc` won't warn
+# by default (only with -Wall).
+fn string_runtime(nl: String) : String =
+  "static const char* quartz_str_concat(const char* a, const char* b) {" ++ nl ++
+  "    if (!a) a = \"\";" ++ nl ++
+  "    if (!b) b = \"\";" ++ nl ++
+  "    size_t la = 0; while (a[la]) la++;" ++ nl ++
+  "    size_t lb = 0; while (b[lb]) lb++;" ++ nl ++
+  "    char* r = (char*)malloc(la + lb + 1);" ++ nl ++
+  "    for (size_t i = 0; i < la; i++) r[i] = a[i];" ++ nl ++
+  "    for (size_t i = 0; i < lb; i++) r[la + i] = b[i];" ++ nl ++
+  "    r[la + lb] = 0;" ++ nl ++
+  "    return r;" ++ nl ++
+  "}" ++ nl
+
+# Render the printf format + cast for a given CType. v3.10 supports
+# Int (%lld via long long cast) and String (%s via const char* cast).
+fn printf_format_for(t: CType) : String =
+  match t {
+    CInt => "%lld";
+    CString => "%s"
+  }
+
+fn printf_arg_cast(t: CType) : String =
+  match t {
+    CInt => "(long long)(intptr_t)";
+    CString => "(const char*)(intptr_t)"
+  }
+
+# --- Program compilation -----------------------------------------------------
+
+fn compile_program(prog: Program, nl: String) : String =
+  match prog {
+    Program(decls, recs, fns, final, result_type) =>
+      let nl_escape : String = "\\" ++ "n" in
+      let needs_ctor_runtime : Bool =
+        if has_type_decls(decls) then true else has_record_decls(recs) in
+      # stdlib + stdarg needed by q_ctor_alloc; stdlib also needed by
+      # quartz_str_concat (which is always emitted). string.h optional —
+      # we hand-roll strlen to avoid the dependency.
+      let extra_includes : String =
+        "#include <stdlib.h>" ++ nl ++
+        (if needs_ctor_runtime then "#include <stdarg.h>" ++ nl else "") in
+      let ctor_runtime : String =
+        if needs_ctor_runtime then runtime_helpers(nl) else "" in
+      let str_runtime : String = string_runtime(nl) in
+      let forwards : String = emit_forwards(fns, nl) in
+      let bodies : String = emit_bodies(fns, decls, recs, nl) in
+      let fmt : String = printf_format_for(result_type) in
+      let cast : String = printf_arg_cast(result_type) in
+      "/* Generated by quartz_min.glass v3.12 — Quartz, written in Glass */" ++ nl ++
+      "#include <stdio.h>" ++ nl ++
+      "#include <stdint.h>" ++ nl ++
+      "#include <stddef.h>" ++ nl ++
+      extra_includes ++
+      ctor_runtime ++
+      str_runtime ++
+      forwards ++ nl ++
+      bodies ++ nl ++
+      "int main(void) {" ++ nl ++
+      "    long long _result = (long long)(intptr_t)(" ++ compile_expr(final, decls, recs) ++ ");" ++ nl ++
+      "    printf(\"" ++ fmt ++ nl_escape ++ "\", " ++ cast ++ "_result);" ++ nl ++
+      "    return 0;" ++ nl ++
+      "}" ++ nl
+  }
+
+# --- Demo --------------------------------------------------------------------
+#
+# Build sample Programs and emit their C source. The printed C can be
+# piped to `cc -x c - -o demo` to produce a binary.
+
+let nl_actual : String = "
+"
+
+# Program 1 (carry-over): no fns, no types, just arithmetic. Returns Int.
+#   1 + 2 * 3  →  7
+let prog1 : Program =
+  Program([], [], [], EAdd(EInt(1), EMul(EInt(2), EInt(3))), CInt)
+
+# Program 2 (carry-over): recursive fact. Returns Int.
+#   fact(5)  →  120
+let prog2 : Program =
+  Program(
+    [],
+    [],
+    [FnDecl(
+      "fact",
+      ["n"],
+      EIf(
+        ELt(EVar("n"), EInt(2)),
+        EInt(1),
+        EMul(EVar("n"), ECall("fact", [ESub(EVar("n"), EInt(1))]))
+      )
+    )],
+    ECall("fact", [EInt(5)]),
+    CInt
+  )
+
+# Program 3 (carry-over): ADT match. Returns Int.
+#   match Some(42) { Some(n) => n; None => 0 }  →  42
+let prog3 : Program =
+  Program(
+    [TypeDecl("Maybe", [Variant("Some", 1), Variant("None", 0)])],
+    [],
+    [],
+    EMatch(
+      ECtor("Some", [EInt(42)]),
+      [
+        MArm(PCtor("Some", [PVar("n")]), EVar("n")),
+        MArm(PCtor("None", []), EInt(0))
+      ]
+    ),
+    CInt
+  )
+
+# Program 4 (carry-over): different ADT. Returns Int.
+#   match Yep(15) { Yep(x) => x * 2; Nope => 0 }  →  30
+let prog4 : Program =
+  Program(
+    [TypeDecl("Box", [Variant("Yep", 1), Variant("Nope", 0)])],
+    [],
+    [],
+    EMatch(
+      ECtor("Yep", [EInt(15)]),
+      [
+        MArm(PCtor("Yep", [PVar("x")]), EMul(EVar("x"), EInt(2))),
+        MArm(PCtor("Nope", []), EInt(0))
+      ]
+    ),
+    CInt
+  )
+
+# Program 5 (carry-over): record with field access. Returns Int.
+#   let p = Point { x: 3, y: 4 } in p.x + p.y  →  7
+let prog5 : Program =
+  Program(
+    [],
+    [RecordDecl("Point", ["x", "y"])],
+    [],
+    ELet(
+      "p",
+      ERecord("Point", [EInt(3), EInt(4)]),
+      EAdd(
+        EField(EVar("p"), "Point", "x"),
+        EField(EVar("p"), "Point", "y")
+      )
+    ),
+    CInt
+  )
+
+# Program 6 (carry-over): record passed to fn. Returns Int.
+#   sumsq(Point { x: 3, y: 4 })  →  25
+let prog6 : Program =
+  Program(
+    [],
+    [RecordDecl("Point", ["x", "y"])],
+    [FnDecl(
+      "sumsq",
+      ["p"],
+      EAdd(
+        EMul(EField(EVar("p"), "Point", "x"), EField(EVar("p"), "Point", "x")),
+        EMul(EField(EVar("p"), "Point", "y"), EField(EVar("p"), "Point", "y"))
+      )
+    )],
+    ECall("sumsq", [ERecord("Point", [EInt(3), EInt(4)])]),
+    CInt
+  )
+
+# Program 7 (NEW in v3.10): string literal.
+#   "hello, world"  →  hello, world
+let prog7 : Program =
+  Program([], [], [], EStr("hello, world"), CString)
+
+# Program 8 (NEW in v3.10): string concatenation.
+#   "hello, " ++ "world"  →  hello, world
+let prog8 : Program =
+  Program(
+    [],
+    [],
+    [],
+    EConcat(EStr("hello, "), EStr("world")),
+    CString
+  )
+
+# Program 9 (carry-over from v3.11): fn that returns a string.
+#   fn greet(_) = "hello, " ++ "Glass"
+#   greet(0)  →  hello, Glass
+let prog9 : Program =
+  Program(
+    [],
+    [],
+    [FnDecl(
+      "greet",
+      ["_unused"],
+      EConcat(EStr("hello, "), EStr("Glass"))
+    )],
+    ECall("greet", [EInt(0)]),
+    CString
+  )
+
+# Program 10 (NEW in v3.12): String inside an ADT field.
+#   type Greet = Hello(String) | Bye(String)
+#   match Hello("Alice") { Hello(name) => "Hi, " ++ name; Bye(name) => "Bye, " ++ name }
+#   →  Hi, Alice
+#
+# Demonstrates that the v3.9 / v3.11 uniform long-long boundary
+# enables multi-type ADT fields with no additional codegen machinery —
+# the v3.12 fix to compile_args_for_ctor (intptr_t bridge) was the
+# only piece missing.
+let prog10 : Program =
+  Program(
+    [TypeDecl("Greet", [Variant("Hello", 1), Variant("Bye", 1)])],
+    [],
+    [],
+    EMatch(
+      ECtor("Hello", [EStr("Alice")]),
+      [
+        MArm(PCtor("Hello", [PVar("name")]), EConcat(EStr("Hi, "), EVar("name"))),
+        MArm(PCtor("Bye", [PVar("name")]), EConcat(EStr("Bye, "), EVar("name")))
+      ]
+    ),
+    CString
+  )
+
+# Program 11 (NEW in v3.12): mixed-type record (Int + String).
+#   type Person = { name: String, age: Int }
+#   let p = Person { name: "Alice", age: 30 } in p.name
+#   →  Alice
+#
+# Same insight: records already accept any field type because storage
+# is uniform long long with cast-at-use-site.
+let prog11 : Program =
+  Program(
+    [],
+    [RecordDecl("Person", ["name", "age"])],
+    [],
+    ELet(
+      "p",
+      ERecord("Person", [EStr("Alice"), EInt(30)]),
+      EField(EVar("p"), "Person", "name")
+    ),
+    CString
+  )
+
+# Program 12 (NEW in v3.12): "generic" identity function used with
+# both Int and String at different call sites.
+#   fn id(x) = x
+#   id("typed") ++ "!"  →  typed!
+#
+# Pure type erasure: id is compiled once as `long long id(long long x)`.
+# At each call site, the caller casts the arg to long long and casts
+# the result back to whatever type it needs. Quartz-in-Glass gets
+# generic-function support for free from the same uniform boundary.
+let prog12 : Program =
+  Program(
+    [],
+    [],
+    [FnDecl("id", ["x"], EVar("x"))],
+    EConcat(ECall("id", [EStr("typed")]), EStr("!")),
+    CString
+  )
+
+# Print all twelve C programs to stdout.
+let _ : String = print("=== prog1: 1 + 2 * 3 ===")
+let _ : String = print(compile_program(prog1, nl_actual))
+let _ : String = print("=== prog2: fact(5) ===")
+let _ : String = print(compile_program(prog2, nl_actual))
+let _ : String = print("=== prog3: match Some(42) ===")
+let _ : String = print(compile_program(prog3, nl_actual))
+let _ : String = print("=== prog4: match Yep(15) ===")
+let _ : String = print(compile_program(prog4, nl_actual))
+let _ : String = print("=== prog5: Point record field access ===")
+let _ : String = print(compile_program(prog5, nl_actual))
+let _ : String = print("=== prog6: sumsq(Point) ===")
+let _ : String = print(compile_program(prog6, nl_actual))
+let _ : String = print("=== prog7: \"hello, world\" ===")
+let _ : String = print(compile_program(prog7, nl_actual))
+let _ : String = print("=== prog8: \"hello, \" ++ \"world\" ===")
+let _ : String = print(compile_program(prog8, nl_actual))
+let _ : String = print("=== prog9: greet() returning concat ===")
+let _ : String = print(compile_program(prog9, nl_actual))
+let _ : String = print("=== prog10: String inside ADT field ===")
+let _ : String = print(compile_program(prog10, nl_actual))
+let _ : String = print("=== prog11: mixed-type record (String + Int) ===")
+let _ : String = print(compile_program(prog11, nl_actual))
+let _ : String = print("=== prog12: 'generic' id over String ===")
+let _ : String = print(compile_program(prog12, nl_actual))
+
+# Final value: the C source string for prog10 (the canonical v3.12 demo).
+compile_program(prog10, nl_actual)

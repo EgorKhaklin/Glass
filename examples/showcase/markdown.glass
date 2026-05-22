@@ -1,0 +1,363 @@
+# =============================================================================
+# markdown.glass — a markdown-to-HTML converter in pure functional Glass.
+#
+# Supports a useful subset of markdown:
+#
+#   # H1 heading
+#   ## H2 heading
+#   ### H3 heading
+#
+#   Plain paragraph text (multiple lines join in one <p>).
+#
+#   **bold text**       ->  <strong>bold text</strong>
+#   *italic text*       ->  <em>italic text</em>
+#   `inline code`       ->  <code>inline code</code>
+#   [text](url)         ->  <a href="url">text</a>
+#
+#   Blank lines separate paragraphs.
+#
+# Doesn't support: code blocks (```), lists, blockquotes, images, tables.
+# Adding any of these is ~30-50 lines each.
+#
+# Demonstrates the v2.4-v2.7 ergonomic surface in real library code:
+# - `let* (v, j) = ...` for Result threading (inline parsing)
+# - `let? x = ...` for Option threading (lookups)
+# - `let (a, b) = ...` for tuple destructure (parse step results)
+#
+# Returns Result<String, String> where Err carries a position-tagged message.
+# =============================================================================
+
+
+# ---- Block AST ---------------------------------------------------------
+
+type Block =
+  | BHeading(Int, String)        # level (1-6) + raw text (still inline-processed)
+  | BParagraph(String)           # raw text (still inline-processed)
+  | BBlank                       # blank line separator (filtered out before render)
+
+
+# ---- Character predicates ----------------------------------------------
+
+fn char_at_str(s: String, i: Int) : String = substring(s, i, i + 1)
+
+fn is_ws(c: String) : Bool =
+  if c == " " then true
+  else if c == "\t" then true
+  else if c == "\r" then true
+  else false
+
+
+# ---- Trim ---------------------------------------------------------------
+
+fn skip_ws_left(s: String, i: Int) : Int =
+  if i >= string_length(s) then i
+  else if is_ws(char_at_str(s, i)) then skip_ws_left(s, i + 1)
+  else i
+
+fn trim_right_at(s: String, end: Int) : Int =
+  if end <= 0 then 0
+  else if is_ws(char_at_str(s, end - 1)) then trim_right_at(s, end - 1)
+  else end
+
+fn trim(s: String) : String =
+  let i = skip_ws_left(s, 0) in
+  let j = trim_right_at(s, string_length(s)) in
+  if j < i then "" else substring(s, i, j)
+
+
+# ---- Heading detection -------------------------------------------------
+#
+# Count leading '#' characters (1-6). Returns the level, or 0 if not
+# a heading line.
+
+fn count_heading_hashes(line: String, i: Int) : Int =
+  if i >= string_length(line) then i
+  else if char_at_str(line, i) == "#" then
+    if i >= 6 then 6
+    else count_heading_hashes(line, i + 1)
+  else i
+
+
+# ---- Block classification ----------------------------------------------
+#
+# Walk lines, classify each into a Block.
+
+fn find_newline(src: String, i: Int) : Int =
+  if i >= string_length(src) then i
+  else if char_at_str(src, i) == "\n" then i
+  else find_newline(src, i + 1)
+
+fn classify_line(line: String) : Block =
+  let trimmed = trim(line) in
+  if string_length(trimmed) == 0 then BBlank
+  else if char_at_str(trimmed, 0) == "#" then
+    let level = count_heading_hashes(trimmed, 0) in
+    # Heading text starts after the hashes + any whitespace
+    let after_hashes = substring(trimmed, level, string_length(trimmed)) in
+    BHeading(level, trim(after_hashes))
+  else
+    BParagraph(trimmed)
+
+
+# ---- Block grouping ----------------------------------------------------
+#
+# Walk lines; consecutive paragraph lines merge into a single paragraph.
+# Blank lines flush the current paragraph. Headings stand alone.
+
+fn lines_to_blocks(src: String) : List<Block> =
+  collect_lines(src, 0, [])
+
+fn collect_lines(src: String, i: Int, acc: List<Block>) : List<Block> =
+  if i >= string_length(src) then merge_paragraphs(acc)
+  else
+    let line_end = find_newline(src, i) in
+    let line = substring(src, i, line_end) in
+    let next_i =
+      if line_end < string_length(src) then line_end + 1
+      else line_end
+    in
+    let block = classify_line(line) in
+    collect_lines(src, next_i, acc ++ [block])
+
+fn merge_paragraphs(blocks: List<Block>) : List<Block> =
+  match blocks {
+    [] => [];
+    [h, ...t] =>
+      match h {
+        BParagraph(text) => merge_paragraphs_acc(t, text, []);
+        BBlank           => merge_paragraphs(t);
+        BHeading(lv, tx) => [BHeading(lv, tx)] ++ merge_paragraphs(t)
+      }
+  }
+
+fn merge_paragraphs_acc(
+  blocks: List<Block>,
+  current: String,
+  out: List<Block>
+) : List<Block> =
+  match blocks {
+    [] => out ++ [BParagraph(current)];
+    [h, ...t] =>
+      match h {
+        BParagraph(text) =>
+          merge_paragraphs_acc(t, current ++ " " ++ text, out);
+        BBlank =>
+          let rest = merge_paragraphs(t) in
+          out ++ [BParagraph(current)] ++ rest;
+        BHeading(lv, tx) =>
+          out ++ [BParagraph(current), BHeading(lv, tx)] ++ merge_paragraphs(t)
+      }
+  }
+
+
+# ---- Inline formatting -------------------------------------------------
+#
+# Walk a string emitting HTML for **bold**, *italic*, `code`, [link](url).
+# Anything else passes through as plain text.
+
+fn render_inline(s: String) : String =
+  render_inline_at(s, 0, "")
+
+fn render_inline_at(s: String, i: Int, acc: String) : String =
+  if i >= string_length(s) then acc
+  else
+    let c = char_at_str(s, i) in
+    if c == "*" then
+      # Could be ** (bold) or * (italic).
+      if i + 1 < string_length(s) then
+        if char_at_str(s, i + 1) == "*" then
+          match find_close_bold(s, i + 2) {
+            Some(end) =>
+              let inner = substring(s, i + 2, end) in
+              render_inline_at(s, end + 2,
+                acc ++ "<strong>" ++ render_inline(inner) ++ "</strong>");
+            None =>
+              render_inline_at(s, i + 1, acc ++ c)
+          }
+        else
+          match find_close(s, i + 1, "*") {
+            Some(end) =>
+              let inner = substring(s, i + 1, end) in
+              render_inline_at(s, end + 1,
+                acc ++ "<em>" ++ render_inline(inner) ++ "</em>");
+            None =>
+              render_inline_at(s, i + 1, acc ++ c)
+          }
+      else
+        render_inline_at(s, i + 1, acc ++ c)
+    else if c == "`" then
+      match find_close(s, i + 1, "`") {
+        Some(end) =>
+          let inner = substring(s, i + 1, end) in
+          render_inline_at(s, end + 1,
+            acc ++ "<code>" ++ inner ++ "</code>");
+        None =>
+          render_inline_at(s, i + 1, acc ++ c)
+      }
+    else if c == "[" then
+      match parse_link(s, i) {
+        Some(triple) =>
+          let (text, url, end) = triple in
+          render_inline_at(s, end,
+            acc ++ "<a href=\"" ++ url ++ "\">" ++ render_inline(text) ++ "</a>");
+        None =>
+          render_inline_at(s, i + 1, acc ++ c)
+      }
+    else
+      render_inline_at(s, i + 1, acc ++ c)
+
+
+# ---- Inline helpers ----------------------------------------------------
+#
+# find_close(s, i, marker) returns Some(j) where j is the start position
+# of `marker` in s starting from i, or None if not found.
+
+fn find_close(s: String, i: Int, marker: String) : Option<Int> =
+  let m_len = string_length(marker) in
+  if i + m_len > string_length(s) then None
+  else if substring(s, i, i + m_len) == marker then Some(i)
+  else find_close(s, i + 1, marker)
+
+# Specialized close-finder for `**` that handles trailing `***` correctly.
+# In `**bold and *italic***`, scanning naively finds the first `**` at the
+# italic-close position. The heuristic: if `**` is immediately followed by
+# another `*`, it's the closing of an inner italic span, so skip it.
+fn find_close_bold(s: String, i: Int) : Option<Int> =
+  if i + 2 > string_length(s) then None
+  else if substring(s, i, i + 2) == "**" then
+    if i + 2 < string_length(s) then
+      if char_at_str(s, i + 2) == "*" then
+        find_close_bold(s, i + 1)
+      else
+        Some(i)
+    else
+      Some(i)
+  else
+    find_close_bold(s, i + 1)
+
+
+# parse_link tries to match `[text](url)` starting at position i (which
+# should be the '[' character). Returns Some((text, url, end_pos)) on
+# success.
+
+fn parse_link(s: String, i: Int) : Option<(String, String, Int)> =
+  # Find the closing ']'
+  let? close_text = find_close(s, i + 1, "]") in
+  if close_text + 1 >= string_length(s) then None
+  else if char_at_str(s, close_text + 1) != "(" then None
+  else
+    let? close_url = find_close(s, close_text + 2, ")") in
+    let text = substring(s, i + 1, close_text) in
+    let url = substring(s, close_text + 2, close_url) in
+    Some((text, url, close_url + 1))
+
+
+# ---- Render blocks to HTML ---------------------------------------------
+
+fn render_block(b: Block) : String =
+  match b {
+    BBlank             => "";
+    BHeading(lv, text) =>
+      let tag = "h" ++ int_to_string(lv) in
+      "<" ++ tag ++ ">" ++ render_inline(text) ++ "</" ++ tag ++ ">";
+    BParagraph(text)   =>
+      "<p>" ++ render_inline(text) ++ "</p>"
+  }
+
+fn render_blocks(blocks: List<Block>) : String =
+  match blocks {
+    [] => "";
+    [h, ...t] =>
+      let rendered = render_block(h) in
+      if string_length(rendered) == 0 then render_blocks(t)
+      else
+        match t {
+          [] => rendered;
+          _  => rendered ++ "\n" ++ render_blocks(t)
+        }
+  }
+
+
+# ---- Top-level entry point ---------------------------------------------
+
+fn markdown_to_html(src: String) : String =
+  let blocks = lines_to_blocks(src) in
+  render_blocks(blocks)
+
+
+# ---- Tests -------------------------------------------------------------
+#
+# Each test prints a label, the input, and the rendered output. Visual
+# regression — easy to spot a mistake by reading the lines side by side.
+
+fn run_test(label: String, input: String, expected: String) : String =
+  let actual = markdown_to_html(input) in
+  let mark = if actual == expected then "OK  " else "FAIL" in
+  mark ++ "  " ++ label
+
+let _ = print(run_test(
+  "h1 heading",
+  "# Hello",
+  "<h1>Hello</h1>"))
+
+let _ = print(run_test(
+  "h2 heading",
+  "## Subtitle",
+  "<h2>Subtitle</h2>"))
+
+let _ = print(run_test(
+  "h3 heading",
+  "### Section",
+  "<h3>Section</h3>"))
+
+let _ = print(run_test(
+  "plain paragraph",
+  "Just some text.",
+  "<p>Just some text.</p>"))
+
+let _ = print(run_test(
+  "bold text",
+  "This is **bold** text.",
+  "<p>This is <strong>bold</strong> text.</p>"))
+
+let _ = print(run_test(
+  "italic text",
+  "This is *italic* text.",
+  "<p>This is <em>italic</em> text.</p>"))
+
+let _ = print(run_test(
+  "inline code",
+  "Use `print()` to output.",
+  "<p>Use <code>print()</code> to output.</p>"))
+
+let _ = print(run_test(
+  "link",
+  "Visit [Glass](https://example.com).",
+  "<p>Visit <a href=\"https://example.com\">Glass</a>.</p>"))
+
+let _ = print(run_test(
+  "heading + paragraph",
+  "# Title\n\nSome text.",
+  "<h1>Title</h1>\n<p>Some text.</p>"))
+
+let _ = print(run_test(
+  "two paragraphs separated by blank line",
+  "First para.\n\nSecond para.",
+  "<p>First para.</p>\n<p>Second para.</p>"))
+
+let _ = print(run_test(
+  "multi-line paragraph",
+  "Line one\nLine two\nLine three",
+  "<p>Line one Line two Line three</p>"))
+
+let _ = print(run_test(
+  "nested inline",
+  "**bold and *italic***",
+  "<p><strong>bold and <em>italic</em></strong></p>"))
+
+let _ = print(run_test(
+  "unclosed bold passes through",
+  "This **never closes",
+  "<p>This **never closes</p>"))
+
+"markdown converter ready"

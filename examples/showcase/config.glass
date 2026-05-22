@@ -1,0 +1,299 @@
+# =============================================================================
+# config.glass — a config-file parser library written in pure Glass.
+#
+# Parses ".ini-style" config files:
+#
+#   # comments start with #
+#   host = localhost
+#   port = 8080
+#   workers = 4
+#
+#   # blank lines allowed
+#   motd = welcome to the server
+#
+# Returns Result<Config, String> with positional error messages on parse
+# failure. Provides:
+#
+#   parse_config(src)          : Result<Config, String>
+#   lookup(c, key)             : Option<String>          — missing is just "no"
+#   lookup_required(c, key)    : Result<String, String>  — missing is an error
+#   parse_int_str(s)           : Option<Int>             — string -> int
+#   lookup_int(c, key)         : Result<Int, String>     — required + parsed
+#
+# Demonstrates v2.4 (let*) AND v2.5 (let?) working together in real code:
+# Result-bind for parse errors and required lookups, Option-bind for
+# optional lookups. Each composes naturally with its short-circuit shape.
+# =============================================================================
+
+
+type Config = | Config(List<Pair<String, String>>)
+
+
+# ---- Character predicates ----------------------------------------------
+
+fn char_at_str(s: String, i: Int) : String = substring(s, i, i + 1)
+
+fn is_ws(c: String) : Bool =
+  if c == " " then true
+  else if c == "\t" then true
+  else if c == "\r" then true
+  else false
+
+fn is_digit(c: String) : Bool =
+  match string_index_of("0123456789", c) {
+    Some(_) => true;
+    None    => false
+  }
+
+fn digit_value(c: String) : Int =
+  match string_index_of("0123456789", c) {
+    Some(i) => i;
+    None    => 0 - 1
+  }
+
+
+# ---- Trim leading/trailing whitespace ----------------------------------
+
+fn skip_ws_left(s: String, i: Int) : Int =
+  if i >= string_length(s) then i
+  else if is_ws(char_at_str(s, i)) then skip_ws_left(s, i + 1)
+  else i
+
+fn trim_right_at(s: String, end: Int) : Int =
+  if end <= 0 then 0
+  else if is_ws(char_at_str(s, end - 1)) then trim_right_at(s, end - 1)
+  else end
+
+fn trim(s: String) : String =
+  let i = skip_ws_left(s, 0) in
+  let j = trim_right_at(s, string_length(s)) in
+  if j < i then "" else substring(s, i, j)
+
+
+# ---- String prefix check -----------------------------------------------
+
+fn starts_with(s: String, prefix: String) : Bool =
+  let p_len = string_length(prefix) in
+  if p_len > string_length(s) then false
+  else substring(s, 0, p_len) == prefix
+
+
+# ---- Find next newline (or end of string) ------------------------------
+
+fn find_newline(src: String, i: Int) : Int =
+  if i >= string_length(src) then i
+  else if char_at_str(src, i) == "\n" then i
+  else find_newline(src, i + 1)
+
+
+# ---- Parse one "key = value" line --------------------------------------
+
+fn parse_key_value(line: String, line_no: Int) : Result<(String, String), String> =
+  match string_index_of(line, "=") {
+    None     => Err("line " ++ int_to_string(line_no) ++ ": expected '=' in '" ++ line ++ "'");
+    Some(eq) =>
+      let key = trim(substring(line, 0, eq)) in
+      let val = trim(substring(line, eq + 1, string_length(line))) in
+      if string_length(key) == 0 then
+        Err("line " ++ int_to_string(line_no) ++ ": empty key")
+      else
+        Ok((key, val))
+  }
+
+
+# ---- Top-level parser --------------------------------------------------
+#
+# parse_config walks line by line. For each line:
+#   - skip if blank after trim
+#   - skip if starts with #
+#   - otherwise parse as key = value
+#
+# Uses let* throughout for short-circuit on parse errors.
+
+fn parse_config_lines(
+  src: String,
+  i: Int,
+  line_no: Int,
+  acc: List<Pair<String, String>>
+) : Result<List<Pair<String, String>>, String> =
+  if i >= string_length(src) then Ok(acc)
+  else
+    let line_end = find_newline(src, i) in
+    let line = substring(src, i, line_end) in
+    let next_i =
+      if line_end < string_length(src) then line_end + 1
+      else line_end
+    in
+    let trimmed = trim(line) in
+    if string_length(trimmed) == 0 then
+      parse_config_lines(src, next_i, line_no + 1, acc)
+    else if starts_with(trimmed, "#") then
+      parse_config_lines(src, next_i, line_no + 1, acc)
+    else
+      let* (k, v) = parse_key_value(trimmed, line_no) in
+      parse_config_lines(src, next_i, line_no + 1, acc ++ [Pair(k, v)])
+
+fn parse_config(src: String) : Result<Config, String> =
+  let* entries = parse_config_lines(src, 0, 1, []) in
+  Ok(Config(entries))
+
+
+# ---- Lookups -----------------------------------------------------------
+#
+# lookup uses Option (missing key isn't an error, just "no").
+# lookup_required uses Result (missing key IS an error).
+# Both compose with their respective let* / let? forms.
+
+fn find_in_pairs(
+  pairs: List<Pair<String, String>>,
+  key: String
+) : Option<String> =
+  match pairs {
+    [] => None;
+    [Pair(k, v), ...rest] =>
+      if k == key then Some(v)
+      else find_in_pairs(rest, key)
+  }
+
+fn lookup(c: Config, key: String) : Option<String> =
+  match c {
+    Config(pairs) => find_in_pairs(pairs, key)
+  }
+
+fn lookup_required(c: Config, key: String) : Result<String, String> =
+  match lookup(c, key) {
+    Some(v) => Ok(v);
+    None    => Err("missing required key: '" ++ key ++ "'")
+  }
+
+
+# ---- Integer parsing ---------------------------------------------------
+#
+# parse_int_str converts a string of digits (optionally signed) into Int.
+# Returns None if the string isn't entirely digits.
+
+fn read_int_acc(s: String, i: Int, acc: Int) : (Int, Int) =
+  if i >= string_length(s) then (acc, i)
+  else
+    let c = char_at_str(s, i) in
+    if is_digit(c) then read_int_acc(s, i + 1, acc * 10 + digit_value(c))
+    else (acc, i)
+
+fn parse_int_str(s: String) : Option<Int> =
+  if string_length(s) == 0 then None
+  else if char_at_str(s, 0) == "-" then
+    let (n, end) = read_int_acc(s, 1, 0) in
+    if end == string_length(s) then
+      if end == 1 then None
+      else Some(0 - n)
+    else None
+  else
+    let (n, end) = read_int_acc(s, 0, 0) in
+    if end == string_length(s) then
+      if end == 0 then None
+      else Some(n)
+    else None
+
+fn lookup_int(c: Config, key: String) : Result<Int, String> =
+  let* val_str = lookup_required(c, key) in
+  match parse_int_str(val_str) {
+    Some(n) => Ok(n);
+    None    => Err("key '" ++ key ++ "' is not an integer: '" ++ val_str ++ "'")
+  }
+
+
+# ---- A "real" use case: server config extraction -----------------------
+#
+# Uses let* for required fields (host, port — error if missing) and
+# let? for optional fields (motd — None means just absent).
+
+fn extract_server(src: String) : Result<(String, Int), String> =
+  let* config = parse_config(src) in
+  let* host = lookup_required(config, "host") in
+  let* port = lookup_int(config, "port") in
+  Ok((host, port))
+
+fn extract_motd(config: Config) : Option<String> =
+  let? motd = lookup(config, "motd") in
+  Some("MOTD: " ++ motd)
+
+
+# ---- Tests -------------------------------------------------------------
+
+fn show_pair(p: Pair<String, String>) : String =
+  match p {
+    Pair(k, v) => k ++ "=" ++ v
+  }
+
+fn show_pairs_list(ps: List<Pair<String, String>>) : String =
+  match ps {
+    [] => "";
+    [h, ...t] =>
+      match t {
+        []        => show_pair(h);
+        [_, ..._] => show_pair(h) ++ "," ++ show_pairs_list(t)
+      }
+  }
+
+fn show_config_result(r: Result<Config, String>) : String =
+  match r {
+    Ok(c) =>
+      match c {
+        Config(pairs) => "OK [" ++ show_pairs_list(pairs) ++ "]"
+      };
+    Err(msg) => "ERR " ++ msg
+  }
+
+fn show_server_result(r: Result<(String, Int), String>) : String =
+  match r {
+    Ok(pair) =>
+      match pair {
+        (h, p) => "OK " ++ h ++ ":" ++ int_to_string(p)
+      };
+    Err(msg) => "ERR " ++ msg
+  }
+
+fn show_option_str(o: Option<String>) : String =
+  match o {
+    Some(s) => "SOME " ++ s;
+    None    => "NONE"
+  }
+
+# A valid config — parses + extracts cleanly.
+let cfg_valid = "# server config\nhost = localhost\nport = 8080\nmotd = welcome\n"
+let _ = print(show_config_result(parse_config(cfg_valid)))
+let _ = print(show_server_result(extract_server(cfg_valid)))
+
+# Optional motd present:
+let _ = match parse_config(cfg_valid) {
+  Ok(c)    => print(show_option_str(extract_motd(c)));
+  Err(msg) => print("ERR " ++ msg)
+}
+
+# Missing required field — let* short-circuits with Err.
+let cfg_no_port = "host = localhost\n"
+let _ = print(show_server_result(extract_server(cfg_no_port)))
+
+# Port not an integer — caught by lookup_int.
+let cfg_bad_port = "host = localhost\nport = banana\n"
+let _ = print(show_server_result(extract_server(cfg_bad_port)))
+
+# Optional motd missing — let? short-circuits with None.
+let cfg_no_motd = "host = h\nport = 1\n"
+let _ = match parse_config(cfg_no_motd) {
+  Ok(c)    => print(show_option_str(extract_motd(c)));
+  Err(msg) => print("ERR " ++ msg)
+}
+
+# Malformed line — no '=' — parse error.
+let cfg_bad = "host = localhost\nthis is not valid\n"
+let _ = print(show_config_result(parse_config(cfg_bad)))
+
+# Empty input is valid (empty config).
+let _ = print(show_config_result(parse_config("")))
+
+# Comments and blank lines are skipped.
+let cfg_skip = "# comment 1\n\n# comment 2\nhost = h\n\n"
+let _ = print(show_config_result(parse_config(cfg_skip)))
+
+"config parser ready"

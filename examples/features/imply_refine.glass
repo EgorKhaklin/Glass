@@ -1,0 +1,48 @@
+# =============================================================================
+# imply_refine.glass — implication discharge for refinements (v2.14).
+#
+# v2.12 introduced refinements with constant-fold discharge (works when
+# the actual argument is a literal). v2.13 added alpha-equivalence
+# discharge (works when the actual's refinement structurally matches the
+# formal's after binder renaming). Both work for restricted cases.
+#
+# v2.14 adds the third strategy: implication discharge. When both
+# predicates are simple comparisons of their binder against an integer
+# constant — `n > 5`, `n != 0`, `n >= 1`, etc. — set-inclusion semantics
+# over integer intervals lets prism prove one implies the other.
+#
+#   (n > 5)  ⟹  (n > 0)       ✓  (the set [6, ∞) is a subset of [1, ∞))
+#   (n > 5)  ⟹  (n != 0)      ✓  ([6, ∞) excludes 0)
+#   (n >= 1) ⟹  (n > 0)       ✓  ([1, ∞) ⊆ [1, ∞))
+#   (n == 7) ⟹  (n > 0)       ✓  ({7} ⊆ [1, ∞))
+#   (n > 0)  ⟹  (n > 5)       ✗  (sound conservative: defer, not reject)
+#
+# No SMT solver, no general theorem prover — just case analysis over six
+# relational operators. Sound (only proves things that actually follow)
+# but incomplete (compound predicates and non-comparison forms defer).
+# =============================================================================
+
+# A divisor refinement and a strict positive refinement.
+fn safe_div(n: Int, d: Int where (d != 0)) : Int = n + d
+fn pos(n: Int where (n > 0)) : Int = n + 100
+
+# Implication chain: (x > 0) ⟹ (d != 0). The actual is a variable, so
+# const-fold can't help. The predicates differ syntactically, so
+# alpha-equivalence can't help. Implication proves it cleanly.
+fn pos_div(x: Int where (x > 0)) : Int = safe_div(100, x)
+
+# Tighter implication: (x > 5) ⟹ (n > 0). Set [6, ∞) ⊆ [1, ∞).
+fn strict_pos(x: Int where (x > 5)) : Int = pos(x)
+
+# Singleton implication: (x == 7) ⟹ (n > 0). {7} ⊆ [1, ∞).
+fn seven(x: Int where (x == 7)) : Int = pos(x)
+
+# Each call passes a literal that satisfies the outer refinement. The
+# INNER refinement's discharge happens by implication.
+let demo : (Int, Int, Int) = (
+  pos_div(7),         # 107 — (x > 0) proves (d != 0)
+  strict_pos(10),     # 110 — (x > 5) proves (n > 0)
+  seven(7)            # 107 — (x == 7) proves (n > 0)
+)
+
+demo

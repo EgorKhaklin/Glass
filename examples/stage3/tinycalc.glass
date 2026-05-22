@@ -1,0 +1,48 @@
+# =============================================================================
+# tinycalc.glass — a tiny calculator written in Glass that uses string
+# operations to tokenize and recursively sum a "1+2+3+4" style expression.
+#
+# Demonstrates the v1.6 additions to prism.glass: `substring` and
+# `string_index_of` are now exposed as builtins so files like this one
+# can be read from disk by prism.glass and run.
+# =============================================================================
+
+# Parse a decimal digit character into its int value. Returns -1 for
+# non-digits. The host's string_index_of returns Option<Int>; prism's
+# returns Int directly. Both are handled by checking for negative.
+fn digit_value(c: String) : Int =
+  match string_index_of("0123456789", c) {
+    Some(i) => i;
+    None    => 0 - 1
+  }
+
+# Read a sequence of digit characters starting at index i. Returns the
+# accumulated value plus the index just past the last digit.
+fn read_int(src: String, i: Int, acc: Int) : (Int, Int) =
+  if i >= string_length(src) then (acc, i)
+  else
+    let c = substring(src, i, i + 1) in
+    let d = digit_value(c) in
+    if d < 0 then (acc, i)
+    else read_int(src, i + 1, acc * 10 + d)
+
+# Sum the numbers in a "1+2+3" style expression. Whitespace and any
+# non-digit are treated as separators.
+fn calc(src: String, i: Int, acc: Int) : Int =
+  if i >= string_length(src) then acc
+  else
+    let c = substring(src, i, i + 1) in
+    if digit_value(c) >= 0 then
+      match read_int(src, i, 0) {
+        (n, j) => calc(src, j, acc + n)
+      }
+    else
+      calc(src, i + 1, acc)
+
+# Test cases.
+let r1 = calc("1+2+3+4", 0, 0)
+let r2 = calc("100 + 23 + 4 + 5", 0, 0)
+let r3 = calc("42", 0, 0)
+let r4 = calc("9+99+999", 0, 0)
+let results = [r1, r2, r3, r4]
+results

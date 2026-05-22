@@ -1,0 +1,158 @@
+# =============================================================================
+# midlang.glass — a Glass-in-Glass interpreter for a small expression
+# language with FIRST-CLASS FUNCTIONS, closures, let-bindings, and
+# recursion. This is the v1.8 scale-up of v1.5's tinylang.glass.
+#
+# tinylang had: Int, Bool, +, *, <, if-then-else.
+# midlang adds: let, lambda, application, recursion via let-rec.
+#
+# Three levels of interpretation when prism.glass runs this file:
+#
+#   glass.py
+#     → interprets prism.glass (3,984 lines of Glass)
+#       → interprets midlang.glass (~150 lines, this file)
+#         → evaluates a factorial program in midlang's language
+#           → produces VInt(120)
+#
+# The inner program: let rec fact = fn(n) ->
+#                      if n < 2 then 1 else n * fact(n - 1)
+#                    in fact(5)
+# Expected: 120.
+# =============================================================================
+
+# ---- midlang AST ---------------------------------------------------------
+
+type MExpr =
+  | EInt(Int)
+  | EBool(Bool)
+  | EVar(String)
+  | EAdd(MExpr, MExpr)
+  | EMul(MExpr, MExpr)
+  | ELt(MExpr, MExpr)
+  | EIf(MExpr, MExpr, MExpr)
+  | ELet(String, MExpr, MExpr)
+  | ELam(String, MExpr)
+  | EApp(MExpr, MExpr)
+  | ELetRec(String, String, MExpr, MExpr)
+
+# ---- midlang Value -------------------------------------------------------
+
+type MValue =
+  | MInt(Int)
+  | MBool(Bool)
+  | MClos(String, MExpr, List<Pair<String, MValue>>)
+  | MRecClos(String, String, MExpr, List<Pair<String, MValue>>)
+
+# ---- Environment lookup --------------------------------------------------
+
+fn lookup_var(env: List<Pair<String, MValue>>, name: String) : MValue =
+  match env {
+    [] => MInt(0 - 99999);
+    [Pair(k, v), ...rest] =>
+      if k == name then v else lookup_var(rest, name)
+  }
+
+# ---- Value coercions -----------------------------------------------------
+
+fn as_int(v: MValue) : Int =
+  match v {
+    MInt(n)  => n;
+    MBool(_) => 0;
+    MClos(_, _, _) => 0;
+    MRecClos(_, _, _, _) => 0
+  }
+
+fn as_bool(v: MValue) : Bool =
+  match v {
+    MBool(b) => b;
+    MInt(_)  => false;
+    MClos(_, _, _) => false;
+    MRecClos(_, _, _, _) => false
+  }
+
+# ---- The evaluator -------------------------------------------------------
+#
+# midlang's eval shares the structural shape of prism.glass's eval:
+# pattern-match on the expression form, evaluate sub-expressions, apply
+# functions to arguments. Closures capture their environment at
+# construction; recursive closures additionally bind their own name in
+# their body so they can reference themselves.
+
+fn eval_m(e: MExpr, env: List<Pair<String, MValue>>) : MValue =
+  match e {
+    EInt(n)  => MInt(n);
+    EBool(b) => MBool(b);
+    EVar(x)  => lookup_var(env, x);
+    EAdd(a, b) =>
+      MInt(as_int(eval_m(a, env)) + as_int(eval_m(b, env)));
+    EMul(a, b) =>
+      MInt(as_int(eval_m(a, env)) * as_int(eval_m(b, env)));
+    ELt(a, b) =>
+      MBool(as_int(eval_m(a, env)) < as_int(eval_m(b, env)));
+    EIf(c, t, el) =>
+      if as_bool(eval_m(c, env)) then eval_m(t, env) else eval_m(el, env);
+    ELet(name, value_expr, body) =>
+      let v = eval_m(value_expr, env) in
+      eval_m(body, [Pair(name, v)] ++ env);
+    ELam(param, body) =>
+      MClos(param, body, env);
+    EApp(fn_expr, arg_expr) =>
+      let fv = eval_m(fn_expr, env) in
+      let av = eval_m(arg_expr, env) in
+      apply_m(fv, av);
+    ELetRec(name, param, lam_body, body) =>
+      let closure = MRecClos(name, param, lam_body, env) in
+      eval_m(body, [Pair(name, closure)] ++ env)
+  }
+
+# Apply a closure to an argument. Recursive closures bind their own name
+# so the body can call itself.
+fn apply_m(fv: MValue, av: MValue) : MValue =
+  match fv {
+    MClos(param, body, clos_env) =>
+      eval_m(body, [Pair(param, av)] ++ clos_env);
+    MRecClos(name, param, body, clos_env) =>
+      let env_with_self = [Pair(name, fv), Pair(param, av)] ++ clos_env in
+      eval_m(body, env_with_self);
+    MInt(_)  => MInt(0 - 99999);
+    MBool(_) => MInt(0 - 99999)
+  }
+
+# ---- The inner program ---------------------------------------------------
+#
+# In midlang's surface syntax (conceptually):
+#
+#   let rec fact = fn(n) ->
+#     if n < 2 then 1 else n * fact(n - 1)
+#   in fact(5)
+#
+# Encoded as midlang AST:
+
+let fact_program : MExpr =
+  ELetRec(
+    "fact",
+    "n",
+    EIf(
+      ELt(EVar("n"), EInt(2)),
+      EInt(1),
+      EMul(EVar("n"), EApp(EVar("fact"), EAdd(EVar("n"), EInt(0 - 1))))
+    ),
+    EApp(EVar("fact"), EInt(5))
+  )
+
+# Also exercise a non-recursive closure: ((fn(x) -> fn(y) -> x + y)(10))(20)
+# should produce 30.
+let curry_program : MExpr =
+  EApp(
+    EApp(
+      ELam("x", ELam("y", EAdd(EVar("x"), EVar("y")))),
+      EInt(10)
+    ),
+    EInt(20)
+  )
+
+# Run both programs and return the results as a tuple.
+let fact_result = eval_m(fact_program, [])
+let curry_result = eval_m(curry_program, [])
+let results = (fact_result, curry_result)
+results

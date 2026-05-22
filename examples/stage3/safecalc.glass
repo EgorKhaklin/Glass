@@ -1,0 +1,84 @@
+# =============================================================================
+# safecalc.glass — a calculator that returns Result<Int, String> for safe
+# error handling instead of panicking on bad input. Uses Pair for parser
+# state, Option for digit lookups, Result for the final answer.
+#
+# v1.8 of prism.glass pre-declares Pair and Result alongside Option,
+# so this file runs on both the host and through prism.glass — same
+# source, same answer, two interpreters.
+#
+# Grammar: expr ::= number (('+' | '*') number)*  — left-associative
+# with no precedence (sequential). Whitespace ignored. Errors yield Err.
+# =============================================================================
+
+# Cross-compatible char-equality (works on host and prism). Returns true
+# if c appears in target — used as `is_char("+", c)` for single-char tests.
+fn is_char(target: String, c: String) : Bool =
+  match string_index_of(target, c) {
+    Some(_) => true;
+    None    => false
+  }
+
+# Decimal digit value as Option<Int>; None for non-digits.
+fn digit_value(c: String) : Option<Int> =
+  string_index_of("0123456789", c)
+
+# Read a sequence of digits starting at i; returns Pair(value, next_index).
+fn read_int(src: String, i: Int, acc: Int) : Pair<Int, Int> =
+  if i >= string_length(src) then Pair(acc, i)
+  else
+    let c = substring(src, i, i + 1) in
+    match digit_value(c) {
+      None    => Pair(acc, i);
+      Some(d) => read_int(src, i + 1, acc * 10 + d)
+    }
+
+# Skip whitespace; returns new index.
+fn skip_ws(src: String, i: Int) : Int =
+  if i >= string_length(src) then i
+  else
+    let c = substring(src, i, i + 1) in
+    if is_char(" ", c) then skip_ws(src, i + 1)
+    else i
+
+# Apply an operator. Returns Ok(result) or Err for unknown operators.
+fn apply_op(op: String, lhs: Int, rhs: Int) : Result<Int, String> =
+  if is_char("+", op) then Ok(lhs + rhs)
+  else if is_char("*", op) then Ok(lhs * rhs)
+  else Err("unknown operator: " ++ op)
+
+# Parse-and-evaluate loop. acc holds the running total.
+fn parse_eval(src: String, i: Int, acc: Int) : Result<Int, String> =
+  let j = skip_ws(src, i) in
+  if j >= string_length(src) then Ok(acc)
+  else
+    let c = substring(src, j, j + 1) in
+    match digit_value(c) {
+      Some(_) =>
+        match read_int(src, j, 0) {
+          Pair(n, k) => parse_eval(src, k, n)
+        };
+      None =>
+        # Treat c as an operator. Read the next number after it.
+        let k = skip_ws(src, j + 1) in
+        if k >= string_length(src) then
+          Err("expected number after operator " ++ c)
+        else
+          match read_int(src, k, 0) {
+            Pair(n, m) =>
+              match apply_op(c, acc, n) {
+                Ok(result) => parse_eval(src, m, result);
+                Err(msg)   => Err(msg)
+              }
+          }
+    }
+
+# Test cases — successes and failures.
+let t1 = parse_eval("1 + 2 + 3", 0, 0)
+let t2 = parse_eval("10 * 5 + 2", 0, 0)
+let t3 = parse_eval("100 + 23", 0, 0)
+let t4 = parse_eval("7 + 3 + 11 + 21", 0, 0)
+let t5 = parse_eval("5 ? 3", 0, 0)
+
+let results = [t1, t2, t3, t4, t5]
+results

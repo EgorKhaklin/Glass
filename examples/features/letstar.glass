@@ -1,0 +1,59 @@
+# =============================================================================
+# letstar.glass — demonstrating `let*` syntactic sugar for Result threading.
+#
+# Glass's pure functional style means errors are values (Result<T, E>). Without
+# sugar, every chained step requires explicit match-on-Result:
+#
+#   match step_a(x) {
+#     Err(msg) => Err(msg);
+#     Ok(a) =>
+#       match step_b(a) {
+#         Err(msg) => Err(msg);
+#         Ok(b) => Ok(b + 1)
+#       }
+#   }
+#
+# Three lines of ceremony per Ok-unwrap. With `let*`:
+#
+#   let* a = step_a(x) in
+#   let* b = step_b(a) in
+#   Ok(b + 1)
+#
+# Pure parse-time desugar. Same semantics, ~60% less code. Available in both
+# host (glass.py) and self-host (prism.glass) as of v2.4.
+# =============================================================================
+
+fn step(n: Int) : Result<Int, String> =
+  if n > 0 then Ok(n + 1)
+  else Err("non-positive input: " ++ int_to_string(n))
+
+fn chain(start: Int) : Result<Int, String> =
+  let* a = step(start) in
+  let* b = step(a) in
+  let* c = step(b) in
+  Ok(c)
+
+fn step_with_pos(state: (Int, Int)) : Result<(Int, Int), String> =
+  match state {
+    (n, pos) =>
+      if n > 0 then Ok((n + 1, pos + 1))
+      else Err("at position " ++ int_to_string(pos))
+  }
+
+fn chain_with_pos(start: Int) : Result<(Int, Int), String> =
+  let* (a, p1) = step_with_pos((start, 0)) in
+  let* (b, p2) = step_with_pos((a, p1)) in
+  let* (c, p3) = step_with_pos((b, p2)) in
+  Ok((c, p3))
+
+let r1 = chain(5)
+let r2 = chain(0 - 1)
+let r3 = chain_with_pos(10)
+let r4 = chain_with_pos(0)
+
+# r1 : Ok(8)        — 5 → 6 → 7 → 8
+# r2 : Err(...)     — short-circuits at step 1
+# r3 : Ok((13, 3))  — 10 → 11 → 12 → 13, three increments to pos
+# r4 : Err(...)     — short-circuits at position 0
+r1
+

@@ -1,0 +1,25 @@
+# A small functional pipeline built on generic helpers.
+# Exercises generic fns with concrete-type instantiations, ADTs in
+# return types, polymorphic field access — all compiled to one native
+# binary via type erasure.
+
+# Generic identity: useful as a placeholder in compositions.
+fn id<T>(x: T) : T = x
+
+# Default-extraction from an Option<T>: if Some, the value; else the
+# fallback. Polymorphic over T.
+fn unwrap_or<T>(opt: Option<T>, default: T) : T =
+  match opt {
+    Some(x) => x;
+    None => default
+  }
+
+# Generic record wrapping a labeled measurement.
+type Reading<T> = { label: String, value: T }
+
+# Build a few Int readings.
+let temp : Reading<Int> = Reading { label: "temp", value: 72 }
+let humid : Reading<Int> = Reading { label: "humid", value: 45 }
+
+# Extract values, defaulting missing samples to 0.
+unwrap_or(Some(temp.value), 0) + unwrap_or(None, humid.value)

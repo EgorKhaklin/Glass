@@ -46,6 +46,33 @@ POSITIVE = [
     os.path.join(EX, "selfhost", "prism.glass"),
     os.path.join(EX, "selfhost", "typecheck.glass"),
     os.path.join(EX, "selfhost", "mini.glass"),
+    os.path.join(EX, "showcase", "derive.glass"),
+    os.path.join(EX, "showcase", "prover.glass"),
+    os.path.join(EX, "showcase", "nash.glass"),
+    os.path.join(EX, "showcase", "refine.glass"),
+    os.path.join(EX, "showcase", "compose.glass"),
+    os.path.join(EX, "showcase", "imply.glass"),
+    os.path.join(EX, "showcase", "regex.glass"),
+    os.path.join(EX, "showcase", "json.glass"),
+    os.path.join(EX, "showcase", "config.glass"),
+    os.path.join(EX, "showcase", "markdown.glass"),
+    os.path.join(EX, "features", "letstar.glass"),
+    os.path.join(EX, "features", "letqmark.glass"),
+    os.path.join(EX, "features", "letpat.glass"),
+    os.path.join(EX, "features", "generic_fn.glass"),
+    os.path.join(EX, "features", "generic_rec.glass"),
+    os.path.join(EX, "features", "refine.glass"),
+    os.path.join(EX, "features", "alpha_refine.glass"),
+    os.path.join(EX, "features", "imply_refine.glass"),
+    os.path.join(EX, "selfhost", "prism_lexer.glass"),
+    os.path.join(EX, "selfhost", "quartz_min.glass"),
+    os.path.join(EX, "selfhost", "build_pipeline.glass"),
+    os.path.join(EX, "selfhost", "quartz_parser.glass"),
+    os.path.join(EX, "selfhost", "selfcompile.glass"),
+    os.path.join(EX, "stage3", "tinylang.glass"),
+    os.path.join(EX, "stage3", "tinycalc.glass"),
+    os.path.join(EX, "stage3", "midlang.glass"),
+    os.path.join(EX, "stage3", "safecalc.glass"),
 ]
 
 # (label, source, expected substring in stderr) — must fail with the right reason.
@@ -143,10 +170,46 @@ NEGATIVE = [
      "arity mismatch"),
 
     # ---- v0.4 refinement-type cases ----
-    ("refinement violated at runtime",
+    # v1.2: refinements with constant args are discharged statically.
+    ("refinement violated at compile time (literal arg)",
      'fn d(a: Int, b: Int where (b != 0)) : Int = a / b\n'
      'let r : Int = d(10, 0)',
+     "refinement violated at compile time"),
+
+    # Runtime check still applies for non-constant arguments.
+    ("refinement violated at runtime (dynamic arg)",
+     'fn d(a: Int, b: Int where (b != 0)) : Int = a / b\n'
+     'fn ident(n: Int) : Int = n\n'
+     'let zero = ident(0)\n'
+     'let r : Int = d(10, zero)',
      "refinement violated: b = 0"),
+
+    # Static discharge through arithmetic constant-folding.
+    ("static discharge via subtraction fold",
+     'fn f(n: Int where (n > 0)) : Int = n\n'
+     'let r : Int = f(5 - 7)',
+     "refinement violated at compile time"),
+
+    # Static discharge through if-then-else folding.
+    ("static discharge via if-fold",
+     'fn f(n: Int where (n > 0)) : Int = n\n'
+     'let r : Int = f(if true then 0 else 10)',
+     "refinement violated at compile time"),
+
+    # Return-type refinement violation at runtime (v1.3).
+    ("return refinement violated at runtime",
+     'fn negate(n: Int) : Int where (result >= 0) = 0 - n\n'
+     'let r : Int = negate(5)',
+     "refinement violated: result = -5 fails predicate"),
+
+    # v1.4: implication discharges (result >= 5) does NOT imply (n > 5),
+    # so the runtime check fires when at_least_five returns exactly 5.
+    ("implication unsound: >= 5 should not imply > 5",
+     'fn at_least_five(n: Int) : Int where (result >= 5) =\n'
+     '  if n >= 5 then n else 5\n'
+     'fn needs_above_five(n: Int where (n > 5)) : Int = n\n'
+     'let r : Int = needs_above_five(at_least_five(0))',
+     "refinement violated: n = 5 fails predicate (n > 5)"),
 
     ("refinement predicate must be Bool",
      'fn d(b: Int where (b + 1)) : Int = b',
@@ -289,10 +352,220 @@ def main() -> int:
             print(f"        stderr: {err.strip()}")
             failures += 1
 
-    total = len(POSITIVE) + len(NEGATIVE)
+    print("== REPL session cases ==")
+    repl_cases = [
+        ("simple expression",
+         "1 + 1\n:quit\n", ": Int = 2"),
+        ("let binding then use",
+         "let x = 42\nx + 1\n:quit\n", ": Int = 43"),
+        ("multi-line fn definition",
+         "fn fact(n: Int) : Int =\n"
+         "  if n < 2 then 1\n"
+         "  else n * fact(n - 1)\n"
+         "fact(5)\n:quit\n", ": Int = 120"),
+        (":type command",
+         ":type 42 + 1\n:quit\n", "42 + 1 : Int"),
+        ("error recovery",
+         "undefined_x\n1 + 1\n:quit\n", ": Int = 2"),
+        (":reset clears state",
+         "let x = 5\n:reset\nx\n:quit\n", "unbound"),
+    ]
+    for label, src, needle in repl_cases:
+        p = subprocess.run(
+            [sys.executable, GLASS],
+            input=src, capture_output=True, text=True,
+        )
+        ok = (needle in p.stdout)
+        print(f"  {'OK ' if ok else 'FAIL'}  {label}")
+        if not ok:
+            print(f"        expected substring {needle!r}")
+            print(f"        stdout: {p.stdout.strip()[-200:]}")
+            failures += 1
+
+    total = len(POSITIVE) + len(NEGATIVE) + len(repl_cases)
+    passed = total - failures
+    quartz_failures = run_quartz_tests()
+    failures += quartz_failures
+    total += 33  # quartz cases (v3.0 + v3.1 + v3.2 + v3.3 + v3.4 + v3.4.1)
     passed = total - failures
     print(f"\n{passed}/{total} passed")
     return 0 if failures == 0 else 1
+
+
+def run_quartz_tests() -> int:
+    """Quartz v3.0: compile each .glass source to a native binary, run it,
+    check stdout matches expectation. Each case proves codegen handles a
+    specific language construct end-to-end."""
+    import tempfile
+    QUARTZ = os.path.join(ROOT, "quartz.py")
+    print("== quartz native-compile cases ==")
+    cases = [
+        ("int literal",              "42\n",                                   "42\n"),
+        ("arithmetic precedence",    "1 + 2 * 3\n",                            "7\n"),
+        ("top-level lets",           "let x = 5\nlet y = 10\nx + y\n",         "15\n"),
+        ("if-then-else as expr",     "if 3 < 5 then 100 else 200\n",           "100\n"),
+        ("nested let-in",            "let r = (let x = 7 in x * 3)\nr + 1\n",  "22\n"),
+        ("string literal",           '"hello"\n',                              "hello\n"),
+        # v3.1 — functions
+        ("fn add",
+         "fn add(x: Int, y: Int) : Int = x + y\nadd(3, 4)\n",
+         "7\n"),
+        ("fn recursion (fact)",
+         "fn fact(n: Int) : Int = if n < 2 then 1 else n * fact(n - 1)\nfact(5)\n",
+         "120\n"),
+        ("fn calls fn",
+         "fn double(x: Int) : Int = x * 2\nfn quad(x: Int) : Int = double(double(x))\nquad(3)\n",
+         "12\n"),
+        ("fn mutual recursion",
+         "fn is_even(n: Int) : Bool = if n == 0 then true else is_odd(n - 1)\n"
+         "fn is_odd(n: Int) : Bool = if n == 0 then false else is_even(n - 1)\n"
+         "is_even(10)\n",
+         "true\n"),
+        ("string concat ++",
+         'fn greet(name: String) : String = "hello, " ++ name\ngreet("world")\n',
+         "hello, world\n"),
+        ("C keyword name collision",
+         "fn double(x: Int) : Int = x * 2\ndouble(21)\n",
+         "42\n"),
+        # v3.2 — ADTs + pattern matching
+        ("ADT enum-style match",
+         "type Color = Red | Green | Blue\n"
+         "match (Red) { Red => 1; Green => 2; Blue => 3 }\n",
+         "1\n"),
+        ("ADT with payload + match",
+         "type Box = Empty | Holds(Int)\n"
+         "match Holds(42) { Holds(n) => n; Empty => 0 }\n",
+         "42\n"),
+        ("ADT multi-field variant",
+         "type Bag = Empty | Twin(Int, Int)\n"
+         "match Twin(10, 20) { Empty => 0; Twin(a, b) => a + b }\n",
+         "30\n"),
+        ("fn returns ADT",
+         "type Color = Red | Green | Blue\n"
+         "fn classify(n: Int) : Color = if n > 0 then Red else Blue\n"
+         "match classify(-5) { Red => 1; Green => 2; Blue => 3 }\n",
+         "3\n"),
+        ("ADT wild pattern ignores payload",
+         "type Outcome = Done(Int) | Failed(String)\n"
+         'fn safe_div(n: Int, d: Int) : Outcome = if d == 0 then Failed("oops") else Done(n / d)\n'
+         "match safe_div(100, 0) { Done(v) => v; Failed(_) => -1 }\n",
+         "-1\n"),
+        # v3.3 — records
+        ("record construct + field access",
+         "type Point = { x: Int, y: Int }\n"
+         "let p = Point { x: 3, y: 4 }\n"
+         "p.x + p.y\n",
+         "7\n"),
+        ("record as fn parameter",
+         "type Point = { x: Int, y: Int }\n"
+         "fn dot(a: Point, b: Point) : Int = a.x * b.x + a.y * b.y\n"
+         "let p = Point { x: 3, y: 4 }\n"
+         "let q = Point { x: 5, y: 6 }\n"
+         "dot(p, q)\n",
+         "39\n"),
+        ("record destructure in match",
+         "type User = { id: Int, name: String }\n"
+         'let u = User { id: 42, name: "alice" }\n'
+         "match u { User { id, name } => id }\n",
+         "42\n"),
+        ("record inside ADT variant",
+         "type User = { id: Int, name: String }\n"
+         "type Outcome = Found(User) | NotFound\n"
+         "fn lookup(id: Int) : Outcome = "
+         'if id == 1 then Found(User { id: 1, name: "alice" }) else NotFound\n'
+         'match lookup(1) { Found(u) => u.name; NotFound => "missing" }\n',
+         "alice\n"),
+        ("chained field access (nested records)",
+         "type Point = { x: Int, y: Int }\n"
+         "type Rect = { tl: Point, br: Point }\n"
+         "let r = Rect { tl: Point { x: 0, y: 0 }, br: Point { x: 1920, y: 1080 } }\n"
+         "r.br.x - r.tl.x\n",
+         "1920\n"),
+        # v3.4 — generics
+        ("generic ADT (user-declared)",
+         "type Maybe<T> = Nope | Yep(T)\n"
+         "match Yep(42) { Yep(n) => n; Nope => 0 }\n",
+         "42\n"),
+        ("generic record",
+         "type Box<T> = { contents: T }\n"
+         "let b = Box { contents: 7 }\n"
+         "b.contents\n",
+         "7\n"),
+        ("prelude Option<Int>",
+         "let o : Option<Int> = Some(42)\n"
+         "match o { Some(n) => n; None => 0 }\n",
+         "42\n"),
+        ("prelude Result<Int, String>",
+         "fn safe_div(n: Int, d: Int) : Result<Int, String> =\n"
+         '  if d == 0 then Err("div by zero") else Ok(n / d)\n'
+         "match safe_div(100, 0) { Ok(v) => v; Err(_) => -1 }\n",
+         "-1\n"),
+        ("generic record as fn parameter",
+         "type Box<T> = { contents: T }\n"
+         "fn unbox(b: Box<Int>) : Int = b.contents\n"
+         "unbox(Box { contents: 99 })\n",
+         "99\n"),
+        # v3.4.1 — generic functions
+        ("generic fn (Int instantiation)",
+         "fn id<T>(x: T) : T = x\n"
+         "id(42)\n",
+         "42\n"),
+        ("generic fn (String instantiation)",
+         "fn id<T>(x: T) : T = x\n"
+         'id("hello")\n',
+         "hello\n"),
+        ("generic fn calling generic fn",
+         "fn id<T>(x: T) : T = x\n"
+         "fn through<A>(x: A) : A = id(x)\n"
+         "through(99)\n",
+         "99\n"),
+        ("generic fn returning ADT",
+         "fn wrap<T>(x: T) : Option<T> = Some(x)\n"
+         "match wrap(42) { Some(n) => n; None => 0 }\n",
+         "42\n"),
+        ("generic fn over ADT scrutinee",
+         "fn unwrap_or<T>(opt: Option<T>, default: T) : T =\n"
+         "  match opt { Some(x) => x; None => default }\n"
+         "unwrap_or(Some(42), 0)\n",
+         "42\n"),
+        ("generic fn — None instantiation",
+         "fn unwrap_or<T>(opt: Option<T>, default: T) : T =\n"
+         "  match opt { Some(x) => x; None => default }\n"
+         'unwrap_or(None, "missing")\n',
+         "missing\n"),
+    ]
+    failures = 0
+    for label, src, expected in cases:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".glass", delete=False
+        ) as f:
+            f.write(src)
+            src_file = f.name
+        with tempfile.NamedTemporaryFile(suffix="", delete=False) as f:
+            out_bin = f.name
+        try:
+            p = subprocess.run(
+                [sys.executable, QUARTZ, src_file, "-o", out_bin],
+                capture_output=True, text=True,
+            )
+            if p.returncode != 0:
+                print(f"  FAIL  {label} (compile)")
+                print(f"        stderr: {p.stderr.strip()}")
+                failures += 1
+                continue
+            r = subprocess.run([out_bin], capture_output=True, text=True)
+            ok = (r.stdout == expected)
+            print(f"  {'OK ' if ok else 'FAIL'}  {label}")
+            if not ok:
+                print(f"        expected {expected!r}, got {r.stdout!r}")
+                failures += 1
+        finally:
+            os.unlink(src_file)
+            try:
+                os.unlink(out_bin)
+            except OSError:
+                pass
+    return failures
 
 
 if __name__ == "__main__":

@@ -1,0 +1,314 @@
+# =============================================================================
+# json.glass — a JSON parser written entirely in pure Glass.
+#
+# Real recursive-descent parser. Handles:
+#   - null, true, false
+#   - integers (positive and negative)
+#   - quoted strings (no escape sequences in this version)
+#   - arrays [...]
+#   - objects {...}
+#   - nested structures arbitrarily deep
+#   - whitespace between tokens
+#
+# Doesn't handle:
+#   - floating point (Glass has no Float type yet)
+#   - escape sequences \n \t \" \\ etc. (would add ~30 lines)
+#   - Unicode escapes \uXXXX
+#
+# Returns a Result<Json, String>. Errors carry a human-readable message
+# with the position where the parse failed.
+#
+# Used by callers like:
+#   match parse_json("{\"a\": 1, \"b\": [true, null]}") {
+#     Ok(j)    => show_json(j);
+#     Err(msg) => "parse error: " ++ msg
+#   }
+# =============================================================================
+
+
+# ---- JSON value type ---------------------------------------------------
+
+type Json =
+  | JNull
+  | JBool(Bool)
+  | JNum(Int)
+  | JStr(String)
+  | JArr(List<Json>)
+  | JObj(List<Pair<String, Json>>)
+
+
+# ---- Character predicates ----------------------------------------------
+#
+# Glass doesn't have a Char type — single characters are just length-1
+# strings. char_at returns one of those.
+
+fn char_at_str(s: String, i: Int) : String = substring(s, i, i + 1)
+
+fn is_ws_char(c: String) : Bool =
+  if c == " " then true
+  else if c == "\n" then true
+  else if c == "\t" then true
+  else if c == "\r" then true
+  else false
+
+fn is_digit_char(c: String) : Bool =
+  match string_index_of("0123456789", c) {
+    Some(_) => true;
+    None    => false
+  }
+
+fn digit_value(c: String) : Int =
+  match string_index_of("0123456789", c) {
+    Some(i) => i;
+    None    => 0 - 1
+  }
+
+
+# ---- Whitespace skipping -----------------------------------------------
+
+fn skip_ws(src: String, i: Int) : Int =
+  if i >= string_length(src) then i
+  else if is_ws_char(char_at_str(src, i)) then skip_ws(src, i + 1)
+  else i
+
+
+# ---- Literal-keyword matcher -------------------------------------------
+#
+# Match an exact literal at position i. Returns the position past it, or
+# -1 if it doesn't match.
+
+fn match_literal(src: String, i: Int, lit: String) : Int =
+  let li = string_length(lit) in
+  let si = string_length(src) in
+  if i + li > si then 0 - 1
+  else if substring(src, i, i + li) == lit then i + li
+  else 0 - 1
+
+
+# ---- Number parsing ----------------------------------------------------
+#
+# Parse a sequence of digits starting at i. Returns (value, new_position).
+# Doesn't consume a sign — that's the caller's job.
+
+fn read_digits(src: String, i: Int, acc: Int) : (Int, Int) =
+  if i >= string_length(src) then (acc, i)
+  else
+    let c = char_at_str(src, i) in
+    if is_digit_char(c) then
+      read_digits(src, i + 1, acc * 10 + digit_value(c))
+    else (acc, i)
+
+fn parse_number(src: String, i: Int) : Result<(Json, Int), String> =
+  if i >= string_length(src) then Err("unexpected end in number")
+  else
+    let c = char_at_str(src, i) in
+    if c == "-" then
+      match read_digits(src, i + 1, 0) {
+        (n, j) =>
+          if j == i + 1 then Err("expected digits after '-'")
+          else Ok((JNum(0 - n), j))
+      }
+    else if is_digit_char(c) then
+      match read_digits(src, i, 0) {
+        (n, j) => Ok((JNum(n), j))
+      }
+    else Err("expected number")
+
+
+# ---- String parsing ----------------------------------------------------
+#
+# Walk until the closing quote. (No escape sequences in this version.)
+
+fn read_string_chars(src: String, i: Int, acc: String) : Result<(String, Int), String> =
+  if i >= string_length(src) then Err("unterminated string")
+  else
+    let c = char_at_str(src, i) in
+    if c == "\"" then Ok((acc, i + 1))
+    else read_string_chars(src, i + 1, acc ++ c)
+
+fn parse_string(src: String, i: Int) : Result<(Json, Int), String> =
+  if i >= string_length(src) then Err("expected string")
+  else if char_at_str(src, i) == "\"" then
+    let* (s, j) = read_string_chars(src, i + 1, "") in
+    Ok((JStr(s), j))
+  else Err("expected '\"'")
+
+
+# ---- Array parsing -----------------------------------------------------
+#
+# [ value, value, ... ]
+#
+# Mutually recursive with parse_value via the eval-then-iterate pattern.
+
+fn parse_array(src: String, i: Int) : Result<(Json, Int), String> =
+  if i >= string_length(src) then Err("expected '['")
+  else if char_at_str(src, i) == "[" then
+    let j = skip_ws(src, i + 1) in
+    if j >= string_length(src) then Err("unterminated array")
+    else if char_at_str(src, j) == "]" then Ok((JArr([]), j + 1))
+    else
+      let* (items, k) = parse_array_items(src, j, []) in
+      Ok((JArr(items), k))
+  else Err("expected '['")
+
+fn parse_array_items(
+  src: String,
+  i: Int,
+  acc: List<Json>
+) : Result<(List<Json>, Int), String> =
+  let* (v, j) = parse_value(src, i) in
+  let new_acc = acc ++ [v] in
+  let k = skip_ws(src, j) in
+  if k >= string_length(src) then Err("unterminated array")
+  else if char_at_str(src, k) == "]" then Ok((new_acc, k + 1))
+  else if char_at_str(src, k) == "," then
+    parse_array_items(src, skip_ws(src, k + 1), new_acc)
+  else Err("expected ',' or ']' in array")
+
+
+# ---- Object parsing ----------------------------------------------------
+#
+# { "key": value, "key": value }
+
+fn parse_object(src: String, i: Int) : Result<(Json, Int), String> =
+  if i >= string_length(src) then Err("expected '{'")
+  else if char_at_str(src, i) == "{" then
+    let j = skip_ws(src, i + 1) in
+    if j >= string_length(src) then Err("unterminated object")
+    else if char_at_str(src, j) == "}" then Ok((JObj([]), j + 1))
+    else
+      let* (fields, k) = parse_object_fields(src, j, []) in
+      Ok((JObj(fields), k))
+  else Err("expected '{'")
+
+fn parse_object_fields(
+  src: String,
+  i: Int,
+  acc: List<Pair<String, Json>>
+) : Result<(List<Pair<String, Json>>, Int), String> =
+  # Parse one field: "key" : value
+  let* (key_j, j) = parse_string(src, i) in
+  let key_str = match key_j {
+    JStr(s) => s;
+    _       => ""
+  } in
+  let k = skip_ws(src, j) in
+  if k >= string_length(src) then Err("expected ':' after key")
+  else if char_at_str(src, k) == ":" then
+    let* (v, m) = parse_value(src, skip_ws(src, k + 1)) in
+    let new_acc = acc ++ [Pair(key_str, v)] in
+    let n = skip_ws(src, m) in
+    if n >= string_length(src) then Err("unterminated object")
+    else if char_at_str(src, n) == "}" then Ok((new_acc, n + 1))
+    else if char_at_str(src, n) == "," then
+      parse_object_fields(src, skip_ws(src, n + 1), new_acc)
+    else Err("expected ',' or '}' in object")
+  else Err("expected ':' after object key")
+
+
+# ---- Top-level value parser --------------------------------------------
+#
+# Dispatch on the first non-whitespace character. Numbers, strings,
+# booleans, null, arrays, objects all have distinct first chars.
+
+fn parse_value(src: String, i: Int) : Result<(Json, Int), String> =
+  let j = skip_ws(src, i) in
+  if j >= string_length(src) then Err("unexpected end of input")
+  else
+    let c = char_at_str(src, j) in
+    if c == "n" then
+      let k = match_literal(src, j, "null") in
+      if k < 0 then Err("expected 'null'")
+      else Ok((JNull, k))
+    else if c == "t" then
+      let k = match_literal(src, j, "true") in
+      if k < 0 then Err("expected 'true'")
+      else Ok((JBool(true), k))
+    else if c == "f" then
+      let k = match_literal(src, j, "false") in
+      if k < 0 then Err("expected 'false'")
+      else Ok((JBool(false), k))
+    else if c == "\"" then parse_string(src, j)
+    else if c == "[" then parse_array(src, j)
+    else if c == "{" then parse_object(src, j)
+    else if c == "-" then parse_number(src, j)
+    else if is_digit_char(c) then parse_number(src, j)
+    else Err("unexpected character: " ++ c)
+
+
+fn parse_json(src: String) : Result<Json, String> =
+  let* (v, j) = parse_value(src, 0) in
+  let k = skip_ws(src, j) in
+  if k < string_length(src) then
+    Err("trailing characters after JSON value at position " ++ int_to_string(k))
+  else Ok(v)
+
+
+# ---- Pretty printer ----------------------------------------------------
+#
+# show_json(j) produces a minified string. Useful for round-trip testing.
+
+fn show_json_list(xs: List<Json>) : String =
+  match xs {
+    []        => "";
+    [h, ...t] =>
+      match t {
+        []     => show_json(h);
+        [_, ..._] => show_json(h) ++ "," ++ show_json_list(t)
+      }
+  }
+
+fn show_json_fields(fs: List<Pair<String, Json>>) : String =
+  match fs {
+    [] => "";
+    [Pair(k, v), ...t] =>
+      match t {
+        []        => "\"" ++ k ++ "\":" ++ show_json(v);
+        [_, ..._] => "\"" ++ k ++ "\":" ++ show_json(v) ++ "," ++ show_json_fields(t)
+      }
+  }
+
+fn show_json(j: Json) : String =
+  match j {
+    JNull       => "null";
+    JBool(b)    => if b then "true" else "false";
+    JNum(n)     => int_to_string(n);
+    JStr(s)     => "\"" ++ s ++ "\"";
+    JArr(items) => "[" ++ show_json_list(items) ++ "]";
+    JObj(fs)    => "{" ++ show_json_fields(fs) ++ "}"
+  }
+
+
+# ---- Tests -------------------------------------------------------------
+
+fn show_result(r: Result<Json, String>) : String =
+  match r {
+    Ok(j)    => "OK  " ++ show_json(j);
+    Err(msg) => "ERR " ++ msg
+  }
+
+let _ = print(show_result(parse_json("null")))
+let _ = print(show_result(parse_json("true")))
+let _ = print(show_result(parse_json("false")))
+let _ = print(show_result(parse_json("42")))
+let _ = print(show_result(parse_json("-17")))
+let _ = print(show_result(parse_json("\"hello\"")))
+let _ = print(show_result(parse_json("\"\"")))
+let _ = print(show_result(parse_json("[]")))
+let _ = print(show_result(parse_json("[1, 2, 3]")))
+let _ = print(show_result(parse_json("[null, true, 42]")))
+let _ = print(show_result(parse_json("{}")))
+let _ = print(show_result(parse_json("{\"a\": 1}")))
+let _ = print(show_result(parse_json("{\"a\": 1, \"b\": true, \"c\": null}")))
+let _ = print(show_result(parse_json("[[1, 2], [3, 4]]")))
+let _ = print(show_result(parse_json("{\"nested\": {\"deep\": [1, 2, 3]}}")))
+let _ = print(show_result(parse_json("  [  1  ,  2  ,  3  ]  ")))
+
+# Negative cases — these should produce Err
+let _ = print(show_result(parse_json("")))
+let _ = print(show_result(parse_json("[1, 2,")))
+let _ = print(show_result(parse_json("{\"a\":")))
+let _ = print(show_result(parse_json("xyz")))
+let _ = print(show_result(parse_json("123abc")))
+
+"json parser ready"

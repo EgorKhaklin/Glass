@@ -1,0 +1,25 @@
+# A safe lookup pattern using the prelude's Option<T> and Result<T, E>.
+# Demonstrates generic ADTs from the prelude composing with concrete
+# records and pattern matching, all natively compiled.
+
+type User = { id: Int, score: Int }
+
+# Three users; we look them up by id and return their score, or a default.
+fn user_score(id: Int) : Option<Int> =
+  if id == 1 then Some(95)
+  else if id == 2 then Some(78)
+  else if id == 3 then Some(83)
+  else None
+
+# Wrap that in a Result, treating "not found" as an error.
+fn grade(id: Int) : Result<Int, String> =
+  match user_score(id) {
+    Some(score) => Ok(score);
+    None => Err("user not found")
+  }
+
+# Look up id=2.
+match grade(2) {
+  Ok(score) => score;
+  Err(_) => -1
+}

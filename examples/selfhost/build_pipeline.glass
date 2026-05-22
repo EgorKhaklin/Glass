@@ -1,0 +1,167 @@
+# =============================================================================
+# build_pipeline.glass — Glass-driven build pipeline (v3.13 demo)
+#
+# Demonstrates the full self-host loop:
+#   1. Glass hosts a Quartz-in-Glass AST
+#   2. Glass calls compile_program to get C source as a String
+#   3. Glass writes the C source to a file (write_file builtin)
+#   4. Glass invokes cc as a subprocess (run_command builtin)
+#   5. Glass invokes the resulting binary (run_command again)
+#   6. The captured stdout is the final answer
+#
+# This is the v3.13 milestone: prism interprets Glass; Glass produces C;
+# Glass invokes cc; Glass runs the binary; Glass sees the output. The
+# entire build pipeline runs from inside a single Glass file. The only
+# thing not yet in Glass is parsing a .glass source file into a Quartz
+# AST — that's v3.14.
+# =============================================================================
+
+# A small Quartz-in-Glass AST that we'll compile end-to-end. Mirrors
+# the v3.7 fact(5) demo so we have a known-good answer (120).
+type Expr =
+  | EInt(Int)
+  | EAdd(Expr, Expr)
+  | ESub(Expr, Expr)
+  | EMul(Expr, Expr)
+  | ELt(Expr, Expr)
+  | EIf(Expr, Expr, Expr)
+  | EVar(String)
+  | ECall(String, List<Expr>)
+
+type FnDecl = | FnDecl(String, List<String>, Expr)
+type Program = | Program(List<FnDecl>, Expr)
+
+# Minimal codegen — just enough for this demo. Real Quartz-in-Glass
+# is examples/selfhost/quartz_min.glass; here we inline a tiny version
+# to keep build_pipeline.glass self-contained.
+
+fn compile_expr(e: Expr) : String =
+  match e {
+    EInt(n) => int_to_string(n);
+    EAdd(a, b) => "(" ++ compile_expr(a) ++ " + " ++ compile_expr(b) ++ ")";
+    ESub(a, b) => "(" ++ compile_expr(a) ++ " - " ++ compile_expr(b) ++ ")";
+    EMul(a, b) => "(" ++ compile_expr(a) ++ " * " ++ compile_expr(b) ++ ")";
+    ELt(a, b) => "(" ++ compile_expr(a) ++ " < " ++ compile_expr(b) ++ ")";
+    EIf(c, t, f) =>
+      "(" ++ compile_expr(c) ++ " ? " ++ compile_expr(t) ++ " : " ++ compile_expr(f) ++ ")";
+    EVar(name) => name;
+    ECall(name, args) => name ++ "(" ++ compile_args(args) ++ ")"
+  }
+
+fn compile_args(args: List<Expr>) : String =
+  match args {
+    [] => "";
+    [x, ...[]] => compile_expr(x);
+    [x, ...rest] => compile_expr(x) ++ ", " ++ compile_args(rest)
+  }
+
+fn compile_params(names: List<String>) : String =
+  match names {
+    [] => "void";
+    [n, ...[]] => "long long " ++ n;
+    [n, ...rest] => "long long " ++ n ++ ", " ++ compile_params(rest)
+  }
+
+fn compile_fn(fd: FnDecl, nl: String) : String =
+  match fd {
+    FnDecl(name, params, body) =>
+      "long long " ++ name ++ "(" ++ compile_params(params) ++ ");" ++ nl ++
+      "long long " ++ name ++ "(" ++ compile_params(params) ++ ") { return (" ++
+        compile_expr(body) ++ "); }"
+  }
+
+fn emit_fns(fns: List<FnDecl>, nl: String) : String =
+  match fns {
+    [] => "";
+    [f, ...[]] => compile_fn(f, nl);
+    [f, ...rest] => compile_fn(f, nl) ++ nl ++ emit_fns(rest, nl)
+  }
+
+fn compile_program(prog: Program, nl: String) : String =
+  match prog {
+    Program(fns, final) =>
+      let nl_escape : String = "\\" ++ "n" in
+      "#include <stdio.h>" ++ nl ++
+      emit_fns(fns, nl) ++ nl ++
+      "int main(void) {" ++ nl ++
+      "    long long _result = " ++ compile_expr(final) ++ ";" ++ nl ++
+      "    printf(\"%lld" ++ nl_escape ++ "\", _result);" ++ nl ++
+      "    return 0;" ++ nl ++
+      "}" ++ nl
+  }
+
+# Build: fact(n) = if n < 2 then 1 else n * fact(n-1); fact(5)
+let fact_decl : FnDecl =
+  FnDecl(
+    "fact",
+    ["n"],
+    EIf(
+      ELt(EVar("n"), EInt(2)),
+      EInt(1),
+      EMul(EVar("n"), ECall("fact", [ESub(EVar("n"), EInt(1))]))
+    )
+  )
+
+let prog : Program = Program([fact_decl], ECall("fact", [EInt(5)]))
+
+let nl : String = "
+"
+
+let c_source : String = compile_program(prog, nl)
+
+# --- Drive the build pipeline ------------------------------------------------
+# All four side-effects (write file, compile, run binary, report) happen
+# from inside this Glass program. Effect annotations document the
+# capabilities used at every level.
+
+fn write_c_source(path: String, source: String) : Result<Int, String> !{File} =
+  write_file(path, source)
+
+fn invoke_cc(src_path: String, out_path: String) : Result<(Int, String, String), String> !{Process} =
+  run_command("cc", [src_path, "-o", out_path])
+
+fn invoke_binary(path: String) : Result<(Int, String, String), String> !{Process} =
+  run_command(path, [])
+
+# --- Run the pipeline --------------------------------------------------------
+
+let src_path : String = "/tmp/glass_build_demo.c"
+let bin_path : String = "/tmp/glass_build_demo"
+
+let _w : Result<Int, String> = write_c_source(src_path, c_source)
+let write_msg : String =
+  match _w {
+    Ok(n) => "  wrote " ++ int_to_string(n) ++ " bytes to " ++ src_path;
+    Err(msg) => "  WRITE FAILED: " ++ msg
+  }
+let _p1 : String = print(write_msg)
+
+let _cc : Result<(Int, String, String), String> = invoke_cc(src_path, bin_path)
+let cc_msg : String =
+  match _cc {
+    Ok(triple) => match triple {
+      (code, _stdout, stderr) =>
+        if code == 0 then
+          "  cc succeeded (exit 0)"
+        else
+          "  cc FAILED with exit " ++ int_to_string(code) ++ ": " ++ stderr
+    };
+    Err(msg) => "  cc launch FAILED: " ++ msg
+  }
+let _p2 : String = print(cc_msg)
+
+let _run : Result<(Int, String, String), String> = invoke_binary(bin_path)
+let run_msg : String =
+  match _run {
+    Ok(triple) => match triple {
+      (code, stdout, _stderr) =>
+        if code == 0 then
+          "  binary printed: " ++ stdout
+        else
+          "  binary FAILED with exit " ++ int_to_string(code)
+    };
+    Err(msg) => "  binary launch FAILED: " ++ msg
+  }
+let _p3 : String = print(run_msg)
+
+"build pipeline complete"

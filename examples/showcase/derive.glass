@@ -1,0 +1,153 @@
+# =============================================================================
+# Symbolic differentiation in Glass.
+#
+# Compact demonstration of the language: an algebraic data type for
+# polynomial expressions, a recursive `diff` that mirrors the calculus rules
+# verbatim, a `simplify` that walks the AST collapsing identities, and a
+# pretty-printer.
+#
+# The output reads like a calculus textbook because the code reads like one.
+# =============================================================================
+
+# An algebraic expression — numbers, variables, and the operations that close
+# the polynomial-ring under differentiation.
+type Expr =
+  | Num(Int)
+  | Var(String)
+  | Add(Expr, Expr)
+  | Sub(Expr, Expr)
+  | Mul(Expr, Expr)
+  | Pow(Expr, Int)
+  | Neg(Expr)
+
+# ---- The derivative rules, transcribed straight from a calculus textbook ----
+
+fn diff(e: Expr, x: String) : Expr =
+  match e {
+    Num(_)      => Num(0);                       # d/dx c = 0
+    Var(name)   => if name == x then Num(1)
+                   else Num(0);                  # d/dx x = 1, d/dx y = 0
+    Add(a, b)   => Add(diff(a, x), diff(b, x));  # (f+g)' = f' + g'
+    Sub(a, b)   => Sub(diff(a, x), diff(b, x));  # (f-g)' = f' - g'
+    Mul(a, b)   =>                               # (fg)' = f'g + fg'
+      Add(Mul(diff(a, x), b), Mul(a, diff(b, x)));
+    Pow(a, n)   =>                               # (f^n)' = n·f^(n-1)·f'
+      Mul(Mul(Num(n), Pow(a, n - 1)), diff(a, x));
+    Neg(a)      => Neg(diff(a, x))               # (-f)' = -f'
+  }
+
+# ---- Algebraic simplification: collapse identities --------------------------
+
+fn simplify(e: Expr) : Expr =
+  match e {
+    Num(n)    => Num(n);
+    Var(s)    => Var(s);
+    Add(a, b) => simplify_add(simplify(a), simplify(b));
+    Sub(a, b) => simplify_sub(simplify(a), simplify(b));
+    Mul(a, b) => simplify_mul(simplify(a), simplify(b));
+    Pow(a, n) => simplify_pow(simplify(a), n);
+    Neg(a)    => simplify_neg(simplify(a))
+  }
+
+fn simplify_add(a: Expr, b: Expr) : Expr =
+  match (a, b) {
+    (Num(0), x)          => x;                   # 0 + x = x
+    (x, Num(0))          => x;                   # x + 0 = x
+    (Num(n), Num(m))     => Num(n + m);          # constant fold
+    (_, _)               => Add(a, b)
+  }
+
+fn simplify_sub(a: Expr, b: Expr) : Expr =
+  match (a, b) {
+    (x, Num(0))          => x;                   # x - 0 = x
+    (Num(0), x)          => Neg(x);              # 0 - x = -x
+    (Num(n), Num(m))     => Num(n - m);          # constant fold
+    (_, _)               => Sub(a, b)
+  }
+
+fn simplify_mul(a: Expr, b: Expr) : Expr =
+  match (a, b) {
+    (Num(0), _)                       => Num(0);
+    (_, Num(0))                       => Num(0);
+    (Num(1), x)                       => x;
+    (x, Num(1))                       => x;
+    (Num(n), Num(m))                  => Num(n * m);
+    (Num(n), Mul(Num(m), x))          => Mul(Num(n * m), x);  # 3 * (2 * x) = 6x
+    (Mul(Num(n), x), Num(m))          => Mul(Num(n * m), x);
+    (_, _)                            => Mul(a, b)
+  }
+
+fn simplify_pow(a: Expr, n: Int) : Expr =
+  if n == 0 then Num(1)                          # x^0 = 1
+  else if n == 1 then a                          # x^1 = x
+  else match a {
+    Num(0)               => Num(0);              # 0^n = 0 (for n > 0)
+    Num(1)               => Num(1);              # 1^n = 1
+    _                    => Pow(a, n)
+  }
+
+fn simplify_neg(a: Expr) : Expr =
+  match a {
+    Num(0)               => Num(0);              # -0 = 0
+    Num(n)               => Num(0 - n);          # fold the negation
+    Neg(b)               => b;                   # --x = x
+    _                    => Neg(a)
+  }
+
+# ---- Pretty-printer ---------------------------------------------------------
+
+fn show(e: Expr) : String =
+  match e {
+    Num(n)    => int_to_string(n);
+    Var(s)    => s;
+    Add(a, b) => "(" ++ show(a) ++ " + " ++ show(b) ++ ")";
+    Sub(a, b) => "(" ++ show(a) ++ " - " ++ show(b) ++ ")";
+    Mul(a, b) => show(a) ++ "*" ++ show(b);
+    Pow(a, n) => show(a) ++ "^" ++ int_to_string(n);
+    Neg(a)    => "-(" ++ show(a) ++ ")"
+  }
+
+# Convenience: differentiate and simplify in one step.
+fn d_dx(e: Expr) : Expr = simplify(diff(e, "x"))
+
+fn report(label: String, e: Expr) : String !{IO} =
+  print(label ++ ":  " ++ show(e) ++ "   ⟶   " ++ show(d_dx(e)))
+
+# ---- Demonstrations ---------------------------------------------------------
+
+# x^2 + 2x + 1   ⟶   2x + 2
+let p1 = Add(Add(Pow(Var("x"), 2), Mul(Num(2), Var("x"))), Num(1))
+let _ = report("x^2 + 2x + 1            ", p1)
+
+# x^3 - 3x       ⟶   3x^2 - 3
+let p2 = Sub(Pow(Var("x"), 3), Mul(Num(3), Var("x")))
+let _ = report("x^3 - 3x                ", p2)
+
+# (x + 1)(x - 1) ⟶   2x  (after simplification)
+let p3 = Mul(Add(Var("x"), Num(1)), Sub(Var("x"), Num(1)))
+let _ = report("(x+1)(x-1)              ", p3)
+
+# x^5            ⟶   5x^4
+let p4 = Pow(Var("x"), 5)
+let _ = report("x^5                     ", p4)
+
+# 7              ⟶   0     (constants vanish)
+let p5 = Num(7)
+let _ = report("7                       ", p5)
+
+# y (with respect to x)  ⟶   0
+let p6 = Var("y")
+let _ = report("y (w.r.t. x)            ", p6)
+
+# A cubic: x^3 + x^2 - 5x + 4    ⟶   3x^2 + 2x - 5
+let cubic = Add(Sub(Add(Pow(Var("x"), 3), Pow(Var("x"), 2)),
+                    Mul(Num(5), Var("x"))),
+                Num(4))
+let _ = report("x^3 + x^2 - 5x + 4      ", cubic)
+
+# Show that d²/dx² of x^3 = 6x
+let p7 = Pow(Var("x"), 3)
+let _ = print("--- second derivative ---")
+let _ = print("x^3 -> d/dx -> " ++ show(d_dx(p7)) ++ " -> d/dx -> " ++ show(d_dx(d_dx(p7))))
+
+"done"

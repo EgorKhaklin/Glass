@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Glass — playground</title>
+<link rel="preconnect" href="https://cdn.jsdelivr.net">
+<style>
+  :root {
+    --bg-0: #0a0d12;
+    --bg-1: #0e1218;
+    --bg-2: #141923;
+    --bg-3: #1a2030;
+    --fg-0: #e6e9ee;
+    --fg-1: #b8c1d1;
+    --fg-2: #6f7a8f;
+    --accent: #00bcd4;
+    --accent-dim: #008ba1;
+    --accent-bg: rgba(0, 188, 212, 0.08);
+    --err: #f6707d;
+    --ok: #6bd28b;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg-0);
+    color: var(--fg-0);
+    font-family: 'SF Mono', 'Monaco', 'Consolas', 'Roboto Mono', monospace;
+    font-size: 14px;
+    line-height: 1.5;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* --- Header ---------------------------------------------------------- */
+  header {
+    padding: 24px 32px;
+    border-bottom: 1px solid var(--bg-3);
+    background: linear-gradient(180deg, var(--bg-1) 0%, var(--bg-0) 100%);
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .logo {
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
+  }
+
+  .logo polygon {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 1.2;
+  }
+
+  h1 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    color: var(--fg-0);
+  }
+
+  h1 .v {
+    color: var(--accent);
+    margin-left: 8px;
+  }
+
+  .tagline {
+    color: var(--fg-2);
+    font-size: 12px;
+    margin-top: 4px;
+  }
+
+  /* --- Toolbar --------------------------------------------------------- */
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    padding: 16px 32px;
+    background: var(--bg-1);
+    border-bottom: 1px solid var(--bg-3);
+    align-items: center;
+  }
+
+  .example-select {
+    background: var(--bg-2);
+    color: var(--fg-1);
+    border: 1px solid var(--bg-3);
+    border-radius: 4px;
+    padding: 6px 12px;
+    font-family: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    outline: none;
+  }
+
+  .example-select:hover, .example-select:focus {
+    border-color: var(--accent);
+  }
+
+  .run-btn {
+    background: var(--accent);
+    color: var(--bg-0);
+    border: none;
+    padding: 6px 20px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: background 120ms ease;
+  }
+
+  .run-btn:hover { background: #4dd9ed; }
+  .run-btn:active { background: var(--accent-dim); }
+  .run-btn:disabled {
+    background: var(--bg-3);
+    color: var(--fg-2);
+    cursor: not-allowed;
+  }
+
+  .status {
+    margin-left: auto;
+    font-size: 12px;
+    color: var(--fg-2);
+  }
+
+  .status.loading { color: var(--accent); }
+  .status.ready   { color: var(--ok); }
+  .status.error   { color: var(--err); }
+
+  /* --- Main split ------------------------------------------------------ */
+  main {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0;
+    overflow: hidden;
+    min-height: 0;
+  }
+
+  @media (max-width: 900px) {
+    main { grid-template-columns: 1fr; }
+  }
+
+  .panel {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    min-width: 0;
+  }
+
+  .panel-header {
+    padding: 8px 16px;
+    background: var(--bg-2);
+    color: var(--fg-2);
+    font-size: 11px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--bg-3);
+    border-right: 1px solid var(--bg-3);
+  }
+
+  .panel:last-child .panel-header { border-right: none; }
+
+  #editor, #output {
+    flex: 1;
+    padding: 16px;
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1.55;
+    background: var(--bg-0);
+    color: var(--fg-0);
+    border: none;
+    outline: none;
+    resize: none;
+    overflow: auto;
+    white-space: pre;
+    tab-size: 2;
+  }
+
+  #editor {
+    border-right: 1px solid var(--bg-3);
+  }
+
+  #output {
+    background: var(--bg-1);
+    margin: 0;
+    color: var(--fg-1);
+  }
+
+  #output .err  { color: var(--err); }
+  #output .ok   { color: var(--ok); }
+  #output .dim  { color: var(--fg-2); }
+  #output .accent { color: var(--accent); }
+
+  /* --- Loading overlay ------------------------------------------------- */
+  .loading-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(10, 13, 18, 0.92);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    z-index: 100;
+    transition: opacity 300ms ease;
+    pointer-events: none;
+  }
+
+  .loading-overlay.hidden {
+    opacity: 0;
+  }
+
+  .loading-text {
+    color: var(--fg-1);
+    font-size: 13px;
+  }
+
+  .loading-detail {
+    color: var(--fg-2);
+    font-size: 11px;
+  }
+
+  @keyframes pulse-octahedron {
+    0%, 100% { transform: rotate(0deg); opacity: 0.6; }
+    50%      { transform: rotate(180deg); opacity: 1; }
+  }
+
+  .loading-octahedron {
+    animation: pulse-octahedron 2s ease-in-out infinite;
+  }
+
+  /* --- Footer ---------------------------------------------------------- */
+  footer {
+    padding: 12px 32px;
+    background: var(--bg-1);
+    border-top: 1px solid var(--bg-3);
+    color: var(--fg-2);
+    font-size: 11px;
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+  }
+
+  footer a {
+    color: var(--accent);
+    text-decoration: none;
+  }
+
+  footer a:hover { text-decoration: underline; }
+
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: var(--bg-1); }
+  ::-webkit-scrollbar-thumb { background: var(--bg-3); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--accent-dim); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <svg class="logo loading-octahedron" viewBox="0 0 32 32">
+      <polygon points="16,2 28,16 16,30 4,16" />
+      <polygon points="16,2 16,30" />
+      <polygon points="4,16 28,16" />
+    </svg>
+    <div>
+      <h1>Glass<span class="v">v4.0</span></h1>
+      <div class="tagline">A pure functional programming language. Running in your browser.</div>
+    </div>
+  </div>
+</header>
+
+<div class="toolbar">
+  <select class="example-select" id="example-select">
+    <option value="hello">Hello world</option>
+    <option value="fib">Fibonacci</option>
+    <option value="adt">ADTs &amp; pattern matching</option>
+    <option value="refinement">Refinement types</option>
+    <option value="effects">Effect system</option>
+    <option value="generics">Generic functions</option>
+    <option value="closures">Closures &amp; higher-order</option>
+    <option value="regex">Regex matcher (mini)</option>
+  </select>
+  <button class="run-btn" id="run-btn" disabled>Run</button>
+  <div class="status loading" id="status">Loading Pyodide…</div>
+</div>
+
+<main>
+  <div class="panel">
+    <div class="panel-header">Source</div>
+    <textarea id="editor" spellcheck="false" autocomplete="off"></textarea>
+  </div>
+  <div class="panel" style="position: relative;">
+    <div class="panel-header">Output</div>
+    <pre id="output"><span class="dim">Press Run to evaluate. Pyodide initialises in the background.</span></pre>
+  </div>
+</main>
+
+<footer>
+  <span>Glass v4.0 · running in <a href="https://pyodide.org" target="_blank" rel="noopener">Pyodide</a></span>
+  <a href="https://github.com/EgorKhaklin/Glass" target="_blank" rel="noopener">GitHub</a>
+  <span>Dual-licensed Apache-2.0 OR MIT</span>
+</footer>
+
+<!-- ---------- Example programs ---------- -->
+<script id="ex-hello" type="text/glass">
+# Hello, Glass.
+"Hello, world!"
+</script>
+
+<script id="ex-fib" type="text/glass">
+# Fibonacci with recursion and refinement types.
+fn fib(n: Int where (n >= 0)) : Int =
+  if n < 2 then n
+  else fib(n - 1) + fib(n - 2)
+
+let results = [fib(0), fib(1), fib(5), fib(10), fib(15)]
+results
+</script>
+
+<script id="ex-adt" type="text/glass">
+# Algebraic data types and exhaustive pattern matching.
+type Tree =
+  | Leaf
+  | Node(Int, Tree, Tree)
+
+fn insert(t: Tree, x: Int) : Tree =
+  match t {
+    Leaf => Node(x, Leaf, Leaf);
+    Node(v, l, r) =>
+      if x < v then Node(v, insert(l, x), r)
+      else if x > v then Node(v, l, insert(r, x))
+      else t
+  }
+
+fn sum_tree(t: Tree) : Int =
+  match t {
+    Leaf => 0;
+    Node(v, l, r) => v + sum_tree(l) + sum_tree(r)
+  }
+
+let t = insert(insert(insert(insert(Leaf, 5), 3), 8), 1)
+sum_tree(t)
+</script>
+
+<script id="ex-refinement" type="text/glass">
+# Refinement types — runtime + static discharge.
+fn safe_div(a: Int, b: Int where (b != 0)) : Int = a / b
+
+# These discharge at compile time — no runtime check.
+let r1 = safe_div(100, 5)
+let r2 = safe_div(36, 6)
+
+# safe_div(10, 0) would be rejected by the type checker.
+
+# Return refinements compose:
+fn positive(n: Int) : Int where (result > 0) =
+  if n > 0 then n else 1
+
+# (result > 0) implies (b != 0), so this discharges too:
+let r3 = safe_div(60, positive(3))
+
+[r1, r2, r3]
+</script>
+
+<script id="ex-effects" type="text/glass">
+# Effect rows — each function declares what it can do.
+fn double(n: Int) : Int = n * 2
+
+fn shout(msg: String) : String !{IO} =
+  print(msg ++ "!")
+
+# `shout` carries the IO effect on its arrow.
+# `double` is pure — type-system-enforced.
+
+let _ = shout("hello from Glass")
+double(21)
+</script>
+
+<script id="ex-generics" type="text/glass">
+# Generic functions and Hindley-Milner inference.
+fn id(x: A) : A = x
+
+# The type-checker infers concrete instantiations at each call site.
+let a = id(42)
+let b = id("hello")
+let c = id([1, 2, 3])
+
+# Polymorphic ADTs.
+type Pair<A, B> = | Pair(A, B)
+
+fn swap(p: Pair<A, B>) : Pair<B, A> =
+  match p {
+    Pair(x, y) => Pair(y, x)
+  }
+
+swap(Pair(1, "one"))
+</script>
+
+<script id="ex-closures" type="text/glass">
+# First-class functions and closures.
+fn add(x: Int) : (Int) -> Int =
+  fn(y: Int) -> x + y
+
+let add5 = add(5)
+let add10 = add(10)
+
+let results = [
+  add5(3),     # 8
+  add5(100),   # 105
+  add10(7),    # 17
+  add(20)(22)  # 42
+]
+results
+</script>
+
+<script id="ex-regex" type="text/glass">
+# A tiny regex engine — literal + alternation + Kleene star.
+type Regex =
+  | RChar(String)
+  | RAlt(Regex, Regex)
+  | RSeq(Regex, Regex)
+  | RStar(Regex)
+  | REmpty
+
+fn match_at(r: Regex, s: String, i: Int, k: (Int) -> Bool) : Bool =
+  match r {
+    REmpty => k(i);
+    RChar(c) =>
+      if i >= string_length(s) then false
+      else if substring(s, i, i + 1) == c then k(i + 1)
+      else false;
+    RSeq(a, b) =>
+      match_at(a, s, i, fn(j: Int) -> match_at(b, s, j, k));
+    RAlt(a, b) =>
+      if match_at(a, s, i, k) then true
+      else match_at(b, s, i, k);
+    RStar(inner) =>
+      if match_at(inner, s, i, fn(j: Int) ->
+            if j == i then k(j)
+            else match_at(RStar(inner), s, j, k))
+        then true
+      else k(i)
+  }
+
+fn matches(r: Regex, s: String) : Bool =
+  match_at(r, s, 0, fn(j: Int) -> j == string_length(s))
+
+# (a|b)*c matched against "ababbc"
+let pat = RSeq(
+  RStar(RAlt(RChar("a"), RChar("b"))),
+  RChar("c")
+)
+
+[
+  matches(pat, "c"),       # true
+  matches(pat, "ac"),      # true
+  matches(pat, "ababbc"),  # true
+  matches(pat, "ababbd")   # false
+]
+</script>
+
+<script>
+"use strict";
+
+// --- DOM references ----------------------------------------------------
+const editor = document.getElementById("editor");
+const output = document.getElementById("output");
+const runBtn = document.getElementById("run-btn");
+const status = document.getElementById("status");
+const exampleSelect = document.getElementById("example-select");
+
+// --- Example loader ----------------------------------------------------
+function loadExample(name) {
+  const node = document.getElementById("ex-" + name);
+  if (node) editor.value = node.textContent.trim() + "\n";
+}
+
+exampleSelect.addEventListener("change", (e) => loadExample(e.target.value));
+loadExample("hello");
+
+// --- Pyodide bootstrap -------------------------------------------------
+let pyodide = null;
+let glassReady = false;
+
+async function bootstrapPyodide() {
+  setStatus("loading", "Loading Pyodide…");
+
+  // Pyodide pinned to a stable version known to work cross-browser.
+  // The CDN copy is ~10MB; first load is slow, then cached.
+  const pyodideScript = document.createElement("script");
+  pyodideScript.src = "https://cdn.jsdelivr.net/pyodide/v0.27.0/full/pyodide.js";
+  document.head.appendChild(pyodideScript);
+  await new Promise((res, rej) => {
+    pyodideScript.onload = res;
+    pyodideScript.onerror = rej;
+  });
+
+  setStatus("loading", "Initialising Python…");
+  pyodide = await loadPyodide({
+    indexURL: "https://cdn.jsdelivr.net/pyodide/v0.27.0/full/",
+  });
+
+  setStatus("loading", "Fetching glass.py…");
+  // Fetch glass.py from the same directory. Hosting setup: place
+  // playground.html alongside the glass.py file (the repo root works).
+  let glassSrc;
+  try {
+    const resp = await fetch("glass.py");
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    glassSrc = await resp.text();
+  } catch (ex) {
+    setStatus("error", "Could not fetch glass.py");
+    output.innerHTML = '<span class="err">Failed to load glass.py from the same directory.</span>\n\n' +
+      '<span class="dim">Serve this page from a directory containing glass.py:</span>\n' +
+      '<span class="dim">  python -m http.server</span>\n\n' +
+      '<span class="dim">or from the cloned repo root.</span>';
+    return;
+  }
+
+  setStatus("loading", "Loading Glass module…");
+  pyodide.FS.writeFile("glass.py", glassSrc);
+
+  // Import glass and capture stdout via io.StringIO.
+  await pyodide.runPythonAsync(`
+import sys, io
+sys.path.insert(0, '/home/pyodide')
+sys.path.insert(0, '.')
+import glass
+`);
+
+  glassReady = true;
+  runBtn.disabled = false;
+  setStatus("ready", "Ready. Edit the source and press Run.");
+  output.innerHTML = '<span class="dim">Glass is loaded. Press Run to evaluate the source on the left.</span>';
+}
+
+// --- Status helper -----------------------------------------------------
+function setStatus(klass, text) {
+  status.className = "status " + klass;
+  status.textContent = text;
+}
+
+// --- Run handler -------------------------------------------------------
+async function runSource() {
+  if (!glassReady) return;
+  const src = editor.value;
+  if (!src.trim()) {
+    output.innerHTML = '<span class="dim">(empty source)</span>';
+    return;
+  }
+
+  setStatus("loading", "Running…");
+  runBtn.disabled = true;
+  output.textContent = "";
+
+  // Set up stdout capture inside Pyodide, run via run_source, retrieve.
+  try {
+    pyodide.globals.set("_glass_user_src", src);
+    const result = await pyodide.runPythonAsync(`
+import sys, io, traceback
+_buf = io.StringIO()
+_old_stdout = sys.stdout
+sys.stdout = _buf
+try:
+    glass.run_source(_glass_user_src, verbose=True)
+    _status = "ok"
+except SyntaxError as e:
+    print(f"SyntaxError: {e}")
+    _status = "err"
+except glass.TypeError_ as e:
+    print(f"TypeError: {e}")
+    _status = "err"
+except RuntimeError as e:
+    print(f"RuntimeError: {e}")
+    _status = "err"
+except Exception as e:
+    print(f"InternalError: {type(e).__name__}: {e}")
+    traceback.print_exc()
+    _status = "err"
+finally:
+    sys.stdout = _old_stdout
+(_buf.getvalue(), _status)
+`);
+    const [text, statusCode] = result.toJs();
+    renderOutput(text, statusCode);
+  } catch (ex) {
+    renderOutput(`Pyodide error: ${ex}\n`, "err");
+  } finally {
+    runBtn.disabled = false;
+    setStatus("ready", "Ready.");
+  }
+}
+
+// --- Output formatter --------------------------------------------------
+function renderOutput(text, statusCode) {
+  if (!text) {
+    output.innerHTML = '<span class="dim">(no output)</span>';
+    return;
+  }
+  // Escape HTML and colorize a few common patterns.
+  const escaped = text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/(SyntaxError|TypeError|RuntimeError|InternalError)([^\n]*)/g,
+             '<span class="err">$1$2</span>')
+    .replace(/(\b[a-z_][a-zA-Z0-9_]*\s*:\s*)([^=\n]+)(=)/g,
+             '<span class="accent">$1</span>$2$3')
+    .replace(/^(  type [^\n]+)/gm, '<span class="dim">$1</span>');
+  output.innerHTML = escaped;
+}
+
+runBtn.addEventListener("click", runSource);
+
+// Ctrl-Enter / Cmd-Enter to run.
+editor.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+    e.preventDefault();
+    if (!runBtn.disabled) runSource();
+  }
+  // Tab inserts two spaces, doesn't change focus.
+  if (e.key === "Tab" && !e.shiftKey) {
+    e.preventDefault();
+    const start = editor.selectionStart;
+    const end = editor.selectionEnd;
+    editor.value = editor.value.slice(0, start) + "  " + editor.value.slice(end);
+    editor.selectionStart = editor.selectionEnd = start + 2;
+  }
+});
+
+// --- Go ---------------------------------------------------------------
+bootstrapPyodide().catch((ex) => {
+  setStatus("error", "Failed to load");
+  output.innerHTML = `<span class="err">Pyodide failed to initialise: ${ex}</span>`;
+});
+</script>
+</body>
+</html>

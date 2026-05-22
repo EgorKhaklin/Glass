@@ -1,0 +1,135 @@
+# =============================================================================
+# selfcompile.glass — Stage 5 endpoint (v4.0)
+#
+# End-to-end self-compile script. Takes one or more Glass source strings,
+# routes each through the Glass-side compilation pipeline:
+#
+#   1. write_file("/tmp/qp_input.glass", source)
+#   2. run_command("glass", ["examples/selfhost/quartz_parser.glass"])
+#      — quartz_parser detects the trigger file, switches to file mode,
+#        parses + compiles + cc's + runs the user program, prints
+#        `COMPILED: <stdout>`
+#   3. Read the captured stdout, extract the COMPILED: line, report.
+#
+# This is the v4.0 milestone: the entire compilation pipeline runs from
+# Glass-driven scripts, end to end. selfcompile.glass orchestrates;
+# quartz_parser.glass parses + generates C; build_and_run drives cc.
+# A user can drop Glass source into a variable and get a native binary
+# whose output is captured back to the caller, all without leaving Glass.
+#
+# Architecture notes:
+#   - Two layers of glass interpretation: the host runs selfcompile,
+#     which subprocess-invokes a fresh glass that runs quartz_parser.
+#   - quartz_parser self-cleans the trigger file after reading it, so
+#     subsequent default-mode invocations work cleanly.
+#   - selfcompile compiles SEVERAL test cases in sequence to demonstrate
+#     the pipeline handles arbitrary Glass programs uniformly.
+#   - True Stage 5 (prism interpreting quartz_parser) would require
+#     prism to support write_file/read_file/run_command builtins;
+#     deferred. The host-direct path here is operationally equivalent.
+# =============================================================================
+
+# Extract the substring after "COMPILED: " in the captured stdout.
+# If the prefix isn't present, return the full output as-is (likely
+# an error message).
+fn extract_result(out: String) : String =
+  match string_index_of(out, "COMPILED: ") {
+    Some(i) =>
+      let start : Int = i + 10 in
+      let len : Int = string_length(out) in
+      # Strip trailing newline if present.
+      let end : Int =
+        if len > start then
+          if substring(out, len - 1, len) == "\n" then len - 1
+          else len
+        else len in
+      substring(out, start, end);
+    None => out
+  }
+
+# Compile a single Glass source string and capture the result.
+# Returns either Ok(result) or Err(message).
+fn compile_one(label: String, src: String)
+    : Result<String, String> !{File, Process} =
+  # Step 1: write the source to the trigger file.
+  match write_file("/tmp/qp_input.glass", src) {
+    Err(msg) => Err("write_file failed: " ++ msg);
+    Ok(_) =>
+      # Step 2: invoke glass on quartz_parser.glass. It will detect
+      # the trigger file, compile the user source, and print
+      # `COMPILED: <stdout>` (or `FAILED: <msg>`).
+      match run_command("glass",
+                       ["examples/selfhost/quartz_parser.glass"]) {
+        Err(msg) => Err("run_command failed: " ++ msg);
+        Ok(triple) =>
+          match triple {
+            (code, stdout, stderr) =>
+              if code == 0 then
+                Ok(extract_result(stdout))
+              else
+                Err("glass exit " ++ int_to_string(code) ++ ": " ++ stderr)
+          }
+      }
+  }
+
+# Top-level: compile several test programs and print results.
+# Each compile_one call drives the FULL pipeline:
+#   user .glass source string
+#     → quartz_parser (Glass interpreted by host)
+#         parses to Quartz AST
+#     → compile_program (Glass codegen)
+#         emits C source string
+#     → write_file + cc + run_command (Glass builtins)
+#         produces and executes native binary
+#     → stdout captured back to selfcompile
+
+# Demo programs — each one exercises a different feature path:
+
+# 1. Pure arithmetic with precedence (v3.14)
+let r1 : Result<String, String> =
+  compile_one("arith", "1 + 2 * 3")
+
+# 2. Let bindings (v3.15)
+let r2 : Result<String, String> =
+  compile_one("let", "let x = 5 in let y = 10 in x * y + 2")
+
+# 3. Recursive function with if + comparison (v3.16) — canonical demo
+let r3 : Result<String, String> =
+  compile_one("fact",
+    "fn fact(n) = if n < 2 then 1 else n * fact(n - 1)  fact(6)")
+
+# 4. ADT + match (v3.17)
+let r4 : Result<String, String> =
+  compile_one("adt",
+    "type Maybe = | Some(Int) | None  match Some(77) { Some(n) => n; None => 0 }")
+
+# 5. Record + field access (v3.18)
+let r5 : Result<String, String> =
+  compile_one("record",
+    "type Point = { x: Int, y: Int }  let p = Point { x: 3, y: 4 } in p.x * p.y")
+
+# 6. Strings + ++ (v3.19)
+let r6 : Result<String, String> =
+  compile_one("string",
+    "\"hello\" ++ \" \" ++ \"world\"")
+
+# 7. Fn returning string (v3.20)
+let r7 : Result<String, String> =
+  compile_one("string_fn",
+    "fn greet(n) = \"hi, \" ++ n  greet(\"Glass\")")
+
+fn show(label: String, r: Result<String, String>) : String =
+  match r {
+    Ok(out) => label ++ " => " ++ out;
+    Err(msg) => label ++ " FAILED: " ++ msg
+  }
+
+let _p1 : String = print(show("arith     (1 + 2 * 3)", r1))
+let _p2 : String = print(show("let       (x * y + 2)", r2))
+let _p3 : String = print(show("fact      (fact(6))", r3))
+let _p4 : String = print(show("adt       (Some(77))", r4))
+let _p5 : String = print(show("record    (p.x * p.y)", r5))
+let _p6 : String = print(show("string    (hello ++ world)", r6))
+let _p7 : String = print(show("string_fn (greet Glass)", r7))
+
+"v4.0 selfcompile complete"

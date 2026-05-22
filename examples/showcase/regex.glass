@@ -1,0 +1,234 @@
+# =============================================================================
+# regex.glass — a small regex engine written entirely in pure Glass.
+#
+# Supports:
+#   literal characters       a
+#   any character            .
+#   alternation              a|b
+#   concatenation            ab
+#   Kleene star              a*
+#   one or more              a+
+#   optional                 a?
+#   grouping                 (ab|cd)
+#
+# Doesn't support: character classes [a-z], anchors ^$, backreferences,
+# escape sequences. Just the core algebra — but enough to show off the
+# language's range: ADTs, pattern matching, recursion, closures (via
+# continuations), refinements, polymorphism, all in one file.
+#
+# The match algorithm: parse the regex into an AST, then walk it via
+# continuation-passing style. Each match attempt receives a continuation
+# that's called with the rest of the input when the current piece
+# matches; if the continuation eventually returns true, the whole match
+# succeeds.
+#
+# A list of test cases at the bottom exercises every operator.
+# =============================================================================
+
+
+# ---- Regex AST ---------------------------------------------------------
+
+type Regex =
+  | RChar(String)                  # match one specific character
+  | RAny                           # match any single character (.)
+  | RAlt(Regex, Regex)             # alternation: a|b
+  | RSeq(Regex, Regex)             # concatenation: ab
+  | RStar(Regex)                   # Kleene star: a*
+  | RPlus(Regex)                   # one or more: a+
+  | ROpt(Regex)                    # optional: a?
+  | REmpty                         # the empty pattern (always matches)
+
+
+# ---- Parser ------------------------------------------------------------
+#
+# Recursive descent with three precedence levels:
+#   alt   ::= seq ('|' seq)*
+#   seq   ::= atom+
+#   atom  ::= char | '.' | '(' alt ')' | atom ('*'|'+'|'?')
+#
+# Each parser returns a pair (Regex, Int) where the Int is the new
+# cursor position. -1 indicates parse failure.
+
+fn is_special(c: String) : Bool =
+  if c == "|" then true
+  else if c == "*" then true
+  else if c == "+" then true
+  else if c == "?" then true
+  else if c == "(" then true
+  else if c == ")" then true
+  else if c == "." then true
+  else false
+
+# Parse an atom: a single char, ., or a parenthesized group, optionally
+# followed by a quantifier *, +, or ?.
+fn parse_atom(src: String, i: Int) : (Regex, Int) =
+  if i >= string_length(src) then (REmpty, 0 - 1)
+  else
+    let c = substring(src, i, i + 1) in
+    if c == "(" then
+      match parse_alt(src, i + 1) {
+        (inner, j) =>
+          if j < 0 then (REmpty, 0 - 1)
+          else if j >= string_length(src) then (REmpty, 0 - 1)
+          else if substring(src, j, j + 1) == ")" then
+            apply_quantifier(inner, src, j + 1)
+          else (REmpty, 0 - 1)
+      }
+    else if c == "." then
+      apply_quantifier(RAny, src, i + 1)
+    else if is_special(c) then
+      (REmpty, 0 - 1)
+    else
+      apply_quantifier(RChar(c), src, i + 1)
+
+# Wrap a freshly parsed atom in *, +, or ? if one follows.
+fn apply_quantifier(r: Regex, src: String, i: Int) : (Regex, Int) =
+  if i >= string_length(src) then (r, i)
+  else
+    let c = substring(src, i, i + 1) in
+    if c == "*" then (RStar(r), i + 1)
+    else if c == "+" then (RPlus(r), i + 1)
+    else if c == "?" then (ROpt(r), i + 1)
+    else (r, i)
+
+# Parse a sequence: a concatenation of atoms.
+fn parse_seq(src: String, i: Int) : (Regex, Int) =
+  if i >= string_length(src) then (REmpty, i)
+  else
+    let c = substring(src, i, i + 1) in
+    if c == "|" then (REmpty, i)
+    else if c == ")" then (REmpty, i)
+    else
+      match parse_atom(src, i) {
+        (first, j) =>
+          if j < 0 then (REmpty, 0 - 1)
+          else
+            match parse_seq(src, j) {
+              (rest, k) =>
+                if k < 0 then (REmpty, 0 - 1)
+                else
+                  match rest {
+                    REmpty => (first, k);
+                    _      => (RSeq(first, rest), k)
+                  }
+            }
+      }
+
+# Parse an alternation: seq ('|' seq)*.
+fn parse_alt(src: String, i: Int) : (Regex, Int) =
+  match parse_seq(src, i) {
+    (left, j) =>
+      if j < 0 then (REmpty, 0 - 1)
+      else if j >= string_length(src) then (left, j)
+      else if substring(src, j, j + 1) == "|" then
+        match parse_alt(src, j + 1) {
+          (right, k) =>
+            if k < 0 then (left, j)
+            else (RAlt(left, right), k)
+        }
+      else (left, j)
+  }
+
+fn parse_regex(src: String) : Regex =
+  match parse_alt(src, 0) {
+    (r, _) => r
+  }
+
+
+# ---- Matcher (continuation-passing) ------------------------------------
+#
+# match_at(r, s, i, k) tries to match r against s starting at position i.
+# If it succeeds, it calls k(j) where j is the new position past the
+# match. The continuation k returns true if the rest of the pattern also
+# matches.
+#
+# This is the classic recursive matcher from "Regular Expression Matching:
+# the Virtual Machine Approach" (Cox 2009), simplified to AST form.
+
+fn match_at(
+  r: Regex,
+  s: String,
+  i: Int,
+  k: (Int) -> Bool
+) : Bool =
+  match r {
+    REmpty => k(i);
+    RChar(c) =>
+      if i >= string_length(s) then false
+      else if substring(s, i, i + 1) == c then k(i + 1)
+      else false;
+    RAny =>
+      if i >= string_length(s) then false
+      else k(i + 1);
+    RSeq(a, b) =>
+      match_at(a, s, i, fn(j: Int) -> match_at(b, s, j, k));
+    RAlt(a, b) =>
+      if match_at(a, s, i, k) then true
+      else match_at(b, s, i, k);
+    RStar(inner) =>
+      # Greedy: try to match inner, then RStar again; if that fails,
+      # match zero times (the empty case k(i)).
+      if match_at(inner, s, i, fn(j: Int) ->
+            if j == i then k(j)   # avoid infinite loop on empty match
+            else match_at(RStar(inner), s, j, k))
+        then true
+      else k(i);
+    RPlus(inner) =>
+      # a+ ≡ a then a*
+      match_at(inner, s, i, fn(j: Int) -> match_at(RStar(inner), s, j, k));
+    ROpt(inner) =>
+      # a? ≡ a | (empty)
+      if match_at(inner, s, i, k) then true
+      else k(i)
+  }
+
+fn regex_match(pattern: String, s: String) : Bool =
+  let r = parse_regex(pattern) in
+  match_at(r, s, 0, fn(j: Int) -> j == string_length(s))
+
+
+# ---- Tests -------------------------------------------------------------
+#
+# Each test: (pattern, input, expected). Build a list, run regex_match
+# on each, compare against expected.
+
+fn int_to_str_bool(b: Bool) : String =
+  if b then "true" else "false"
+
+fn run_test(pattern: String, input: String, expected: Bool) : String =
+  let actual = regex_match(pattern, input) in
+  let mark = if actual == expected then "OK  " else "FAIL" in
+  mark ++ "  " ++ pattern ++ " ~ \"" ++ input ++ "\"  -> " ++ int_to_str_bool(actual)
+
+let _ = print(run_test("a",         "a",       true))
+let _ = print(run_test("a",         "b",       false))
+let _ = print(run_test("abc",       "abc",     true))
+let _ = print(run_test("abc",       "abd",     false))
+let _ = print(run_test("a|b",       "a",       true))
+let _ = print(run_test("a|b",       "b",       true))
+let _ = print(run_test("a|b",       "c",       false))
+let _ = print(run_test("a*",        "",        true))
+let _ = print(run_test("a*",        "aaaa",    true))
+let _ = print(run_test("a*",        "aaab",    false))
+let _ = print(run_test("a+",        "",        false))
+let _ = print(run_test("a+",        "a",       true))
+let _ = print(run_test("a+",        "aaaa",    true))
+let _ = print(run_test("a?b",       "b",       true))
+let _ = print(run_test("a?b",       "ab",      true))
+let _ = print(run_test("a?b",       "aab",     false))
+let _ = print(run_test(".",         "x",       true))
+let _ = print(run_test(".",         "",        false))
+let _ = print(run_test("a.c",       "abc",     true))
+let _ = print(run_test("a.c",       "abbc",    false))
+let _ = print(run_test("(ab)+",     "ab",      true))
+let _ = print(run_test("(ab)+",     "abab",    true))
+let _ = print(run_test("(ab)+",     "aba",     false))
+let _ = print(run_test("(a|b)*c",   "c",       true))
+let _ = print(run_test("(a|b)*c",   "ababbc",  true))
+let _ = print(run_test("(a|b)*c",   "ababbd",  false))
+let _ = print(run_test("a(bc)*d",   "ad",      true))
+let _ = print(run_test("a(bc)*d",   "abcd",    true))
+let _ = print(run_test("a(bc)*d",   "abcbcd",  true))
+let _ = print(run_test("a(bc)*d",   "abc",     false))
+
+"regex tests done"

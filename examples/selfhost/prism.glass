@@ -41,6 +41,8 @@ type Token =
   | TLe
   | TGe
   | TEq
+  | TEqEq
+  | TNeq
   | TArrow
   | TLBracket
   | TRBracket
@@ -63,8 +65,10 @@ type Token =
   | TFatArrow
   | TSemi
   | TBang
+  | TQmark
   | TMatch
   | TType
+  | TWhere
   | TEnd
 
 type Type =
@@ -76,6 +80,7 @@ type Type =
   | TyRec(List<Pair<String, Type>>)
   | TyAdt(String, List<Type>)
   | TyTuple(List<Type>)
+  | TyRefine(Type, String, Expr)
 
 # An effect row: concrete labels plus an optional tail row variable.
 # EffRow(["IO"], None)    = !{IO}              (closed)
@@ -112,12 +117,15 @@ type Expr =
   | EGt(Expr, Expr)
   | ELe(Expr, Expr)
   | EGe(Expr, Expr)
+  | EEq(Expr, Expr)
+  | ENeq(Expr, Expr)
   | EIf(Expr, Expr, Expr)
   | ELam(String, Expr)
   | EApp(Expr, Expr)
   | ELet(String, Expr, Expr)
   | ELetRec(String, Expr, Expr)
   | ERec(List<Pair<String, Expr>>)
+  | ENamedRec(String, List<Pair<String, Expr>>)
   | EField(Expr, String)
   | ECtor(String, List<Expr>)
   | EMatch(Expr, List<Pair<Pattern, Expr>>)
@@ -129,14 +137,18 @@ type CtorDecl = | CtorDecl(String, List<Type>)
 # A type declaration: ADT name, type parameter names, and constructors.
 # Example: type Option<A> = | None | Some(A) →
 #   TypeDecl("Option", ["A"], [CtorDecl("None", []), CtorDecl("Some", [TyAdt("A", [])])])
-type TypeDecl = | TypeDecl(String, List<String>, List<CtorDecl>)
+type TypeDecl =
+  | TypeDecl(String, List<String>, List<CtorDecl>)
+  | RecordDecl(String, List<String>, List<Pair<String, Type>>)
 
-# A top-level function declaration:
-# Example: fn add(x: Int, y: Int) : Int = x + y desugars to
-#   FnDecl("add", TyFn(TyInt, TyFn(TyInt, TyInt, pure), pure),
-#                 ELam("x", ELam("y", EAdd(EVar("x"), EVar("y")))))
-# All multi-param fns are pre-desugared at parse time into nested lambdas.
-type FnDecl = | FnDecl(String, Type, Expr)
+# A top-level function declaration: name, optional type parameter names,
+# full fn type (including possibly TyAdt("A", []) refs that get resolved
+# at env-build time), and body expression. Multi-param fns are
+# pre-desugared at parse time into nested lambdas.
+# Example: fn id<A>(x: A) : A = x desugars to
+#   FnDecl("id", ["A"], TyFn(TyAdt("A", []), TyAdt("A", []), pure),
+#                       ELam("x", EVar("x")))
+type FnDecl = | FnDecl(String, List<String>, Type, Expr)
 
 # A program: zero or more type declarations, zero or more fn declarations,
 # followed by one main expression. All top-level fns are mutually visible.
@@ -212,9 +224,22 @@ fn read_string(s: String, i: Int, acc: String) : (Token, Int) =
   if i >= string_length(s) then (TStr(acc), i)
   else
     let c : String = char_at(s, i) in
-    if c == "\""
-      then (TStr(acc), i + 1)
-      else read_string(s, i + 1, acc ++ c)
+    if c == "\"" then (TStr(acc), i + 1)
+    else if c == "\\" then
+      # Backslash escape: consume next char and translate
+      if i + 1 >= string_length(s) then (TStr(acc ++ c), i + 1)
+      else
+        let n : String = char_at(s, i + 1) in
+        let esc : String =
+          if n == "\"" then "\""
+          else if n == "\\" then "\\"
+          else if n == "n" then "\n"
+          else if n == "t" then "\t"
+          else if n == "r" then "\r"
+          else n
+        in
+        read_string(s, i + 2, acc ++ esc)
+    else read_string(s, i + 1, acc ++ c)
 
 fn classify_word(s: String) : Token =
   if s == "if"    then TIf
@@ -228,6 +253,7 @@ fn classify_word(s: String) : Token =
   else if s == "false" then TFalse
   else if s == "match" then TMatch
   else if s == "type"  then TType
+  else if s == "where" then TWhere
   else TIdent(s)
 
 fn next_token(s: String, i: Int) : (Token, Int) =
@@ -255,7 +281,8 @@ fn next_token(s: String, i: Int) : (Token, Int) =
       if char_at(s, j + 1) == "=" then (TGe, j + 2)
       else (TGt, j + 1)
     else if c == "=" then
-      if char_at(s, j + 1) == ">" then (TFatArrow, j + 2)
+      if char_at(s, j + 1) == "=" then (TEqEq, j + 2)
+      else if char_at(s, j + 1) == ">" then (TFatArrow, j + 2)
       else (TEq, j + 1)
     else if c == "(" then (TLParen, j + 1)
     else if c == ")" then (TRParen, j + 1)
@@ -272,7 +299,10 @@ fn next_token(s: String, i: Int) : (Token, Int) =
       else (TDot, j + 1)
     else if c == "|" then (TPipe,   j + 1)
     else if c == ";" then (TSemi,   j + 1)
-    else if c == "!" then (TBang,   j + 1)
+    else if c == "!" then
+      if char_at(s, j + 1) == "=" then (TNeq, j + 2)
+      else (TBang,   j + 1)
+    else if c == "?" then (TQmark, j + 1)
     else if c == "-" then
       if char_at(s, j + 1) == ">" then (TArrow, j + 2)
       else (TMinus, j + 1)
@@ -333,6 +363,7 @@ fn parse_atom(ts: List<Token>) : Result<(Expr, List<Token>), String> =
     TPipe        => Err("parse: unexpected | in atom");
     TSemi        => Err("parse: unexpected ; in atom");
     TBang        => Err("parse: unexpected ! in atom");
+    TQmark       => Err("parse: unexpected ? in atom");
     TEllipsis    => Err("parse: unexpected ... in atom");
     TIn          => Err("parse: unexpected 'in' in atom");
     TThen        => Err("parse: unexpected 'then' in atom");
@@ -358,6 +389,20 @@ fn parse_ctor_call(
                   fn(p: (List<Expr>, List<Token>)) ->
         match p { (args, rest) =>
           Ok((ECtor(name, args), rest))
+        });
+    # Named record literal: `Name { x: 1, y: 2 }`.
+    # v2.11: keep the name as ENamedRec — the type-checker uses it to
+    # look up the record decl and resolve parameterized record types.
+    # If the name doesn't match any declared record, type-check falls
+    # back to structural treatment (compatible with v2.x behavior).
+    TLBrace =>
+      bind_result(parse_record(rest_tok(ts)),
+                  fn(p: (Expr, List<Token>)) ->
+        match p { (rec_expr, rest) =>
+          match rec_expr {
+            ERec(fields) => Ok((ENamedRec(name, fields), rest));
+            _            => Ok((rec_expr, rest))
+          }
         });
     _ => Ok((ECtor(name, []), ts))
   }
@@ -648,9 +693,114 @@ fn parse_if(ts: List<Token>) : Result<(Expr, List<Token>), String> =
 
 fn parse_let(ts: List<Token>) : Result<(Expr, List<Token>), String> =
   match peek_tok(ts) {
-    TRec => parse_let_inner(rest_tok(ts), true);
-    _    => parse_let_inner(ts, false)
+    TRec      => parse_let_inner(rest_tok(ts), true);
+    TStar     => parse_let_star(rest_tok(ts));
+    TQmark    => parse_let_qmark(rest_tok(ts));
+    TLParen   => parse_let_pattern(ts);
+    TLBracket => parse_let_pattern(ts);
+    TIdent(name) =>
+      if is_uppercase_first(name) then parse_let_pattern(ts)
+      else parse_let_inner(ts, false);
+    _         => parse_let_inner(ts, false)
   }
+
+# `let PAT = EXPR in BODY` where PAT is a non-identifier pattern (v2.7).
+# Desugars to: match EXPR { PAT => BODY }
+# Type-checker enforces exhaustiveness via the standard match rules.
+fn parse_let_pattern(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  bind_result(parse_pattern(ts), fn(p1: (Pattern, List<Token>)) ->
+    match p1 { (pat, after_pat) =>
+      match peek_tok(after_pat) {
+        TEq =>
+          bind_result(parse_expr(rest_tok(after_pat)),
+                      fn(p2: (Expr, List<Token>)) ->
+            match p2 { (val, after_val) =>
+              match peek_tok(after_val) {
+                TIn =>
+                  bind_result(parse_expr(rest_tok(after_val)),
+                              fn(p3: (Expr, List<Token>)) ->
+                    match p3 { (body, after_body) =>
+                      Ok((EMatch(val, [Pair(pat, body)]), after_body))
+                    });
+                _ => Err("parse: expected 'in' in let pattern")
+              }
+            });
+        _ => Err("parse: expected '=' after let pattern")
+      }
+    })
+
+# `let* PAT = EXPR in BODY` — Result-bind sugar.
+# Desugars at parse time to:
+#   match EXPR {
+#     Err(__glass_lse) => Err(__glass_lse);
+#     Ok(__glass_lso)  => match __glass_lso { PAT => BODY }
+#   }
+# The user must already be writing inside a context where the result
+# type is Result<_, _> for the resulting expression to type-check.
+# Pure parse-time desugar — no type-checker or eval changes needed.
+fn parse_let_star(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  bind_result(parse_pattern(ts), fn(p1: (Pattern, List<Token>)) ->
+    match p1 { (pat, after_pat) =>
+      match peek_tok(after_pat) {
+        TEq =>
+          bind_result(parse_expr(rest_tok(after_pat)),
+                      fn(p2: (Expr, List<Token>)) ->
+            match p2 { (val, after_val) =>
+              match peek_tok(after_val) {
+                TIn =>
+                  bind_result(parse_expr(rest_tok(after_val)),
+                              fn(p3: (Expr, List<Token>)) ->
+                    match p3 { (body, after_body) =>
+                      let err_pat : Pattern = PCtor("Err", [PVar("__glass_lse")]) in
+                      let err_body : Expr   = ECtor("Err", [EVar("__glass_lse")]) in
+                      let ok_pat  : Pattern = PCtor("Ok",  [PVar("__glass_lso")]) in
+                      let ok_body : Expr    = EMatch(EVar("__glass_lso"), [Pair(pat, body)]) in
+                      let arms : List<Pair<Pattern, Expr>> =
+                        [Pair(err_pat, err_body), Pair(ok_pat, ok_body)] in
+                      Ok((EMatch(val, arms), after_body))
+                    });
+                _ => Err("parse: expected 'in' in let*")
+              }
+            });
+        _ => Err("parse: expected '=' after let* pattern")
+      }
+    })
+
+# `let? PAT = EXPR in BODY` — Option-bind sugar (v2.5).
+# Mirror of let*: desugars at parse time to:
+#   match EXPR {
+#     None => None;
+#     Some(__glass_lqs) => match __glass_lqs { PAT => BODY }
+#   }
+# The user must already be writing inside a context where the result
+# type is Option<_>. Pure parse-time desugar.
+fn parse_let_qmark(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  bind_result(parse_pattern(ts), fn(p1: (Pattern, List<Token>)) ->
+    match p1 { (pat, after_pat) =>
+      match peek_tok(after_pat) {
+        TEq =>
+          bind_result(parse_expr(rest_tok(after_pat)),
+                      fn(p2: (Expr, List<Token>)) ->
+            match p2 { (val, after_val) =>
+              match peek_tok(after_val) {
+                TIn =>
+                  bind_result(parse_expr(rest_tok(after_val)),
+                              fn(p3: (Expr, List<Token>)) ->
+                    match p3 { (body, after_body) =>
+                      let none_pat : Pattern = PCtor("None", []) in
+                      let none_body : Expr   = ECtor("None", []) in
+                      let some_pat : Pattern = PCtor("Some", [PVar("__glass_lqs")]) in
+                      let some_body : Expr   = EMatch(EVar("__glass_lqs"), [Pair(pat, body)]) in
+                      let arms : List<Pair<Pattern, Expr>> =
+                        [Pair(none_pat, none_body), Pair(some_pat, some_body)] in
+                      Ok((EMatch(val, arms), after_body))
+                    });
+                _ => Err("parse: expected 'in' in let?")
+              }
+            });
+        _ => Err("parse: expected '=' after let? pattern")
+      }
+    })
 
 fn parse_let_inner(
   ts: List<Token>,
@@ -856,6 +1006,18 @@ fn parse_compare(ts: List<Token>) : Result<(Expr, List<Token>), String> =
               match p2 {
                 (right, after_right) => Ok((EGe(left, right), after_right))
               });
+          TEqEq =>
+            bind_result(parse_add(rest_tok(after_left)),
+                        fn(p2: (Expr, List<Token>)) ->
+              match p2 {
+                (right, after_right) => Ok((EEq(left, right), after_right))
+              });
+          TNeq =>
+            bind_result(parse_add(rest_tok(after_left)),
+                        fn(p2: (Expr, List<Token>)) ->
+              match p2 {
+                (right, after_right) => Ok((ENeq(left, right), after_right))
+              });
           _ => Ok((left, after_left))
         }
     })
@@ -967,38 +1129,42 @@ fn parse_fn_decl(ts: List<Token>) : Result<(FnDecl, List<Token>), String> =
   match peek_tok(ts) {
     TIdent(name) =>
       let after_name : List<Token> = rest_tok(ts) in
-      match peek_tok(after_name) {
-        TLParen =>
-          bind_result(parse_fn_params(rest_tok(after_name), []),
-                      fn(p1: (List<Pair<String, Type>>, List<Token>)) ->
-            match p1 { (params, after_params) =>
-              match peek_tok(after_params) {
-                TColon =>
-                  bind_result(parse_type(rest_tok(after_params)),
-                              fn(p2: (Type, List<Token>)) ->
-                    match p2 { (ret_ty, after_ret) =>
-                      # Optional effect annotation: `!{...}`.
-                      bind_result(parse_optional_effect(after_ret),
-                                  fn(pe: (EffRow, List<Token>)) ->
-                        match pe { (fn_eff, after_eff) =>
-                          match peek_tok(after_eff) {
-                            TEq =>
-                              bind_result(parse_expr(rest_tok(after_eff)),
-                                          fn(p3: (Expr, List<Token>)) ->
-                                match p3 { (body, after_body) =>
-                                  let fn_ty : Type = build_fn_type(params, ret_ty, fn_eff) in
-                                  let fn_body : Expr = build_fn_body(params, body) in
-                                  Ok((FnDecl(name, fn_ty, fn_body), after_body))
-                                });
-                            _ => Err("parse: fn decl: expected = after return type")
-                          }
-                        })
-                    });
-                _ => Err("parse: fn decl: expected : after params")
-              }
-            });
-        _ => Err("parse: fn decl: expected ( after name")
-      };
+      # Optional type parameters: `fn id<A, B>(...)` (v2.9).
+      bind_result(parse_optional_params(after_name),
+                  fn(pp: (List<String>, List<Token>)) ->
+        match pp { (type_params, after_tparams) =>
+          match peek_tok(after_tparams) {
+            TLParen =>
+              bind_result(parse_fn_params(rest_tok(after_tparams), []),
+                          fn(p1: (List<Pair<String, Type>>, List<Token>)) ->
+                match p1 { (params, after_params) =>
+                  match peek_tok(after_params) {
+                    TColon =>
+                      bind_result(parse_type(rest_tok(after_params)),
+                                  fn(p2: (Type, List<Token>)) ->
+                        match p2 { (ret_ty, after_ret) =>
+                          bind_result(parse_optional_effect(after_ret),
+                                      fn(pe: (EffRow, List<Token>)) ->
+                            match pe { (fn_eff, after_eff) =>
+                              match peek_tok(after_eff) {
+                                TEq =>
+                                  bind_result(parse_expr(rest_tok(after_eff)),
+                                              fn(p3: (Expr, List<Token>)) ->
+                                    match p3 { (body, after_body) =>
+                                      let fn_ty : Type = build_fn_type(params, ret_ty, fn_eff) in
+                                      let fn_body : Expr = build_fn_body(params, body) in
+                                      Ok((FnDecl(name, type_params, fn_ty, fn_body), after_body))
+                                    });
+                                _ => Err("parse: fn decl: expected = after return type")
+                              }
+                            })
+                        });
+                    _ => Err("parse: fn decl: expected : after params")
+                  }
+                });
+            _ => Err("parse: fn decl: expected ( after name")
+          }
+        });
     _ => Err("parse: fn decl: expected name after fn")
   }
 
@@ -1045,16 +1211,50 @@ fn parse_fn_params(
           bind_result(parse_type(rest_tok(rest_tok(ts))),
                       fn(p: (Type, List<Token>)) ->
             match p { (ty, after_ty) =>
-              let new_acc : List<Pair<String, Type>> = acc ++ [Pair(name, ty)] in
-              match peek_tok(after_ty) {
-                TComma  => parse_fn_params(rest_tok(after_ty), new_acc);
-                TRParen => Ok((new_acc, rest_tok(after_ty)));
-                _       => Err("parse: fn params: expected , or )")
-              }
+              # v2.12: optional refinement `T where (pred)` — only on
+              # fn-param types. The binder name comes from the param.
+              bind_result(parse_optional_refinement(after_ty, name, ty),
+                          fn(pr: (Type, List<Token>)) ->
+                match pr { (final_ty, after_ref) =>
+                  let new_acc : List<Pair<String, Type>> = acc ++ [Pair(name, final_ty)] in
+                  match peek_tok(after_ref) {
+                    TComma  => parse_fn_params(rest_tok(after_ref), new_acc);
+                    TRParen => Ok((new_acc, rest_tok(after_ref)));
+                    _       => Err("parse: fn params: expected , or )")
+                  }
+                })
             });
         _ => Err("parse: fn params: expected : after name")
       };
     _ => Err("parse: fn params: expected name or )")
+  }
+
+# v2.12: if the next token is `where`, parse `(predicate_expr)` and wrap
+# the base type in a TyRefine. The binder name comes from the
+# surrounding param name; free vars in the predicate matching that name
+# refer to the parameter's value at call time.
+fn parse_optional_refinement(
+  ts: List<Token>,
+  binder: String,
+  base: Type
+) : Result<(Type, List<Token>), String> =
+  match peek_tok(ts) {
+    TWhere =>
+      let after_where : List<Token> = rest_tok(ts) in
+      match peek_tok(after_where) {
+        TLParen =>
+          bind_result(parse_expr(rest_tok(after_where)),
+                      fn(p: (Expr, List<Token>)) ->
+            match p { (pred, after_pred) =>
+              match peek_tok(after_pred) {
+                TRParen =>
+                  Ok((TyRefine(base, binder, pred), rest_tok(after_pred)));
+                _ => Err("parse: expected ) after refinement predicate")
+              }
+            });
+        _ => Err("parse: expected ( after 'where'")
+      };
+    _ => Ok((base, ts))
   }
 
 # Build the curried function type from params + return + effect.
@@ -1094,11 +1294,50 @@ fn parse_type_decl(ts: List<Token>) : Result<(TypeDecl, List<Token>), String> =
                   fn(p: (List<String>, List<Token>)) ->
         match p { (params, after_params) =>
           match peek_tok(after_params) {
-            TEq => parse_ctor_decls(rest_tok(after_params), [], adt_name, params);
+            TEq =>
+              # Dispatch: '= {' is a record declaration, otherwise sum.
+              match peek_tok(rest_tok(after_params)) {
+                TLBrace =>
+                  parse_record_decl_fields(
+                    rest_tok(rest_tok(after_params)),
+                    adt_name, params, []);
+                _ => parse_ctor_decls(rest_tok(after_params), [], adt_name, params)
+              };
             _ => Err("parse: expected '=' in type declaration")
           }
         });
     _ => Err("parse: expected type name after 'type'")
+  }
+
+# Parse the contents of `type Foo = { x: T, y: T }` after the `{`.
+# Fields are comma-separated, each is `name : type`. Closing `}` ends.
+fn parse_record_decl_fields(
+  ts: List<Token>,
+  rec_name: String,
+  params: List<String>,
+  acc: List<Pair<String, Type>>
+) : Result<(TypeDecl, List<Token>), String> =
+  match peek_tok(ts) {
+    TRBrace => Ok((RecordDecl(rec_name, params, acc), rest_tok(ts)));
+    TIdent(fname) =>
+      let after_name = rest_tok(ts) in
+      match peek_tok(after_name) {
+        TColon =>
+          bind_result(parse_type(rest_tok(after_name)),
+                      fn(p: (Type, List<Token>)) ->
+            match p { (fty, after_ty) =>
+              let new_acc = acc ++ [Pair(fname, fty)] in
+              match peek_tok(after_ty) {
+                TComma =>
+                  parse_record_decl_fields(
+                    rest_tok(after_ty), rec_name, params, new_acc);
+                TRBrace => Ok((RecordDecl(rec_name, params, new_acc), rest_tok(after_ty)));
+                _ => Err("parse: expected ',' or '}' in record fields")
+              }
+            });
+        _ => Err("parse: expected ':' after field name")
+      };
+    _ => Err("parse: expected field name in record decl")
   }
 
 # Optional `<A, B, C>` after a type name (in declarations).
@@ -1366,7 +1605,8 @@ fn apply_sub(s: Sub, t: Type) : Type =
              apply_eff_sub(s_e, e));
       TyRec(fs)  => TyRec(apply_sub_rec_fields(s, fs));
       TyAdt(n, args) => TyAdt(n, apply_sub_list(s, args));
-      TyTuple(ts) => TyTuple(apply_sub_list(s, ts))
+      TyTuple(ts) => TyTuple(apply_sub_list(s, ts));
+      TyRefine(base, bn, pred) => TyRefine(apply_sub(s, base), bn, pred)
     }
   }
 
@@ -1431,7 +1671,9 @@ fn apply_sub_avoid(
       TyAdt(n, args) =>
         TyAdt(n, apply_sub_avoid_list(s, args, avoid_t, avoid_e));
       TyTuple(ts) =>
-        TyTuple(apply_sub_avoid_list(s, ts, avoid_t, avoid_e))
+        TyTuple(apply_sub_avoid_list(s, ts, avoid_t, avoid_e));
+      TyRefine(base, bn, pred) =>
+        TyRefine(apply_sub_avoid(s, base, avoid_t, avoid_e), bn, pred)
     }
   }
 
@@ -1490,7 +1732,8 @@ fn free_vars(t: Type) : List<Int> =
     TyFn(a, b, _) => int_union(free_vars(a), free_vars(b));
     TyRec(fs)  => free_vars_rec(fs);
     TyAdt(_, args) => free_vars_list(args);
-    TyTuple(ts) => free_vars_list(ts)
+    TyTuple(ts) => free_vars_list(ts);
+    TyRefine(base, _, _) => free_vars(base)
   }
 
 fn free_vars_rec(fs: List<Pair<String, Type>>) : List<Int> =
@@ -1517,7 +1760,8 @@ fn free_eff_vars(t: Type) : List<Int> =
                 free_eff_vars_row(e));
     TyRec(fs)  => free_eff_vars_rec(fs);
     TyAdt(_, args) => free_eff_vars_list(args);
-    TyTuple(ts) => free_eff_vars_list(ts)
+    TyTuple(ts) => free_eff_vars_list(ts);
+    TyRefine(base, _, _) => free_eff_vars(base)
   }
 
 fn free_eff_vars_row(r: EffRow) : List<Int> =
@@ -1573,6 +1817,7 @@ fn occurs_in(n: Int, t: Type) : Bool =
     TyRec(fs)  => occurs_in_rec(n, fs);
     TyAdt(_, args) => occurs_in_list(n, args);
     TyTuple(ts) => occurs_in_list(n, ts);
+    TyRefine(base, _, _) => occurs_in(n, base);
     _         => false
   }
 
@@ -1600,6 +1845,23 @@ fn unify(t1: Type, t2: Type, s: Sub, next: Int)
   unify_rec(apply_sub(s, t1), apply_sub(s, t2), s, next)
 
 fn unify_rec(t1: Type, t2: Type, s: Sub, next: Int)
+    : Result<(Sub, Int), String> =
+  # v2.12: refinements are TRANSPARENT to unification. Strip them so the
+  # base type drives the structural match below.
+  let t1s : Type = strip_refine(t1) in
+  let t2s : Type = strip_refine(t2) in
+  unify_stripped(t1s, t2s, s, next)
+
+# Strip outer refinements to reach the underlying base type. Used wherever
+# the static type system needs to look at the type's shape; refinements
+# are enforced separately at call sites and (eventually) at runtime.
+fn strip_refine(t: Type) : Type =
+  match t {
+    TyRefine(base, _, _) => strip_refine(base);
+    _ => t
+  }
+
+fn unify_stripped(t1: Type, t2: Type, s: Sub, next: Int)
     : Result<(Sub, Int), String> =
   match t1 {
     TyVar(n) =>
@@ -1671,7 +1933,10 @@ fn unify_rec(t1: Type, t2: Type, s: Sub, next: Int)
             else Err("type: tuple sizes differ");
         TyVar(_) => unify_rec(t2, t1, s, next);
         _ => Err("type: can't unify tuple with " ++ show_type(t2))
-      }
+      };
+    # v2.12: t1 is already stripped by unify_rec; TyRefine should not
+    # appear here in practice. Arm present for exhaustiveness.
+    TyRefine(base, _, _) => unify_rec(base, t2, s, next)
   }
 
 fn bind_t_var(n: Int, t: Type, s: Sub, next: Int)
@@ -1845,15 +2110,31 @@ fn lookup_ty_env(env: List<Pair<String, Scheme>>, name: String) : Option<Scheme>
 # in a TyAdt(name, _). Collect the constructors whose final ADT matches
 # the scrutinee's ADT name.
 
+# Test if a name starts with an uppercase letter (the constructor
+# convention in Glass). Used by ctors_of_adt to distinguish actual
+# constructors from regular functions that happen to return an ADT.
+fn starts_uppercase(s: String) : Bool =
+  if string_length(s) == 0 then false
+  else
+    let c : String = char_at(s, 0) in
+    # ASCII uppercase: A-Z is 0..25 in the string "ABC...Z".
+    match string_index_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ", c) {
+      Some(_) => true;
+      None    => false
+    }
+
 fn ctors_of_adt(env: List<Pair<String, Scheme>>, adt_name: String) : List<String> =
   match env {
     [] => [];
     [Pair(name, sch), ...rest] =>
       match sch {
         Scheme(_, _, body) =>
-          if ctor_belongs_to(body, adt_name)
-            then [name] ++ ctors_of_adt(rest, adt_name)
-            else ctors_of_adt(rest, adt_name)
+          if starts_uppercase(name) then
+            if ctor_belongs_to(body, adt_name)
+              then [name] ++ ctors_of_adt(rest, adt_name)
+              else ctors_of_adt(rest, adt_name)
+          else
+            ctors_of_adt(rest, adt_name)
       }
   }
 
@@ -1997,17 +2278,19 @@ fn infer(
         });
 
     EConcat(a, b) =>
+      # ++ is polymorphic over String and List. The type-checker just
+      # unifies the two sides with each other and returns that type;
+      # the runtime dispatches on the value kind. (A proper type-class
+      # system would constrain ta to be "concatenable", but Glass
+      # doesn't have those yet.)
       bind_result(infer(a, env, s, next), fn(r1: (Type, EffRow, Sub, Int)) ->
         match r1 { (ta, ea, s1, n1) =>
-          bind_result(unify(ta, TyStr, s1, n1), fn(r2: (Sub, Int)) ->
-            match r2 { (s2, n2) =>
-              bind_result(infer(b, env, s2, n2),
-                          fn(r3: (Type, EffRow, Sub, Int)) ->
-                match r3 { (tb, eb, s3, n3) =>
-                  bind_result(unify(tb, TyStr, s3, n3), fn(r4: (Sub, Int)) ->
-                    match r4 { (s4, n4) =>
-                      Ok((TyStr, eff_union_via(s4, ea, eb), s4, n4))
-                    })
+          bind_result(infer(b, env, s1, n1),
+                      fn(r2: (Type, EffRow, Sub, Int)) ->
+            match r2 { (tb, eb, s2, n2) =>
+              bind_result(unify(ta, tb, s2, n2), fn(r3: (Sub, Int)) ->
+                match r3 { (s3, n3) =>
+                  Ok((ta, eff_union_via(s3, ea, eb), s3, n3))
                 })
             })
         });
@@ -2076,6 +2359,34 @@ fn infer(
             })
         });
 
+    EEq(a, b) =>
+      # Equality: both sides must have the same type. Polymorphic in that
+      # type (no TyInt constraint like </>/<=/>=). Result is TyBool.
+      bind_result(infer(a, env, s, next), fn(r1: (Type, EffRow, Sub, Int)) ->
+        match r1 { (ta, ea, s1, n1) =>
+          bind_result(infer(b, env, s1, n1),
+                      fn(r2: (Type, EffRow, Sub, Int)) ->
+            match r2 { (tb, eb, s2, n2) =>
+              bind_result(unify(ta, tb, s2, n2), fn(r3: (Sub, Int)) ->
+                match r3 { (s3, n3) =>
+                  Ok((TyBool, eff_union_via(s3, ea, eb), s3, n3))
+                })
+            })
+        });
+
+    ENeq(a, b) =>
+      bind_result(infer(a, env, s, next), fn(r1: (Type, EffRow, Sub, Int)) ->
+        match r1 { (ta, ea, s1, n1) =>
+          bind_result(infer(b, env, s1, n1),
+                      fn(r2: (Type, EffRow, Sub, Int)) ->
+            match r2 { (tb, eb, s2, n2) =>
+              bind_result(unify(ta, tb, s2, n2), fn(r3: (Sub, Int)) ->
+                match r3 { (s3, n3) =>
+                  Ok((TyBool, eff_union_via(s3, ea, eb), s3, n3))
+                })
+            })
+        });
+
     EIf(c, t, e_b) =>
       bind_result(infer(c, env, s, next), fn(r1: (Type, EffRow, Sub, Int)) ->
         match r1 { (tc, ec, s1, n1) =>
@@ -2122,20 +2433,25 @@ fn infer(
           bind_result(infer(arg, env, s1, n1),
                       fn(r2: (Type, EffRow, Sub, Int)) ->
             match r2 { (ta, ea, s2, n2) =>
-              # Fresh return type and fresh effect var (the latent).
-              let result : Type = TyVar(n2) in
-              let latent : EffRow = EffRow([], Some(n2 + 1)) in
-              let expected : Type = TyFn(ta, result, latent) in
-              bind_result(unify(tf, expected, s2, n2 + 2),
-                          fn(r3: (Sub, Int)) ->
-                match r3 { (s3, n3) =>
-                  let resolved_latent : EffRow =
-                    apply_sub_eff(s3, latent) in
-                  let all_eff : EffRow =
-                    eff_union_via(s3, ef,
-                      eff_union_via(s3, ea, resolved_latent)) in
-                  Ok((apply_sub(s3, result), all_eff, s3, n3))
-                })
+              # v2.13: refinement discharge — tries const-fold (literal arg)
+              # first, then alpha-equivalence on actual arg's inferred type.
+              # Defers silently otherwise (no runtime check in chunk 2).
+              bind_result(check_refinement_at_call(
+                            apply_sub(s2, tf), arg, apply_sub(s2, ta)),
+                          fn(_disch: String) ->
+                let result : Type = TyVar(n2) in
+                let latent : EffRow = EffRow([], Some(n2 + 1)) in
+                let expected : Type = TyFn(ta, result, latent) in
+                bind_result(unify(tf, expected, s2, n2 + 2),
+                            fn(r3: (Sub, Int)) ->
+                  match r3 { (s3, n3) =>
+                    let resolved_latent : EffRow =
+                      apply_sub_eff(s3, latent) in
+                    let all_eff : EffRow =
+                      eff_union_via(s3, ef,
+                        eff_union_via(s3, ea, resolved_latent)) in
+                    Ok((apply_sub(s3, result), all_eff, s3, n3))
+                  }))
             })
         });
 
@@ -2188,6 +2504,42 @@ fn infer(
         match r { (fts, eff, s1, n1) =>
           Ok((TyRec(fts), eff, s1, n1))
         });
+
+    # v2.11: ENamedRec — `Box { value: x, color: y }`. Look up the record
+    # name in the env; if found as a Scheme(params, [], TyRec(decl_fields)),
+    # instantiate to get a TyRec template with fresh TyVars for each param.
+    # Then infer each user field expr and unify with the corresponding
+    # template field. Result: TyRec(decl_fields) with type-param TyVars
+    # constrained by the field values. This is what makes
+    # `fn box_swap(b: Box<Int>, v: String) : Box<String> =
+    #    Box { value: v, color: b.color }` type-check.
+    ENamedRec(rec_name, user_fields) =>
+      match lookup_ty_env(env, rec_name) {
+        None =>
+          # Unknown record name — fall back to structural ERec inference.
+          bind_result(infer_record_fields(user_fields, env, s, next, pure_eff()),
+                      fn(r: (List<Pair<String, Type>>, EffRow, Sub, Int)) ->
+            match r { (fts, eff, s1, n1) =>
+              Ok((TyRec(fts), eff, s1, n1))
+            });
+        Some(sch) =>
+          match instantiate(sch, next) {
+            (template, n1) =>
+              match template {
+                TyRec(decl_fields) =>
+                  check_named_rec_fields(
+                    user_fields, decl_fields, env, s, n1, pure_eff());
+                _ =>
+                  # Name resolves to something other than a record (e.g. a
+                  # function or constructor). Fall back to structural.
+                  bind_result(infer_record_fields(user_fields, env, s, n1, pure_eff()),
+                              fn(r: (List<Pair<String, Type>>, EffRow, Sub, Int)) ->
+                    match r { (fts, eff, s1, n2) =>
+                      Ok((TyRec(fts), eff, s1, n2))
+                    })
+              }
+          }
+      };
 
     EField(rec, name) =>
       bind_result(infer(rec, env, s, next),
@@ -2455,6 +2807,53 @@ fn infer_record_fields(
         })
   }
 
+# v2.11: Type-check a named record literal against a template of declared
+# field types. For each user-provided field, find the matching declared
+# field and unify the inferred expr type with the declared type. Returns
+# the final TyRec (decl_fields with substitutions applied).
+fn check_named_rec_fields(
+  user_fields: List<Pair<String, Expr>>,
+  decl_fields: List<Pair<String, Type>>,
+  env: List<Pair<String, Scheme>>,
+  s: Sub,
+  next: Int,
+  acc_eff: EffRow
+) : Result<(Type, EffRow, Sub, Int), String> =
+  match user_fields {
+    [] =>
+      # All user fields checked. Return the decl_fields template as the
+      # result type; substitutions accumulated during checking will be
+      # applied by the caller (run_infer's apply_sub at the end).
+      Ok((TyRec(decl_fields), acc_eff, s, next));
+    [Pair(uk, uv), ...rest] =>
+      match find_decl_field_ty(decl_fields, uk) {
+        None =>
+          Err("type: unknown field in named record: " ++ uk);
+        Some(decl_ty) =>
+          bind_result(infer(uv, env, s, next),
+                      fn(r1: (Type, EffRow, Sub, Int)) ->
+            match r1 { (user_ty, ev, s1, n1) =>
+              bind_result(unify(user_ty, decl_ty, s1, n1),
+                          fn(r2: (Sub, Int)) ->
+                match r2 { (s2, n2) =>
+                  check_named_rec_fields(rest, decl_fields, env, s2, n2,
+                                          eff_union_via(s2, acc_eff, ev))
+                })
+            })
+      }
+  }
+
+fn find_decl_field_ty(
+  decl_fields: List<Pair<String, Type>>,
+  name: String
+) : Option<Type> =
+  match decl_fields {
+    [] => None;
+    [Pair(k, t), ...rest] =>
+      if k == name then Some(t)
+      else find_decl_field_ty(rest, name)
+  }
+
 fn run_infer(e: Expr, init_env: List<Pair<String, Scheme>>, start: Int)
     : Result<(Type, EffRow), String> =
   bind_result(infer(e, init_env, empty_sub(), start),
@@ -2462,6 +2861,419 @@ fn run_infer(e: Expr, init_env: List<Pair<String, Scheme>>, start: Int)
     match r { (t, eff, s, _) =>
       Ok((apply_sub(s, t), close_top_eff(apply_sub_eff(s, eff))))
     })
+
+# v2.12: Refinement discharge helpers.
+#
+# expr_to_value: extract a Value from a literal Expr. Only literals
+# (EInt, EBool, EStr) qualify for constant-fold discharge in chunk 1.
+# Non-literal args defer to runtime check (not yet implemented; chunk 2).
+fn expr_to_value(e: Expr) : Option<Value> =
+  match e {
+    EInt(n)  => Some(VInt(n));
+    EBool(b) => Some(VBool(b));
+    EStr(s)  => Some(VStr(s));
+    # Fold simple negative-literal forms like `0 - 5` or `-(5)` which the
+    # parser produces for literal negative numbers.
+    ESub(a, b) =>
+      match a {
+        EInt(0) =>
+          match b {
+            EInt(n) => Some(VInt(0 - n));
+            _ => None
+          };
+        _ => None
+      };
+    _        => None
+  }
+
+# eval_pred: pure mini-evaluator for refinement predicates. Handles
+# literals, variable lookup, arithmetic, comparisons, equality, simple
+# conditionals. Anything more elaborate returns Err and the discharge
+# defers (rather than erroring the program). No effects — pure subset
+# only, so this can be called from inside infer (which is pure).
+fn lookup_val(env: List<Pair<String, Value>>, name: String) : Option<Value> =
+  match env {
+    [] => None;
+    [Pair(k, v), ...rest] =>
+      if k == name then Some(v)
+      else lookup_val(rest, name)
+  }
+
+fn eval_pred_int2(a: Expr, b: Expr, env: List<Pair<String, Value>>)
+    : Result<(Int, Int), String> =
+  bind_result(eval_pred(a, env), fn(va: Value) ->
+    bind_result(eval_pred(b, env), fn(vb: Value) ->
+      match va {
+        VInt(na) =>
+          match vb {
+            VInt(nb) => Ok((na, nb));
+            _ => Err("refinement: expected Int")
+          };
+        _ => Err("refinement: expected Int")
+      }))
+
+fn eval_pred(e: Expr, env: List<Pair<String, Value>>) : Result<Value, String> =
+  match e {
+    EInt(n)  => Ok(VInt(n));
+    EBool(b) => Ok(VBool(b));
+    EStr(s)  => Ok(VStr(s));
+    EVar(name) =>
+      match lookup_val(env, name) {
+        Some(v) => Ok(v);
+        None    => Err("refinement: unbound " ++ name)
+      };
+    EAdd(a, b) =>
+      bind_result(eval_pred_int2(a, b, env),
+                  fn(p: (Int, Int)) -> match p { (x, y) => Ok(VInt(x + y)) });
+    ESub(a, b) =>
+      bind_result(eval_pred_int2(a, b, env),
+                  fn(p: (Int, Int)) -> match p { (x, y) => Ok(VInt(x - y)) });
+    EMul(a, b) =>
+      bind_result(eval_pred_int2(a, b, env),
+                  fn(p: (Int, Int)) -> match p { (x, y) => Ok(VInt(x * y)) });
+    ELt(a, b) =>
+      bind_result(eval_pred_int2(a, b, env),
+                  fn(p: (Int, Int)) -> match p { (x, y) => Ok(VBool(x < y)) });
+    EGt(a, b) =>
+      bind_result(eval_pred_int2(a, b, env),
+                  fn(p: (Int, Int)) -> match p { (x, y) => Ok(VBool(x > y)) });
+    ELe(a, b) =>
+      bind_result(eval_pred_int2(a, b, env),
+                  fn(p: (Int, Int)) -> match p { (x, y) =>
+                    Ok(VBool(if x < y then true else x == y))
+                  });
+    EGe(a, b) =>
+      bind_result(eval_pred_int2(a, b, env),
+                  fn(p: (Int, Int)) -> match p { (x, y) =>
+                    Ok(VBool(if x > y then true else x == y))
+                  });
+    EEq(a, b) =>
+      bind_result(eval_pred(a, env), fn(va: Value) ->
+        bind_result(eval_pred(b, env), fn(vb: Value) ->
+          Ok(VBool(value_eq(va, vb)))));
+    ENeq(a, b) =>
+      bind_result(eval_pred(a, env), fn(va: Value) ->
+        bind_result(eval_pred(b, env), fn(vb: Value) ->
+          Ok(VBool(if value_eq(va, vb) then false else true))));
+    EIf(c, t, f) =>
+      bind_result(eval_pred(c, env), fn(vc: Value) ->
+        match vc {
+          VBool(true)  => eval_pred(t, env);
+          VBool(false) => eval_pred(f, env);
+          _ => Err("refinement: if condition not Bool")
+        });
+    _ => Err("refinement: unsupported predicate form")
+  }
+
+# v2.13: alpha-equivalence discharge for refinements.
+# When the actual argument's inferred type is itself a refinement with the
+# same predicate shape (modulo binder renaming) as the formal, the
+# precondition holds without any runtime check.
+#
+# Example: `fn outer(x: Int where (x > 0)) : Int = inner(x)` calling
+# `fn inner(n: Int where (n > 0)) : Int = n * 2` — outer's `x` already
+# carries `(x > 0)`, which alpha-matches inner's `(n > 0)` after renaming
+# both binders to a common name. Compile-time discharge, zero runtime cost.
+#
+# alpha_rename_pred substitutes free occurrences of `from` with `to`
+# inside a predicate Expr. Only handles the subset of expressions that
+# can appear in refinement predicates (the same subset eval_pred handles).
+fn alpha_rename_pred(e: Expr, from: String, to: String) : Expr =
+  match e {
+    EInt(n)  => EInt(n);
+    EBool(b) => EBool(b);
+    EStr(s)  => EStr(s);
+    EVar(name) =>
+      if name == from then EVar(to) else EVar(name);
+    EAdd(a, b)    => EAdd(alpha_rename_pred(a, from, to),
+                          alpha_rename_pred(b, from, to));
+    ESub(a, b)    => ESub(alpha_rename_pred(a, from, to),
+                          alpha_rename_pred(b, from, to));
+    EMul(a, b)    => EMul(alpha_rename_pred(a, from, to),
+                          alpha_rename_pred(b, from, to));
+    EConcat(a, b) => EConcat(alpha_rename_pred(a, from, to),
+                             alpha_rename_pred(b, from, to));
+    ELt(a, b)     => ELt(alpha_rename_pred(a, from, to),
+                         alpha_rename_pred(b, from, to));
+    EGt(a, b)     => EGt(alpha_rename_pred(a, from, to),
+                         alpha_rename_pred(b, from, to));
+    ELe(a, b)     => ELe(alpha_rename_pred(a, from, to),
+                         alpha_rename_pred(b, from, to));
+    EGe(a, b)     => EGe(alpha_rename_pred(a, from, to),
+                         alpha_rename_pred(b, from, to));
+    EEq(a, b)     => EEq(alpha_rename_pred(a, from, to),
+                         alpha_rename_pred(b, from, to));
+    ENeq(a, b)    => ENeq(alpha_rename_pred(a, from, to),
+                          alpha_rename_pred(b, from, to));
+    EIf(c, t, f)  => EIf(alpha_rename_pred(c, from, to),
+                         alpha_rename_pred(t, from, to),
+                         alpha_rename_pred(f, from, to));
+    _ => e   # unsupported form — leave unchanged (will fail equality below)
+  }
+
+# Structural equality on the predicate-expression subset.
+fn ast_equal_pred(a: Expr, b: Expr) : Bool =
+  match a {
+    EInt(n) =>
+      match b { EInt(m) => n == m; _ => false };
+    EBool(p) =>
+      match b { EBool(q) => p == q; _ => false };
+    EStr(s) =>
+      match b { EStr(t) => s == t; _ => false };
+    EVar(n) =>
+      match b { EVar(m) => n == m; _ => false };
+    EAdd(x, y) =>
+      match b { EAdd(u, v) =>
+        if ast_equal_pred(x, u) then ast_equal_pred(y, v) else false;
+        _ => false };
+    ESub(x, y) =>
+      match b { ESub(u, v) =>
+        if ast_equal_pred(x, u) then ast_equal_pred(y, v) else false;
+        _ => false };
+    EMul(x, y) =>
+      match b { EMul(u, v) =>
+        if ast_equal_pred(x, u) then ast_equal_pred(y, v) else false;
+        _ => false };
+    EConcat(x, y) =>
+      match b { EConcat(u, v) =>
+        if ast_equal_pred(x, u) then ast_equal_pred(y, v) else false;
+        _ => false };
+    ELt(x, y) =>
+      match b { ELt(u, v) =>
+        if ast_equal_pred(x, u) then ast_equal_pred(y, v) else false;
+        _ => false };
+    EGt(x, y) =>
+      match b { EGt(u, v) =>
+        if ast_equal_pred(x, u) then ast_equal_pred(y, v) else false;
+        _ => false };
+    ELe(x, y) =>
+      match b { ELe(u, v) =>
+        if ast_equal_pred(x, u) then ast_equal_pred(y, v) else false;
+        _ => false };
+    EGe(x, y) =>
+      match b { EGe(u, v) =>
+        if ast_equal_pred(x, u) then ast_equal_pred(y, v) else false;
+        _ => false };
+    EEq(x, y) =>
+      match b { EEq(u, v) =>
+        if ast_equal_pred(x, u) then ast_equal_pred(y, v) else false;
+        _ => false };
+    ENeq(x, y) =>
+      match b { ENeq(u, v) =>
+        if ast_equal_pred(x, u) then ast_equal_pred(y, v) else false;
+        _ => false };
+    EIf(c, t, f) =>
+      match b { EIf(c2, t2, f2) =>
+        if ast_equal_pred(c, c2) then
+          if ast_equal_pred(t, t2) then ast_equal_pred(f, f2) else false
+        else false;
+        _ => false };
+    _ => false
+  }
+
+# True iff predicate p1 (with binder n1) is the same predicate as p2 (with
+# binder n2), modulo binder renaming. Both binders renamed to a fixed
+# sentinel name before structural comparison.
+fn predicate_alpha_equiv(
+  p1: Expr, n1: String, p2: Expr, n2: String
+) : Bool =
+  let fresh : String = "__alpha__" in
+  ast_equal_pred(
+    alpha_rename_pred(p1, n1, fresh),
+    alpha_rename_pred(p2, n2, fresh))
+
+# check_refinement_at_call: at an EApp site, attempt static discharge of
+# any refinement on the formal parameter type. Three strategies tried in
+# order:
+#   1. Const-fold (v2.12): if actual arg is a literal, evaluate the
+#      predicate against it.
+#   2. Alpha-equivalence (v2.13): if actual arg's inferred type is itself
+#      a refinement with an alpha-matching predicate, discharge.
+#   3. Defer (chunk 2 endpoint): non-literal arg with mismatched or no
+#      refinement on inferred type — accept silently. Runtime check would
+#      go here in chunk 2's second half (not yet shipped).
+fn check_refinement_at_call(
+  tf: Type, arg: Expr, arg_ty: Type
+) : Result<String, String> =
+  match tf {
+    TyFn(arg_ty_formal, _, _) =>
+      match strip_refine_outer(arg_ty_formal) {
+        None => Ok("no refinement");
+        Some(triple) =>
+          match triple { (base_unused, binder, pred) =>
+            # Strategy 1: const-fold against a literal actual.
+            match expr_to_value(arg) {
+              Some(v) =>
+                match eval_pred(pred, [Pair(binder, v)]) {
+                  Ok(VBool(true)) => Ok("discharged via const-fold");
+                  Ok(VBool(false)) =>
+                    Err("refinement violated at compile time: " ++ binder ++
+                        " = " ++ show_value(v) ++ " fails predicate");
+                  Ok(_) =>
+                    Err("refinement: predicate did not evaluate to Bool");
+                  Err(_) => try_alpha_discharge(arg_ty, binder, pred)
+                };
+              None =>
+                # Strategy 2: alpha-equivalence on actual's refined type.
+                try_alpha_discharge(arg_ty, binder, pred)
+            }
+          }
+      };
+    _ => Ok("not a fn type")
+  }
+
+# Try the alpha-equivalence discharge strategy. If arg_ty is itself a
+# TyRefine and its predicate alpha-matches the formal's predicate,
+# discharge. Otherwise try implication discharge (v2.14). If that also
+# fails, defer (return Ok).
+fn try_alpha_discharge(
+  arg_ty: Type, formal_binder: String, formal_pred: Expr
+) : Result<String, String> =
+  match strip_refine_outer(arg_ty) {
+    None => Ok("deferred — actual has no refinement");
+    Some(triple) =>
+      match triple { (_actual_base, actual_binder, actual_pred) =>
+        if predicate_alpha_equiv(actual_pred, actual_binder,
+                                  formal_pred, formal_binder)
+          then Ok("discharged via alpha-equivalence")
+        else if predicate_implies(actual_pred, actual_binder,
+                                   formal_pred, formal_binder)
+          then Ok("discharged via implication")
+          else Ok("deferred — refinements differ")
+      }
+  }
+
+# === Implication-based discharge (v2.14) ================================
+#
+# When both predicates are simple comparisons of their binder against an
+# integer constant, set-inclusion semantics over integer intervals lets
+# us prove (n > 5) implies (n > 0), (n > 0) implies (n != 0), and so on.
+# No SMT solver, no inference — just case analysis over six relational
+# operators (<, >, <=, >=, ==, !=).
+
+# Recognize `binder OP k` or `k OP binder` (flipping the operator).
+# Returns Some((canonical_op, k)) where the binder is always on the left.
+fn extract_comparison(pred: Expr, binder: String) : Option<(String, Int)> =
+  match pred {
+    ELt(a, b)  => extract_cmp("<",  a, b, binder);
+    EGt(a, b)  => extract_cmp(">",  a, b, binder);
+    ELe(a, b)  => extract_cmp("<=", a, b, binder);
+    EGe(a, b)  => extract_cmp(">=", a, b, binder);
+    EEq(a, b)  => extract_cmp("==", a, b, binder);
+    ENeq(a, b) => extract_cmp("!=", a, b, binder);
+    _ => None
+  }
+
+fn extract_cmp(
+  op: String, lhs: Expr, rhs: Expr, binder: String
+) : Option<(String, Int)> =
+  match lhs {
+    EVar(name) =>
+      if name == binder then
+        match rhs {
+          EInt(k) => Some((op, k));
+          _ => extract_cmp_right(op, lhs, rhs, binder)
+        }
+      else extract_cmp_right(op, lhs, rhs, binder);
+    _ => extract_cmp_right(op, lhs, rhs, binder)
+  }
+
+fn extract_cmp_right(
+  op: String, lhs: Expr, rhs: Expr, binder: String
+) : Option<(String, Int)> =
+  match rhs {
+    EVar(name) =>
+      if name == binder then
+        match lhs {
+          EInt(k) => Some((flip_op(op), k));
+          _ => None
+        }
+      else None;
+    _ => None
+  }
+
+fn flip_op(op: String) : String =
+  if op == "<"  then ">"
+  else if op == ">"  then "<"
+  else if op == "<=" then ">="
+  else if op == ">=" then "<="
+  else op
+
+fn satisfies(op: String, k: Int, v: Int) : Bool =
+  if op == "<"  then v < k
+  else if op == ">"  then v > k
+  else if op == "<=" then v <= k
+  else if op == ">=" then v >= k
+  else if op == "==" then v == k
+  else if op == "!=" then v != k
+  else false
+
+# Does (n op1 k1) imply (n op2 k2)? Set-inclusion semantics over Z.
+fn comparison_implies(
+  op1: String, k1: Int, op2: String, k2: Int
+) : Bool =
+  # op1 == "==": singleton {k1}. Implies op2/k2 iff k1 satisfies it.
+  if op1 == "==" then satisfies(op2, k2, k1)
+  # op2 == "==" but op1 != "==": S1 isn't a singleton, can't equal {k2}.
+  else if op2 == "==" then false
+  # op1 == "!=": Z \ {k1}. Only same predicate matches.
+  else if op1 == "!=" then
+    if op2 == "!=" then k1 == k2 else false
+  # op2 == "!=": S1 must exclude k2.
+  else if op2 == "!=" then
+    if op1 == ">"  then k2 <= k1
+    else if op1 == ">=" then k2 < k1
+    else if op1 == "<"  then k2 >= k1
+    else if op1 == "<=" then k2 > k1
+    else false
+  # Both bounded-below (>, >=).
+  else if op_is_lower(op1) then
+    if op_is_lower(op2) then
+      let low1 : Int = if op1 == ">" then k1 + 1 else k1 in
+      let low2 : Int = if op2 == ">" then k2 + 1 else k2 in
+      low1 >= low2
+    else false
+  # Both bounded-above (<, <=).
+  else if op_is_upper(op1) then
+    if op_is_upper(op2) then
+      let high1 : Int = if op1 == "<" then k1 - 1 else k1 in
+      let high2 : Int = if op2 == "<" then k2 - 1 else k2 in
+      high1 <= high2
+    else false
+  else false
+
+fn op_is_lower(op: String) : Bool =
+  if op == ">" then true else if op == ">=" then true else false
+
+fn op_is_upper(op: String) : Bool =
+  if op == "<" then true else if op == "<=" then true else false
+
+# Top-level predicate_implies: extract both as comparisons (binder on
+# left after normalization), then run the integer-interval logic.
+fn predicate_implies(
+  p1: Expr, n1: String, p2: Expr, n2: String
+) : Bool =
+  match extract_comparison(p1, n1) {
+    None => false;
+    Some(c1) =>
+      match extract_comparison(p2, n2) {
+        None => false;
+        Some(c2) =>
+          match c1 { (op1, k1) =>
+            match c2 { (op2, k2) =>
+              comparison_implies(op1, k1, op2, k2)
+            }
+          }
+      }
+  }
+
+# Extract the (base, binder, pred) triple from a TyRefine, returning None
+# if t isn't a refinement.
+fn strip_refine_outer(t: Type) : Option<(Type, String, Expr)> =
+  match t {
+    TyRefine(base, bn, pred) => Some((base, bn, pred));
+    _ => None
+  }
 
 # Close a top-level open row: if no concrete effects accumulated, the
 # expression is pure; if the tail var was never bound, hide it (it
@@ -2482,7 +3294,9 @@ fn show_type(t: Type) : String =
       "(" ++ show_type(a) ++ " -> " ++ show_type(b) ++ show_eff(e) ++ ")";
     TyRec(fs)  => "{ " ++ show_type_fields(fs) ++ " }";
     TyAdt(n, args) => if len(args) == 0 then n else n ++ "<" ++ show_type_args(args) ++ ">";
-    TyTuple(ts) => "(" ++ show_type_args(ts) ++ ")"
+    TyTuple(ts) => "(" ++ show_type_args(ts) ++ ")";
+    TyRefine(base, bn, _) =>
+      show_type(base) ++ " where (" ++ bn ++ " : pred)"
   }
 
 fn show_eff(r: EffRow) : String =
@@ -2534,6 +3348,57 @@ fn eval_int_bin(
         _ => Err("eval: lhs not Int")
       }))
 
+# Polymorphic value equality. Works on Int, Bool, and String; other
+# value kinds (closures, ctors, tuples, records) compare as not equal
+# for simplicity. Used by EEq/ENeq.
+#
+# Note: this function uses == directly on Int/Bool/String. The HOST
+# evaluates this code (since prism.glass is the program being
+# interpreted), and the host's == handles those primitive types
+# natively. When prism.glass interprets a program that uses ==, the
+# parser builds EEq, eval matches EEq, calls into value_eq — and the
+# host's evaluation of value_eq does the actual comparison.
+fn value_eq(a: Value, b: Value) : Bool =
+  match a {
+    VInt(x)  =>
+      match b {
+        VInt(y) => x == y;
+        _       => false
+      };
+    VBool(x) =>
+      match b {
+        VBool(y) => x == y;
+        _        => false
+      };
+    VStr(x)  =>
+      match b {
+        VStr(y) => x == y;
+        _       => false
+      };
+    VClos(_, _, _)          => false;
+    VRecClos(_, _, _, _)    => false;
+    VMutRecClos(_, _, _, _) => false;
+    VRec(_)                 => false;
+    VCtor(_, _)             => false;
+    VTuple(_)               => false;
+    VBuiltin(_, _, _)       => false
+  }
+
+# Concatenate two list values represented as Cons/Nil chains. Used by
+# EConcat eval when the operands are lists rather than strings.
+fn list_concat_val(va: Value, vb: Value) : Value =
+  match va {
+    VCtor(name, args) =>
+      if name == "Nil" then vb
+      else
+        match args {
+          [h, t, ...rest] =>
+            VCtor("Cons", [h, list_concat_val(t, vb)]);
+          _ => va
+        };
+    _ => va
+  }
+
 # Note: when the inferer accepts a program, eval CAN'T produce most of
 # these errors — they're caught at type-check time. We still return
 # Result for the unbound-variable case and for the (theoretically
@@ -2562,12 +3427,23 @@ fn eval(e: Expr, env: List<Pair<String, Value>>) : Result<Value, String> !{IO, F
                 VStr(sb) => Ok(VStr(sa ++ sb));
                 _ => Err("eval: ++ rhs not a string")
               };
-            _ => Err("eval: ++ lhs not a string")
+            VCtor(_, _) =>
+              # Lists (Cons/Nil chains).
+              Ok(list_concat_val(va, vb));
+            _ => Err("eval: ++ lhs not a string or list")
           }));
     ELt(a, b)  => eval_int_bin(a, b, env, fn(x: Int, y: Int) -> VBool(x < y));
     EGt(a, b)  => eval_int_bin(a, b, env, fn(x: Int, y: Int) -> VBool(y < x));
     ELe(a, b)  => eval_int_bin(a, b, env, fn(x: Int, y: Int) -> VBool(if y < x then false else true));
     EGe(a, b)  => eval_int_bin(a, b, env, fn(x: Int, y: Int) -> VBool(if x < y then false else true));
+    EEq(a, b)  =>
+      bind_result(eval(a, env), fn(va: Value) ->
+        bind_result(eval(b, env), fn(vb: Value) ->
+          Ok(VBool(value_eq(va, vb)))));
+    ENeq(a, b) =>
+      bind_result(eval(a, env), fn(va: Value) ->
+        bind_result(eval(b, env), fn(vb: Value) ->
+          Ok(VBool(if value_eq(va, vb) then false else true))));
 
     EIf(c, t, e_b) =>
       bind_result(eval(c, env), fn(vc: Value) ->
@@ -2630,6 +3506,12 @@ fn eval(e: Expr, env: List<Pair<String, Value>>) : Result<Value, String> !{IO, F
       bind_result(eval_record_fields(fields, env), fn(vfs: List<Pair<String, Value>>) ->
         Ok(VRec(vfs)));
 
+    # v2.11: ENamedRec evaluates identically to ERec — the name is purely
+    # a type-checking aid. Runtime value is structural.
+    ENamedRec(_, fields) =>
+      bind_result(eval_record_fields(fields, env), fn(vfs: List<Pair<String, Value>>) ->
+        Ok(VRec(vfs)));
+
     EField(rec, name) =>
       bind_result(eval(rec, env), fn(vr: Value) ->
         match vr {
@@ -2689,7 +3571,7 @@ fn build_mutrec_env_iter(
   match remaining {
     [] => [];
     [d, ...rest] =>
-      match d { FnDecl(name, _, body) =>
+      match d { FnDecl(name, _, _, body) =>
         [Pair(name, VMutRecClos(name, body, all_decls, outer_env))]
         ++ build_mutrec_env_iter(rest, all_decls, outer_env)
       }
@@ -2732,6 +3614,15 @@ fn apply_builtin(name: String, args: List<Value>) : Result<Value, String> !{IO, 
         };
       _ => Err("eval: int_to_str: bad args")
     }
+  else if name == "int_to_string" then
+    match args {
+      [v, ...rest] =>
+        match v {
+          VInt(n) => Ok(VStr(int_to_string(n)));
+          _ => Err("eval: int_to_string: not an int")
+        };
+      _ => Err("eval: int_to_string: bad args")
+    }
   else if name == "string_eq" then
     match args {
       [v1, v2, ...rest] =>
@@ -2766,6 +3657,64 @@ fn apply_builtin(name: String, args: List<Value>) : Result<Value, String> !{IO, 
           _ => Err("eval: read_file: not a string")
         };
       _ => Err("eval: read_file: bad args")
+    }
+  else if name == "substring" then
+    # substring(s, start, end) — return chars at indices [start, end).
+    # Out-of-range indices clamp; start >= end produces "".
+    match args {
+      [v1, v2, v3, ...rest] =>
+        match v1 {
+          VStr(s) =>
+            match v2 {
+              VInt(start) =>
+                match v3 {
+                  VInt(end) =>
+                    Ok(VStr(substring(s, start, end)));
+                  _ => Err("eval: substring: end not Int")
+                };
+              _ => Err("eval: substring: start not Int")
+            };
+          _ => Err("eval: substring: target not String")
+        };
+      _ => Err("eval: substring: bad args")
+    }
+  else if name == "string_index_of" then
+    # string_index_of(haystack, needle) — first index where needle
+    # occurs in haystack, returned as Some(i); None if not found.
+    match args {
+      [v1, v2, ...rest] =>
+        match v1 {
+          VStr(haystack) =>
+            match v2 {
+              VStr(needle) =>
+                match string_index_of(haystack, needle) {
+                  Some(i) => Ok(VCtor("Some", [VInt(i)]));
+                  None    => Ok(VCtor("None", []))
+                };
+              _ => Err("eval: string_index_of: needle not String")
+            };
+          _ => Err("eval: string_index_of: haystack not String")
+        };
+      _ => Err("eval: string_index_of: bad args")
+    }
+  else if name == "string_contains" then
+    # string_contains(haystack, needle) — true if needle appears in
+    # haystack. Implemented in terms of string_index_of for v2.15.
+    match args {
+      [v1, v2, ...rest] =>
+        match v1 {
+          VStr(haystack) =>
+            match v2 {
+              VStr(needle) =>
+                match string_index_of(haystack, needle) {
+                  Some(_) => Ok(VBool(true));
+                  None    => Ok(VBool(false))
+                };
+              _ => Err("eval: string_contains: needle not String")
+            };
+          _ => Err("eval: string_contains: haystack not String")
+        };
+      _ => Err("eval: string_contains: bad args")
     }
   else
     Err("eval: unknown builtin: " ++ name)
@@ -2976,7 +3925,128 @@ fn build_ctor_env_at(
         ctor_env_for(adt_name, ctors, params, param_tys, param_ids) in
       match build_ctor_env_at(rest, next + n_params) {
         (rest_env, final_next) => (local_env ++ rest_env, final_next)
+      };
+    # v2.11: Each record declaration contributes a Scheme to the type env
+    # mapping the record's name to a generalized TyRec template. When the
+    # type-checker sees `Box { value: x, color: y }` (ENamedRec), it looks
+    # up the name, instantiates the scheme with fresh TyVars, and unifies
+    # the field expressions against the template — driving parameterized
+    # record literal type inference.
+    [RecordDecl(rec_name, params, fields), ...rest] =>
+      let n_params : Int = len(params) in
+      let param_ids : List<Int> = range(next, next + n_params) in
+      let param_tys : List<Type> = ids_to_tvars(param_ids) in
+      let resolved_fields : List<Pair<String, Type>> =
+        resolve_param_in_fields(fields, params, param_tys) in
+      let sch : Scheme = Scheme(param_ids, [], TyRec(resolved_fields)) in
+      let local_env : List<Pair<String, Scheme>> = [Pair(rec_name, sch)] in
+      match build_ctor_env_at(rest, next + n_params) {
+        (rest_env, final_next) => (local_env ++ rest_env, final_next)
       }
+  }
+
+# Look up a record decl by name. Returns the field list, or None if the
+# name isn't a record.
+fn lookup_record_decl(
+  decls: List<TypeDecl>,
+  name: String
+) : Option<List<Pair<String, Type>>> =
+  match decls {
+    [] => None;
+    [TypeDecl(_, _, _), ...rest] => lookup_record_decl(rest, name);
+    [RecordDecl(rname, _, fields), ...rest] =>
+      if rname == name then Some(fields)
+      else lookup_record_decl(rest, name)
+  }
+
+# v2.11: lookup that also returns the declared params, so the caller
+# can substitute the user's type arguments into the field types.
+fn lookup_record_full(
+  decls: List<TypeDecl>,
+  name: String
+) : Option<(List<String>, List<Pair<String, Type>>)> =
+  match decls {
+    [] => None;
+    [TypeDecl(_, _, _), ...rest] => lookup_record_full(rest, name);
+    [RecordDecl(rname, params, fields), ...rest] =>
+      if rname == name then Some((params, fields))
+      else lookup_record_full(rest, name)
+  }
+
+# Recursively replace TyAdt(record_name, args) with TyRec(fields) — the
+# v2.9 records-alignment pre-pass, v2.11-corrected to substitute the
+# type arguments into the field types (Box<String> now expands to a
+# TyRec where the A param has been replaced by String).
+fn expand_record_types(
+  t: Type,
+  decls: List<TypeDecl>
+) : Type =
+  match t {
+    TyInt    => TyInt;
+    TyBool   => TyBool;
+    TyStr    => TyStr;
+    TyVar(n) => TyVar(n);
+    TyFn(a, b, eff) =>
+      TyFn(expand_record_types(a, decls),
+           expand_record_types(b, decls),
+           eff);
+    TyRec(fields) =>
+      TyRec(expand_record_fields(fields, decls));
+    TyAdt(name, args) =>
+      match lookup_record_full(decls, name) {
+        Some(p) =>
+          match p { (params, fields) =>
+            # Substitute the user's type args into the declared field
+            # types. Box<String> with fields=[(value, A), (color, Color)]
+            # and args=[TyStr] becomes [(value, String), (color, Color)].
+            let expanded_args : List<Type> =
+              expand_record_type_list(args, decls) in
+            let resolved_fields : List<Pair<String, Type>> =
+              resolve_param_in_fields(fields, params, expanded_args) in
+            TyRec(expand_record_fields(resolved_fields, decls))
+          };
+        None =>
+          TyAdt(name, expand_record_type_list(args, decls))
+      };
+    TyTuple(tys) =>
+      TyTuple(expand_record_type_list(tys, decls));
+    TyRefine(base, bn, pred) =>
+      TyRefine(expand_record_types(base, decls), bn, pred)
+  }
+
+fn expand_record_type_list(
+  ts: List<Type>,
+  decls: List<TypeDecl>
+) : List<Type> =
+  match ts {
+    [] => [];
+    [t, ...rest] =>
+      [expand_record_types(t, decls)] ++ expand_record_type_list(rest, decls)
+  }
+
+fn expand_record_fields(
+  fields: List<Pair<String, Type>>,
+  decls: List<TypeDecl>
+) : List<Pair<String, Type>> =
+  match fields {
+    [] => [];
+    [Pair(name, ty), ...rest] =>
+      [Pair(name, expand_record_types(ty, decls))] ++
+      expand_record_fields(rest, decls)
+  }
+
+# Apply expansion to every fn signature. The body is unchanged; only the
+# declared type (parameter and return types) gets its TyAdt(record, [])
+# expanded to TyRec(fields).
+fn expand_fn_decls(
+  decls: List<FnDecl>,
+  type_decls: List<TypeDecl>
+) : List<FnDecl> =
+  match decls {
+    [] => [];
+    [FnDecl(name, tparams, fn_ty, body), ...rest] =>
+      [FnDecl(name, tparams, expand_record_types(fn_ty, type_decls), body)] ++
+      expand_fn_decls(rest, type_decls)
   }
 
 fn ids_to_tvars(ids: List<Int>) : List<Type> =
@@ -3017,6 +4087,20 @@ fn resolve_param_refs(
       ++ resolve_param_refs(rest, params, param_tys)
   }
 
+# v2.11: walk a record's field-type list and resolve each TyAdt(param, [])
+# reference against the declared param list.
+fn resolve_param_in_fields(
+  fields: List<Pair<String, Type>>,
+  params: List<String>,
+  param_tys: List<Type>
+) : List<Pair<String, Type>> =
+  match fields {
+    [] => [];
+    [Pair(name, ty), ...rest] =>
+      [Pair(name, resolve_param(ty, params, param_tys))] ++
+      resolve_param_in_fields(rest, params, param_tys)
+  }
+
 fn resolve_param(
   t: Type,
   params: List<String>,
@@ -3039,7 +4123,9 @@ fn resolve_param(
         None     => TyAdt(name, resolve_param_refs(args, params, param_tys))
       };
     TyTuple(ts) =>
-      TyTuple(resolve_param_refs(ts, params, param_tys))
+      TyTuple(resolve_param_refs(ts, params, param_tys));
+    TyRefine(base, bn, pred) =>
+      TyRefine(resolve_param(base, params, param_tys), bn, pred)
   }
 
 fn resolve_rec_param(
@@ -3095,6 +4181,35 @@ fn initial_envs(decls: List<TypeDecl>)
   let cons_scheme : Scheme =
     Scheme([0], [],
       TyFn(list_param_ty, TyFn(list_adt, list_adt, pure_eff()), pure_eff())) in
+  # Pre-declare the built-in `type Option<A> = | None | Some(A)`.
+  # Required for string_index_of's return type and any user code that
+  # uses Option without re-declaring it.
+  let option_param_ty : Type = TyVar(1) in
+  let option_adt : Type = TyAdt("Option", [option_param_ty]) in
+  let none_scheme : Scheme =
+    Scheme([1], [], option_adt) in
+  let some_scheme : Scheme =
+    Scheme([1], [],
+      TyFn(option_param_ty, option_adt, pure_eff())) in
+  # Pre-declare the built-in `type Pair<A, B> = | Pair(A, B)`.
+  # Two type variables — TyVar(2) for A, TyVar(3) for B.
+  let pair_a : Type = TyVar(2) in
+  let pair_b : Type = TyVar(3) in
+  let pair_adt : Type = TyAdt("Pair", [pair_a, pair_b]) in
+  let pair_scheme : Scheme =
+    Scheme([2, 3], [],
+      TyFn(pair_a, TyFn(pair_b, pair_adt, pure_eff()), pure_eff())) in
+  # Pre-declare the built-in `type Result<T, E> = | Ok(T) | Err(E)`.
+  # TyVar(4) for T, TyVar(5) for E.
+  let result_t : Type = TyVar(4) in
+  let result_e : Type = TyVar(5) in
+  let result_adt : Type = TyAdt("Result", [result_t, result_e]) in
+  let ok_scheme : Scheme =
+    Scheme([4, 5], [],
+      TyFn(result_t, result_adt, pure_eff())) in
+  let err_scheme : Scheme =
+    Scheme([4, 5], [],
+      TyFn(result_e, result_adt, pure_eff())) in
   # String inspection builtins. Pure (no effects).
   # string_length : String -> Int
   let strlen_scheme : Scheme =
@@ -3116,25 +4231,62 @@ fn initial_envs(decls: List<TypeDecl>)
   # read_file : String -> String !{File}
   let read_file_scheme : Scheme =
     Scheme([], [], TyFn(TyStr, TyStr, EffRow(["File"], None))) in
+  # substring : String -> Int -> Int -> String   (curried; (s, start, end))
+  let substring_scheme : Scheme =
+    Scheme([], [],
+      TyFn(TyStr,
+        TyFn(TyInt,
+          TyFn(TyInt, TyStr, pure_eff()),
+          pure_eff()),
+        pure_eff())) in
+  # string_index_of : String -> String -> Option<Int>
+  # Mirrors the host's signature exactly. Returns Some(i) at first match,
+  # None if the needle does not appear in the haystack.
+  let string_index_of_scheme : Scheme =
+    Scheme([], [],
+      TyFn(TyStr,
+        TyFn(TyStr, TyAdt("Option", [TyInt]), pure_eff()),
+        pure_eff())) in
+  # string_contains : String -> String -> Bool
+  # Added for Stage 4.5 (v2.15): prism's own source uses this in
+  # is_digit / is_letter. Without it, prism can't compile its own source.
+  let string_contains_scheme : Scheme =
+    Scheme([], [],
+      TyFn(TyStr,
+        TyFn(TyStr, TyBool, pure_eff()),
+        pure_eff())) in
   let builtin_ty_env : List<Pair<String, Scheme>> =
     [Pair("tick", tick_scheme),
      Pair("Nil",  nil_scheme),
      Pair("Cons", cons_scheme),
-     Pair("string_length", strlen_scheme),
-     Pair("char_at",       char_at_scheme),
-     Pair("int_to_str",    int_to_str_scheme),
-     Pair("string_eq",     string_eq_scheme),
-     Pair("print",         print_scheme),
-     Pair("read_file",     read_file_scheme)] in
+     Pair("None", none_scheme),
+     Pair("Some", some_scheme),
+     Pair("Pair", pair_scheme),
+     Pair("Ok",   ok_scheme),
+     Pair("Err",  err_scheme),
+     Pair("string_length",   strlen_scheme),
+     Pair("char_at",         char_at_scheme),
+     Pair("int_to_str",      int_to_str_scheme),
+     Pair("int_to_string",   int_to_str_scheme),
+     Pair("string_eq",       string_eq_scheme),
+     Pair("print",           print_scheme),
+     Pair("read_file",       read_file_scheme),
+     Pair("substring",       substring_scheme),
+     Pair("string_index_of", string_index_of_scheme),
+     Pair("string_contains", string_contains_scheme)] in
   let builtin_val_env : List<Pair<String, Value>> =
     [Pair("tick", tick_value),
-     Pair("string_length", VBuiltin("string_length", 1, [])),
-     Pair("char_at",       VBuiltin("char_at",       2, [])),
-     Pair("int_to_str",    VBuiltin("int_to_str",    1, [])),
-     Pair("string_eq",     VBuiltin("string_eq",     2, [])),
-     Pair("print",         VBuiltin("print",         1, [])),
-     Pair("read_file",     VBuiltin("read_file",     1, []))] in
-  match build_ctor_env_at(decls, 1) {
+     Pair("string_length",   VBuiltin("string_length",   1, [])),
+     Pair("char_at",         VBuiltin("char_at",         2, [])),
+     Pair("int_to_str",      VBuiltin("int_to_str",      1, [])),
+     Pair("int_to_string",   VBuiltin("int_to_string",   1, [])),
+     Pair("string_eq",       VBuiltin("string_eq",       2, [])),
+     Pair("print",           VBuiltin("print",           1, [])),
+     Pair("read_file",       VBuiltin("read_file",       1, [])),
+     Pair("substring",       VBuiltin("substring",       3, [])),
+     Pair("string_index_of", VBuiltin("string_index_of", 2, [])),
+     Pair("string_contains", VBuiltin("string_contains", 2, []))] in
+  match build_ctor_env_at(decls, 6) {
     (ctor_env, next) =>
       (builtin_ty_env ++ ctor_env, builtin_val_env, next)
   }
@@ -3145,46 +4297,79 @@ fn initial_envs(decls: List<TypeDecl>)
 # now includes the inferred ambient EFFECT alongside the type.
 fn compile(src: String) : Result<(Type, EffRow, Value), String> !{IO, File} =
   bind_result(parse_program(src), fn(prog: Program) ->
-    match prog { Program(type_decls, fn_decls, e) =>
+    match prog { Program(type_decls, fn_decls_raw, e) =>
+      # v2.9 records-alignment pre-pass: expand TyAdt(record_name, [])
+      # in fn signatures to the structural TyRec(fields). This lets
+      # host programs that use `type Foo = { ... }` + `: Foo` annotations
+      # type-check against structural record literals in prism.
+      let fn_decls : List<FnDecl> = expand_fn_decls(fn_decls_raw, type_decls) in
       match initial_envs(type_decls) {
         (ty_env, val_env, start_id) =>
           # Add top-level fn declarations to both envs.
           # Type env: each fn's full type, generalized.
           # Val env: VMutRecClos so the fns can reference each other.
-          let fn_ty_env : List<Pair<String, Scheme>> =
-            build_fn_ty_env(fn_decls) in
-          let fn_val_env : List<Pair<String, Value>> =
-            build_mutrec_env(fn_decls, val_env) in
-          let full_ty_env : List<Pair<String, Scheme>> = fn_ty_env ++ ty_env in
-          let full_val_env : List<Pair<String, Value>> = fn_val_env ++ val_env in
-          # First, type-check each fn body matches its declared type.
-          bind_result(check_fn_decls(fn_decls, full_ty_env, start_id),
-                      fn(checked_id: Int) ->
-            bind_result(run_infer(e, full_ty_env, checked_id),
-                        fn(p: (Type, EffRow)) ->
-              match p { (t, eff) =>
-                bind_result(eval(e, full_val_env), fn(v: Value) ->
-                  Ok((t, eff, v)))
-              }))
+          let fn_ty_env_result : (List<Pair<String, Scheme>>, Int) =
+            build_fn_ty_env(fn_decls, start_id) in
+          match fn_ty_env_result {
+            (fn_ty_env, after_fn_env_id) =>
+              let fn_val_env : List<Pair<String, Value>> =
+                build_mutrec_env(fn_decls, val_env) in
+              let full_ty_env : List<Pair<String, Scheme>> = fn_ty_env ++ ty_env in
+              let full_val_env : List<Pair<String, Value>> = fn_val_env ++ val_env in
+              bind_result(check_fn_decls(fn_decls, full_ty_env, after_fn_env_id),
+                          fn(checked_id: Int) ->
+                bind_result(run_infer(e, full_ty_env, checked_id),
+                            fn(p: (Type, EffRow)) ->
+                  match p { (t, eff) =>
+                    bind_result(eval(e, full_val_env), fn(v: Value) ->
+                      Ok((t, eff, v)))
+                  }))
+          }
       }
     })
 
-# Build the type env extension from fn decls: each fn's name maps to
-# a generalized scheme over its declared type.
-fn build_fn_ty_env(decls: List<FnDecl>) : List<Pair<String, Scheme>> =
-  match decls {
+# Generic-fn helpers (v2.9): build a range of TyVar IDs whose length
+# matches a list of param names, without needing a generic list_length.
+fn range_for(params: List<String>, start: Int) : List<Int> =
+  match params {
     [] => [];
+    [_, ...rest] => [start] ++ range_for(rest, start + 1)
+  }
+
+fn next_after(ids: List<Int>, start: Int) : Int =
+  match ids {
+    [] => start;
+    [_, ...rest] => next_after(rest, start + 1)
+  }
+
+# Build the type env extension from fn decls: each fn's name maps to a
+# Scheme. For monomorphic fns (no `<A,B>` declared), the scheme has empty
+# quantification. For generic fns (v2.9), the scheme quantifies over fresh
+# TyVar IDs allocated for each declared type param, and the fn_ty has its
+# TyAdt("A", []) refs replaced with the corresponding TyVar.
+fn build_fn_ty_env(
+  decls: List<FnDecl>,
+  next: Int
+) : (List<Pair<String, Scheme>>, Int) =
+  match decls {
+    [] => ([], next);
     [d, ...rest] =>
-      match d { FnDecl(name, fn_ty, _) =>
-        # Generalize the fn type. The scheme quantifies any free type
-        # variables in fn_ty. For now, fns are monomorphic at top level
-        # (no polymorphism); we can extend this later.
-        let sch : Scheme = Scheme([], [], fn_ty) in
-        [Pair(name, sch)] ++ build_fn_ty_env(rest)
+      match d { FnDecl(name, tparams, fn_ty, _) =>
+        let ids : List<Int> = range_for(tparams, next) in
+        let n_tparams : Int = next_after(ids, next) in
+        let tyvars : List<Type> = ids_to_tvars(ids) in
+        let resolved_fn_ty : Type =
+          resolve_param(fn_ty, tparams, tyvars) in
+        let sch : Scheme = Scheme(ids, [], resolved_fn_ty) in
+        match build_fn_ty_env(rest, n_tparams) {
+          (rest_env, final_next) =>
+            ([Pair(name, sch)] ++ rest_env, final_next)
+        }
       }
   }
 
-# Type-check each fn body matches its declared type.
+# Type-check each fn body matches its declared type. For generic fns
+# (v2.9), allocate fresh TyVars for declared type params before checking.
 fn check_fn_decls(
   decls: List<FnDecl>,
   ty_env: List<Pair<String, Scheme>>,
@@ -3193,19 +4378,56 @@ fn check_fn_decls(
   match decls {
     [] => Ok(next);
     [d, ...rest] =>
-      match d { FnDecl(name, fn_ty, body) =>
-        # Infer the body in the env containing all fn signatures.
-        bind_result(infer(body, ty_env, empty_sub(), next),
-                    fn(r: (Type, EffRow, Sub, Int)) ->
-          match r { (inferred_ty, _, s1, n1) =>
-            # Unify the inferred type with the declared type.
-            bind_result(unify(inferred_ty, fn_ty, s1, n1),
-                        fn(r2: (Sub, Int)) ->
-              match r2 { (_, n2) =>
-                check_fn_decls(rest, ty_env, n2)
-              })
+      match d { FnDecl(name, tparams, fn_ty, body) =>
+        let ids : List<Int> = range_for(tparams, next) in
+        let n2 : Int = next_after(ids, next) in
+        let tyvars : List<Type> = ids_to_tvars(ids) in
+        let resolved_fn_ty : Type =
+          resolve_param(fn_ty, tparams, tyvars) in
+        bind_result(check_fn_body(resolved_fn_ty, body, ty_env, empty_sub(), n2),
+                    fn(r: (Sub, Int)) ->
+          match r { (_, n3) =>
+            check_fn_decls(rest, ty_env, n3)
           })
       }
+  }
+
+# Walk fn_ty's arrow chain in parallel with body's ELam chain. At each
+# step, pre-bind the parameter name to its declared type before recursing
+# into the inner body. When the body stops being ELams (or fn_ty stops
+# being arrows), infer the remaining body and unify with the remaining
+# return type.
+fn check_fn_body(
+  remaining_ty: Type,
+  remaining_body: Expr,
+  ty_env: List<Pair<String, Scheme>>,
+  s: Sub,
+  next: Int
+) : Result<(Sub, Int), String> =
+  match remaining_body {
+    ELam(param_name, inner) =>
+      match remaining_ty {
+        TyFn(param_ty, ret_ty, _) =>
+          let new_env : List<Pair<String, Scheme>> =
+            [Pair(param_name, Scheme([], [], param_ty))] ++ ty_env in
+          check_fn_body(ret_ty, inner, new_env, s, next);
+        _ =>
+          # Body has more lambdas than fn_ty has arrows. Fall back to
+          # generic inference + unification (preserves the v2.8 behavior
+          # for unusual cases).
+          bind_result(infer(remaining_body, ty_env, s, next),
+                      fn(r: (Type, EffRow, Sub, Int)) ->
+            match r { (inferred_ty, _, s1, n1) =>
+              unify(inferred_ty, remaining_ty, s1, n1)
+            })
+      };
+    _ =>
+      # The inner expression. Its type must equal the declared return type.
+      bind_result(infer(remaining_body, ty_env, s, next),
+                  fn(r: (Type, EffRow, Sub, Int)) ->
+        match r { (inferred_ty, _, s1, n1) =>
+          unify(inferred_ty, remaining_ty, s1, n1)
+        })
   }
 
 fn empty_sub() : Sub = Sub([], [])
@@ -3966,6 +5188,212 @@ let _ : String = match read_file("examples/stage3/poly.glass") {
         match triple {
           (t, eff, v) =>
             print("examples/stage3/poly.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("compile error: " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+# v1.5: meta-circular evaluation. tinylang.glass is itself a Glass-in-Glass
+# interpreter for a tiny expression language. prism.glass reads it from
+# disk, compiles it through its own pipeline, and runs it. Two levels of
+# interpretation: glass.py → prism.glass → tinylang → arithmetic expr.
+let _ : String = match read_file("examples/stage3/tinylang.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/stage3/tinylang.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("compile error: " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+# v1.6: tinycalc.glass uses the substring + string_index_of builtins
+# newly exposed by prism.glass. A string like "1+2+3+4" is tokenised
+# and summed, all using only the subset of Glass that prism.glass
+# implements. The result is a List<Int> of four sums.
+let _ : String = match read_file("examples/stage3/tinycalc.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/stage3/tinycalc.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("compile error: " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+# v1.8: midlang.glass is a Glass-in-Glass interpreter for a small
+# expression language WITH CLOSURES AND RECURSION (let-rec). prism.glass
+# reads it from disk, compiles it through its own pipeline, and runs it.
+# The midlang program computes factorial(5) via let-rec, returning
+# (MInt(120), MInt(30)) — the factorial result and a curried-add result.
+let _ : String = match read_file("examples/stage3/midlang.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/stage3/midlang.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("compile error: " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+# v1.8: safecalc.glass uses Pair, Option, and Result — all pre-declared
+# in prism.glass's initial_envs as of this release. The calculator parses
+# arithmetic expressions and returns Result<Int, String> for safe error
+# handling. Same source runs on host and through prism.glass.
+let _ : String = match read_file("examples/stage3/safecalc.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/stage3/safecalc.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("compile error: " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+let _ : String = match read_file("examples/showcase/json.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/showcase/json.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("compile error: " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+let _ : String = match read_file("examples/showcase/config.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/showcase/config.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("compile error: " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+let _ : String = match read_file("examples/showcase/markdown.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/showcase/markdown.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("compile error: " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+let _ : String = match read_file("examples/features/generic_fn.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/features/generic_fn.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("compile error: " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+let _ : String = match read_file("examples/features/generic_rec.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/features/generic_rec.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("compile error: " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+let _ : String = match read_file("examples/features/refine.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/features/refine.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("compile error: " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+let _ : String = match read_file("examples/features/alpha_refine.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/features/alpha_refine.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("compile error: " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+let _ : String = match read_file("examples/features/imply_refine.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/features/imply_refine.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("compile error: " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+# Stage 4.5 (v2.15): prism compiles a meaningful subset of its own source.
+# The subset is types + complete lexer chain (~320 lines), proving prism
+# can parse, type-check, AND evaluate self-referential Glass code.
+let _ : String = match read_file("examples/selfhost/prism_lexer.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("STAGE 4.5: examples/selfhost/prism_lexer.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("compile error: " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+# Stage 5 piece (v3.6): prism interprets quartz_min.glass — a Glass program
+# that compiles a small subset of Glass to C source code. Demonstrates the
+# self-host-plus-native pipeline: prism interprets Quartz-in-Glass which
+# produces C; that C, fed to cc, becomes a native binary.
+let _ : String = match read_file("examples/selfhost/quartz_min.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("STAGE 5 piece: examples/selfhost/quartz_min.glass ==> Quartz-in-Glass produced " ++ show_type(t) ++ " of C source")
         };
       Err(msg) => print("compile error: " ++ msg)
     };

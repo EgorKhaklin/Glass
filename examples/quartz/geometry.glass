@@ -1,0 +1,17 @@
+# Geometry calculations using records.
+# Exercises records with multiple fields, records as fn params,
+# field access, and records inside expressions.
+
+type Point = { x: Int, y: Int }
+type Rect  = { topLeft: Point, bottomRight: Point }
+
+fn width(r: Rect) : Int = r.bottomRight.x - r.topLeft.x
+fn height(r: Rect) : Int = r.bottomRight.y - r.topLeft.y
+fn area(r: Rect) : Int = width(r) * height(r)
+
+let viewport : Rect = Rect {
+  topLeft: Point { x: 0, y: 0 },
+  bottomRight: Point { x: 1920, y: 1080 }
+}
+
+area(viewport)

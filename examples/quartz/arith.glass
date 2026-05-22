@@ -1,0 +1,5 @@
+let a = 100
+let b = 25
+let c = a / b
+let d = a - (b * c)
+c + d

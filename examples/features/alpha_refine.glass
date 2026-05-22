@@ -1,0 +1,50 @@
+# =============================================================================
+# alpha_refine.glass — alpha-equivalence discharge for refinements (v2.13).
+#
+# v2.12 introduced refinements with constant-fold discharge. Const-fold
+# only fires when the actual argument is a literal — `inner(7)`, `inner("")`,
+# `inner(0 - 5)`. For programs that thread refinements THROUGH function
+# calls — a function takes a refined parameter and passes it to ANOTHER
+# function with the same refinement — const-fold can't help, because the
+# argument at the inner call is a variable, not a literal.
+#
+# v2.13 adds alpha-equivalence discharge. When the actual argument's
+# inferred type is itself a TyRefine with a predicate that matches the
+# formal's predicate (modulo binder renaming), the precondition holds
+# without any runtime check.
+#
+# Both predicates get renamed to a common sentinel name; structural
+# equality on the resulting expressions confirms the match. No SMT
+# solver, no inference — just AST equality after alpha-renaming.
+# =============================================================================
+
+# A pair of functions with the SAME refinement, just different binder
+# names. inner takes Int where (n > 0); outer takes Int where (x > 0).
+# When outer calls inner(x), the actual arg `x` has refined type
+# Int where (x > 0), which alpha-matches inner's Int where (n > 0).
+# Compile-time discharge, zero runtime check.
+fn inner(n: Int where (n > 0)) : Int = n + n
+
+fn outer(x: Int where (x > 0)) : Int = inner(x)
+
+# A chain — three levels, all with the same refinement. Each call
+# discharges via alpha-equivalence.
+fn level1(a: Int where (a > 0)) : Int = a + 1
+fn level2(b: Int where (b > 0)) : Int = level1(b)
+fn level3(c: Int where (c > 0)) : Int = level2(c)
+
+# Non-empty string refinement threaded through.
+fn echo_one(s: String where (s != "")) : String = s
+fn echo_two(t: String where (t != "")) : String = echo_one(t)
+
+# All calls below pass literals that satisfy the OUTER refinement.
+# Const-fold discharges each outer call (literal arg). Each INTERNAL
+# pass-through (inner(x), level2(b), level1(c) etc.) discharges via
+# alpha-equivalence.
+let demo : (Int, Int, String) = (
+  outer(7),         # 14  — const-fold on outer, alpha-eq on inner
+  level3(10),       # 11  — const-fold on level3, alpha-eq through 2 levels
+  echo_two("hi")    # "hi" — const-fold on echo_two, alpha-eq on echo_one
+)
+
+demo

@@ -1,0 +1,23 @@
+Glass is dual-licensed under either:
+
+    Apache License, Version 2.0
+        (LICENSE-APACHE or http://www.apache.org/licenses/LICENSE-2.0)
+
+    MIT License
+        (LICENSE-MIT or http://opensource.org/licenses/MIT)
+
+at your option.
+
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+You may use this software under the terms of either license. Contributions
+you submit are licensed under the same dual-license terms, unless you
+explicitly state otherwise.
+
+The Apache 2.0 license includes an explicit patent grant. The MIT license
+is simpler and more permissive. Most users can pick either freely; pick the
+one that best fits your project's other licenses.
+
+---
+
+Copyright 2026 VANTA (Egor Khaklin)

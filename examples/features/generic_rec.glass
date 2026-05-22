@@ -1,0 +1,38 @@
+# =============================================================================
+# generic_rec.glass — parameterized record literal type inference (v2.11).
+#
+# Before v2.11, prism rejected:
+#
+#   fn box_swap(b: Box<Int>, new_val: String) : Box<String> =
+#     Box { value: new_val, color: b.color }
+#
+# with "can't unify String with A". Two bugs:
+#   1. expand_record_types ignored the type arguments — Box<String> and
+#      Box<Int> both expanded to a TyRec with the literal 'A' still present.
+#   2. ENamedRec didn't exist; `Box { value: x }` was parsed identically
+#      to `{ value: x }` (anonymous structural), so the record name was
+#      lost before the type-checker could use it.
+#
+# v2.11 fixes both. ENamedRec keeps the name through parsing; the type-
+# checker looks the name up in the env (where record decls are now
+# registered as Schemes), instantiates fresh TyVars for each param, and
+# unifies user field exprs against the declared field types. expand_
+# record_types now substitutes type args correctly: Box<String> becomes
+# TyRec([("value", String), ("color", Color)]) with A resolved to String.
+# =============================================================================
+
+type Color = | Red | Green | Blue
+type Box<A> = { value: A, color: Color }
+
+fn box_swap(b: Box<Int>, new_val: String) : Box<String> =
+  Box { value: new_val, color: b.color }
+
+fn box_double(b: Box<Int>) : Box<Int> =
+  Box { value: b.value * 2, color: b.color }
+
+let int_box = Box { value: 42, color: Red }
+let doubled = box_double(int_box)
+let swapped = box_swap(int_box, "hello")
+
+# Result: the doubled int box has value 84, swapped string box has value "hello".
+swapped.value ++ " (was " ++ int_to_string(doubled.value) ++ ")"

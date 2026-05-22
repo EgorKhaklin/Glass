@@ -1,0 +1,108 @@
+# =============================================================================
+# Refinement implication: stronger predicates subsume weaker ones.
+#
+# v1.3 added subsumption when the predicate matched exactly (up to binder
+# rename). v1.4 adds implication for simple comparisons:
+#
+#   (n > k1) ⟹ (n >= k2)     when k1 >= k2 - 1
+#   (n >= k1) ⟹ (n > k2)     when k1 > k2
+#   (n > 0)  ⟹ (n != 0)      because nothing positive is zero
+#   (n >= 1) ⟹ (n > 0)       because the integers ≥1 are exactly those > 0
+#
+# A function whose return is `Int where (result > 0)` now flows directly
+# into any parameter that requires `Int where (b != 0)`, because the
+# implication is provable. No alpha-equivalence required, no runtime
+# check, no annotation in the consumer.
+# =============================================================================
+
+# ---- A library where each function declares a STRONGER refinement than
+# ---- the next function downstream requires.
+
+# Returns a strictly positive Int.
+fn ensure_positive(n: Int) : Int where (result > 0) =
+  if n > 0 then n else 1
+
+# Returns Int >= 1.
+fn min_one(n: Int) : Int where (result >= 1) =
+  if n >= 1 then n else 1
+
+# Returns Int >= 5.
+fn at_least_five(n: Int) : Int where (result >= 5) =
+  if n >= 5 then n else 5
+
+# Returns Int > 10.
+fn more_than_ten(n: Int) : Int where (result > 10) =
+  if n > 10 then n else 11
+
+# ---- Consumers with WEAKER refinement requirements.
+
+# Division requires only nonzero divisor — every implementation here can
+# feed it because every implementation returns something strictly positive.
+fn safe_div(a: Int, b: Int where (b != 0)) : Int = a / b
+
+# This consumer needs non-negativity; every >=1 / >5 / >10 satisfies it.
+fn sqrt_floor(n: Int where (n >= 0)) : Int =
+  if n == 0 then 0
+  else if n < 4 then 1
+  else if n < 9 then 2
+  else if n < 16 then 3
+  else if n < 25 then 4
+  else if n < 36 then 5
+  else 6
+
+# This one needs n > 5 — only the last two implementations satisfy it.
+fn needs_above_five(n: Int where (n > 5)) : Int = n + 1000
+
+# ---- Discharges that fire ---------------------------------------------------
+
+# (result > 0) ⟹ (b != 0)
+let r1 = safe_div(100, ensure_positive(7))
+
+# (result >= 1) ⟹ (b != 0)
+let r2 = safe_div(50, min_one(3))
+
+# (result >= 5) ⟹ (b != 0)
+let r3 = safe_div(36, at_least_five(2))
+
+# (result > 10) ⟹ (b != 0)
+let r4 = safe_div(120, more_than_ten(0))
+
+# (result > 0) ⟹ (n >= 0)
+let r5 = sqrt_floor(ensure_positive(15))
+
+# (result >= 1) ⟹ (n >= 0)
+let r6 = sqrt_floor(min_one(8))
+
+# (result >= 5) ⟹ (n > 5)?  NO — 5 is in [5, ∞) but 5 > 5 is false.
+# The compiler should keep this as a runtime check.
+# (Uncomment to see the runtime path fire when at_least_five returns 5.)
+#   let r7 = needs_above_five(at_least_five(0))
+
+# (result > 10) ⟹ (n > 5)?  YES — 10+1 = 11 > 5.
+let r8 = needs_above_five(more_than_ten(0))
+
+# (result >= 5) ⟹ (n >= 0)?  YES.
+let r9 = sqrt_floor(at_least_five(20))
+
+# (result >= 1) ⟹ (n > 0)?  YES (integers >= 1 are exactly those > 0).
+let r10 = needs_above_five(more_than_ten(min_one(15)))
+
+let summary : List<Int> = [r1, r2, r3, r4, r5, r6, r8, r9, r10]
+
+fn show_list(xs: List<Int>) : String =
+  match xs {
+    []           => "]";
+    [h, ...rest] =>
+      match rest {
+        []        => int_to_string(h) ++ "]";
+        [_, ..._] => int_to_string(h) ++ ", " ++ show_list(rest)
+      }
+  }
+
+let _ = print("implication discharges: [" ++ show_list(summary))
+let _ = print("")
+let _ = print("each refinement was provably stronger than the receiver's")
+let _ = print("precondition. compile-time discharges via comparison")
+let _ = print("implication — no alpha-equivalence required, no runtime cost.")
+
+"implication complete"

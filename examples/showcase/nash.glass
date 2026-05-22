@@ -1,0 +1,157 @@
+# =============================================================================
+# Pure-strategy Nash equilibrium for two-player 2×2 games, in Glass.
+#
+# Given a 2×2 normal-form game — a payoff matrix where each cell holds a pair
+# of payoffs (one for each player) — this program enumerates the four pure
+# strategy profiles, identifies which ones are Nash equilibria, and prints
+# the classification.
+#
+# Demonstrated on five classic games: Prisoner's Dilemma, Stag Hunt, Battle
+# of the Sexes, Matching Pennies, and Chicken.
+# =============================================================================
+
+# A pair of payoffs: one for each player at a strategy profile.
+type Payoff = | Payoff(Int, Int)
+
+# A 2×2 game indexed by (P1-strategy, P2-strategy) ∈ {(T,L), (T,R), (B,L), (B,R)}.
+# The constructor order is row-major: TL, TR, BL, BR.
+type Game = | Game(Payoff, Payoff, Payoff, Payoff)
+
+# A pure strategy for each player.
+type S1 = | Top    | Bottom
+type S2 = | Left   | Right
+
+# A pure-strategy profile.
+type Profile = | Profile(S1, S2)
+
+# ---- Read the payoff at a profile ------------------------------------------
+
+fn payoff_at(g: Game, p: Profile) : Payoff =
+  match g {
+    Game(tl, tr, bl, br) =>
+      match p {
+        Profile(Top,    Left)  => tl;
+        Profile(Top,    Right) => tr;
+        Profile(Bottom, Left)  => bl;
+        Profile(Bottom, Right) => br
+      }
+  }
+
+# ---- Best-response test ----------------------------------------------------
+#
+# A profile is a Nash equilibrium iff neither player can unilaterally
+# deviate to a strictly higher payoff. Equivalently, each player's
+# strategy is a best response to the other's.
+
+fn p1_payoff(g: Game, s1: S1, s2: S2) : Int =
+  match payoff_at(g, Profile(s1, s2)) { Payoff(a, _) => a }
+
+fn p2_payoff(g: Game, s1: S1, s2: S2) : Int =
+  match payoff_at(g, Profile(s1, s2)) { Payoff(_, b) => b }
+
+fn flip1(s: S1) : S1 = match s { Top => Bottom; Bottom => Top }
+fn flip2(s: S2) : S2 = match s { Left => Right; Right => Left }
+
+fn is_nash(g: Game, p: Profile) : Bool =
+  match p {
+    Profile(s1, s2) =>
+      let here_1 = p1_payoff(g, s1, s2) in
+      let dev_1  = p1_payoff(g, flip1(s1), s2) in
+      let here_2 = p2_payoff(g, s1, s2) in
+      let dev_2  = p2_payoff(g, s1, flip2(s2)) in
+      if here_1 < dev_1 then false
+      else if here_2 < dev_2 then false
+      else true
+  }
+
+# ---- Find all pure-strategy Nash equilibria --------------------------------
+
+fn all_profiles() : List<Profile> =
+  [Profile(Top, Left), Profile(Top, Right),
+   Profile(Bottom, Left), Profile(Bottom, Right)]
+
+fn equilibria(g: Game) : List<Profile> =
+  filter(all_profiles(), fn(p: Profile) -> is_nash(g, p))
+
+# ---- Pretty-printers -------------------------------------------------------
+
+fn show_s1(s: S1) : String = match s { Top => "T"; Bottom => "B" }
+fn show_s2(s: S2) : String = match s { Left => "L"; Right => "R" }
+
+fn show_profile(p: Profile) : String =
+  match p { Profile(a, b) => "(" ++ show_s1(a) ++ ", " ++ show_s2(b) ++ ")" }
+
+fn show_payoff(p: Payoff) : String =
+  match p {
+    Payoff(a, b) =>
+      "(" ++ int_to_string(a) ++ ", " ++ int_to_string(b) ++ ")"
+  }
+
+fn show_profiles(ps: List<Profile>) : String =
+  match ps {
+    []           => "(none — no pure-strategy equilibrium)";
+    [p, ...rest] =>
+      match rest {
+        []  => show_profile(p);
+        _   => show_profile(p) ++ ", " ++ show_profiles(rest)
+      }
+  }
+
+fn show_game(g: Game) : String =
+  match g {
+    Game(tl, tr, bl, br) =>
+      "       L          R\n" ++
+      "  T  " ++ show_payoff(tl) ++ "   " ++ show_payoff(tr) ++ "\n" ++
+      "  B  " ++ show_payoff(bl) ++ "   " ++ show_payoff(br)
+  }
+
+fn report(name: String, g: Game) : String !{IO} =
+  let _ = print("") in
+  let _ = print("=== " ++ name ++ " ===") in
+  let _ = print(show_game(g)) in
+  let eqs = equilibria(g) in
+  print("  Nash equilibria: " ++ show_profiles(eqs))
+
+# ---- The classic games -----------------------------------------------------
+
+# Prisoner's Dilemma:
+#       Cooperate    Defect
+#   C   ( 3,  3)    ( 0,  5)
+#   D   ( 5,  0)    ( 1,  1)
+# Unique NE: (Defect, Defect) — the dominant strategy outcome.
+let pd = Game(Payoff(3, 3), Payoff(0, 5), Payoff(5, 0), Payoff(1, 1))
+let _ = report("Prisoner's Dilemma", pd)
+
+# Stag Hunt:
+#       Stag    Hare
+#   S   (4, 4) (0, 3)
+#   H   (3, 0) (3, 3)
+# Two NE: (Stag, Stag) Pareto-dominant, (Hare, Hare) risk-dominant.
+let sh = Game(Payoff(4, 4), Payoff(0, 3), Payoff(3, 0), Payoff(3, 3))
+let _ = report("Stag Hunt", sh)
+
+# Battle of the Sexes:
+#       Opera   Football
+#   O   (2, 1)  (0, 0)
+#   F   (0, 0)  (1, 2)
+# Two NE: (Opera, Opera) and (Football, Football) — coordination problem.
+let bos = Game(Payoff(2, 1), Payoff(0, 0), Payoff(0, 0), Payoff(1, 2))
+let _ = report("Battle of the Sexes", bos)
+
+# Matching Pennies (zero-sum):
+#       Heads    Tails
+#   H   ( 1, -1) (-1,  1)
+#   T   (-1,  1) ( 1, -1)
+# No pure-strategy NE — only a mixed-strategy equilibrium at (½, ½).
+let mp = Game(Payoff(1, 0 - 1), Payoff(0 - 1, 1), Payoff(0 - 1, 1), Payoff(1, 0 - 1))
+let _ = report("Matching Pennies", mp)
+
+# Chicken:
+#       Swerve   Straight
+#   S   ( 0,  0) (-1,  1)
+#   T   ( 1, -1) (-9, -9)
+# Two NE: (Swerve, Straight) and (Straight, Swerve) — commitment matters.
+let ch = Game(Payoff(0, 0), Payoff(0 - 1, 1), Payoff(1, 0 - 1), Payoff(0 - 9, 0 - 9))
+let _ = report("Chicken", ch)
+
+"done"

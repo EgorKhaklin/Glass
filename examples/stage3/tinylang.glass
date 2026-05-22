@@ -1,0 +1,62 @@
+# =============================================================================
+# tinylang.glass — a tiny interpreter for an expression language,
+# written entirely in the subset of Glass that prism.glass implements.
+#
+# This file is read from disk by prism.glass, compiled through
+# prism.glass's pipeline, and run. The result is the output of a tinylang
+# program. Two levels of interpretation:
+#
+#   glass.py interprets prism.glass interprets tinylang interprets a program.
+#
+# tinylang itself supports: integers, booleans, addition, multiplication,
+# less-than, if-then-else. No closures, no let, no functions — just
+# enough to exercise prism.glass's ADT + pattern-matching + recursion
+# pipeline in the eval function.
+# =============================================================================
+
+type Expr =
+  | EInt(Int)
+  | EBool(Bool)
+  | EAdd(Expr, Expr)
+  | EMul(Expr, Expr)
+  | ELt(Expr, Expr)
+  | EIf(Expr, Expr, Expr)
+
+type Value =
+  | VInt(Int)
+  | VBool(Bool)
+
+fn as_int(v: Value) : Int =
+  match v {
+    VInt(n)  => n;
+    VBool(_) => 0
+  }
+
+fn as_bool(v: Value) : Bool =
+  match v {
+    VBool(b) => b;
+    VInt(_)  => false
+  }
+
+fn eval(e: Expr) : Value =
+  match e {
+    EInt(n)       => VInt(n);
+    EBool(b)      => VBool(b);
+    EAdd(a, b)    => VInt(as_int(eval(a)) + as_int(eval(b)));
+    EMul(a, b)    => VInt(as_int(eval(a)) * as_int(eval(b)));
+    ELt(a, b)     => VBool(as_int(eval(a)) < as_int(eval(b)));
+    EIf(c, t, e2) =>
+      if as_bool(eval(c)) then eval(t) else eval(e2)
+  }
+
+# A program: if (2 + 3) < (4 * 5) then (10 + 7) else 0
+# Expected: 17, because 5 < 20 is true.
+let prog =
+  EIf(
+    ELt(EAdd(EInt(2), EInt(3)), EMul(EInt(4), EInt(5))),
+    EAdd(EInt(10), EInt(7)),
+    EInt(0)
+  )
+
+let result = eval(prog)
+result

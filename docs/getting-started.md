@@ -7,8 +7,8 @@ This document walks you from a fresh clone to a working Glass program in five mi
 Glass requires Python 3.10+.
 
 ```bash
-git clone https://github.com/EgorKhaklin/Glass.git
-cd Glass
+git clone https://github.com/<you>/glass.git
+cd glass
 pip install -e .
 ```
 
