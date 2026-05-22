@@ -473,6 +473,6 @@ other licenses. See [`LICENSE`](LICENSE) for the dispatch.
 
 <div align="center">
 
-*Glass v1.0 — built on the principle that constraints can be load-bearing.*
+*Glass — built on the principle that constraints can be load-bearing.*
 
 </div>
