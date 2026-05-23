@@ -441,7 +441,7 @@ The cost is verbosity. The benefit is that six months later, when you come back 
 | Config-file parser library (real Glass code, `let*`+`let?`)            | **✓ v2.6**        |
 | Pattern destructuring in plain `let` (host + prism)                    | **✓ v2.7**        |
 | Markdown-to-HTML library in Glass (~340 lines)                         | **✓ v2.8**        |
-| Records alignment between host (nominal) and prism                     | **✓ v2.9** (retroactively confirmed; infra was already in place) |
+| Records alignment between host (nominal) and prism                     | **✓ v2.9**        |
 | Generic fn declarations in prism (`fn foo<A, B>(...)`)                 | **✓ v2.9**        |
 | Parameterized record literal type inference in prism                   | **✓ v2.11**       |
 | Refinements in prism (chunk 1: parsing + const-fold discharge)         | **✓ v2.12**       |
@@ -452,8 +452,8 @@ The cost is verbosity. The benefit is that six months later, when you come back 
 | Refinements in prism (runtime check insertion)                         | planned — v2.x    |
 | Refinement types — SMT-backed for full arithmetic / compound           | planned — v2.x    |
 | **Quartz: native compiler back-end** (Stage 5)                         | **planned — v3.0**|
-| Pane: query layer                                                      | planned — v3.x    |
-| Frost: ZK extension of Pane                                            | planned — v4.0    |
+| Pane: query layer                                                      | planned —         |
+| Frost: ZK extension of Pane                                            | planned —         |
 
 <br/>
 
