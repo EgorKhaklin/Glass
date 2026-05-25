@@ -7,6 +7,9 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [4.90.0] — 2026-05-25 — The prelude self-hosts
+- The entire standard prelude now compiles through the **self-hosted** compiler, not just the reference: `fst`, `snd`, `reverse`, `map_option`, `bind_option`, and `map_result` join `bind_result`/`string_contains` — all emitted by `glassc` (Pair field access, a `q_reverse` list walker, and closure-applying Option/Result mappers built on `q_apply1`). Every prelude function now runs identically on the interpreter, Quartz, and the self-hosted compiler. Bootstrap fixpoint byte-identical (963 lines of C, gen1 == gen2); suite 381/381.
+
 ## [4.89.0] — 2026-05-25 — Parser parity: reference ⟷ self-hosted front end
 - A parser-parity audit aligned the reference interpreter (`glass.py`) with the self-hosted front end (`prism`), so a program that runs on `glass` is one that self-hosts:
   - **chained comparison** (`a == b == c`) is now a parse error in the reference too — comparison operators don't associate; write `(a == b) == c`.
