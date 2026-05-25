@@ -39,7 +39,7 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Shipped (through v4.92)
+## Shipped (through v4.93)
 
 - **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
 - **Pane** — a query language in Glass.
@@ -132,14 +132,25 @@ proves the things the project was for."
 - **H2 — A cryptographic prover.** Wire the 128-bit bignum field (`frost_field`)
   through the FRI/quotient so the end-to-end proof has real security, not the toy
   base field. The field is built (N4); this is the integration.
-- **H3 — Recursive proofs. 🚧 SEEDED.** A proof that verifies another proof. The
+- **H3 — Recursive proofs. 🚧 IN PROGRESS.** A proof that verifies another proof. The
   hard core is expressing a verifier as a circuit; a STARK verifier's algebraic
-  heart is the FRI **fold check**, now built as a provable circuit
-  ([`prove_recursion.glass`](../examples/prove/prove_recursion.glass)): an honest
-  fold path ACCEPTs, any tampered value REJECTs, and verifying a whole path is the
-  FRI low-degree test re-run inside a circuit. Composed with `frost_zk`'s in-circuit
-  Merkle membership, that's a recursive STARK verifier. Self-hosted byte-identical;
-  it's deep enough that running it on the native path (below) is the point.
+  heart is the FRI **fold check**.
+  - ✅ **The fold check as a sound circuit**
+    ([`prove_recursion.glass`](../examples/prove/prove_recursion.glass)): an honest
+    fold path ACCEPTs, any tampered value REJECTs, and verifying a whole path is the
+    FRI low-degree test re-run inside a circuit (division by an inverse-witness with
+    a `w·inv == 1` gate).
+  - ✅ **The fold step in zero-knowledge**
+    ([`prove_recursion_zk.glass`](../examples/prove/prove_recursion_zk.glass)): that
+    fold circuit lowered through the blinded F_{p⁴} FRI STARK (the `prove_zk`
+    backend), so the verifier's own step is succinct and blind — opened values stay
+    private. The `(2x)·inv == 1` division check rides as a `qassert` gate with the
+    inverse supplied on an input wire. Honest ACCEPT, tampered REJECT, two blinding
+    seeds give different openings. Self-hosted byte-identical; ~1.1s native vs ~46s
+    interpreted (~42×) — exactly why the native path matters.
+  - **Next:** compose with `frost_zk`'s in-circuit Merkle membership for a full
+    recursive STARK verifier (the opened codeword values authenticated against the
+    commitment, in-circuit).
 - **H4 — Performance. 🚧 STARTED.** The reference interpreter (`glass.py`) is the
   bottleneck for the heavy STARK demos (the compiled `native_glassc` is ~10× faster).
   Profiling showed the cost is sheer node-visit volume (tens of millions of

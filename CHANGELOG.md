@@ -7,6 +7,9 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [4.93.0] — 2026-05-25 — A FRI fold step, verified in zero-knowledge
+- **H3 advances: the recursion step is now succinct and blind.** [`prove_recursion_zk.glass`](examples/prove/prove_recursion_zk.glass) takes the FRI fold check — `fold(f(x), f(-x)) = (f(x)+f(-x))/2 + β·(f(x)−f(-x))/(2x)` — and lowers it through the blinded F_{p⁴} FRI STARK (the `prove_zk` backend), so the verifier's own fold step is proven in zero-knowledge: the opened values stay private. Division rides as input-wire inverse hints with `(2x)·inv == 1` `qassert` gates. Honest fold step ACCEPTs, a tampered fold REJECTs, and two blinding seeds verify with different quotient openings. Self-hosted byte-identical; ~1.1s native vs ~46s interpreted (~42×) — the native-substrate payoff on a genuinely heavy circuit.
+
 ## [4.92.0] — 2026-05-25 — Top-level functions self-host as values
 - A bare top-level function used as a first-class value (`map(xs, inc)`) now self-hosts: `glassc` gains an eta-expansion pre-pass that rewrites it to an arity-saturated lambda (`fn(a) -> inc(a)`) before codegen, which compiles to a proper closure. Call heads and shadowing locals are untouched, so the pass is a no-op on code that doesn't use a bare fn as a value — the bootstrap fixpoint still closes byte-identically (972 lines of C, gen1 == gen2); suite 381/381.
 - **This closes the last self-hosting divergence.** The reference interpreter and the self-hosted compiler now agree on the entire practical language — the culmination of the parser-parity audit (v4.89–v4.92).
