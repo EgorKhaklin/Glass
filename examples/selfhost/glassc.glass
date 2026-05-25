@@ -860,13 +860,88 @@ fn print_stmt_for(rty: Type) : String =
 
 # --- program codegen ---------------------------------------------------------
 
+# --- eta-expand bare top-level-function references used as values ------------
+# `map(xs, inc)` uses `inc` as a VALUE, but the C backends only know how to
+# *call* a top-level fn — so a bare reference is rewritten into an arity-
+# saturated lambda `fn(a) -> inc(a)`, which compiles to a proper closure. Call
+# heads (`inc(x)`) and shadowing locals are left untouched, so this is a no-op
+# on code that doesn't use a bare fn as a value (the self-hosted core included).
+fn lam_arity(e: Expr) : Int =
+  match e { ELam(_, b) => 1 + lam_arity(b); ELamR(_, _, b) => 1 + lam_arity(b); _ => 0 }
+fn fn_arities(fns: List<FnDecl>) : List<Pair<String, Int>> =
+  match fns {
+    [] => [];
+    [FnDecl(nm, _, _, body), ...rest] => [Pair(nm, lam_arity(body))] ++ fn_arities(rest)
+  }
+fn arity_of(fns: List<Pair<String, Int>>, name: String) : Option<Int> =
+  match fns { [] => None; [Pair(n, a), ...rest] => if n == name then Some(a) else arity_of(rest, name) }
+fn eta_has(xs: List<String>, s: String) : Bool =
+  match xs { [] => false; [x, ...rest] => if x == s then true else eta_has(rest, s) }
+fn eta_build_app(h: Expr, args: List<Expr>) : Expr =
+  match args { [] => h; [a, ...rest] => eta_build_app(EApp(h, a), rest) }
+fn eta_args(i: Int, ar: Int) : List<Expr> =
+  if i >= ar then [] else [EVar("__eta" ++ int_to_string(i))] ++ eta_args(i + 1, ar)
+fn eta_lams(name: String, i: Int, ar: Int) : Expr =
+  if i >= ar then eta_build_app(EVar(name), eta_args(0, ar))
+  else ELam("__eta" ++ int_to_string(i), eta_lams(name, i + 1, ar))
+fn eta_make(name: String, ar: Int) : Expr =
+  if ar <= 0 then EVar(name) else eta_lams(name, 0, ar)
+fn eta(e: Expr, fns: List<Pair<String, Int>>, locals: List<String>) : Expr =
+  match e {
+    EVar(n) =>
+      if eta_has(locals, n) then EVar(n)
+      else match arity_of(fns, n) { Some(ar) => eta_make(n, ar); None => EVar(n) };
+    EApp(_, _) =>
+      let h : Expr = app_head(e) in
+      let h2 : Expr = match h { EVar(n) => EVar(n); _ => eta(h, fns, locals) } in
+      eta_build_app(h2, eta_list(app_args(e), fns, locals));
+    EAdd(a, b) => EAdd(eta(a, fns, locals), eta(b, fns, locals));
+    ESub(a, b) => ESub(eta(a, fns, locals), eta(b, fns, locals));
+    EMul(a, b) => EMul(eta(a, fns, locals), eta(b, fns, locals));
+    EDiv(a, b) => EDiv(eta(a, fns, locals), eta(b, fns, locals));
+    EMod(a, b) => EMod(eta(a, fns, locals), eta(b, fns, locals));
+    EConcat(a, b) => EConcat(eta(a, fns, locals), eta(b, fns, locals));
+    ELt(a, b) => ELt(eta(a, fns, locals), eta(b, fns, locals));
+    EGt(a, b) => EGt(eta(a, fns, locals), eta(b, fns, locals));
+    ELe(a, b) => ELe(eta(a, fns, locals), eta(b, fns, locals));
+    EGe(a, b) => EGe(eta(a, fns, locals), eta(b, fns, locals));
+    EEq(a, b) => EEq(eta(a, fns, locals), eta(b, fns, locals));
+    ENeq(a, b) => ENeq(eta(a, fns, locals), eta(b, fns, locals));
+    EAnd(a, b) => EAnd(eta(a, fns, locals), eta(b, fns, locals));
+    EOr(a, b) => EOr(eta(a, fns, locals), eta(b, fns, locals));
+    EUNot(a) => EUNot(eta(a, fns, locals));
+    EIf(c, t, f) => EIf(eta(c, fns, locals), eta(t, fns, locals), eta(f, fns, locals));
+    ELam(p, b) => ELam(p, eta(b, fns, [p] ++ locals));
+    ELamR(p, t, b) => ELamR(p, t, eta(b, fns, [p] ++ locals));
+    ELet(x, v, b) => ELet(x, eta(v, fns, locals), eta(b, fns, [x] ++ locals));
+    ELetRec(x, v, b) => ELetRec(x, eta(v, fns, [x] ++ locals), eta(b, fns, [x] ++ locals));
+    ERec(fields) => ERec(eta_fields(fields, fns, locals));
+    ENamedRec(nm, fields) => ENamedRec(nm, eta_fields(fields, fns, locals));
+    EField(r, f) => EField(eta(r, fns, locals), f);
+    ECtor(nm, args) => ECtor(nm, eta_list(args, fns, locals));
+    EMatch(s, arms) => EMatch(eta(s, fns, locals), eta_arms(arms, fns, locals));
+    ETuple(items) => ETuple(eta_list(items, fns, locals));
+    _ => e
+  }
+fn eta_list(es: List<Expr>, fns: List<Pair<String, Int>>, locals: List<String>) : List<Expr> =
+  match es { [] => []; [x, ...rest] => [eta(x, fns, locals)] ++ eta_list(rest, fns, locals) }
+fn eta_fields(fs: List<Pair<String, Expr>>, fns: List<Pair<String, Int>>, locals: List<String>) : List<Pair<String, Expr>> =
+  match fs { [] => []; [Pair(k, v), ...rest] => [Pair(k, eta(v, fns, locals))] ++ eta_fields(rest, fns, locals) }
+fn eta_arms(arms: List<Pair<Pattern, Expr>>, fns: List<Pair<String, Int>>, locals: List<String>) : List<Pair<Pattern, Expr>> =
+  match arms { [] => []; [Pair(pat, body), ...rest] => [Pair(pat, eta(body, fns, pat_vars(pat) ++ locals))] ++ eta_arms(rest, fns, locals) }
+fn eta_fns(fns_d: List<FnDecl>, fnset: List<Pair<String, Int>>) : List<FnDecl> =
+  match fns_d { [] => []; [FnDecl(nm, tp, ty, body), ...rest] => [FnDecl(nm, tp, ty, eta(body, fnset, []))] ++ eta_fns(rest, fnset) }
+
 fn gen_program(p: Program) : String =
   match p {
     Program(types, fns_raw, main) =>
-      let fns : List<FnDecl> = dedup_fns(fns_raw) in
+      let fns0 : List<FnDecl> = dedup_fns(fns_raw) in
+      let fnset : List<Pair<String, Int>> = fn_arities(fns0) in
+      let fns : List<FnDecl> = eta_fns(fns0, fnset) in
+      let emain : Expr = eta(main, fnset, []) in
       let rty : Type =
         match infer_main_type(p) { Ok(t) => t; Err(_) => TyInt } in
-      match gen_expr(main, [], "main") {
+      match gen_expr(emain, [], "main") {
         (sm, rm, lm) =>
           match gen_defs(fns) {
             Pair(defs, deflifted) =>

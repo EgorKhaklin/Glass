@@ -130,11 +130,11 @@ For a language designed around transparent local reasoning, this matters. The fe
 
 Three implementations are kept in lockstep by differential testing: the reference interpreter (`glass.py`), the Quartz C back end (`quartz.py`, which shares the reference's parser), and the self-hosted front end (`prism.glass`). [`dogfood.sh`](../examples/selfhost/dogfood.sh) checks that any file runs identically on `glass.py` and the self-hosted `native_glassc`.
 
-A parser-parity audit closed every case where they had drifted: the reference now **rejects chained comparisons** (`a == b == c`) and **uppercase value bindings** (matching prism); **both** sides accept **negative literals** (`-5`) and **fixed-length list patterns** (`[a, b]`); `prism` + `glassc` now parse and compile **record patterns** (`Point { x, y } => …`); and the **whole standard prelude** self-hosts (`fst`/`snd`/`reverse` and the `map_option`/`bind_option`/`map_result` family are all emitted by `glassc`). One known gap remains — an edge to be aware of, not an accident:
+A parser-parity audit closed **every** case where they had drifted: the reference now **rejects chained comparisons** (`a == b == c`) and **uppercase value bindings** (matching prism); **both** sides accept **negative literals** (`-5`) and **fixed-length list patterns** (`[a, b]`); `prism` + `glassc` parse and compile **record patterns** (`Point { x, y } => …`); the **whole standard prelude** self-hosts (`fst`/`snd`/`reverse` and the `map_option`/`bind_option`/`map_result` family); and a **bare top-level function used as a value** (`map(xs, inc)`) self-hosts via an eta-expansion pass in `glassc` that rewrites it to `fn(a) -> inc(a)` before codegen.
 
-- **A bare top-level function used as a first-class value** (`map(xs, inc)`) runs in the interpreter but *neither* C back end compiles it (both want a closure). Wrap it in a lambda — `map(xs, fn(x) -> inc(x))` — which both back ends handle.
+**The reference interpreter and the self-hosted compiler now agree on the entire practical language** — there are no known self-hosting divergences. (One auxiliary note: the Python *Quartz* backend still wants an explicit lambda for a bare fn-as-value; it shares the reference's parser and is used to bootstrap `glassc`, but doesn't carry the eta pass — and nothing in the bootstrap or test suite exercises that case.)
 
-Everything the test suite and `dogfood.sh` exercise stays on the agreed-upon subset; these notes are the boundary. The principle: **the self-hosted compiler implements a subset of the reference, and the dogfooded corpus lives inside it.**
+The principle held throughout: every layer is a reference semantics plus a compiler, and they must agree bit-for-bit — checked by `dogfood.sh` and the bootstrap fixpoint on every change.
 
 ---
 
