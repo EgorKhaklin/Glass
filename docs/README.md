@@ -1,5 +1,8 @@
 # Documentation
 
+### Start here
+- **[Glass, end to end](the-story.md)** — the whole arc in one read: one principle carried from a type signature to a zero-knowledge proof over private data. Every claim is a command you can run.
+
 ### Learn the language
 - [Getting started](getting-started.md) — install and first programs.
 - [A tour of the language](language-tour.md) — the feature walk-through.

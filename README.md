@@ -32,14 +32,17 @@ And that single idea — *transparency* — turns out to go further than anyone 
 > honest enough to stand on its own.
 >
 > ### It proves itself.
-> Built from scratch, in Glass: a **zero-knowledge prover**. Hand it a
-> computation, get back a cryptographic proof that it ran correctly and revealing
-> nothing else.
+> Built from scratch, in Glass: a **zero-knowledge prover**. Commit a private
+> dataset, ask it a question — *the total payroll, the headcount, the average
+> salary* — and get back a cryptographic proof of the answer that reveals the
+> commitment, the query, and the result, and **not a single row**.
 
 <br/>
 
 One principle, from a type signature all the way to a zero-knowledge proof:
 **you should never have to take the code's word for it.**
+
+→ **[Read the whole story, end to end](docs/the-story.md)** — every claim a command you can run.
 
 <br/>
 
@@ -68,6 +71,7 @@ cd Glass
 pip install -e .            # Python 3.10+, no other dependencies
 
 glass examples/basic/hello.glass
+glass examples/prove/prove_pane.glass   # prove queries over a private table, revealing no rows
 glass                        # or start the REPL
 ```
 
@@ -84,6 +88,8 @@ Prefer the browser? `python -m http.server` and open
 | **See what it can express** | [`examples/showcase/`](examples/showcase/) |
 | **Watch Glass compile itself** | [Self-hosting](docs/self-hosting.md) · [`examples/selfhost/`](examples/selfhost/) |
 | **See the zero-knowledge prover** | **[Frost — a zk-STARK in Glass](examples/frost/)** · [write Glass, get a proof](examples/prove/) |
+| **Prove a query over private data** | **[Pane ⊕ Frost — the founding payoff](examples/prove/prove_pane.glass)** · [in zero-knowledge](examples/prove/prove_query_zk.glass) |
+| **Read the whole story** | [Glass, end to end](docs/the-story.md) |
 | **Know where it's headed** | [Roadmap](docs/roadmap.md) |
 | **Read every example** | [`examples/`](examples/) |
 
