@@ -132,8 +132,14 @@ proves the things the project was for."
 - **H2 — A cryptographic prover.** Wire the 128-bit bignum field (`frost_field`)
   through the FRI/quotient so the end-to-end proof has real security, not the toy
   base field. The field is built (N4); this is the integration.
-- **H3 — Recursive proofs.** A proof that verifies another proof — aggregation,
-  the path to scalable and on-chain-style verification.
+- **H3 — Recursive proofs. 🚧 SEEDED.** A proof that verifies another proof. The
+  hard core is expressing a verifier as a circuit; a STARK verifier's algebraic
+  heart is the FRI **fold check**, now built as a provable circuit
+  ([`prove_recursion.glass`](../examples/prove/prove_recursion.glass)): an honest
+  fold path ACCEPTs, any tampered value REJECTs, and verifying a whole path is the
+  FRI low-degree test re-run inside a circuit. Composed with `frost_zk`'s in-circuit
+  Merkle membership, that's a recursive STARK verifier. Self-hosted byte-identical;
+  it's deep enough that running it on the native path (below) is the point.
 - **H4 — Performance. 🚧 STARTED.** The reference interpreter (`glass.py`) is the
   bottleneck for the heavy STARK demos (the compiled `native_glassc` is ~10× faster).
   Profiling showed the cost is sheer node-visit volume (tens of millions of

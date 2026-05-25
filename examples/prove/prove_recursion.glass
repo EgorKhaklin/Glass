@@ -1,0 +1,123 @@
+# =============================================================================
+# prove_recursion.glass — verifying a proof inside a proof (the recursion seed)
+#
+# A *recursive* proof is a proof that another proof verifies. Its hard core is
+# expressing a VERIFIER as a circuit. A STARK verifier's algebraic heart is the
+# FRI fold check: given a codeword opened at x and -x, the next layer's value
+# must equal
+#       fold(f(x), f(-x)) = (f(x)+f(-x))/2  +  beta·(f(x)-f(-x))/(2x).
+# This file builds that check as a circuit and proves it — "a proof that the FRI
+# fold step verified." Run it over a whole fold path and you've verified, inside
+# a circuit, that a codeword folds to a constant: the FRI low-degree test,
+# recursively. (The other half of a recursive verifier — authenticating the
+# opened values against the Merkle commitment in-circuit — is frost_zk's
+# membership gadget; composed, they are a recursive STARK verifier.)
+#
+# Division is by an inverse *witness* with a `w·inv == 1` gate (the circuit-
+# friendly way to divide). Honest fold path ACCEPTs; any tampered value REJECTs.
+# The fold path is deep enough that this is where moving off the interpreter
+# pays: run it with examples/selfhost/run_native.sh. Field 2^31-1; dogfoods.
+# =============================================================================
+
+fn fadd(a: Int, b: Int) : Int = (a + b) % 2147483647
+fn fmul(a: Int, b: Int) : Int = (a * b) % 2147483647
+fn fsub(a: Int, b: Int) : Int = ((a - b) % 2147483647 + 2147483647) % 2147483647
+fn fnorm(a: Int) : Int = (a % 2147483647 + 2147483647) % 2147483647
+fn fpow(base: Int, e: Int) : Int = if e == 0 then 1 else if e % 2 == 0 then let h : Int = fpow(base, e / 2) in fmul(h, h) else fmul(base, fpow(base, e - 1))
+fn finv(x: Int) : Int = fpow(x, 2147483645)
+fn sbox(x: Int) : Int = let x2 : Int = fmul(x, x) in let x4 : Int = fmul(x2, x2) in fmul(x4, x)
+fn rconst(i: Int) : Int = fnorm((i + 1) * (i + 1) * (i + 1) + i * 1009 + 1234567)
+fn mimc(x: Int, k: Int, i: Int) : Int = if i >= 16 then fadd(x, k) else mimc(sbox(fadd(fadd(x, k), rconst(i))), k, i + 1)
+fn hash2(a: Int, b: Int) : Int = fadd(fadd(mimc(a, b, 0), a), b)
+
+# --- the prove-bridge constraint system (with an assert gate) ----------------
+type Gate = | GConst(Int, Int) | GAdd(Int, Int, Int) | GSub(Int, Int, Int) | GMul(Int, Int, Int) | GAssertEq(Int, Int)
+type Build = | Build(Int, List<Gate>, List<Pair<Int, Int>>)
+fn assoc(vs: List<Pair<Int, Int>>, w: Int) : Int = match vs { [] => 0; [Pair(k, v), ...r] => if k == w then v else assoc(r, w) }
+fn b_fresh(b: Build) : (Int, Build) = match b { Build(n, gs, vs) => (n, Build(n + 1, gs, vs)) }
+fn b_emit(g: Gate, b: Build) : Build = match b { Build(n, gs, vs) => Build(n, [g] ++ gs, vs) }
+fn b_set(w: Int, v: Int, b: Build) : Build = match b { Build(n, gs, vs) => Build(n, gs, [Pair(w, v)] ++ vs) }
+fn b_val(b: Build, w: Int) : Int = match b { Build(n, gs, vs) => assoc(vs, w) }
+fn mk_const(c: Int, b: Build) : (Int, Build) = match b_fresh(b) { (w, b1) => (w, b_set(w, fnorm(c), b_emit(GConst(w, fnorm(c)), b1))) }
+fn mk_add(a: Int, bw: Int, b: Build) : (Int, Build) = match b_fresh(b) { (o, b1) => (o, b_set(o, fadd(b_val(b1, a), b_val(b1, bw)), b_emit(GAdd(o, a, bw), b1))) }
+fn mk_mul(a: Int, bw: Int, b: Build) : (Int, Build) = match b_fresh(b) { (o, b1) => (o, b_set(o, fmul(b_val(b1, a), b_val(b1, bw)), b_emit(GMul(o, a, bw), b1))) }
+fn mk_sub(a: Int, bw: Int, b: Build) : (Int, Build) = match b_fresh(b) { (o, b1) => (o, b_set(o, fsub(b_val(b1, a), b_val(b1, bw)), b_emit(GSub(o, a, bw), b1))) }
+# division gadget: an inverse WITNESS for wire w, with w·inv == 1 asserted.
+fn mk_inv(w: Int, b: Build) : (Int, Build) =
+  let v : Int = b_val(b, w) in let iv : Int = if v == 0 then 0 else finv(v) in
+  match b_fresh(b) { (wi, b1) => let b2 : Build = b_set(wi, iv, b1) in
+    match mk_mul(w, wi, b2) { (wp, b3) => match mk_const(1, b3) { (w1, b4) => (wi, b_emit(GAssertEq(wp, w1), b4)) } } }
+fn residual(g: Gate, vs: List<Pair<Int, Int>>) : Int =
+  match g { GConst(o, c) => fsub(assoc(vs, o), fnorm(c)); GAdd(o, a, b) => fsub(assoc(vs, o), fadd(assoc(vs, a), assoc(vs, b)));
+    GSub(o, a, b) => fsub(assoc(vs, o), fsub(assoc(vs, a), assoc(vs, b))); GMul(o, a, b) => fsub(assoc(vs, o), fmul(assoc(vs, a), assoc(vs, b)));
+    GAssertEq(a, b) => fsub(assoc(vs, a), assoc(vs, b)) }
+fn ordered_w(vs: List<Pair<Int, Int>>, i: Int, n: Int) : List<Int> = if i >= n then [] else [assoc(vs, i)] ++ ordered_w(vs, i + 1, n)
+fn rlc(gates: List<Gate>, vs: List<Pair<Int, Int>>, r: Int, rpow: Int) : Int = match gates { [] => 0; [g, ...rest] => fadd(fmul(rpow, residual(g, vs)), rlc(rest, vs, r, fmul(rpow, r))) }
+fn hash_fold(xs: List<Int>, acc: Int) : Int = match xs { [] => acc; [x, ...r] => hash_fold(r, hash2(acc, x)) }
+fn prove_ok(gates: List<Gate>, vs: List<Pair<Int, Int>>, n: Int) : Bool = rlc(gates, vs, hash2(hash_fold(ordered_w(vs, 0, n), 0), 777), 1) == 0
+
+# --- the FRI fold, as reference and as a circuit -----------------------------
+# reference fold: what the verifier expects the next layer's value to be.
+fn ref_fold(fx: Int, fmx: Int, x: Int, beta: Int) : Int =
+  fadd(fmul(fadd(fx, fmx), finv(2)),
+       fmul(beta, fmul(fsub(fx, fmx), finv(fmul(2, x)))))
+# the same fold, emitted as gates over wires (fx, fmx, x, beta) -> folded wire.
+fn fold_step(wfx: Int, wfmx: Int, wx: Int, wbeta: Int, b: Build) : (Int, Build) =
+  match mk_add(wfx, wfmx, b) { (wsum, b1) => match mk_sub(wfx, wfmx, b1) { (wdiff, b2) =>
+  match mk_const(finv(2), b2) { (winv2, b3) => match mk_mul(wsum, winv2, b3) { (weven, b4) =>
+  match mk_add(wx, wx, b4) { (w2x, b5) => match mk_inv(w2x, b5) { (winv2x, b6) =>
+  match mk_mul(wdiff, winv2x, b6) { (wq, b7) => match mk_mul(wbeta, wq, b7) { (wodd, b8) =>
+  mk_add(weven, wodd, b8) } } } } } } } }
+
+# --- one fold-check circuit: verify fold(fx,fmx,x,beta) == claimed -----------
+type Step = | Step(Int, Int, Int, Int, Int)   # fx, fmx, x, beta, claimed-next
+fn build_one(s: Step) : Build =
+  match s { Step(fx, fmx, x, beta, claimed) =>
+    let b0 : Build = Build(4, [], [Pair(0, fnorm(fx)), Pair(1, fnorm(fmx)), Pair(2, fnorm(x)), Pair(3, fnorm(beta))]) in
+    match fold_step(0, 1, 2, 3, b0) { (wf, b1) =>
+      match mk_const(claimed, b1) { (wc, b2) => b_emit(GAssertEq(wf, wc), b2) } } }
+
+# --- a whole fold PATH: verify every step of a FRI query, in one circuit -----
+# wires 0..4k-1 hold the k steps' (fx,fmx,x,beta); each fold is asserted equal
+# to that step's claimed-next. Verifying all of them = verifying the codeword
+# folds correctly down the FRI layers for this query — recursion, in a circuit.
+fn flat_steps(steps: List<Step>) : List<Int> = match steps { [] => []; [Step(fx, fmx, x, beta, c), ...r] => [fnorm(fx), fnorm(fmx), fnorm(x), fnorm(beta)] ++ flat_steps(r) }
+fn vs_of(xs: List<Int>, i: Int) : List<Pair<Int, Int>> = match xs { [] => []; [x, ...r] => [Pair(i, x)] ++ vs_of(r, i + 1) }
+fn claims_of(steps: List<Step>) : List<Int> = match steps { [] => []; [Step(fx, fmx, x, beta, c), ...r] => [c] ++ claims_of(r) }
+fn path_go(i: Int, n: Int, claims: List<Int>, b: Build) : Build =
+  if i >= n then b
+  else match fold_step(4 * i, 4 * i + 1, 4 * i + 2, 4 * i + 3, b) { (wf, b1) =>
+    match mk_const(nth_claim(claims, i), b1) { (wc, b2) => path_go(i + 1, n, claims, b_emit(GAssertEq(wf, wc), b2)) } }
+fn nth_claim(cs: List<Int>, i: Int) : Int = match cs { [] => 0; [c, ...r] => if i == 0 then c else nth_claim(r, i - 1) }
+fn nsteps(steps: List<Step>) : Int = match steps { [] => 0; [s, ...r] => 1 + nsteps(r) }
+fn build_path(steps: List<Step>) : Build =
+  let flat : List<Int> = flat_steps(steps) in let k : Int = nsteps(steps) in
+  let b0 : Build = Build(4 * k, [], vs_of(flat, 0)) in
+  path_go(0, k, claims_of(steps), b0)
+fn prove_path(steps: List<Step>) : Bool = match build_path(steps) { Build(n, gates, vs) => prove_ok(gates, vs, n) }
+
+# build an honest step from (fx, fmx, x, beta): claimed = the real fold.
+fn mkstep(fx: Int, fmx: Int, x: Int, beta: Int) : Step = Step(fx, fmx, x, beta, ref_fold(fx, fmx, x, beta))
+fn tamper(s: Step) : Step = match s { Step(fx, fmx, x, beta, c) => Step(fx, fmx, x, beta, fadd(c, 1)) }
+
+# --- demo --------------------------------------------------------------------
+fn show_a(b: Bool) : String = if b then "ACCEPT" else "REJECT"
+let s1 : Step = mkstep(100, 40, 7, 918273645)
+let path : List<Step> = [mkstep(100, 40, 7, 12345), mkstep(250, 80, 49, 67890), mkstep(900, 16, 2401, 31415), mkstep(123, 456, 9, 271828)]
+
+let _ : String = print("--- prove_recursion.glass: a verifier inside a circuit (the recursion seed) ---")
+let _ : String = print("the FRI fold check fold(f(x),f(-x)) = (sum)/2 + beta(diff)/(2x), as a provable circuit")
+let _ : String = print("")
+let _ : String = print("one fold step, honest:    " ++ show_a(prove_path([s1])))
+let _ : String = print("one fold step, tampered:  " ++ show_a(prove_path([tamper(s1)])) ++ "  (folded != claimed => REJECT)")
+let _ : String = print("")
+let _ : String = print("a whole 4-layer fold path (a FRI query verified in-circuit):")
+let _ : String = print("  honest path:    " ++ show_a(prove_path(path)))
+let _ : String = print("  one step faked: " ++ show_a(prove_path([nth_step(path, 0), tamper(nth_step(path, 1)), nth_step(path, 2), nth_step(path, 3)])))
+let _ : String = print("")
+let _ : String = print("a proof that the FRI fold path verified: the algebraic core of a recursive STARK verifier.")
+let _ : String = print("compose with frost_zk's in-circuit Merkle membership for a full recursive verifier.")
+
+fn nth_step(steps: List<Step>, i: Int) : Step = match steps { [] => Step(0, 0, 1, 0, 0); [s, ...r] => if i == 0 then s else nth_step(r, i - 1) }
+
+"prove_recursion v0.1 — the FRI fold verifier, expressed as a provable circuit (recursion's hard core)"
