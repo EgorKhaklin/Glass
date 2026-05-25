@@ -126,6 +126,19 @@ For a language designed around transparent local reasoning, this matters. The fe
 
 ---
 
+## Known divergences (the honest edge)
+
+Three implementations are kept in lockstep by differential testing: the reference interpreter (`glass.py`), the Quartz C back end (`quartz.py`, which shares the reference's parser), and the self-hosted front end (`prism.glass`). [`dogfood.sh`](../examples/selfhost/dogfood.sh) checks that any file runs identically on `glass.py` and the self-hosted `native_glassc`.
+
+A parser-parity audit closed several cases where they had drifted: the reference now **rejects chained comparisons** (`a == b == c`) and **uppercase value bindings** (matching prism), and **both** sides accept **negative literals** (`-5`) and **fixed-length list patterns** (`[a, b]`). Two known gaps remain — edges to be aware of, not accidents:
+
+- **Record patterns in `match`** (`Point { x, y } => …`) run in the interpreter and compile through Quartz, but `prism` doesn't parse them yet, so they don't self-host. In self-hosted code, bind the value with a plain pattern and read fields with `.field`.
+- **A bare top-level function used as a first-class value** (`map(xs, inc)`) runs in the interpreter but *neither* C back end compiles it (both want a closure). Wrap it in a lambda — `map(xs, fn(x) -> inc(x))` — which both back ends handle.
+
+Everything the test suite and `dogfood.sh` exercise stays on the agreed-upon subset; these two notes are the boundary.
+
+---
+
 ## See also
 
 - [`../examples/selfhost/prism.glass`](../examples/selfhost/prism.glass) — the full implementation
