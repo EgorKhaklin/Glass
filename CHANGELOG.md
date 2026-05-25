@@ -7,6 +7,10 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [4.92.0] — 2026-05-25 — Top-level functions self-host as values
+- A bare top-level function used as a first-class value (`map(xs, inc)`) now self-hosts: `glassc` gains an eta-expansion pre-pass that rewrites it to an arity-saturated lambda (`fn(a) -> inc(a)`) before codegen, which compiles to a proper closure. Call heads and shadowing locals are untouched, so the pass is a no-op on code that doesn't use a bare fn as a value — the bootstrap fixpoint still closes byte-identically (972 lines of C, gen1 == gen2); suite 381/381.
+- **This closes the last self-hosting divergence.** The reference interpreter and the self-hosted compiler now agree on the entire practical language — the culmination of the parser-parity audit (v4.89–v4.92).
+
 ## [4.91.0] — 2026-05-25 — Record patterns self-host
 - Record patterns in `match` (`Point { x, y } => …`) now parse in `prism` and compile through `glassc` — they previously ran on the reference interpreter and Quartz but not the self-hosted native compiler. With this, the parser-parity audit has closed **every practical divergence**: the reference, Quartz, and the self-hosted compiler now agree on the whole language. Bootstrap fixpoint byte-identical (972 lines of C, gen1 == gen2); suite 381/381.
 
