@@ -1171,10 +1171,12 @@ class Parser:
             if self.accept("RBRACK"):
                 return Pattern("nil")
             heads = [self.parse_pattern()]
-            # Multi-head support: [h1, h2, h3, ...t] is sugar for nested cons.
-            # Each comma separates either another head or the ellipsis.
-            tail: Pattern
-            while True:
+            # `[h1, .., hn]` is a fixed-length list (tail = nil); `[h1, .., hn, ...t]`
+            # binds the rest to t. Both desugar to right-nested cons. Fixed-length
+            # support matches prism, which accepts `[a, b]` — the reference used to
+            # require the `...t` ellipsis and reject `[a, b]`.
+            tail: Pattern = Pattern("nil")
+            while self.peek().kind == "COMMA":
                 self.eat("COMMA")
                 if self.accept("ELLIPSIS"):
                     tail = self.parse_pattern()
