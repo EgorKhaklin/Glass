@@ -48,7 +48,9 @@ fi
 # 4. self-hosted compiler: compile /tmp/in.glass -> /tmp/glassc_bin, run it
 cp "$SRC" /tmp/in.glass
 rm -f /tmp/glassc_bin
-"$GLASSC" >/dev/null 2>&1 || { echo "DOGFOOD FAIL ($FILE): native compile error"; exit 1; }
+"$GLASSC" >/dev/null 2>&1 || true
+# glassc exits 0 even when cc fails, so check the binary was actually produced
+[ -x /tmp/glassc_bin ] || { echo "DOGFOOD FAIL ($FILE): native compile error (no binary; run native_glassc to see cc errors)"; exit 1; }
 /tmp/glassc_bin 2>/dev/null | sed '$d' > "$T/native.out" || true   # drop the auto-printed final value
 
 # 5. compare

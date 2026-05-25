@@ -7,6 +7,11 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [4.84.0] — 2026-05-25 — A 128-bit bignum field, a hardened runtime, and a written semantics
+- A **production-width field**: a 128-bit prime (2¹²⁸ − 159) built from base-2¹⁶ bignum limbs — arithmetic that overflows a single int64 now works limb-by-limb, and self-hosts byte-for-byte. (`examples/frost/frost_field`)
+- **Hardened the native runtime**: the emitted `run_command` uses process-unique temp files with cleanup (no more fixed-`/tmp` clobber); the bootstrap fixpoint still closes byte-identically.
+- **Tooling**: `dogfood.sh` runs the self-host differential check in one command, and `docs/semantics.md` writes down Glass's big-step operational semantics.
+
 ## [4.83.0] — 2026-05-25 — Structured match, a unified bridge, and self-host tooling
 - The prove bridge compiles structured **`match` on ADTs** — a value becomes a `(tag, fields…)` wire-tuple, dispatched by tag and bound by field. (`examples/prove/prove_adt`)
 - A **unified front end** proves real multi-function Glass programs — function calls, `match`, `if`, `==`, and arithmetic all interacting. (`examples/prove/prove_full`)

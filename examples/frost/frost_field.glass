@@ -1,0 +1,94 @@
+# =============================================================================
+# frost_field.glass — a production-width field via bignum limbs (N4)
+#
+# Frost's fields packed each element into ONE int64, capping the prime near
+# 2^31. A cryptographic STARK wants a ~128-bit+ prime — but a single multiply of
+# two ~2^64 values overflows int64 (the "int64 wall"). The fix is bignum: a field
+# element is a list of base-2^16 LIMBS, so every limb product (2^16 · 2^16 = 2^32)
+# and the carry sums stay well inside int64. This builds that, mod the 128-bit
+# prime  p = 2^128 - 159, with fast pseudo-Mersenne reduction (2^128 ≡ 159).
+#
+# Limbs are little-endian (index 0 = least significant); numbers are canonical
+# (no high zero limbs). All arithmetic uses only int64-safe steps, so it DOGFOODS
+# — native_glassc (int64) and glass.py agree, proving the wall is genuinely
+# lifted, not just hidden by Python's big ints.
+#
+# Verified the checkable way: 2^128 ≡ 159 (mod p), so (2^64)^2 mod p must be 159;
+# plus the field laws a·1 = a, a+0 = a, and distributivity (a+b)·c = a·c + b·c.
+# =============================================================================
+
+fn lmod(x: Int) : Int = x % 65536
+fn ldiv(x: Int) : Int = x / 65536
+# local reverse (the builtin `reverse` isn't emitted by glassc; keep self-hosting)
+fn rev_go(xs: List<Int>, acc: List<Int>) : List<Int> = match xs { [] => acc; [h, ...t] => rev_go(t, [h] ++ acc) }
+fn rev(xs: List<Int>) : List<Int> = rev_go(xs, [])
+
+# strip high zero limbs -> canonical form
+fn drop_zeros(xs: List<Int>) : List<Int> = match xs { [] => []; [h, ...t] => if h == 0 then drop_zeros(t) else xs }
+fn trim(xs: List<Int>) : List<Int> = rev(drop_zeros(rev(xs)))
+
+# add with carry (handles unequal lengths)
+fn addc(a: List<Int>, b: List<Int>, carry: Int) : List<Int> =
+  match a {
+    [] => match b { [] => if carry == 0 then [] else [carry]; [hb, ...tb] => let s : Int = hb + carry in [lmod(s)] ++ addc([], tb, ldiv(s)) };
+    [ha, ...ta] => match b { [] => let s : Int = ha + carry in [lmod(s)] ++ addc(ta, [], ldiv(s)); [hb, ...tb] => let s : Int = ha + hb + carry in [lmod(s)] ++ addc(ta, tb, ldiv(s)) }
+  }
+fn bn_add(a: List<Int>, b: List<Int>) : List<Int> = trim(addc(a, b, 0))
+
+# multiply a limb-list by a small scalar k (k small enough that k·limb + carry fits)
+fn smul(xs: List<Int>, k: Int, carry: Int) : List<Int> =
+  match xs { [] => if carry == 0 then [] else [carry]; [h, ...t] => let p : Int = h * k + carry in [lmod(p)] ++ smul(t, k, ldiv(p)) }
+fn shift(xs: List<Int>, n: Int) : List<Int> = if n <= 0 then xs else [0] ++ shift(xs, n - 1)
+# schoolbook multiply
+fn mul_go(a: List<Int>, b: List<Int>, i: Int) : List<Int> =
+  match b { [] => []; [hb, ...tb] => bn_add(shift(smul(a, hb, 0), i), mul_go(a, tb, i + 1)) }
+fn bn_mul(a: List<Int>, b: List<Int>) : List<Int> = trim(mul_go(a, b, 0))
+
+# compare trimmed bignums: -1 / 0 / 1
+fn cmp_hi(a: List<Int>, b: List<Int>) : Int = match a { [] => 0; [ha, ...ta] => match b { [] => 0; [hb, ...tb] => if ha == hb then cmp_hi(ta, tb) else (if ha < hb then 0 - 1 else 1) } }
+fn bn_cmp(a: List<Int>, b: List<Int>) : Int =
+  let ta : List<Int> = trim(a) in let tb : List<Int> = trim(b) in
+  if len(ta) == len(tb) then cmp_hi(rev(ta), rev(tb)) else (if len(ta) < len(tb) then 0 - 1 else 1)
+# subtract (a >= b) with borrow
+fn subb(a: List<Int>, b: List<Int>, borrow: Int) : List<Int> =
+  match a { [] => [];
+    [ha, ...ta] => match b {
+      [] => let d : Int = ha - borrow in if d < 0 then [d + 65536] ++ subb(ta, [], 1) else [d] ++ subb(ta, [], 0);
+      [hb, ...tb] => let d : Int = ha - hb - borrow in if d < 0 then [d + 65536] ++ subb(ta, tb, 1) else [d] ++ subb(ta, tb, 0) } }
+fn bn_sub(a: List<Int>, b: List<Int>) : List<Int> = trim(subb(a, b, 0))
+
+fn take(xs: List<Int>, n: Int) : List<Int> = if n <= 0 then [] else match xs { [] => []; [h, ...t] => [h] ++ take(t, n - 1) }
+fn drop(xs: List<Int>, n: Int) : List<Int> = if n <= 0 then xs else match xs { [] => []; [h, ...t] => drop(t, n - 1) }
+# p = 2^128 - 159  (8 limbs: low limb 65535-158, the rest 65535)
+fn pp(d: Int) : List<Int> = [65377, 65535, 65535, 65535, 65535, 65535, 65535, 65535]
+# reduce mod p: fold the part above 2^128 back in via 2^128 ≡ 159, then one subtract
+fn bn_mod_p(a: List<Int>) : List<Int> =
+  let t : List<Int> = trim(a) in
+  if len(t) > 8 then bn_mod_p(bn_add(take(t, 8), smul(drop(t, 8), 159, 0)))
+  else if bn_cmp(t, pp(0)) >= 0 then bn_sub(t, pp(0)) else t
+
+fn fadd(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_add(a, b))
+fn fmul(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_mul(a, b))
+fn bn_eq(a: List<Int>, b: List<Int>) : Bool = bn_cmp(a, b) == 0
+
+fn show(xs: List<Int>) : String = match trim(xs) { [] => "0"; [h, ...t] => match t { [] => int_to_string(h); _ => int_to_string(h) ++ "+…(" ++ int_to_string(len(trim(xs))) ++ " limbs)" } }
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+
+# --- demo --------------------------------------------------------------------
+let two64 : List<Int> = [0, 0, 0, 0, 1]                 # 2^64
+let a : List<Int> = [12345, 6789, 4242]
+let b : List<Int> = [111, 222, 333, 444]
+let c : List<Int> = [7, 8, 9]
+
+let _ : String = print("--- frost_field.glass: a 128-bit field via bignum limbs (lifting the int64 wall) ---")
+let _ : String = print("p = 2^128 - 159, base-2^16 limbs.  a 128-bit MULTIPLY would overflow int64 — limbs don't.")
+let _ : String = print("")
+let _ : String = print("(2^64)^2 mod p  = " ++ show(fmul(two64, two64)) ++ "   (2^128 ≡ 159, so expect 159): " ++ show_b(bn_eq(fmul(two64, two64), [159])))
+let _ : String = print("a · 1 == a:                         " ++ show_b(bn_eq(fmul(a, [1]), a)))
+let _ : String = print("a + 0 == a:                         " ++ show_b(bn_eq(fadd(a, []), a)))
+let _ : String = print("distributivity (a+b)·c == a·c+b·c:  " ++ show_b(bn_eq(fmul(fadd(a, b), c), fadd(fmul(a, c), fmul(b, c)))))
+let _ : String = print("")
+let _ : String = print("a real 128-bit field, all arithmetic int64-safe (dogfoods). widen the limb count")
+let _ : String = print("for 256-bit; this is the production-field path past the single-int64 cap.")
+
+"frost field v0.1 (N4) — bignum (base-2^16 limb) field mod 2^128-159: a cryptographic-width field in int64"

@@ -6,6 +6,7 @@
 - [The REPL](repl.md) — interactive sessions.
 - [The browser playground](playground.md) — run Glass with no install.
 - [Language specification](../LANG.md) — the full reference.
+- [Operational semantics](semantics.md) — the explicit big-step rules (what a program *means*).
 
 ### How Glass is built
 - [Self-hosting](self-hosting.md) — Glass compiling Glass, and the bootstrap fixpoint.

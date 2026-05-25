@@ -1,4 +1,4 @@
-"""Quartz: native C compiler back-end for Glass (v4.83).
+"""Quartz: native C compiler back-end for Glass (v4.84).
 
 Takes a parsed + typed Glass program and emits C source. Invokes the
 system C compiler to produce a native binary that, when run, prints
@@ -2160,6 +2160,7 @@ def compile_program(decls: list, checker=None) -> str:
         "#include <stdint.h>",
         "#include <string.h>",
         "#include <stdbool.h>",
+        "#include <unistd.h>",
         "",
         "/* Quartz runtime — algebraic values, string concat. */",
         "typedef struct q_value {",
@@ -2300,12 +2301,15 @@ def compile_program(decls: list, checker=None) -> str:
         "\" %s\", arg);",
         "        a = (q_value_t*)(intptr_t)a->fields[1];",
         "    }",
-        "    snprintf(line + pos, sizeof(line) - pos, "
-        "\" > /tmp/qrc_out 2> /tmp/qrc_err\");",
+        "    char outp[64], errp[64];",
+        "    snprintf(outp, sizeof(outp), \"/tmp/qrc_out_%d\", (int)getpid());",
+        "    snprintf(errp, sizeof(errp), \"/tmp/qrc_err_%d\", (int)getpid());",
+        "    snprintf(line + pos, sizeof(line) - pos, \" > %s 2> %s\", outp, errp);",
         "    int rc = system(line);",
         "    int code = (rc == -1) ? -1 : ((rc >> 8) & 0xFF);",
-        "    char* out = quartz__slurp(\"/tmp/qrc_out\");",
-        "    char* err = quartz__slurp(\"/tmp/qrc_err\");",
+        "    char* out = quartz__slurp(outp);",
+        "    char* err = quartz__slurp(errp);",
+        "    unlink(outp); unlink(errp);",
         "    q_value_t* tup = q_ctor_alloc(0, 3, (int64_t)code, "
         "(int64_t)(intptr_t)out, (int64_t)(intptr_t)err);",
         "    return q_ctor_alloc(ok_tag, 1, (int64_t)(intptr_t)tup);",
