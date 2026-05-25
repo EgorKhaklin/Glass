@@ -1,5 +1,5 @@
 """
-Glass v4.81 — reference implementation.
+Glass v4.82 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -1802,7 +1802,10 @@ class TypeChecker:
         if isinstance(e, BoolLit):   return TyBool()
         if isinstance(e, Ident):
             if e.name not in env:
-                raise TypeError_(f"unbound identifier {e.name!r}")
+                hint = (" (names starting with an uppercase letter are treated as "
+                        "constructors; variables and parameters must be lowercase)"
+                        if e.name[:1].isupper() else "")
+                raise TypeError_(f"unbound identifier {e.name!r}{hint}")
             # Polymorphic identifiers (builtins, constructors, generic fns)
             # get fresh TyVars AND fresh effect-row vars at each use so
             # multiple uses don't share variables.
@@ -2082,7 +2085,10 @@ class TypeChecker:
         if p.kind == "tuple":
             scrut_b = base_of(scrut_ty)
             if not isinstance(scrut_b, TyTuple):
-                raise TypeError_(f"tuple pattern against {scrut_ty}")
+                raise TypeError_(
+                    f"tuple pattern against {scrut_ty} — to destructure an ADT "
+                    f"like Pair, use a constructor pattern, e.g. Pair(a, b), not a "
+                    f"tuple pattern (a, b)")
             args = p.args or []
             if len(args) != len(scrut_b.items):
                 raise TypeError_(
@@ -3378,7 +3384,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v4.81 — interactive REPL")
+    print("Glass v4.82 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3489,6 +3495,8 @@ def main() -> None:
     filename it runs that file."""
     if len(sys.argv) == 1:
         repl()
+    elif sys.argv[1] in ("--version", "-V"):
+        print("Glass 4.82.0")
     else:
         with open(sys.argv[1]) as f:
             src = f.read()

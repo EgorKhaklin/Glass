@@ -1,0 +1,122 @@
+# =============================================================================
+# prove_stark.glass — closing the loop, Stage 1: the PLONK arithmetization
+#
+# GOAL (roadmap N1): make "write Glass -> get a SUCCINCT, ZERO-KNOWLEDGE proof"
+# literally true. prove_glass compiles Glass source to a circuit but proves it
+# with the simpler RLC protocol (verifier sees the witness). To get a succinct
+# zk-STARK we must lower the circuit into a form a STARK can prove — a TRACE with
+# LOCAL per-row constraints — then quotient + FRI it. That lowering is the
+# PLONK arithmetization. This file is its first stage.
+#
+# THE LAYOUT. A circuit is gates over arbitrary wires. Lay it out as a trace:
+# one ROW per gate, with columns
+#     qadd qmul qsub qconst   (SELECTORS — the circuit's public structure, 0/1)
+#     l r o                   (the gate's left/right-input and output VALUES)
+#     c                       (the constant, for GConst)
+# Then every gate becomes ONE LOCAL polynomial identity per row:
+#     qadd·(o-(l+r)) + qmul·(o-l·r) + qsub·(o-(l-r)) + qconst·(o-c) = 0
+# A valid witness makes every row's identity 0; any tampering makes some row ≠0.
+# This per-row identity is exactly what Stage 3 turns into a vanishing-on-the-
+# trace-domain polynomial, divides by Z to get the quotient, and FRI-proves.
+#
+# STILL TO COME: Stage 2 — copy constraints (the permutation argument, frost_perm)
+# that wire l/r/o to the right wire values without revealing them. Stage 3 —
+# interpolate the columns, build the combined quotient. Stage 4 — blind + commit
+# + FRI over F_{p^4} (frost_crypto). Baby Bear field; self-contained; dogfoods.
+# =============================================================================
+
+# --- field (Baby Bear, to align with the F_{p^4} FRI layer to come) ----------
+fn fadd(a: Int, b: Int) : Int = (a + b) % 2013265921
+fn fmul(a: Int, b: Int) : Int = (a * b) % 2013265921
+fn fsub(a: Int, b: Int) : Int = ((a - b) % 2013265921 + 2013265921) % 2013265921
+fn fnorm(a: Int) : Int = (a % 2013265921 + 2013265921) % 2013265921
+
+fn nth(xs: List<Int>, i: Int) : Int =
+  match xs { [] => 0; [x, ...r] => if i == 0 then x else nth(r, i - 1) }
+fn set_nth(xs: List<Int>, i: Int, v: Int) : List<Int> =
+  match xs { [] => []; [x, ...r] => if i == 0 then [v] ++ r else [x] ++ set_nth(r, i - 1, v) }
+fn ilen(xs: List<Int>) : Int = match xs { [] => 0; [x, ...r] => 1 + ilen(r) }
+
+# --- the circuit (a Glass arithmetic expression -> gates + witness) ----------
+type Gate = | GConst(Int, Int) | GAdd(Int, Int, Int) | GSub(Int, Int, Int) | GMul(Int, Int, Int)
+type Expr = | Var(Int) | Const(Int) | Add(Expr, Expr) | Sub(Expr, Expr) | Mul(Expr, Expr)
+type Build = | Build(Int, List<Gate>, List<Int>)
+
+# trace generation: each subexpression becomes a wire; inputs are wires 0..k-1.
+fn compile(e: Expr, b: Build) : (Int, Build) =
+  match e {
+    Var(i)   => (i, b);
+    Const(c) => match b { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GConst(n, c)], w ++ [fnorm(c)])) };
+    Add(x, y) => match compile(x, b) { (wx, b1) => match compile(y, b1) { (wy, b2) =>
+      match b2 { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GAdd(n, wx, wy)], w ++ [fadd(nth(w, wx), nth(w, wy))])) } } };
+    Sub(x, y) => match compile(x, b) { (wx, b1) => match compile(y, b1) { (wy, b2) =>
+      match b2 { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GSub(n, wx, wy)], w ++ [fsub(nth(w, wx), nth(w, wy))])) } } };
+    Mul(x, y) => match compile(x, b) { (wx, b1) => match compile(y, b1) { (wy, b2) =>
+      match b2 { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GMul(n, wx, wy)], w ++ [fmul(nth(w, wx), nth(w, wy))])) } } }
+  }
+fn compile_top(e: Expr, inputs: List<Int>) : (Int, Build) =
+  compile(e, Build(ilen(inputs), [], inputs))
+
+# --- the PLONK trace ---------------------------------------------------------
+# Row(qadd, qmul, qsub, qconst, l, r, o, c)
+type Row = | Row(Int, Int, Int, Int, Int, Int, Int, Int)
+
+fn gate_row(g: Gate, w: List<Int>) : Row =
+  match g {
+    GConst(o, c)  => Row(0, 0, 0, 1, 0, 0, nth(w, o), fnorm(c));
+    GAdd(o, a, b) => Row(1, 0, 0, 0, nth(w, a), nth(w, b), nth(w, o), 0);
+    GSub(o, a, b) => Row(0, 0, 1, 0, nth(w, a), nth(w, b), nth(w, o), 0);
+    GMul(o, a, b) => Row(0, 1, 0, 0, nth(w, a), nth(w, b), nth(w, o), 0)
+  }
+fn build_trace(gs: List<Gate>, w: List<Int>) : List<Row> =
+  match gs { [] => []; [g, ...rest] => [gate_row(g, w)] ++ build_trace(rest, w) }
+
+# the universal gate identity, per row (0 iff the gate is satisfied).
+fn gate_id(row: Row) : Int =
+  match row { Row(qa, qm, qs, qc, l, r, o, c) =>
+    fadd(fmul(qa, fsub(o, fadd(l, r))),
+    fadd(fmul(qm, fsub(o, fmul(l, r))),
+    fadd(fmul(qs, fsub(o, fsub(l, r))),
+         fmul(qc, fsub(o, c))))) }
+
+# every row's identity must be 0.
+fn all_rows_ok(trace: List<Row>) : Bool =
+  match trace { [] => true; [row, ...rest] => if gate_id(row) == 0 then all_rows_ok(rest) else false }
+fn rows_failing(trace: List<Row>) : Int =
+  match trace { [] => 0; [row, ...rest] => (if gate_id(row) == 0 then 0 else 1) + rows_failing(rest) }
+fn nrows(trace: List<Row>) : Int = match trace { [] => 0; [r, ...rest] => 1 + nrows(rest) }
+
+# --- demo --------------------------------------------------------------------
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+
+# f(x) = x*x + x + 5  (the prove.glass example), secret x = 3 -> 17
+let f : Expr = Add(Add(Mul(Var(0), Var(0)), Var(0)), Const(5))
+let secret : List<Int> = [3]
+
+let _ : String = print("--- prove_stark.glass: the PLONK arithmetization (closing the loop, Stage 1) ---")
+let _ : String = print("f(x) = x*x + x + 5,  secret x = 3")
+let _ : String = print("")
+let _ : String =
+  match compile_top(f, secret) { (out, bld) => match bld { Build(n, gates, w) =>
+    let trace : List<Row> = build_trace(gates, w) in
+    print("circuit -> PLONK trace: " ++ int_to_string(nrows(trace)) ++ " rows (one per gate), " ++
+          int_to_string(n) ++ " wires; output = " ++ int_to_string(nth(w, out))) } }
+
+# honest witness: every per-row gate identity is 0.
+let _ : String =
+  match compile_top(f, secret) { (out, bld) => match bld { Build(n, gates, w) =>
+    print("honest witness    -> all rows satisfy the gate identity: " ++
+          show_b(all_rows_ok(build_trace(gates, w)))) } }
+
+# tampered witness: corrupt the output wire -> some row's identity is nonzero.
+let _ : String =
+  match compile_top(f, secret) { (out, bld) => match bld { Build(n, gates, w) =>
+    let bad : List<Int> = set_nth(w, out, 99) in
+    print("tampered (out=99) -> rows failing the gate identity: " ++
+          int_to_string(rows_failing(build_trace(gates, bad))) ++ " (nonzero => detected)") } }
+
+let _ : String = print("")
+let _ : String = print("every gate is now ONE local per-row identity — the form a STARK can prove.")
+let _ : String = print("next: copy constraints (permutation), then the quotient, then FRI over F_{p^4}.")
+
+"prove_stark v0.1 (Stage 1) — circuit -> PLONK trace + local gate-selector identity"

@@ -1,0 +1,149 @@
+# =============================================================================
+# prove_quotient.glass — closing the loop, Stage 3: the gate-constraint quotient
+#
+# Stage 1 made every gate a LOCAL per-row identity over the columns
+# qadd qmul qsub qconst | l r o | c. This stage turns "all rows satisfy that
+# identity" into the single statement a STARK actually proves: "a certain
+# polynomial is LOW DEGREE."
+#
+# THE STEP. Interpolate each column over the trace domain D (the N-th roots of
+# unity, N a power of two ≥ #gates; short circuits are padded with no-op rows).
+# The gate identity then lifts to a polynomial
+#   G(x) = qadd(x)·(o-(l+r)) + qmul(x)·(o-l·r) + qsub(x)·(o-(l-r)) + qconst(x)·(o-c)
+# which VANISHES on all of D  ⟺  every gate is satisfied. A polynomial that
+# vanishes on D is divisible by the vanishing polynomial Z_H(x) = x^N − 1, so
+#   Q(x) = G(x) / Z_H(x)
+# is a genuine low-degree polynomial IFF the constraints hold. We evaluate Q on
+# a COSET (where Z_H ≠ 0) and run the FRI low-degree test (folding): honest →
+# Q folds to a constant; tamper any wire → G stops vanishing on D, Q is not a
+# polynomial, and the fold does NOT reach a constant.
+#
+# (The copy-constraint permutation from Stage 2 becomes a second quotient via a
+# running-product accumulator; Stage 4 commits + FRIs these over F_{p^4} with
+# blinding for the succinct, zero-knowledge proof.)
+#
+# Baby Bear field; reuses Stage-1 circuit + interpolation + folding. Dogfoods.
+# =============================================================================
+
+fn fadd(a: Int, b: Int) : Int = (a + b) % 2013265921
+fn fmul(a: Int, b: Int) : Int = (a * b) % 2013265921
+fn fsub(a: Int, b: Int) : Int = ((a - b) % 2013265921 + 2013265921) % 2013265921
+fn fnorm(a: Int) : Int = (a % 2013265921 + 2013265921) % 2013265921
+fn fpow(base: Int, e: Int) : Int =
+  if e == 0 then 1 else if e % 2 == 0 then let h : Int = fpow(base, e / 2) in fmul(h, h) else fmul(base, fpow(base, e - 1))
+fn finv(x: Int) : Int = fpow(x, 2013265919)
+fn root_of_unity(n: Int) : Int = fpow(31, 2013265920 / n)
+fn nth(xs: List<Int>, i: Int) : Int = match xs { [] => 0; [x, ...r] => if i == 0 then x else nth(r, i - 1) }
+fn set_nth(xs: List<Int>, i: Int, v: Int) : List<Int> =
+  match xs { [] => []; [x, ...r] => if i == 0 then [v] ++ r else [x] ++ set_nth(r, i - 1, v) }
+fn ilen(xs: List<Int>) : Int = match xs { [] => 0; [x, ...r] => 1 + ilen(r) }
+fn pad(xs: List<Int>, n: Int) : List<Int> = if ilen(xs) >= n then xs else pad(xs ++ [0], n)
+
+# --- polynomials: evaluate + interpolate (iNTT) + domains ---------------------
+fn powers(w: Int, cur: Int, k: Int) : List<Int> = if k <= 0 then [] else [cur] ++ powers(w, fmul(cur, w), k - 1)
+fn build_domain(n: Int) : List<Int> = powers(root_of_unity(n), 1, n)
+fn coset_domain(n: Int) : List<Int> = powers(root_of_unity(n), 31, n)
+fn poly_eval(coeffs: List<Int>, x: Int) : Int = match coeffs { [] => 0; [c, ...r] => fadd(c, fmul(x, poly_eval(r, x))) }
+fn intt_sum(ev: List<Int>, k: Int, j: Int, n: Int, wi: Int) : Int =
+  if j >= n then 0 else fadd(fmul(nth(ev, j), fpow(wi, (j * k) % n)), intt_sum(ev, k, j + 1, n, wi))
+fn interp_go(ev: List<Int>, k: Int, n: Int, wi: Int, ni: Int) : List<Int> =
+  if k >= n then [] else [fmul(ni, intt_sum(ev, k, 0, n, wi))] ++ interp_go(ev, k + 1, n, wi, ni)
+fn interpolate(ev: List<Int>) : List<Int> =
+  let n : Int = ilen(ev) in let w : Int = root_of_unity(n) in interp_go(ev, 0, n, finv(w), finv(n))
+
+# --- circuit (Stage 1 builder) -----------------------------------------------
+type Gate = | GConst(Int, Int) | GAdd(Int, Int, Int) | GSub(Int, Int, Int) | GMul(Int, Int, Int)
+type Expr = | Var(Int) | Const(Int) | Add(Expr, Expr) | Sub(Expr, Expr) | Mul(Expr, Expr)
+type Build = | Build(Int, List<Gate>, List<Int>)
+fn compile(e: Expr, b: Build) : (Int, Build) =
+  match e {
+    Var(i)   => (i, b);
+    Const(c) => match b { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GConst(n, c)], w ++ [fnorm(c)])) };
+    Add(x, y) => match compile(x, b) { (wx, b1) => match compile(y, b1) { (wy, b2) =>
+      match b2 { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GAdd(n, wx, wy)], w ++ [fadd(nth(w, wx), nth(w, wy))])) } } };
+    Sub(x, y) => match compile(x, b) { (wx, b1) => match compile(y, b1) { (wy, b2) =>
+      match b2 { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GSub(n, wx, wy)], w ++ [fsub(nth(w, wx), nth(w, wy))])) } } };
+    Mul(x, y) => match compile(x, b) { (wx, b1) => match compile(y, b1) { (wy, b2) =>
+      match b2 { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GMul(n, wx, wy)], w ++ [fmul(nth(w, wx), nth(w, wy))])) } } }
+  }
+fn compile_top(e: Expr, inputs: List<Int>) : (Int, Build) = compile(e, Build(ilen(inputs), [], inputs))
+
+# --- the eight trace columns (length = #gates, padded to N) ------------------
+fn sel_add(g: Gate) : Int = match g { GAdd(o, a, b) => 1; GConst(o, c) => 0; GSub(o, a, b) => 0; GMul(o, a, b) => 0 }
+fn sel_mul(g: Gate) : Int = match g { GMul(o, a, b) => 1; GConst(o, c) => 0; GAdd(o, a, b) => 0; GSub(o, a, b) => 0 }
+fn sel_sub(g: Gate) : Int = match g { GSub(o, a, b) => 1; GConst(o, c) => 0; GAdd(o, a, b) => 0; GMul(o, a, b) => 0 }
+fn sel_con(g: Gate) : Int = match g { GConst(o, c) => 1; GAdd(o, a, b) => 0; GSub(o, a, b) => 0; GMul(o, a, b) => 0 }
+fn cv(g: Gate) : Int = match g { GConst(o, c) => fnorm(c); GAdd(o, a, b) => 0; GSub(o, a, b) => 0; GMul(o, a, b) => 0 }
+fn lv(g: Gate, w: List<Int>) : Int = match g { GConst(o, c) => 0; GAdd(o, a, b) => nth(w, a); GSub(o, a, b) => nth(w, a); GMul(o, a, b) => nth(w, a) }
+fn rv(g: Gate, w: List<Int>) : Int = match g { GConst(o, c) => 0; GAdd(o, a, b) => nth(w, b); GSub(o, a, b) => nth(w, b); GMul(o, a, b) => nth(w, b) }
+fn ov(g: Gate, w: List<Int>) : Int = match g { GConst(o, c) => nth(w, o); GAdd(o, a, b) => nth(w, o); GSub(o, a, b) => nth(w, o); GMul(o, a, b) => nth(w, o) }
+
+fn c_qa(gs: List<Gate>) : List<Int> = match gs { [] => []; [g, ...r] => [sel_add(g)] ++ c_qa(r) }
+fn c_qm(gs: List<Gate>) : List<Int> = match gs { [] => []; [g, ...r] => [sel_mul(g)] ++ c_qm(r) }
+fn c_qs(gs: List<Gate>) : List<Int> = match gs { [] => []; [g, ...r] => [sel_sub(g)] ++ c_qs(r) }
+fn c_qc(gs: List<Gate>) : List<Int> = match gs { [] => []; [g, ...r] => [sel_con(g)] ++ c_qc(r) }
+fn c_c(gs: List<Gate>) : List<Int> = match gs { [] => []; [g, ...r] => [cv(g)] ++ c_c(r) }
+fn c_l(gs: List<Gate>, w: List<Int>) : List<Int> = match gs { [] => []; [g, ...r] => [lv(g, w)] ++ c_l(r, w) }
+fn c_r(gs: List<Gate>, w: List<Int>) : List<Int> = match gs { [] => []; [g, ...r] => [rv(g, w)] ++ c_r(r, w) }
+fn c_o(gs: List<Gate>, w: List<Int>) : List<Int> = match gs { [] => []; [g, ...r] => [ov(g, w)] ++ c_o(r, w) }
+
+# --- the gate-constraint polynomial G(x) and its quotient Q = G / Z_H --------
+fn gate_G_at(qa: List<Int>, qm: List<Int>, qs: List<Int>, qc: List<Int>, l: List<Int>, r: List<Int>, o: List<Int>, c: List<Int>, x: Int) : Int =
+  let va : Int = poly_eval(qa, x) in let vm : Int = poly_eval(qm, x) in let vs : Int = poly_eval(qs, x) in let vc : Int = poly_eval(qc, x) in
+  let vl : Int = poly_eval(l, x) in let vr : Int = poly_eval(r, x) in let vo : Int = poly_eval(o, x) in let vk : Int = poly_eval(c, x) in
+  fadd(fmul(va, fsub(vo, fadd(vl, vr))),
+  fadd(fmul(vm, fsub(vo, fmul(vl, vr))),
+  fadd(fmul(vs, fsub(vo, fsub(vl, vr))),
+       fmul(vc, fsub(vo, vk)))))
+fn quotient_cw(qa: List<Int>, qm: List<Int>, qs: List<Int>, qc: List<Int>, l: List<Int>, r: List<Int>, o: List<Int>, c: List<Int>, coset: List<Int>, big_n: Int) : List<Int> =
+  match coset { [] => []; [x, ...rest] =>
+    let g : Int = gate_G_at(qa, qm, qs, qc, l, r, o, c, x) in
+    let zh : Int = fsub(fpow(x, big_n), 1) in
+    [fmul(g, finv(zh))] ++ quotient_cw(qa, qm, qs, qc, l, r, o, c, rest, big_n) }
+
+# --- FRI low-degree test (base-field fold; Stage 4 lifts to F_{p^4}) ---------
+fn nthb(xs: List<Int>, i: Int) : Int = match xs { [] => 0; [x, ...r] => if i == 0 then x else nthb(r, i - 1) }
+fn ilen4(xs: List<Int>) : Int = match xs { [] => 0; [x, ...r] => 1 + ilen4(r) }
+fn fold_at(cw: List<Int>, dom: List<Int>, beta: Int, i: Int, half: Int) : List<Int> =
+  if i >= half then []
+  else let fx : Int = nthb(cw, i) in let fmx : Int = nthb(cw, i + half) in let x : Int = nthb(dom, i) in
+    let fe : Int = fmul(fadd(fx, fmx), finv(2)) in let fo : Int = fmul(fsub(fx, fmx), finv(fmul(2, x))) in
+    [fadd(fe, fmul(beta, fo))] ++ fold_at(cw, dom, beta, i + 1, half)
+fn sqd(dom: List<Int>, i: Int, half: Int) : List<Int> =
+  if i >= half then [] else [fmul(nthb(dom, i), nthb(dom, i))] ++ sqd(dom, i + 1, half)
+fn fold_all(cw: List<Int>, dom: List<Int>, round: Int) : List<Int> =
+  if ilen4(cw) <= 2 then cw
+  else let half : Int = ilen4(cw) / 2 in fold_all(fold_at(cw, dom, fadd(fmul(round, 7919), 12345), 0, half), sqd(dom, 0, half), round + 1)
+fn is_const(xs: List<Int>) : Bool = match xs { [] => true; [x, ...r] => match r { [] => true; [y, ...r2] => if x == y then is_const(r) else false } }
+
+# build all 8 column polynomials (interpolated over the size-N trace domain).
+fn low_degree_quotient(gates: List<Gate>, w: List<Int>, big_n: Int) : Bool =
+  let n : Int = 8 in
+  let qa : List<Int> = interpolate(pad(c_qa(gates), n)) in let qm : List<Int> = interpolate(pad(c_qm(gates), n)) in
+  let qs : List<Int> = interpolate(pad(c_qs(gates), n)) in let qc : List<Int> = interpolate(pad(c_qc(gates), n)) in
+  let cc : List<Int> = interpolate(pad(c_c(gates), n)) in
+  let ll : List<Int> = interpolate(pad(c_l(gates, w), n)) in let rr : List<Int> = interpolate(pad(c_r(gates, w), n)) in let oo : List<Int> = interpolate(pad(c_o(gates, w), n)) in
+  let coset : List<Int> = coset_domain(big_n) in
+  is_const(fold_all(quotient_cw(qa, qm, qs, qc, ll, rr, oo, cc, coset, n), coset, 0))
+
+# --- demo --------------------------------------------------------------------
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+let f : Expr = Add(Add(Mul(Var(0), Var(0)), Var(0)), Const(5))
+
+let _ : String = print("--- prove_quotient.glass: gate-constraint quotient + low-degree test (Stage 3) ---")
+let _ : String = print("f(x) = x*x + x + 5, secret x = 3.  trace domain N=8, FRI coset size 32.")
+let _ : String = print("")
+let _ : String =
+  match compile_top(f, [3]) { (out, bld) => match bld { Build(n, gates, w) =>
+    print("honest witness    -> Q = G/Z_H folds to a constant (low-degree): " ++
+          show_b(low_degree_quotient(gates, w, 32))) } }
+let _ : String =
+  match compile_top(f, [3]) { (out, bld) => match bld { Build(n, gates, w) =>
+    let bad : List<Int> = set_nth(w, out, 99) in
+    print("tampered (out=99) -> Q folds to a constant: " ++
+          show_b(low_degree_quotient(gates, bad, 32)) ++ "  (NOT low-degree => G doesn't vanish => caught)") } }
+let _ : String = print("")
+let _ : String = print("all gate constraints are now one low-degree polynomial Q. Stage 4 commits Q")
+let _ : String = print("(+ the permutation accumulator), blinds it, and FRI-proves it over F_{p^4}.")
+
+"prove_quotient v0.1 (Stage 3) — gate constraints -> a single quotient, low-degree iff satisfied"

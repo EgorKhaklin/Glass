@@ -1,0 +1,166 @@
+# =============================================================================
+# prove_match.glass — widening the bridge (N2): MATCH by selector-multiplexer
+#
+# `match` is the last common construct the prove bridge lacked. A circuit is
+# branchless, so a match compiles to: evaluate the scrutinee once; for each arm,
+# a SELECTOR that is 1 iff that arm's pattern matches AND no earlier arm did
+# (first-match semantics); then the result is Σ selector_i · body_i — every body
+# evaluated, the right one selected. Pattern variables bind to the scrutinee wire.
+#
+# Supported patterns (scalar dispatch — the common, circuit-friendly case):
+#   PInt(n)  — selector = is-zero(scrutinee − n)   [the is-zero gadget]
+#   PBool(b) — same, against 0/1
+#   PVar(x)  — always matches, binds x = scrutinee
+#   PWild    — always matches
+# Structured patterns (PCtor/PTuple) need multi-wire tagged values — a larger
+# step, noted for later. Real Glass source, parsed by prism.
+#
+# THE GLASS DISCIPLINE: a reference match (first-match, with binding) and the
+# branchless selector-mux circuit must agree on the output. Reuses prism + the
+# prove-bridge builder + RLC proof. Dogfoods (inline-prism recipe).
+# =============================================================================
+
+import "../selfhost/prism.glass"
+
+fn fadd(a: Int, b: Int) : Int = (a + b) % 2147483647
+fn fmul(a: Int, b: Int) : Int = (a * b) % 2147483647
+fn fsub(a: Int, b: Int) : Int = ((a - b) % 2147483647 + 2147483647) % 2147483647
+fn fnorm(a: Int) : Int = (a % 2147483647 + 2147483647) % 2147483647
+fn fpow(base: Int, e: Int) : Int = if e == 0 then 1 else if e % 2 == 0 then let h : Int = fpow(base, e / 2) in fmul(h, h) else fmul(base, fpow(base, e - 1))
+fn finv(x: Int) : Int = fpow(x, 2147483645)
+fn sbox(x: Int) : Int = let x2 : Int = fmul(x, x) in let x4 : Int = fmul(x2, x2) in fmul(x4, x)
+fn rconst(i: Int) : Int = fnorm((i + 1) * (i + 1) * (i + 1) + i * 1009 + 1234567)
+fn mimc(x: Int, k: Int, i: Int) : Int = if i >= 16 then fadd(x, k) else mimc(sbox(fadd(fadd(x, k), rconst(i))), k, i + 1)
+fn hash2(a: Int, b: Int) : Int = fadd(fadd(mimc(a, b, 0), a), b)
+fn hash_fold(xs: List<Int>, acc: Int) : Int = match xs { [] => acc; [x, ...r] => hash_fold(r, hash2(acc, x)) }
+fn hash_list(xs: List<Int>) : Int = hash_fold(xs, 0)
+
+type Gate = | GConst(Int, Int) | GAdd(Int, Int, Int) | GSub(Int, Int, Int) | GMul(Int, Int, Int) | GAssertEq(Int, Int)
+fn glen(gs: List<Gate>) : Int = match gs { [] => 0; [g, ...r] => 1 + glen(r) }
+type Build = | Build(Int, List<Gate>, List<Pair<Int, Int>>)
+fn assoc(vs: List<Pair<Int, Int>>, w: Int) : Int = match vs { [] => 0; [Pair(k, v), ...r] => if k == w then v else assoc(r, w) }
+fn b_fresh(b: Build) : (Int, Build) = match b { Build(n, gs, vs) => (n, Build(n + 1, gs, vs)) }
+fn b_emit(g: Gate, b: Build) : Build = match b { Build(n, gs, vs) => Build(n, [g] ++ gs, vs) }
+fn b_set(w: Int, v: Int, b: Build) : Build = match b { Build(n, gs, vs) => Build(n, gs, [Pair(w, v)] ++ vs) }
+fn b_val(b: Build, w: Int) : Int = match b { Build(n, gs, vs) => assoc(vs, w) }
+fn mk_const(c: Int, b: Build) : (Int, Build) = match b_fresh(b) { (w, b1) => (w, b_set(w, fnorm(c), b_emit(GConst(w, fnorm(c)), b1))) }
+fn mk_add(a: Int, bw: Int, b: Build) : (Int, Build) = match b_fresh(b) { (o, b1) => (o, b_set(o, fadd(b_val(b1, a), b_val(b1, bw)), b_emit(GAdd(o, a, bw), b1))) }
+fn mk_mul(a: Int, bw: Int, b: Build) : (Int, Build) = match b_fresh(b) { (o, b1) => (o, b_set(o, fmul(b_val(b1, a), b_val(b1, bw)), b_emit(GMul(o, a, bw), b1))) }
+fn mk_sub(a: Int, bw: Int, b: Build) : (Int, Build) = match b_fresh(b) { (o, b1) => (o, b_set(o, fsub(b_val(b1, a), b_val(b1, bw)), b_emit(GSub(o, a, bw), b1))) }
+# is-zero gadget: returns a wire = 1 if wx==wy else 0.
+fn mk_eq(wx: Int, wy: Int, b: Build) : (Int, Build) =
+  match mk_sub(wx, wy, b) { (wd, b1) =>
+    let dv : Int = b_val(b1, wd) in let inv : Int = if dv == 0 then 0 else finv(dv) in
+    match b_fresh(b1) { (winv, b2) => let b3 : Build = b_set(winv, inv, b2) in
+      match mk_mul(wd, winv, b3) { (wp, b4) => match mk_const(1, b4) { (wone, b5) =>
+        match mk_sub(wone, wp, b5) { (wout, b6) => match mk_mul(wd, wout, b6) { (wz, b7) =>
+          match mk_const(0, b7) { (wzero, b8) => (wout, b_emit(GAssertEq(wz, wzero), b8)) } } } } } } }
+fn residual(g: Gate, vs: List<Pair<Int, Int>>) : Int =
+  match g {
+    GConst(o, c)    => fsub(assoc(vs, o), fnorm(c));
+    GAdd(o, a, b)   => fsub(assoc(vs, o), fadd(assoc(vs, a), assoc(vs, b)));
+    GSub(o, a, b)   => fsub(assoc(vs, o), fsub(assoc(vs, a), assoc(vs, b)));
+    GMul(o, a, b)   => fsub(assoc(vs, o), fmul(assoc(vs, a), assoc(vs, b)));
+    GAssertEq(a, b) => fsub(assoc(vs, a), assoc(vs, b))
+  }
+fn env_get(env: List<Pair<String, Int>>, name: String) : Int = match env { [] => 0; [Pair(k, v), ...rest] => if k == name then v else env_get(rest, name) }
+
+# --- patterns (scalar) -------------------------------------------------------
+fn pat_matches(p: Pattern, v: Int) : Bool =
+  match p { PWild => true; PVar(x) => true; PInt(n) => v == fnorm(n); PBool(bb) => v == (if bb then 1 else 0); PCtor(nm, ps) => false; PTuple(ps) => false; PStr(s) => false }
+fn pat_bind(p: Pattern, v: Int, env: List<Pair<String, Int>>) : List<Pair<String, Int>> =
+  match p { PVar(x) => [Pair(x, v)] ++ env; PWild => env; PInt(n) => env; PBool(bb) => env; PCtor(nm, ps) => env; PTuple(ps) => env; PStr(s) => env }
+
+# --- 1. REFERENCE SEMANTICS (first-match) ------------------------------------
+fn reval(e: Expr, env: List<Pair<String, Int>>) : Int =
+  match e {
+    EInt(n)    => fnorm(n);
+    EVar(nm)   => env_get(env, nm);
+    EAdd(a, b) => fadd(reval(a, env), reval(b, env));
+    ESub(a, b) => fsub(reval(a, env), reval(b, env));
+    EMul(a, b) => fmul(reval(a, env), reval(b, env));
+    ELet(nm, v, bd) => reval(bd, [Pair(nm, reval(v, env))] ++ env);
+    EMatch(scrut, arms) => reval_match(reval(scrut, env), arms, env);
+    _ => 0
+  }
+fn reval_match(sv: Int, arms: List<Pair<Pattern, Expr>>, env: List<Pair<String, Int>>) : Int =
+  match arms { [] => 0;
+    [Pair(p, body), ...rest] => if pat_matches(p, sv) then reval(body, pat_bind(p, sv, env)) else reval_match(sv, rest, env) }
+
+# --- 2. CIRCUIT COMPILER (branchless selector-mux) ---------------------------
+fn pat_sel(p: Pattern, ws: Int, b: Build) : (Int, Build) =
+  match p {
+    PWild    => mk_const(1, b);
+    PVar(x)  => mk_const(1, b);
+    PInt(n)  => match mk_const(n, b) { (wn, b1) => mk_eq(ws, wn, b1) };
+    PBool(bb) => match mk_const(if bb then 1 else 0, b) { (wn, b1) => mk_eq(ws, wn, b1) };
+    PCtor(nm, ps) => mk_const(0, b); PTuple(ps) => mk_const(0, b); PStr(s) => mk_const(0, b)
+  }
+fn pat_cenv(p: Pattern, ws: Int, cenv: List<Pair<String, Int>>) : List<Pair<String, Int>> =
+  match p { PVar(x) => [Pair(x, ws)] ++ cenv; PWild => cenv; PInt(n) => cenv; PBool(bb) => cenv; PCtor(nm, ps) => cenv; PTuple(ps) => cenv; PStr(s) => cenv }
+
+fn cgen(e: Expr, cenv: List<Pair<String, Int>>, b: Build) : (Int, Build) =
+  match e {
+    EInt(c)  => mk_const(c, b);
+    EVar(nm) => (env_get(cenv, nm), b);
+    EAdd(x, y) => match cgen(x, cenv, b) { (wx, b1) => match cgen(y, cenv, b1) { (wy, b2) => mk_add(wx, wy, b2) } };
+    ESub(x, y) => match cgen(x, cenv, b) { (wx, b1) => match cgen(y, cenv, b1) { (wy, b2) => mk_sub(wx, wy, b2) } };
+    EMul(x, y) => match cgen(x, cenv, b) { (wx, b1) => match cgen(y, cenv, b1) { (wy, b2) => mk_mul(wx, wy, b2) } };
+    ELet(nm, v, bd) => match cgen(v, cenv, b) { (wv, b1) => cgen(bd, [Pair(nm, wv)] ++ cenv, b1) };
+    EMatch(scrut, arms) => match cgen(scrut, cenv, b) { (ws, b1) =>
+      match mk_const(0, b1) { (zm, b2) => match mk_const(0, b2) { (zr, b3) =>
+        cgen_match(arms, ws, cenv, zm, zr, b3) } } };
+    _ => mk_const(0, b)
+  }
+# eff_i = sel_i·(1 − matched);  result += eff_i·body_i;  matched += eff_i.
+fn cgen_match(arms: List<Pair<Pattern, Expr>>, ws: Int, cenv: List<Pair<String, Int>>, matched: Int, result: Int, b: Build) : (Int, Build) =
+  match arms { [] => (result, b);
+    [Pair(p, body), ...rest] =>
+      match pat_sel(p, ws, b) { (sel, b1) =>
+      match mk_const(1, b1) { (one, b2) => match mk_sub(one, matched, b2) { (notm, b3) =>
+      match mk_mul(sel, notm, b3) { (eff, b4) =>
+      match cgen(body, pat_cenv(p, ws, cenv), b4) { (wbody, b5) =>
+      match mk_mul(eff, wbody, b5) { (contrib, b6) =>
+      match mk_add(result, contrib, b6) { (nres, b7) =>
+      match mk_add(matched, eff, b7) { (nmatched, b8) =>
+        cgen_match(rest, ws, cenv, nmatched, nres, b8) } } } } } } } }
+  }
+
+# --- input + RLC proof -------------------------------------------------------
+fn plen(ps: List<Pair<String, Int>>) : Int = match ps { [] => 0; [p, ...r] => 1 + plen(r) }
+fn in_cenv(inputs: List<Pair<String, Int>>, i: Int) : List<Pair<String, Int>> = match inputs { [] => []; [Pair(nm, val), ...rest] => [Pair(nm, i)] ++ in_cenv(rest, i + 1) }
+fn in_vs(inputs: List<Pair<String, Int>>, i: Int) : List<Pair<Int, Int>> = match inputs { [] => []; [Pair(nm, val), ...rest] => [Pair(i, val)] ++ in_vs(rest, i + 1) }
+fn cgen_top(e: Expr, inputs: List<Pair<String, Int>>) : (Int, Build) = cgen(e, in_cenv(inputs, 0), Build(plen(inputs), [], in_vs(inputs, 0)))
+fn ordered_w(vs: List<Pair<Int, Int>>, i: Int, n: Int) : List<Int> = if i >= n then [] else [assoc(vs, i)] ++ ordered_w(vs, i + 1, n)
+fn fiat_shamir(c: Int) : Int = hash2(c, 777)
+fn rlc(gates: List<Gate>, vs: List<Pair<Int, Int>>, r: Int, rpow: Int) : Int = match gates { [] => 0; [g, ...rest] => fadd(fmul(rpow, residual(g, vs)), rlc(rest, vs, r, fmul(rpow, r))) }
+fn prove_ok(gates: List<Gate>, vs: List<Pair<Int, Int>>, n: Int) : Bool = rlc(gates, vs, fiat_shamir(hash_list(ordered_w(vs, 0, n))), 1) == 0
+fn parse_e(src: String) : Expr = match parse_program(src) { Ok(p) => match p { Program(t, f, e) => e }; Err(m) => EInt(0) }
+
+# --- demo --------------------------------------------------------------------
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+fn show_a(b: Bool) : String = if b then "ACCEPT" else "REJECT"
+
+# a real Glass match: dispatch on inp, with literal arms and a binding catch-all.
+let src : String = "match inp { 0 => 100; 1 => 200; k => k * k + 7 }"
+
+fn run(src: String, x: Int) : String !{IO} =
+  let e : Expr = parse_e(src) in
+  let inputs : List<Pair<String, Int>> = [Pair("inp", x)] in
+  let spec : Int = reval(e, inputs) in
+  match cgen_top(e, inputs) { (out, bld) => match bld { Build(n, gates, vs) =>
+    print("  inp=" ++ int_to_string(x) ++ ": reference=" ++ int_to_string(spec) ++
+          ", circuit=" ++ int_to_string(b_val(bld, out)) ++ " (match " ++ show_b(b_val(bld, out) == spec) ++
+          "), " ++ int_to_string(glen(gates)) ++ " gates, proof " ++ show_a(prove_ok(gates, vs, n))) } }
+
+let _ : String = print("--- prove_match.glass: match by selector-multiplexer (N2, widen the bridge) ---")
+let _ : String = print("match inp { 0 => 100;  1 => 200;  k => k*k + 7 }")
+let _ : String = print("")
+let _ : String = run(src, 0)     # literal arm -> 100
+let _ : String = run(src, 1)     # literal arm -> 200
+let _ : String = run(src, 5)     # binding catch-all k=5 -> 32
+let _ : String = print("")
+let _ : String = print("each arm is a selector (is-zero for literals, 1 for var/wild) gated by first-match;")
+let _ : String = print("result = Σ selector·body. real Glass `match` now compiles to a circuit & proves.")
+
+"prove_match v0.1 (N2) — match (scalar dispatch) compiled to a selector-multiplexer circuit"

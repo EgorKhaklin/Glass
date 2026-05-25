@@ -1,0 +1,149 @@
+# =============================================================================
+# prove_calls.glass — widening the bridge (N2): FUNCTION CALLS by inlining
+#
+# The prove bridge handled arithmetic and control flow but not function calls —
+# yet real Glass programs are mostly calls. This adds them. We parse a whole
+# Glass PROGRAM (helper functions + a main expression) with prism, and compile
+# a call `f(args)` by INLINING: prism desugars `fn f(a,b)=body` to
+# `ELam(a, ELam(b, body))`, so we peel those lambdas, bind each parameter to its
+# argument's wire, and compile the body. Nested and chained calls inline
+# recursively (non-recursive functions; a bounded domain).
+#
+# THE GLASS DISCIPLINE holds across calls: a reference evaluator that *also*
+# inlines (reval/reval_call) and the circuit compiler (cgen/cgen_call) must
+# agree on the output for every input. Reuses prism (parser + Expr/FnDecl) and
+# the prove-bridge builder + RLC proof. The succinct/ZK back end is orthogonal
+# (N1) — any circuit this produces can be fed to prove_zk. Dogfoods.
+# =============================================================================
+
+import "../selfhost/prism.glass"
+
+# --- field + hash (prove bridge) ---------------------------------------------
+fn fadd(a: Int, b: Int) : Int = (a + b) % 2147483647
+fn fmul(a: Int, b: Int) : Int = (a * b) % 2147483647
+fn fsub(a: Int, b: Int) : Int = ((a - b) % 2147483647 + 2147483647) % 2147483647
+fn fnorm(a: Int) : Int = (a % 2147483647 + 2147483647) % 2147483647
+fn sbox(x: Int) : Int = let x2 : Int = fmul(x, x) in let x4 : Int = fmul(x2, x2) in fmul(x4, x)
+fn rconst(i: Int) : Int = fnorm((i + 1) * (i + 1) * (i + 1) + i * 1009 + 1234567)
+fn mimc(x: Int, k: Int, i: Int) : Int = if i >= 16 then fadd(x, k) else mimc(sbox(fadd(fadd(x, k), rconst(i))), k, i + 1)
+fn hash2(a: Int, b: Int) : Int = fadd(fadd(mimc(a, b, 0), a), b)
+fn hash_fold(xs: List<Int>, acc: Int) : Int = match xs { [] => acc; [x, ...r] => hash_fold(r, hash2(acc, x)) }
+fn hash_list(xs: List<Int>) : Int = hash_fold(xs, 0)
+
+# --- constraint builder (prove bridge) ---------------------------------------
+type Gate = | GConst(Int, Int) | GAdd(Int, Int, Int) | GSub(Int, Int, Int) | GMul(Int, Int, Int)
+fn glen(gs: List<Gate>) : Int = match gs { [] => 0; [g, ...r] => 1 + glen(r) }
+type Build = | Build(Int, List<Gate>, List<Pair<Int, Int>>)
+fn assoc(vs: List<Pair<Int, Int>>, w: Int) : Int = match vs { [] => 0; [Pair(k, v), ...r] => if k == w then v else assoc(r, w) }
+fn b_fresh(b: Build) : (Int, Build) = match b { Build(n, gs, vs) => (n, Build(n + 1, gs, vs)) }
+fn b_emit(g: Gate, b: Build) : Build = match b { Build(n, gs, vs) => Build(n, [g] ++ gs, vs) }
+fn b_set(w: Int, v: Int, b: Build) : Build = match b { Build(n, gs, vs) => Build(n, gs, [Pair(w, v)] ++ vs) }
+fn b_val(b: Build, w: Int) : Int = match b { Build(n, gs, vs) => assoc(vs, w) }
+fn mk_const(c: Int, b: Build) : (Int, Build) = match b_fresh(b) { (w, b1) => (w, b_set(w, fnorm(c), b_emit(GConst(w, fnorm(c)), b1))) }
+fn mk_add(a: Int, bw: Int, b: Build) : (Int, Build) = match b_fresh(b) { (o, b1) => (o, b_set(o, fadd(b_val(b1, a), b_val(b1, bw)), b_emit(GAdd(o, a, bw), b1))) }
+fn mk_mul(a: Int, bw: Int, b: Build) : (Int, Build) = match b_fresh(b) { (o, b1) => (o, b_set(o, fmul(b_val(b1, a), b_val(b1, bw)), b_emit(GMul(o, a, bw), b1))) }
+fn mk_sub(a: Int, bw: Int, b: Build) : (Int, Build) = match b_fresh(b) { (o, b1) => (o, b_set(o, fsub(b_val(b1, a), b_val(b1, bw)), b_emit(GSub(o, a, bw), b1))) }
+fn residual(g: Gate, vs: List<Pair<Int, Int>>) : Int =
+  match g {
+    GConst(o, c)  => fsub(assoc(vs, o), fnorm(c));
+    GAdd(o, a, b) => fsub(assoc(vs, o), fadd(assoc(vs, a), assoc(vs, b)));
+    GSub(o, a, b) => fsub(assoc(vs, o), fsub(assoc(vs, a), assoc(vs, b)));
+    GMul(o, a, b) => fsub(assoc(vs, o), fmul(assoc(vs, a), assoc(vs, b)))
+  }
+fn env_get(env: List<Pair<String, Int>>, name: String) : Int =
+  match env { [] => 0; [Pair(k, v), ...rest] => if k == name then v else env_get(rest, name) }
+
+# --- function lookup + application spine -------------------------------------
+fn fn_body_of(fns: List<FnDecl>, name: String) : Expr =
+  match fns { [] => EInt(0); [FnDecl(fnm, tps, ty, body), ...rest] => if fnm == name then body else fn_body_of(rest, name) }
+fn unwind_app(e: Expr, acc: List<Expr>) : (Expr, List<Expr>) =
+  match e { EApp(f, a) => unwind_app(f, [a] ++ acc); _ => (e, acc) }
+
+# --- 1. REFERENCE SEMANTICS (evaluates, inlining calls) ----------------------
+fn reval(e: Expr, env: List<Pair<String, Int>>, fns: List<FnDecl>) : Int =
+  match e {
+    EInt(n)    => fnorm(n);
+    EVar(nm)   => env_get(env, nm);
+    EAdd(a, b) => fadd(reval(a, env, fns), reval(b, env, fns));
+    ESub(a, b) => fsub(reval(a, env, fns), reval(b, env, fns));
+    EMul(a, b) => fmul(reval(a, env, fns), reval(b, env, fns));
+    ELet(nm, v, bd) => reval(bd, [Pair(nm, reval(v, env, fns))] ++ env, fns);
+    EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) =>
+      match hd { EVar(fnm) => reval_call(fn_body_of(fns, fnm), args, env, [], fns);
+                 _ => 0 } };
+    _ => 0
+  }
+fn reval_call(body: Expr, args: List<Expr>, ccenv: List<Pair<String, Int>>, fcenv: List<Pair<String, Int>>, fns: List<FnDecl>) : Int =
+  match body {
+    ELam(p, inner) => match args {
+      [a, ...rest] => reval_call(inner, rest, ccenv, [Pair(p, reval(a, ccenv, fns))] ++ fcenv, fns);
+      [] => reval(body, fcenv, fns) };
+    _ => reval(body, fcenv, fns)
+  }
+
+# --- 2. CIRCUIT COMPILER (compiles, inlining calls) --------------------------
+fn cgen(e: Expr, cenv: List<Pair<String, Int>>, fns: List<FnDecl>, b: Build) : (Int, Build) =
+  match e {
+    EInt(c)  => mk_const(c, b);
+    EVar(nm) => (env_get(cenv, nm), b);
+    EAdd(x, y) => match cgen(x, cenv, fns, b) { (wx, b1) => match cgen(y, cenv, fns, b1) { (wy, b2) => mk_add(wx, wy, b2) } };
+    ESub(x, y) => match cgen(x, cenv, fns, b) { (wx, b1) => match cgen(y, cenv, fns, b1) { (wy, b2) => mk_sub(wx, wy, b2) } };
+    EMul(x, y) => match cgen(x, cenv, fns, b) { (wx, b1) => match cgen(y, cenv, fns, b1) { (wy, b2) => mk_mul(wx, wy, b2) } };
+    ELet(nm, v, bd) => match cgen(v, cenv, fns, b) { (wv, b1) => cgen(bd, [Pair(nm, wv)] ++ cenv, fns, b1) };
+    EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) =>
+      match hd { EVar(fnm) => cgen_call(fn_body_of(fns, fnm), args, cenv, [], fns, b);
+                 _ => mk_const(0, b) } };
+    _ => mk_const(0, b)
+  }
+fn cgen_call(body: Expr, args: List<Expr>, ccenv: List<Pair<String, Int>>, fcenv: List<Pair<String, Int>>, fns: List<FnDecl>, b: Build) : (Int, Build) =
+  match body {
+    ELam(p, inner) => match args {
+      [a, ...rest] => match cgen(a, ccenv, fns, b) { (wa, b1) => cgen_call(inner, rest, ccenv, [Pair(p, wa)] ++ fcenv, fns, b1) };
+      [] => cgen(body, fcenv, fns, b) };
+    _ => cgen(body, fcenv, fns, b)
+  }
+
+# --- input setup + RLC proof (prove bridge) ----------------------------------
+fn plen(ps: List<Pair<String, Int>>) : Int = match ps { [] => 0; [p, ...r] => 1 + plen(r) }
+fn in_cenv(inputs: List<Pair<String, Int>>, i: Int) : List<Pair<String, Int>> =
+  match inputs { [] => []; [Pair(nm, val), ...rest] => [Pair(nm, i)] ++ in_cenv(rest, i + 1) }
+fn in_vs(inputs: List<Pair<String, Int>>, i: Int) : List<Pair<Int, Int>> =
+  match inputs { [] => []; [Pair(nm, val), ...rest] => [Pair(i, val)] ++ in_vs(rest, i + 1) }
+fn cgen_top(e: Expr, inputs: List<Pair<String, Int>>, fns: List<FnDecl>) : (Int, Build) =
+  cgen(e, in_cenv(inputs, 0), fns, Build(plen(inputs), [], in_vs(inputs, 0)))
+fn ordered_w(vs: List<Pair<Int, Int>>, i: Int, n: Int) : List<Int> =
+  if i >= n then [] else [assoc(vs, i)] ++ ordered_w(vs, i + 1, n)
+fn fiat_shamir(c: Int) : Int = hash2(c, 777)
+fn rlc(gates: List<Gate>, vs: List<Pair<Int, Int>>, r: Int, rpow: Int) : Int =
+  match gates { [] => 0; [g, ...rest] => fadd(fmul(rpow, residual(g, vs)), rlc(rest, vs, r, fmul(rpow, r))) }
+fn prove_ok(gates: List<Gate>, vs: List<Pair<Int, Int>>, n: Int) : Bool =
+  rlc(gates, vs, fiat_shamir(hash_list(ordered_w(vs, 0, n))), 1) == 0
+
+fn parse_prog(src: String) : Program =
+  match parse_program(src) { Ok(p) => p; Err(m) => Program([], [], EInt(0)) }
+
+# --- demo --------------------------------------------------------------------
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+fn show_a(b: Bool) : String = if b then "ACCEPT" else "REJECT"
+
+# a real Glass program: three functions, nested calls, a free input `inp`.
+let src : String =
+  "fn sq(n: Int) : Int = n * n\nfn cube(n: Int) : Int = sq(n) * n\nfn f(x: Int) : Int = cube(x) - sq(x) + 7\nf(inp)"
+
+let _ : String = print("--- prove_calls.glass: function calls by inlining (N2, widen the bridge) ---")
+let _ : String = print("program: fn sq(n)=n*n;  fn cube(n)=sq(n)*n;  fn f(x)=cube(x)-sq(x)+7;  f(inp)")
+let _ : String = print("with inp = 3:  cube(3)=27, sq(3)=9, f(3)=27-9+7 = 25")
+let _ : String = print("")
+let _ : String =
+  match parse_prog(src) { Program(types, fns, main) =>
+    let inputs : List<Pair<String, Int>> = [Pair("inp", 3)] in
+    let spec : Int = reval(main, inputs, fns) in
+    match cgen_top(main, inputs, fns) { (out, bld) => match bld { Build(n, gates, vs) =>
+      print("inlined " ++ int_to_string(glen(gates)) ++ " gates; reference=" ++ int_to_string(spec) ++
+            ", circuit=" ++ int_to_string(b_val(bld, out)) ++ " (match " ++ show_b(b_val(bld, out) == spec) ++
+            "), proof " ++ show_a(prove_ok(gates, vs, n))) } } }
+let _ : String = print("")
+let _ : String = print("nested/chained function calls inline into one flat circuit — more real Glass")
+let _ : String = print("becomes provable. (feed this circuit to prove_zk for the succinct ZK proof.)")
+
+"prove_calls v0.1 (N2) — function calls inlined: real Glass programs (with helpers) -> circuit"

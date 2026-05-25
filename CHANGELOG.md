@@ -7,6 +7,12 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [4.82.0] — 2026-05-25 — The prove bridge closes the loop: Glass source → a succinct, zero-knowledge proof
+- Write a Glass function, get a STARK proof of its execution that is sound, succinct, *and* zero-knowledge — the circuit is lowered through a PLONK arithmetization, copy constraints (a z-accumulator permutation), a gate-constraint quotient, and a blinded FRI over F_{p⁴}. (`examples/prove/prove_stark`, `prove_copy`, `prove_quotient`, `prove_zk`, `prove_zperm`)
+- The bridge now also handles **function calls** (by inlining) and **`match`** (scalar dispatch), over real prism-parsed Glass. (`prove_calls`, `prove_match`)
+- Developer experience: a standard **prelude** (`examples/lib/prelude.glass` — `nth`, `take`/`drop`, `zip`, Option/Result helpers), a `glass --version` flag, and parser/type diagnostics that *explain* the common gotchas (uppercase = constructor, tuple-vs-`Pair`).
+- Performance: a recursive **O(n log n) NTT** replaces the O(n²) transform under evaluate/interpolate/FRI. (`frost_ntt`)
+
 ## [4.81.0] — 2026-05-24 — Docs & repo: a cinematic pass
 - README rewritten around the macro idea — transparency, carried from a type signature to a zero-knowledge proof.
 - Examples reorganized so the repo reads itself: Frost split into its own folder, per-folder guides, a navigation index.

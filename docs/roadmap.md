@@ -39,31 +39,48 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Roadmap
+## Shipped (through v4.82)
 
-- **Phase 0 — DONE (this arc).** Self-hosting fixpoint; Pane; the Frost STARK
-  toolkit (commitment, FRI, AIR), all self-hosted and differential-tested.
-- **Phase 1 — THE PROVE BRIDGE v0 (executing now).** Compile a Glass arithmetic
-  expression into a Frost constraint system + witness, then produce and verify a
-  zero-knowledge proof that `y = f(secret x)`. The seam between the language and
-  the prover. Differential-tested: the reference evaluator and the compiled
-  circuit agree on every input.
-- **Phase 2 — FULL EXPRESSION BRIDGE.** Extend the compiler to the real Glass
-  AST via prism (let / if / match / calls over a bounded domain), so ordinary
-  Glass functions become provable, not just a toy arithmetic AST.
-- **Phase 3 — CRYPTOGRAPHIC HARDENING.** 64-bit Goldilocks or an extension field
-  for a ~100-bit soundness margin; Fiat-Shamir query sampling; ZK blinding of the
-  trace polynomial. Turns the educational STARK into a cryptographic one.
-- **Phase 4 — DEVELOPER EXPERIENCE.** A curated prelude (stop rewriting
-  `nth`/`fold`/`map` in every file); parser/type diagnostics that *explain* the
-  gotchas (uppercase = constructor, tuple-vs-Pair) instead of misfiring; a formatter.
-- **Phase 5 — SPEC & TOOLING.** A written operational semantics (glass.py is the
-  de-facto spec — make it explicit); `glass test` as a first-class differential
-  harness; `glass prove` as a CLI over Phase 1–2.
+- **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
+- **Pane** — a query language in Glass.
+- **Frost** — a from-scratch zk-STARK toolkit: finite field + an **F_{p⁴}
+  extension** (cryptographic challenge space), MiMC hash, Merkle trees,
+  arithmetization, FRI (with Fiat-Shamir query sampling + amplification),
+  AIR, **ZK blinding**, a **permutation argument** (copy constraints), and an
+  **end-to-end zk-STARK** that's sound, succinct, and zero-knowledge.
+- **The prove bridge** — write *real Glass source* (parsed by prism), get a
+  proof: arithmetic, comparisons, booleans, `if`/`let`. *(Today this emits a
+  sound RLC proof, not yet the succinct ZK STARK — see N1.)*
 
-## Success criteria (verifiable, per the Glass discipline)
+## What's next
 
-Every phase ships a differential-tested, self-hosting artifact: the reference and
+- **N1 — Close the loop: source → succinct ZK proof. ✅ DONE.** The prove-bridge
+  circuit is lowered into the cryptographic STARK backend: PLONK arithmetization
+  (`prove_stark`) → copy constraints via the permutation argument (`prove_copy`)
+  → gate-constraint quotient (`prove_quotient`) → blinded + FRI over F_{p⁴}
+  (`prove_zk`). `write Glass → a *succinct, zero-knowledge* proof` is now real and
+  self-hosted (honest ACCEPT / tampered REJECT / two blindings reveal different
+  openings). Remaining rigor: fold the permutation into a FRI'd z-accumulator
+  quotient so the wiring is succinct too (tracked under N4).
+- **N2 — Widen the bridge. ✅ DONE.** Function calls (`EApp`, by inlining —
+  `prove_calls`) and `match` (scalar dispatch via a selector-multiplexer —
+  `prove_match`). The bridge now covers arithmetic, comparisons, booleans,
+  `if`/`let`, calls, and `match` over real prism-parsed Glass. Remaining:
+  structured patterns (`PCtor`/`PTuple` → multi-wire tagged values), tracked under N4.
+- **N3 — Developer experience. ✅ DONE.** A standard prelude
+  (`examples/lib/prelude.glass` — `nth`, `take`/`drop`, `zip`, Option/Result
+  helpers); parser/type diagnostics that *explain* the gotchas (uppercase =
+  constructor; tuple-vs-`Pair`); a `--version` flag. (The "monomorphic length"
+  papercut was self-inflicted — `len` is already polymorphic.)
+- **N4 — Performance & crypto rigor.** Recursive NTT/FFT (replace the O(n²)
+  transform); a production-grade field/parameters; harden the emitted C runtime
+  (`run_command` temp-file handling, OOM checks).
+- **N5 — Tooling.** `glass prove` / `glass test` as first-class CLIs; a written
+  operational semantics (glass.py is the de-facto spec — make it explicit).
+
+## Success criteria (the Glass discipline)
+
+Every item ships a differential-tested, self-hosting artifact: the reference and
 the compiled/proved result agree, and `native_glassc` reproduces it byte-for-byte.
-No phase is "done" until the interpreter and the self-hosted compiler give the
+Nothing is "done" until the interpreter and the self-hosted compiler give the
 same answer.

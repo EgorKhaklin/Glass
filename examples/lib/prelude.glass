@@ -1,0 +1,61 @@
+# =============================================================================
+# prelude.glass — Glass standard prelude (N3: developer experience)
+#
+# The generic helpers that the builtins don't cover, in one place — so you stop
+# re-deriving `nth` (and friends) in every file. Import with:
+#
+#     import "prelude.glass"      # (adjust the path to this file)
+#
+# ALREADY BUILTIN (no import, and polymorphic — use these directly):
+#   len, map, filter, fold, reverse, head, tail, cons, range,
+#   print, int_to_string, substring, string_length, string_index_of,
+#   string_to_lower, string_to_upper, char_at, read_file, write_file,
+#   run_command, random_int.
+#   (Tip: `len` works on a list of ANY element type — no need for a typed
+#    length per element type. That was a self-inflicted papercut worth retiring.)
+#
+# This file adds the common ones those leave out. Everything is generic.
+# =============================================================================
+
+# indexing — the big missing one. nth with an explicit default, or as Option.
+fn nth<A>(xs: List<A>, i: Int, d: A) : A =
+  match xs { [] => d; [h, ...t] => if i == 0 then h else nth(t, i - 1, d) }
+fn nth_opt<A>(xs: List<A>, i: Int) : Option<A> =
+  match xs { [] => None; [h, ...t] => if i == 0 then Some(h) else nth_opt(t, i - 1) }
+fn last_opt<A>(xs: List<A>) : Option<A> =
+  match xs { [] => None; [h, ...t] => match t { [] => Some(h); _ => last_opt(t) } }
+
+# slicing
+fn take<A>(xs: List<A>, n: Int) : List<A> =
+  if n <= 0 then [] else match xs { [] => []; [h, ...t] => [h] ++ take(t, n - 1) }
+fn drop<A>(xs: List<A>, n: Int) : List<A> =
+  if n <= 0 then xs else match xs { [] => []; [h, ...t] => drop(t, n - 1) }
+fn repeat<A>(x: A, n: Int) : List<A> = if n <= 0 then [] else [x] ++ repeat(x, n - 1)
+
+# pairing
+fn zip<A, B>(xs: List<A>, ys: List<B>) : List<Pair<A, B>> =
+  match xs { [] => []; [hx, ...tx] => match ys { [] => []; [hy, ...ty] => [Pair(hx, hy)] ++ zip(tx, ty) } }
+
+# numeric folds (the builtin `fold` covers the general case; these are the
+# everyday shorthands)
+fn sum(xs: List<Int>) : Int = match xs { [] => 0; [h, ...t] => h + sum(t) }
+fn product(xs: List<Int>) : Int = match xs { [] => 1; [h, ...t] => h * product(t) }
+fn maximum(xs: List<Int>, lo: Int) : Int = match xs { [] => lo; [h, ...t] => maximum(t, if h > lo then h else lo) }
+fn contains_int(xs: List<Int>, x: Int) : Bool = match xs { [] => false; [h, ...t] => if h == x then true else contains_int(t, x) }
+
+# Option / Result helpers
+fn is_some<A>(o: Option<A>) : Bool = match o { None => false; Some(v) => true }
+fn unwrap_or<A>(o: Option<A>, d: A) : A = match o { None => d; Some(v) => v }
+fn ok_or<A, E>(o: Option<A>, e: E) : Result<A, E> = match o { None => Err(e); Some(v) => Ok(v) }
+
+# --- self-test (runs when this file is executed directly; ignored on import) -
+let _ : String = print("prelude self-test:")
+let _ : String = print("  nth([10,20,30], 1, 0)            = " ++ int_to_string(nth([10, 20, 30], 1, 0)))
+let _ : String = print("  sum([1,2,3,4])                  = " ++ int_to_string(sum([1, 2, 3, 4])))
+let _ : String = print("  product([1,2,3,4])              = " ++ int_to_string(product([1, 2, 3, 4])))
+let _ : String = print("  maximum([3,9,2,7], 0)           = " ++ int_to_string(maximum([3, 9, 2, 7], 0)))
+let _ : String = print("  len(take([1,2,3,4,5], 2))       = " ++ int_to_string(len(take([1, 2, 3, 4, 5], 2))))
+let _ : String = print("  unwrap_or(nth_opt([7,8], 5), 99)= " ++ int_to_string(unwrap_or(nth_opt([7, 8], 5), 99)))
+let _ : String = print("  contains_int([1,2,3], 2)        = " ++ (if contains_int([1, 2, 3], 2) then "true" else "false"))
+
+"glass prelude — generic helpers beyond the builtins"

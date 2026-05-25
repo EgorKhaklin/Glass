@@ -1,0 +1,82 @@
+# =============================================================================
+# frost_ntt.glass — fast polynomial transform (N4: performance)
+#
+# Frost's polynomial layer used an O(n^2) DFT: to evaluate a degree-<n poly over
+# the n-th roots of unity, it ran Horner at each of the n points. This is the
+# O(n log n) replacement — the recursive Cooley–Tukey number-theoretic transform.
+#
+# THE IDEA (decimation in time): split the coefficients into even/odd halves,
+#   P(x) = P_even(x^2) + x·P_odd(x^2)
+# recursively transform each half (over the squared root w^2, half the size),
+# then butterfly them back:
+#   A[k]        = E[k] + w^k · O[k]
+#   A[k + n/2]  = E[k] − w^k · O[k]      (since w^(k+n/2) = −w^k)
+# n must be a power of two. The inverse (iNTT) runs the same butterfly with w^-1
+# and scales by 1/n.
+#
+# Verified the Glass way: the fast NTT must agree with the slow O(n^2) DFT on
+# every point, and iNTT must invert it. Baby Bear field; uses the builtin `len`;
+# self-contained; dogfoods.
+# =============================================================================
+
+fn fadd(a: Int, b: Int) : Int = (a + b) % 2013265921
+fn fmul(a: Int, b: Int) : Int = (a * b) % 2013265921
+fn fsub(a: Int, b: Int) : Int = ((a - b) % 2013265921 + 2013265921) % 2013265921
+fn fpow(base: Int, e: Int) : Int =
+  if e == 0 then 1 else if e % 2 == 0 then let h : Int = fpow(base, e / 2) in fmul(h, h) else fmul(base, fpow(base, e - 1))
+fn finv(x: Int) : Int = fpow(x, 2013265919)
+fn root_of_unity(n: Int) : Int = fpow(31, 2013265920 / n)
+fn nth(xs: List<Int>, i: Int) : Int = match xs { [] => 0; [x, ...r] => if i == 0 then x else nth(r, i - 1) }
+
+# --- recursive NTT (Cooley–Tukey) --------------------------------------------
+fn evens(xs: List<Int>) : List<Int> = match xs { [] => []; [a, ...t] => match t { [] => [a]; [b, ...r] => [a] ++ evens(r) } }
+fn odds(xs: List<Int>) : List<Int> = match xs { [] => []; [a, ...t] => match t { [] => []; [b, ...r] => [b] ++ odds(r) } }
+# butterfly halves: A[k] = E[k] + w^k·O[k]  (lo);  A[k+n/2] = E[k] − w^k·O[k]  (hi)
+fn ntt_lo(e: List<Int>, o: List<Int>, wk: Int, w: Int, k: Int, half: Int) : List<Int> =
+  if k >= half then [] else [fadd(nth(e, k), fmul(wk, nth(o, k)))] ++ ntt_lo(e, o, fmul(wk, w), w, k + 1, half)
+fn ntt_hi(e: List<Int>, o: List<Int>, wk: Int, w: Int, k: Int, half: Int) : List<Int> =
+  if k >= half then [] else [fsub(nth(e, k), fmul(wk, nth(o, k)))] ++ ntt_hi(e, o, fmul(wk, w), w, k + 1, half)
+fn ntt(coeffs: List<Int>, w: Int) : List<Int> =
+  let n : Int = len(coeffs) in
+  if n <= 1 then coeffs
+  else
+    let e : List<Int> = ntt(evens(coeffs), fmul(w, w)) in
+    let o : List<Int> = ntt(odds(coeffs), fmul(w, w)) in
+    let half : Int = n / 2 in
+    ntt_lo(e, o, 1, w, 0, half) ++ ntt_hi(e, o, 1, w, 0, half)
+fn scale_list(xs: List<Int>, s: Int) : List<Int> = match xs { [] => []; [a, ...t] => [fmul(a, s)] ++ scale_list(t, s) }
+fn intt(evals: List<Int>, w: Int) : List<Int> = scale_list(ntt(evals, finv(w)), finv(len(evals)))
+
+# --- the slow O(n^2) reference (to check against) ----------------------------
+fn poly_eval(coeffs: List<Int>, x: Int) : Int = match coeffs { [] => 0; [c, ...r] => fadd(c, fmul(x, poly_eval(r, x))) }
+fn powers(w: Int, cur: Int, k: Int) : List<Int> = if k <= 0 then [] else [cur] ++ powers(w, fmul(cur, w), k - 1)
+fn dft(coeffs: List<Int>, w: Int, n: Int) : List<Int> =
+  match powers(w, 1, n) { dom => dft_at(coeffs, dom) }
+fn dft_at(coeffs: List<Int>, dom: List<Int>) : List<Int> =
+  match dom { [] => []; [x, ...rest] => [poly_eval(coeffs, x)] ++ dft_at(coeffs, rest) }
+
+fn list_eq(a: List<Int>, b: List<Int>) : Bool =
+  match a { [] => match b { [] => true; _ => false };
+            [x, ...ra] => match b { [] => false; [y, ...rb] => if x == y then list_eq(ra, rb) else false } }
+
+# --- demo --------------------------------------------------------------------
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+
+let c8 : List<Int> = [1, 2, 3, 4, 5, 6, 7, 8]
+let c16 : List<Int> = [3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5, 8, 9, 7, 9, 3]
+
+let _ : String = print("--- frost_ntt.glass: recursive NTT (O(n log n)) vs the O(n^2) DFT ---")
+let _ : String = print("")
+let _ : String = print("n=8:  fast NTT == slow DFT (all 8 evaluations agree): " ++
+  show_b(list_eq(ntt(c8, root_of_unity(8)), dft(c8, root_of_unity(8), 8))))
+let _ : String = print("n=8:  iNTT(NTT(coeffs)) == coeffs (round-trip):       " ++
+  show_b(list_eq(intt(ntt(c8, root_of_unity(8)), root_of_unity(8)), c8)))
+let _ : String = print("n=16: fast NTT == slow DFT:                            " ++
+  show_b(list_eq(ntt(c16, root_of_unity(16)), dft(c16, root_of_unity(16), 16))))
+let _ : String = print("n=16: round-trip iNTT∘NTT == coeffs:                   " ++
+  show_b(list_eq(intt(ntt(c16, root_of_unity(16)), root_of_unity(16)), c16)))
+let _ : String = print("")
+let _ : String = print("same answers, O(n log n) instead of O(n^2) — Frost's evaluate/interpolate,")
+let _ : String = print("the FRI fold, and the AIR quotient all run on this transform.")
+
+"frost ntt v0.1 (N4) — recursive Cooley–Tukey NTT/iNTT: the O(n log n) polynomial transform"

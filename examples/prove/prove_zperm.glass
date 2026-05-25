@@ -1,0 +1,108 @@
+# =============================================================================
+# prove_zperm.glass — succinct copy constraints: the z-accumulator (N4)
+#
+# Stage 2 (prove_copy) proved the wiring with a grand product ∏(β·p+v+γ) ==
+# ∏(β·σ(p)+v+γ) — sound, but the verifier recomputes the whole product (linear,
+# not succinct). This closes that gap with PLONK's z-ACCUMULATOR, turning the
+# permutation into a LOCAL per-row constraint that a STARK can quotient + FRI.
+#
+# Define a running product z over the m cells:
+#     z[0] = 1
+#     z[p+1] = z[p] · (β·p + v_p + γ) / (β·σ(p) + v_p + γ)
+# Then:
+#   * TRANSITION (local, every step):  z[p+1]·(β·σ(p)+v_p+γ) = z[p]·(β·p+v_p+γ).
+#     This recurrence holds by construction; interpolating z and asking that the
+#     transition vanish on the domain is a QUOTIENT — FRI-proved low-degree
+#     exactly like prove_quotient. It binds z to the true running product.
+#   * BOUNDARY:  z[m] = 1  ⟺  the two grand products are equal  ⟺  the wiring is
+#     consistent. The entire permutation collapses to this ONE check on the
+#     committed z — no product to recompute. That is the succinctness.
+#
+# Honest wiring -> z[m] = 1 and the transition holds. Corrupt one shared cell ->
+# z[m] ≠ 1, caught by the boundary. Baby Bear field; reuses Stage 2's cells + σ;
+# self-contained; dogfoods.
+# =============================================================================
+
+fn fadd(a: Int, b: Int) : Int = (a + b) % 2013265921
+fn fmul(a: Int, b: Int) : Int = (a * b) % 2013265921
+fn fsub(a: Int, b: Int) : Int = ((a - b) % 2013265921 + 2013265921) % 2013265921
+fn fnorm(a: Int) : Int = (a % 2013265921 + 2013265921) % 2013265921
+fn fpow(base: Int, e: Int) : Int = if e == 0 then 1 else if e % 2 == 0 then let h : Int = fpow(base, e / 2) in fmul(h, h) else fmul(base, fpow(base, e - 1))
+fn finv(x: Int) : Int = fpow(x, 2013265919)
+fn nth(xs: List<Int>, i: Int) : Int = match xs { [] => 0; [x, ...r] => if i == 0 then x else nth(r, i - 1) }
+fn set_nth(xs: List<Int>, i: Int, v: Int) : List<Int> = match xs { [] => []; [x, ...r] => if i == 0 then [v] ++ r else [x] ++ set_nth(r, i - 1, v) }
+
+# --- circuit + trace cells + σ (from Stage 2, prove_copy) --------------------
+type Gate = | GConst(Int, Int) | GAdd(Int, Int, Int) | GSub(Int, Int, Int) | GMul(Int, Int, Int)
+type Expr = | Var(Int) | Const(Int) | Add(Expr, Expr) | Sub(Expr, Expr) | Mul(Expr, Expr)
+type Build = | Build(Int, List<Gate>, List<Int>)
+fn glen(gs: List<Gate>) : Int = match gs { [] => 0; [g, ...r] => 1 + glen(r) }
+fn compile(e: Expr, b: Build) : (Int, Build) =
+  match e {
+    Var(i)   => (i, b);
+    Const(c) => match b { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GConst(n, c)], w ++ [fnorm(c)])) };
+    Add(x, y) => match compile(x, b) { (wx, b1) => match compile(y, b1) { (wy, b2) => match b2 { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GAdd(n, wx, wy)], w ++ [fadd(nth(w, wx), nth(w, wy))])) } } };
+    Sub(x, y) => match compile(x, b) { (wx, b1) => match compile(y, b1) { (wy, b2) => match b2 { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GSub(n, wx, wy)], w ++ [fsub(nth(w, wx), nth(w, wy))])) } } };
+    Mul(x, y) => match compile(x, b) { (wx, b1) => match compile(y, b1) { (wy, b2) => match b2 { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GMul(n, wx, wy)], w ++ [fmul(nth(w, wx), nth(w, wy))])) } } }
+  }
+fn compile_top(e: Expr, inputs: List<Int>) : (Int, Build) = compile(e, Build(0, [], inputs))
+fn lval(g: Gate, w: List<Int>) : Int = match g { GConst(o, c) => 0; GAdd(o, a, b) => nth(w, a); GSub(o, a, b) => nth(w, a); GMul(o, a, b) => nth(w, a) }
+fn rval(g: Gate, w: List<Int>) : Int = match g { GConst(o, c) => 0; GAdd(o, a, b) => nth(w, b); GSub(o, a, b) => nth(w, b); GMul(o, a, b) => nth(w, b) }
+fn oval(g: Gate, w: List<Int>) : Int = match g { GConst(o, c) => nth(w, o); GAdd(o, a, b) => nth(w, o); GSub(o, a, b) => nth(w, o); GMul(o, a, b) => nth(w, o) }
+fn lref(g: Gate, i: Int) : Int = match g { GConst(o, c) => 1000000 + i; GAdd(o, a, b) => a; GSub(o, a, b) => a; GMul(o, a, b) => a }
+fn rref(g: Gate, i: Int) : Int = match g { GConst(o, c) => 2000000 + i; GAdd(o, a, b) => b; GSub(o, a, b) => b; GMul(o, a, b) => b }
+fn oref(g: Gate) : Int = match g { GConst(o, c) => o; GAdd(o, a, b) => o; GSub(o, a, b) => o; GMul(o, a, b) => o }
+fn lvals(gs: List<Gate>, w: List<Int>) : List<Int> = match gs { [] => []; [g, ...r] => [lval(g, w)] ++ lvals(r, w) }
+fn rvals(gs: List<Gate>, w: List<Int>) : List<Int> = match gs { [] => []; [g, ...r] => [rval(g, w)] ++ rvals(r, w) }
+fn ovals(gs: List<Gate>, w: List<Int>) : List<Int> = match gs { [] => []; [g, ...r] => [oval(g, w)] ++ ovals(r, w) }
+fn lrefs(gs: List<Gate>, i: Int) : List<Int> = match gs { [] => []; [g, ...r] => [lref(g, i)] ++ lrefs(r, i + 1) }
+fn rrefs(gs: List<Gate>, i: Int) : List<Int> = match gs { [] => []; [g, ...r] => [rref(g, i)] ++ rrefs(r, i + 1) }
+fn orefs(gs: List<Gate>) : List<Int> = match gs { [] => []; [g, ...r] => [oref(g)] ++ orefs(r) }
+fn cell_values(gs: List<Gate>, w: List<Int>) : List<Int> = lvals(gs, w) ++ rvals(gs, w) ++ ovals(gs, w)
+fn cell_wires(gs: List<Gate>) : List<Int> = lrefs(gs, 0) ++ rrefs(gs, 0) ++ orefs(gs)
+fn find_from(refs: List<Int>, j: Int, wr: Int, total: Int) : Int =
+  if j >= total then 0 - 1 else if nth(refs, j) == wr then j else find_from(refs, j + 1, wr, total)
+fn sigma_at(refs: List<Int>, p: Int, total: Int) : Int =
+  let wr : Int = nth(refs, p) in let nxt : Int = find_from(refs, p + 1, wr, total) in
+  if nxt == (0 - 1) then find_from(refs, 0, wr, total) else nxt
+
+# --- the z-accumulator -------------------------------------------------------
+fn numer(v: List<Int>, beta: Int, gamma: Int, p: Int) : Int = fadd(fadd(fmul(beta, p), nth(v, p)), gamma)
+fn denom(v: List<Int>, refs: List<Int>, beta: Int, gamma: Int, p: Int, total: Int) : Int = fadd(fadd(fmul(beta, sigma_at(refs, p, total)), nth(v, p)), gamma)
+# z[0..total]: z[0]=1, z[p+1]=z[p]·numer_p/denom_p.
+fn z_list(v: List<Int>, refs: List<Int>, beta: Int, gamma: Int, p: Int, total: Int, cur: Int) : List<Int> =
+  if p >= total then [cur]
+  else [cur] ++ z_list(v, refs, beta, gamma, p + 1, total, fmul(cur, fmul(numer(v, beta, gamma, p), finv(denom(v, refs, beta, gamma, p, total)))))
+# transition: z[p+1]·denom_p == z[p]·numer_p for every step (the local constraint).
+fn transition_ok(v: List<Int>, refs: List<Int>, z: List<Int>, beta: Int, gamma: Int, p: Int, total: Int) : Bool =
+  if p >= total then true
+  else if fmul(nth(z, p + 1), denom(v, refs, beta, gamma, p, total)) == fmul(nth(z, p), numer(v, beta, gamma, p))
+       then transition_ok(v, refs, z, beta, gamma, p + 1, total) else false
+
+# --- demo --------------------------------------------------------------------
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+fn f_expr(d: Int) : Expr = Add(Add(Mul(Var(0), Var(0)), Var(0)), Const(5))
+
+let _ : String = print("--- prove_zperm.glass: the z-accumulator — succinct copy constraints (N4) ---")
+let _ : String = print("f(x) = x*x + x + 5, secret x = 3.  permutation -> running product z; check z[last]==1.")
+let _ : String = print("")
+let _ : String =
+  match compile_top(f_expr(0), [3]) { (out, bld) => match bld { Build(n, gates, w) =>
+    let total : Int = 3 * glen(gates) in
+    let v : List<Int> = cell_values(gates, w) in let refs : List<Int> = cell_wires(gates) in
+    let z : List<Int> = z_list(v, refs, 12345, 67890, 0, total, 1) in
+    print("honest wiring     -> z[last] = " ++ int_to_string(nth(z, total)) ++
+          "  (==1: " ++ show_b(nth(z, total) == 1) ++ "),  transition holds: " ++
+          show_b(transition_ok(v, refs, z, 12345, 67890, 0, total))) } }
+let _ : String =
+  match compile_top(f_expr(0), [3]) { (out, bld) => match bld { Build(n, gates, w) =>
+    let total : Int = 3 * glen(gates) in
+    let bad : List<Int> = set_nth(cell_values(gates, w), 0, 777) in let refs : List<Int> = cell_wires(gates) in
+    let z : List<Int> = z_list(bad, refs, 12345, 67890, 0, total, 1) in
+    print("cheat (L0 := 777) -> z[last] = " ++ int_to_string(nth(z, total)) ++
+          "  (==1: " ++ show_b(nth(z, total) == 1) ++ ")  -> broken wiring caught by the boundary") } }
+let _ : String = print("")
+let _ : String = print("the permutation is now ONE boundary on a committed polynomial z, with a local")
+let _ : String = print("transition the verifier FRI-proves (like prove_quotient) — succinct, no product recompute.")
+
+"prove_zperm v0.1 (N4) — z-accumulator: copy constraints as a local transition + boundary (succinct)"

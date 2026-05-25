@@ -1,0 +1,141 @@
+# =============================================================================
+# prove_copy.glass — closing the loop, Stage 2: copy constraints (permutation)
+#
+# Stage 1 laid the circuit out as a trace whose every gate is a LOCAL per-row
+# identity over columns l, r, o. But "local" hides a gap: a wire produced by one
+# gate and consumed by another must hold the SAME value in both rows. The
+# verifier sees only commitments to the l/r/o columns, not the witness — so a
+# cheating prover could satisfy each gate's local identity while putting
+# inconsistent values in cells that are supposed to be the same wire.
+#
+# COPY CONSTRAINTS close that gap, via the PLONK permutation argument (the
+# grand product from frost_perm). Give every trace CELL a position id. Define a
+# permutation σ that arranges the cells sharing a wire into cycles. Then
+#
+#     ∏_p ( β·p + value_p + γ )   ==   ∏_p ( β·σ(p) + value_p + γ )
+#
+# holds (for random β, γ) IF AND ONLY IF value is constant on every σ-cycle —
+# i.e. every group of cells that name the same wire holds the same value. The
+# verifier checks this from the committed columns alone; the witness stays hidden.
+#
+# Honest trace -> products equal. Corrupt one cell that shares a wire -> the
+# σ-cycle is broken -> products differ -> detected. (β, γ are fixed here for the
+# reference; Stage 4 draws them from F_{p^4} by Fiat-Shamir for soundness.)
+#
+# Baby Bear field; reuses Stage 1's circuit builder; self-contained; dogfoods.
+# =============================================================================
+
+fn fadd(a: Int, b: Int) : Int = (a + b) % 2013265921
+fn fmul(a: Int, b: Int) : Int = (a * b) % 2013265921
+fn fsub(a: Int, b: Int) : Int = ((a - b) % 2013265921 + 2013265921) % 2013265921
+fn fnorm(a: Int) : Int = (a % 2013265921 + 2013265921) % 2013265921
+fn nth(xs: List<Int>, i: Int) : Int =
+  match xs { [] => 0; [x, ...r] => if i == 0 then x else nth(r, i - 1) }
+fn set_nth(xs: List<Int>, i: Int, v: Int) : List<Int> =
+  match xs { [] => []; [x, ...r] => if i == 0 then [v] ++ r else [x] ++ set_nth(r, i - 1, v) }
+fn ilen(xs: List<Int>) : Int = match xs { [] => 0; [x, ...r] => 1 + ilen(r) }
+
+# --- circuit (same arithmetic builder as Stage 1) ----------------------------
+type Gate = | GConst(Int, Int) | GAdd(Int, Int, Int) | GSub(Int, Int, Int) | GMul(Int, Int, Int)
+type Expr = | Var(Int) | Const(Int) | Add(Expr, Expr) | Sub(Expr, Expr) | Mul(Expr, Expr)
+type Build = | Build(Int, List<Gate>, List<Int>)
+fn compile(e: Expr, b: Build) : (Int, Build) =
+  match e {
+    Var(i)   => (i, b);
+    Const(c) => match b { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GConst(n, c)], w ++ [fnorm(c)])) };
+    Add(x, y) => match compile(x, b) { (wx, b1) => match compile(y, b1) { (wy, b2) =>
+      match b2 { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GAdd(n, wx, wy)], w ++ [fadd(nth(w, wx), nth(w, wy))])) } } };
+    Sub(x, y) => match compile(x, b) { (wx, b1) => match compile(y, b1) { (wy, b2) =>
+      match b2 { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GSub(n, wx, wy)], w ++ [fsub(nth(w, wx), nth(w, wy))])) } } };
+    Mul(x, y) => match compile(x, b) { (wx, b1) => match compile(y, b1) { (wy, b2) =>
+      match b2 { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GMul(n, wx, wy)], w ++ [fmul(nth(w, wx), nth(w, wy))])) } } }
+  }
+fn compile_top(e: Expr, inputs: List<Int>) : (Int, Build) = compile(e, Build(ilen(inputs), [], inputs))
+
+fn glen(gs: List<Gate>) : Int = match gs { [] => 0; [g, ...r] => 1 + glen(r) }
+
+# --- the trace cells: value + which wire each cell names ---------------------
+# columns are laid out as [ all L | all R | all O ]; position p indexes that.
+fn lval(g: Gate, w: List<Int>) : Int =
+  match g { GConst(o, c) => 0; GAdd(o, a, b) => nth(w, a); GSub(o, a, b) => nth(w, a); GMul(o, a, b) => nth(w, a) }
+fn rval(g: Gate, w: List<Int>) : Int =
+  match g { GConst(o, c) => 0; GAdd(o, a, b) => nth(w, b); GSub(o, a, b) => nth(w, b); GMul(o, a, b) => nth(w, b) }
+fn oval(g: Gate, w: List<Int>) : Int =
+  match g { GConst(o, c) => nth(w, o); GAdd(o, a, b) => nth(w, o); GSub(o, a, b) => nth(w, o); GMul(o, a, b) => nth(w, o) }
+# wire each cell names; GConst's unused l/r get unique sentinels so they stay singletons.
+fn lref(g: Gate, i: Int) : Int =
+  match g { GConst(o, c) => 1000000 + i; GAdd(o, a, b) => a; GSub(o, a, b) => a; GMul(o, a, b) => a }
+fn rref(g: Gate, i: Int) : Int =
+  match g { GConst(o, c) => 2000000 + i; GAdd(o, a, b) => b; GSub(o, a, b) => b; GMul(o, a, b) => b }
+fn oref(g: Gate) : Int =
+  match g { GConst(o, c) => o; GAdd(o, a, b) => o; GSub(o, a, b) => o; GMul(o, a, b) => o }
+
+fn lvals(gs: List<Gate>, w: List<Int>) : List<Int> = match gs { [] => []; [g, ...r] => [lval(g, w)] ++ lvals(r, w) }
+fn rvals(gs: List<Gate>, w: List<Int>) : List<Int> = match gs { [] => []; [g, ...r] => [rval(g, w)] ++ rvals(r, w) }
+fn ovals(gs: List<Gate>, w: List<Int>) : List<Int> = match gs { [] => []; [g, ...r] => [oval(g, w)] ++ ovals(r, w) }
+fn lrefs(gs: List<Gate>, i: Int) : List<Int> = match gs { [] => []; [g, ...r] => [lref(g, i)] ++ lrefs(r, i + 1) }
+fn rrefs(gs: List<Gate>, i: Int) : List<Int> = match gs { [] => []; [g, ...r] => [rref(g, i)] ++ rrefs(r, i + 1) }
+fn orefs(gs: List<Gate>) : List<Int> = match gs { [] => []; [g, ...r] => [oref(g)] ++ orefs(r) }
+
+fn cell_values(gs: List<Gate>, w: List<Int>) : List<Int> = lvals(gs, w) ++ rvals(gs, w) ++ ovals(gs, w)
+fn cell_wires(gs: List<Gate>) : List<Int> = lrefs(gs, 0) ++ rrefs(gs, 0) ++ orefs(gs)
+
+# --- the wiring permutation σ -------------------------------------------------
+# σ(p) = the next position (cyclically) whose wire-name equals position p's.
+fn find_from(refs: List<Int>, j: Int, wr: Int, total: Int) : Int =
+  if j >= total then 0 - 1 else if nth(refs, j) == wr then j else find_from(refs, j + 1, wr, total)
+fn sigma_at(refs: List<Int>, p: Int, total: Int) : Int =
+  let wr : Int = nth(refs, p) in
+  let nxt : Int = find_from(refs, p + 1, wr, total) in
+  if nxt == (0 - 1) then find_from(refs, 0, wr, total) else nxt
+
+# --- the grand-product copy-constraint check ---------------------------------
+# ∏ (β·pos_p + value_p + γ), where pos is identity (gp_id) or σ (gp_sigma).
+fn gp_id(v: List<Int>, beta: Int, gamma: Int, p: Int, total: Int) : Int =
+  if p >= total then 1
+  else fmul(fadd(fadd(fmul(beta, p), nth(v, p)), gamma), gp_id(v, beta, gamma, p + 1, total))
+fn gp_sigma(v: List<Int>, refs: List<Int>, beta: Int, gamma: Int, p: Int, total: Int) : Int =
+  if p >= total then 1
+  else fmul(fadd(fadd(fmul(beta, sigma_at(refs, p, total)), nth(v, p)), gamma), gp_sigma(v, refs, beta, gamma, p + 1, total))
+
+fn copy_ok(v: List<Int>, refs: List<Int>, total: Int) : Bool =
+  gp_id(v, 12345, 67890, 0, total) == gp_sigma(v, refs, 12345, 67890, 0, total)
+
+# --- demo --------------------------------------------------------------------
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+
+# f(x) = x*x + x + 5, secret x = 3.  wire0 (=x) is named by cells {L0, R0, R1}.
+let f : Expr = Add(Add(Mul(Var(0), Var(0)), Var(0)), Const(5))
+
+let _ : String = print("--- prove_copy.glass: copy constraints via the permutation argument (Stage 2) ---")
+let _ : String = print("f(x) = x*x + x + 5,  secret x = 3")
+let _ : String = print("")
+let _ : String =
+  match compile_top(f, [3]) { (out, bld) => match bld { Build(n, gates, w) =>
+    let v : List<Int> = cell_values(gates, w) in
+    let refs : List<Int> = cell_wires(gates) in
+    let total : Int = 3 * glen(gates) in
+    print("trace cells: " ++ int_to_string(total) ++ " (3 columns × " ++ int_to_string(glen(gates)) ++ " gates)") } }
+
+# honest: every cell naming the same wire holds the same value.
+let _ : String =
+  match compile_top(f, [3]) { (out, bld) => match bld { Build(n, gates, w) =>
+    let total : Int = 3 * glen(gates) in
+    print("honest trace      -> copy constraints hold (∏ invariant under σ): " ++
+          show_b(copy_ok(cell_values(gates, w), cell_wires(gates), total))) } }
+
+# cheat: corrupt ONE cell (position 0 = L0, which names wire0 alongside R0,R1).
+# Each gate's local identity could still pass, but the wiring is now inconsistent.
+let _ : String =
+  match compile_top(f, [3]) { (out, bld) => match bld { Build(n, gates, w) =>
+    let total : Int = 3 * glen(gates) in
+    let bad : List<Int> = set_nth(cell_values(gates, w), 0, 777) in
+    print("cheat (L0 := 777) -> copy constraints hold: " ++
+          show_b(copy_ok(bad, cell_wires(gates), total)) ++ "  (broken wiring detected)") } }
+
+let _ : String = print("")
+let _ : String = print("the wiring is now provable from the committed columns alone — the witness")
+let _ : String = print("never appears. next: fold the gate identity + this permutation into one")
+let _ : String = print("quotient, then commit + FRI over F_{p^4} (Stages 3–4) for a succinct ZK proof.")
+
+"prove_copy v0.1 (Stage 2) — copy constraints: PLONK permutation argument over the trace cells"
