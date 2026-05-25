@@ -34,7 +34,7 @@ And that single idea — *transparency* — turns out to go further than anyone 
 > ### It proves itself.
 > Built from scratch, in Glass: a **zero-knowledge prover**. Commit a private
 > dataset, ask it a question — *the total payroll, the headcount, the average
-> salary* — and get back a cryptographic proof of the answer that reveals the
+> salary* and get back a cryptographic proof of the answer that reveals the
 > commitment, the query, and the result, and **not a single row**.
 
 <br/>
