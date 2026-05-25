@@ -7,6 +7,10 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [4.88.0] — 2026-05-25 — Poseidon: a permutation-based hash
+- Frost gains **Poseidon**, the hash production STARKs actually use, built from scratch: an `x⁷` S-box (a real *permutation* on Baby Bear — MiMC's `x⁵` is not, since 5 ∣ p−1), full + partial rounds, and an MDS mixing layer. It even proves the S-box is a bijection — `(x⁷)^d == x` for `d = 7⁻¹ mod (p−1)` — and powers a Poseidon Merkle root. A genuine upgrade over the toy MiMC. (`examples/frost/frost_poseidon.glass`)
+- Frost's README gains a **"Sharper primitives"** section gathering the drop-in upgrades: Poseidon, the recursive O(n log n) NTT, and the 128-bit bignum field.
+
 ## [4.87.0] — 2026-05-25 — A faster reference interpreter
 - The reference interpreter (`glass.py`) runs the heavy STARK demos **~24% faster** — `dataclass(slots=True)` on the runtime value classes (Python 3.10+, graceful on 3.9), plus inlining the leaf-operand cases (`Ident` / `IntLit` / `BinOp`) in the binop, function-call, and tail-call paths to skip millions of `eval_expr` dispatch calls. Output is byte-identical: suite 381/381, dogfoods unchanged, Python 3.9 ≡ 3.12.
 - **MIN/MAX now support `WHERE`**, so every aggregate (SUM, COUNT, AVG, MIN, MAX, GROUP BY) filters uniformly — each proven over the same committed table. (`examples/prove/prove_pane.glass`)

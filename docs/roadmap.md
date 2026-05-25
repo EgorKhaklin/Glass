@@ -39,12 +39,13 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Shipped (through v4.87)
+## Shipped (through v4.88)
 
 - **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
 - **Pane** — a query language in Glass.
 - **Frost** — a from-scratch zk-STARK toolkit: finite field + an **F_{p⁴}
-  extension** (cryptographic challenge space), MiMC hash, Merkle trees,
+  extension** (cryptographic challenge space), hashes (MiMC, and a proper
+  **Poseidon** — `x⁷` permutation S-box, full/partial rounds, MDS), Merkle trees,
   arithmetization, FRI (with Fiat-Shamir query sampling + amplification),
   AIR, **ZK blinding**, a **permutation argument** (copy constraints), and an
   **end-to-end zk-STARK** that's sound, succinct, and zero-knowledge.

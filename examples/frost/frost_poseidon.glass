@@ -1,0 +1,98 @@
+# =============================================================================
+# frost_poseidon.glass — Poseidon, the standard ZK hash, from scratch in Glass
+#
+# Frost's other files hash with MiMC (an x^5 S-box). On Baby Bear that S-box is
+# a fine mixing function but NOT a permutation: p-1 = 2^27·3·5, and 5 | p-1, so
+# x -> x^5 is not a bijection. Poseidon — the hash most real STARK/SNARK systems
+# use — is built on a permutation, so it needs an S-box x -> x^alpha with
+# gcd(alpha, p-1) = 1. The smallest such alpha here is 7 (7 does not divide
+# 2^27·3·5), so this Poseidon uses x^7. We *prove* it's a permutation below.
+#
+# The permutation, state width t = 3 (rate 2, capacity 1):
+#   each round:  add round constants -> S-box -> MDS mix
+#   full rounds S-box all 3 lanes; partial rounds S-box only lane 0 (the trick
+#   that keeps Poseidon cheap). R_F full rounds (split half/half), R_P partial.
+# A 2-to-1 compression hash absorbs (a, b) into [a, b, 0] and reads lane 0 out.
+#
+# Educational-grade parameters (round constants from a fixed schedule; a small
+# integer MDS matrix verified below). Baby Bear field; self-contained; dogfoods.
+# =============================================================================
+
+fn fadd(a: Int, b: Int) : Int = (a + b) % 2013265921
+fn fmul(a: Int, b: Int) : Int = (a * b) % 2013265921
+fn fsub(a: Int, b: Int) : Int = ((a - b) % 2013265921 + 2013265921) % 2013265921
+fn fnorm(a: Int) : Int = (a % 2013265921 + 2013265921) % 2013265921
+fn fpow(base: Int, e: Int) : Int = if e == 0 then 1 else if e % 2 == 0 then let h : Int = fpow(base, e / 2) in fmul(h, h) else fmul(base, fpow(base, e - 1))
+
+# S-box x^7 = x · x^2 · x^4  (a permutation on Baby Bear, since gcd(7, p-1)=1).
+fn sbox(x: Int) : Int = let x2 : Int = fmul(x, x) in let x4 : Int = fmul(x2, x2) in fmul(fmul(x4, x2), x)
+
+# round constants — a fixed deterministic schedule (real Poseidon uses a Grain
+# LFSR; this is the educational stand-in, varied across round r and lane p).
+fn rc(r: Int, p: Int) : Int = fnorm((r + 1) * (r + 1) * (r + 1) + (p + 1) * 7919 + (r + 1) * (p + 1) * 31 + 1234567)
+
+# MDS mix: a small-integer matrix [[2,3,1],[1,2,3],[3,1,2]]. It is MDS over Baby
+# Bear — every minor is a nonzero small integer (the 2x2 minors are ±1,±5,±7;
+# det = 18) and the prime divides none of them — so the layer mixes every lane.
+fn mds(s0: Int, s1: Int, s2: Int) : (Int, Int, Int) =
+  (fadd(fadd(fmul(2, s0), fmul(3, s1)), s2),
+   fadd(fadd(s0, fmul(2, s1)), fmul(3, s2)),
+   fadd(fadd(fmul(3, s0), s1), fmul(2, s2)))
+
+fn round_full(s0: Int, s1: Int, s2: Int, r: Int) : (Int, Int, Int) =
+  let a0 : Int = sbox(fadd(s0, rc(r, 0))) in
+  let a1 : Int = sbox(fadd(s1, rc(r, 1))) in
+  let a2 : Int = sbox(fadd(s2, rc(r, 2))) in
+  mds(a0, a1, a2)
+fn round_partial(s0: Int, s1: Int, s2: Int, r: Int) : (Int, Int, Int) =
+  let a0 : Int = sbox(fadd(s0, rc(r, 0))) in        # S-box lane 0 only
+  let a1 : Int = fadd(s1, rc(r, 1)) in
+  let a2 : Int = fadd(s2, rc(r, 2)) in
+  mds(a0, a1, a2)
+fn full_rounds(s0: Int, s1: Int, s2: Int, r: Int, n: Int) : (Int, Int, Int) =
+  if n <= 0 then (s0, s1, s2) else match round_full(s0, s1, s2, r) { (t0, t1, t2) => full_rounds(t0, t1, t2, r + 1, n - 1) }
+fn partial_rounds(s0: Int, s1: Int, s2: Int, r: Int, n: Int) : (Int, Int, Int) =
+  if n <= 0 then (s0, s1, s2) else match round_partial(s0, s1, s2, r) { (t0, t1, t2) => partial_rounds(t0, t1, t2, r + 1, n - 1) }
+
+# the permutation: 4 full, 22 partial, 4 full (R_F = 8, R_P = 22).
+fn perm(s0: Int, s1: Int, s2: Int) : (Int, Int, Int) =
+  match full_rounds(s0, s1, s2, 0, 4) { (a0, a1, a2) =>
+  match partial_rounds(a0, a1, a2, 4, 22) { (b0, b1, b2) =>
+  full_rounds(b0, b1, b2, 26, 4) } }
+
+# 2-to-1 compression: absorb (a, b) into the rate lanes, read lane 0 out.
+fn poseidon2(a: Int, b: Int) : Int = match perm(a, b, 0) { (o0, o1, o2) => o0 }
+
+# --- it really is a permutation: 7·d ≡ 1 (mod p-1), so (x^7)^d == x ----------
+# d = 7^{-1} mod (p-1=2013265920). (Derivation: p-1 ≡ 1 mod 7, so d=(1+6(p-1))/7.)
+fn pow7(x: Int) : Int = sbox(x)
+fn unsbox(y: Int) : Int = fpow(y, 1725656503)
+fn is_permuted(x: Int) : Bool = unsbox(pow7(x)) == x
+
+# --- a Merkle root built on Poseidon -----------------------------------------
+fn merkle4(a: Int, b: Int, c: Int, d: Int) : Int = poseidon2(poseidon2(a, b), poseidon2(c, d))
+
+# --- demo --------------------------------------------------------------------
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+let h12 : Int = poseidon2(1, 2)
+let h13 : Int = poseidon2(1, 3)
+let h21 : Int = poseidon2(2, 1)
+let av0 : Int = poseidon2(1000000, 2000000)
+let av1 : Int = poseidon2(1000001, 2000000)   # one input bit flipped
+
+let _ : String = print("--- frost_poseidon.glass: Poseidon, the standard ZK hash, from scratch ---")
+let _ : String = print("S-box x^7 (alpha=7, gcd(7, p-1)=1 => a permutation; MiMC's x^5 is NOT here)")
+let _ : String = print("")
+let _ : String = print("poseidon2(1,2) = " ++ int_to_string(h12))
+let _ : String = print("deterministic:        " ++ show_b(poseidon2(1, 2) == h12))
+let _ : String = print("order-sensitive (12 != 21): " ++ show_b(h12 != h21))
+let _ : String = print("collision-free on samples (12 != 13): " ++ show_b(h12 != h13))
+let _ : String = print("avalanche (1-bit flip -> different): " ++ show_b(av0 != av1))
+let _ : String = print("")
+let _ : String = print("x^7 is a bijection ((x^7)^d == x) at x=3,5,7,123456: "
+  ++ show_b(is_permuted(3)) ++ "/" ++ show_b(is_permuted(5)) ++ "/" ++ show_b(is_permuted(7)) ++ "/" ++ show_b(is_permuted(123456)))
+let _ : String = print("Merkle root over [10,20,30,40] with Poseidon = " ++ int_to_string(merkle4(10, 20, 30, 40)))
+let _ : String = print("")
+let _ : String = print("a permutation-based hash: the construction real STARKs use, replacing the toy MiMC.")
+
+"frost_poseidon v0.1 — Poseidon (x^7 S-box, full/partial rounds, MDS) from scratch in Glass"

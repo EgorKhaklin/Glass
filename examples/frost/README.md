@@ -39,6 +39,11 @@ compiles identically through the self-hosted toolchain.
 **The capstone**
 16. [`frost_starkzk.glass`](frost_starkzk.glass) — one end-to-end zk-STARK: sound, succinct, zero-knowledge.
 
+**Sharper primitives** *(drop-in upgrades that harden the toy parts)*
+- [`frost_poseidon.glass`](frost_poseidon.glass) — **Poseidon**, the standard ZK hash, from scratch: an `x⁷` S-box (a real *permutation* on Baby Bear, unlike MiMC's `x⁵`), full/partial rounds, and an MDS mix — the construction production STARKs actually use.
+- [`frost_ntt.glass`](frost_ntt.glass) — a recursive **O(n log n) NTT** (Cooley–Tukey), replacing the O(n²) transform under interpolation and FRI.
+- [`frost_field.glass`](frost_field.glass) — a **128-bit field** (2¹²⁸ − 159) from base-2¹⁶ bignum limbs: arithmetic past the single-int64 ceiling.
+
 > Honest note: the field and parameters are real enough to be *correct* and to
 > demonstrate every property; the sizes are kept small so each file reads in one
 > sitting. It's a working zk-STARK to learn from, not a hardened production prover.
