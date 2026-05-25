@@ -14,7 +14,7 @@
 
 <br/>
 
-A functional language where every signature tells the **whole truth** — what it
+A functional language where every signature tells the **whole truth**: what it
 takes, what it returns, what it touches, how it can fail. Read one function and
 you know exactly what it does. Nothing hidden. Nothing implicit. Like glass.
 
@@ -24,7 +24,7 @@ And that single idea — *transparency* — turns out to go further than anyone 
 
 > ### It tells the truth.
 > Honest signatures. Exhaustive matches. Effects you must declare. The compiler
-> enforces that you can reason about any function by reading it — and only it.
+> enforces that you can reason about any function by reading it and only it.
 >
 > ### It compiles itself.
 > Glass's compiler is **written in Glass**, and reproduces itself byte-for-byte
@@ -33,7 +33,7 @@ And that single idea — *transparency* — turns out to go further than anyone 
 >
 > ### It proves itself.
 > Built from scratch, in Glass: a **zero-knowledge prover**. Hand it a
-> computation, get back a cryptographic proof that it ran correctly — revealing
+> computation, get back a cryptographic proof that it ran correctly and revealing
 > nothing else.
 
 <br/>
@@ -112,7 +112,7 @@ glass/
 Glass is a research language and a labor of love. It self-hosts, ships 381
 passing tests, runs in the browser, and is the foundation for the experiments
 in [`examples/frost/`](examples/frost/) and [`examples/prove/`](examples/prove/).
-It is not production-hardened, and it doesn't pretend to be — see the honest
+It is not production-hardened, and it doesn't pretend to be. See the honest
 notes throughout.
 
 ## License
