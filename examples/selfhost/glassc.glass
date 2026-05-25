@@ -137,6 +137,21 @@ fn c_prelude_of(unused: Int) : String =
   "  if (!strcmp(v->ctor, \"Ok\")) return q_apply1(k, v->fields[0]);\n" ++
   "  return r;\n" ++
   "}\n" ++
+  "static long long q_map_option(long long o, long long f) {\n" ++
+  "  q_value_t* v = (q_value_t*)(intptr_t)o;\n" ++
+  "  if (!strcmp(v->ctor, \"Some\")) { q_value_t* s = q_alloc(\"Some\", 1); s->fields[0] = q_apply1(f, v->fields[0]); return (long long)(intptr_t)s; }\n" ++
+  "  return o;\n" ++
+  "}\n" ++
+  "static long long q_bind_option(long long o, long long k) {\n" ++
+  "  q_value_t* v = (q_value_t*)(intptr_t)o;\n" ++
+  "  if (!strcmp(v->ctor, \"Some\")) return q_apply1(k, v->fields[0]);\n" ++
+  "  return o;\n" ++
+  "}\n" ++
+  "static long long q_map_result(long long r, long long f) {\n" ++
+  "  q_value_t* v = (q_value_t*)(intptr_t)r;\n" ++
+  "  if (!strcmp(v->ctor, \"Ok\")) { q_value_t* s = q_alloc(\"Ok\", 1); s->fields[0] = q_apply1(f, v->fields[0]); return (long long)(intptr_t)s; }\n" ++
+  "  return r;\n" ++
+  "}\n" ++
   "static long long q_list_concat(long long a, long long b) {\n" ++
   "  q_value_t* v = (q_value_t*)(intptr_t)a;\n" ++
   "  if (strcmp(v->ctor, \"Cons\")) return b;\n" ++
@@ -580,6 +595,12 @@ fn gen_builtin(name: String, args: List<Expr>, venv: List<Pair<String, String>>,
         Some(mk_builtin(sargs, tv, lifted, "(((q_value_t*)(intptr_t)(" ++ a0 ++ "))->fields[1])"))
       else if name == "reverse" then
         Some(mk_builtin(sargs, tv, lifted, "q_reverse((long long)(" ++ a0 ++ "))"))
+      else if name == "map_option" then
+        Some(mk_builtin(sargs, tv, lifted, "q_map_option((long long)(" ++ a0 ++ "), (long long)(" ++ a1 ++ "))"))
+      else if name == "bind_option" then
+        Some(mk_builtin(sargs, tv, lifted, "q_bind_option((long long)(" ++ a0 ++ "), (long long)(" ++ a1 ++ "))"))
+      else if name == "map_result" then
+        Some(mk_builtin(sargs, tv, lifted, "q_map_result((long long)(" ++ a0 ++ "), (long long)(" ++ a1 ++ "))"))
       else None
   }
 
