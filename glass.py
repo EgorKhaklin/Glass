@@ -549,6 +549,11 @@ BIN_PREC = {
     "STAR":   7, "SLASH": 7, "PERCENT": 7,
 }
 RIGHT_ASSOC = {"CONCAT"}
+# Comparison operators do not associate: `a == b == c` is a parse error (write
+# `(a == b) == c`). glass.py's precedence climber would happily chain them, but
+# prism's front end rejects the chain — so the reference matches the self-hosted
+# compiler, and a program that runs here is one that self-hosts.
+COMPARISON_OPS = {"EQ", "NEQ", "LT", "GT", "LE", "GE"}
 OP_NAME = {
     "PLUS": "+", "MINUS": "-", "STAR": "*", "SLASH": "/",
     "EQ": "==", "NEQ": "!=", "LT": "<", "GT": ">", "LE": "<=", "GE": ">=",
@@ -865,6 +870,13 @@ class Parser:
                     left = Call(fn=right, args=[left])
             else:
                 left = BinOp(op=OP_NAME[t.kind], lhs=left, rhs=right)
+                nxt = self.peek()
+                if t.kind in COMPARISON_OPS and nxt.kind in COMPARISON_OPS:
+                    raise SyntaxError(
+                        f"chained comparison '{OP_NAME[t.kind]} ... {OP_NAME[nxt.kind]}' "
+                        f"at line {nxt.line} needs parentheses — comparison operators "
+                        f"don't associate; write e.g. (a {OP_NAME[t.kind]} b) {OP_NAME[nxt.kind]} c"
+                    )
         return left
 
     def parse_unary(self) -> Node:
