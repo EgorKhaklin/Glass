@@ -24,7 +24,7 @@ And that single idea — *transparency* — turns out to go further than anyone 
 
 > ### It tells the truth.
 > Honest signatures. Exhaustive matches. Effects you must declare. The compiler
-> enforces that you can reason about any function by reading it — and only it.
+> enforces that you can reason about any function by reading it and only it.
 >
 > ### It compiles itself.
 > Glass's compiler is **written in Glass**, and reproduces itself byte-for-byte
