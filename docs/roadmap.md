@@ -81,6 +81,28 @@ language feature, not a library you assemble by hand.
   command; a `glass --quiet` flag; and a written
   [operational semantics](semantics.md) making glass.py's de-facto spec explicit.
 
+## Beyond N1–N5 — the next horizon
+
+N1–N5 reached the founding thesis: *write Glass, get a zero-knowledge proof.*
+What's next is making that proof matter — moving from "it can prove" to "it
+proves the things the project was for."
+
+- **H1 — Pane ⊕ Frost: zero-knowledge queries.** The founding vision (*Frost =
+  the ZK extension of Pane*). Commit a private table (a Merkle root), run a Pane
+  query, and prove *"query Q over the committed table yields R"* — revealing only
+  Q, the commitment, and R. End to end: Pane's query algebra → a Frost circuit →
+  a ZK proof. (`frost_zk`'s membership ∧ query is the seed.)
+- **H2 — A cryptographic prover.** Wire the 128-bit bignum field (`frost_field`)
+  through the FRI/quotient so the end-to-end proof has real security, not the toy
+  base field. The field is built (N4); this is the integration.
+- **H3 — Recursive proofs.** A proof that verifies another proof — aggregation,
+  the path to scalable and on-chain-style verification.
+- **H4 — Performance.** Use the recursive NTT throughout; benchmark and optimize
+  the prover on larger circuits.
+
+The recommended next step is **H1** — it's concrete, demonstrable, uses pieces
+that already exist, and is the literal payoff of the whole project.
+
 ## Success criteria (the Glass discipline)
 
 Every item ships a differential-tested, self-hosting artifact: the reference and
