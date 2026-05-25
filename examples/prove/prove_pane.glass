@@ -1,0 +1,239 @@
+# =============================================================================
+# prove_pane.glass — H1: Frost as a second backend over the Pane query algebra
+#
+# pane.glass says it out loud: *"Frost will be a SECOND backend over the very
+# same Query / PExpr ASTs."* This file is that backend. You take a real Pane
+# `Query` value — `SumQ("salary", Where(EqE(Col("dept"), LitI(0)), From(t)))` —
+# and instead of interpreting it (`run_query`), you LOWER it into a Frost
+# circuit over a *committed, private* table, and prove its result.
+#
+# Two evaluators, one AST:
+#   * run_query  : Query -> Table     (the reference semantics, from pane.glass)
+#   * prove_pane : Query -> a proof   (the ZK backend, here)
+# and the discipline is that they agree: the circuit's answer ACCEPTs exactly
+# when it equals run_query's, and any other claimed answer REJECTs.
+#
+# Public: the table commitment, the query, the result. Private: the rows.
+# PExpr lowers gadget-for-gadget: Col -> a witness wire, LitI -> a constant,
+# EqE -> an is-zero selector, And/Or/Not -> boolean arithmetic, Add/Sub/Mul ->
+# field arithmetic. (LtE/GtE need a range/bit-decomposition gadget — lowered to
+# false here, so an order predicate fails safe rather than proving a wrong
+# answer; equality predicates are the ZK-cheap core.)
+#
+# Self-contained (Pane core inlined from pane.glass); field 2^31-1; dogfoods.
+# =============================================================================
+
+fn fadd(a: Int, b: Int) : Int = (a + b) % 2147483647
+fn fmul(a: Int, b: Int) : Int = (a * b) % 2147483647
+fn fsub(a: Int, b: Int) : Int = ((a - b) % 2147483647 + 2147483647) % 2147483647
+fn fnorm(a: Int) : Int = (a % 2147483647 + 2147483647) % 2147483647
+fn fpow(base: Int, e: Int) : Int = if e == 0 then 1 else if e % 2 == 0 then let h : Int = fpow(base, e / 2) in fmul(h, h) else fmul(base, fpow(base, e - 1))
+fn finv(x: Int) : Int = fpow(x, 2147483645)
+fn sbox(x: Int) : Int = let x2 : Int = fmul(x, x) in let x4 : Int = fmul(x2, x2) in fmul(x4, x)
+fn rconst(i: Int) : Int = fnorm((i + 1) * (i + 1) * (i + 1) + i * 1009 + 1234567)
+fn mimc(x: Int, k: Int, i: Int) : Int = if i >= 16 then fadd(x, k) else mimc(sbox(fadd(fadd(x, k), rconst(i))), k, i + 1)
+fn hash2(a: Int, b: Int) : Int = fadd(fadd(mimc(a, b, 0), a), b)
+
+# --- the prove-bridge constraint system --------------------------------------
+type Gate = | GConst(Int, Int) | GAdd(Int, Int, Int) | GSub(Int, Int, Int) | GMul(Int, Int, Int) | GAssertEq(Int, Int)
+type Build = | Build(Int, List<Gate>, List<Pair<Int, Int>>)
+fn assoc(vs: List<Pair<Int, Int>>, w: Int) : Int = match vs { [] => 0; [Pair(k, v), ...r] => if k == w then v else assoc(r, w) }
+fn b_fresh(b: Build) : (Int, Build) = match b { Build(n, gs, vs) => (n, Build(n + 1, gs, vs)) }
+fn b_emit(g: Gate, b: Build) : Build = match b { Build(n, gs, vs) => Build(n, [g] ++ gs, vs) }
+fn b_set(w: Int, v: Int, b: Build) : Build = match b { Build(n, gs, vs) => Build(n, gs, [Pair(w, v)] ++ vs) }
+fn b_val(b: Build, w: Int) : Int = match b { Build(n, gs, vs) => assoc(vs, w) }
+fn mk_const(c: Int, b: Build) : (Int, Build) = match b_fresh(b) { (w, b1) => (w, b_set(w, fnorm(c), b_emit(GConst(w, fnorm(c)), b1))) }
+fn mk_add(a: Int, bw: Int, b: Build) : (Int, Build) = match b_fresh(b) { (o, b1) => (o, b_set(o, fadd(b_val(b1, a), b_val(b1, bw)), b_emit(GAdd(o, a, bw), b1))) }
+fn mk_mul(a: Int, bw: Int, b: Build) : (Int, Build) = match b_fresh(b) { (o, b1) => (o, b_set(o, fmul(b_val(b1, a), b_val(b1, bw)), b_emit(GMul(o, a, bw), b1))) }
+fn mk_sub(a: Int, bw: Int, b: Build) : (Int, Build) = match b_fresh(b) { (o, b1) => (o, b_set(o, fsub(b_val(b1, a), b_val(b1, bw)), b_emit(GSub(o, a, bw), b1))) }
+fn mk_eq(wx: Int, wy: Int, b: Build) : (Int, Build) =
+  match mk_sub(wx, wy, b) { (wd, b1) => let dv : Int = b_val(b1, wd) in let inv : Int = if dv == 0 then 0 else finv(dv) in
+    match b_fresh(b1) { (winv, b2) => let b3 : Build = b_set(winv, inv, b2) in
+      match mk_mul(wd, winv, b3) { (wp, b4) => match mk_const(1, b4) { (wone, b5) =>
+        match mk_sub(wone, wp, b5) { (wout, b6) => match mk_mul(wd, wout, b6) { (wz, b7) =>
+          match mk_const(0, b7) { (wzero, b8) => (wout, b_emit(GAssertEq(wz, wzero), b8)) } } } } } } }
+fn residual(g: Gate, vs: List<Pair<Int, Int>>) : Int =
+  match g { GConst(o, c) => fsub(assoc(vs, o), fnorm(c)); GAdd(o, a, b) => fsub(assoc(vs, o), fadd(assoc(vs, a), assoc(vs, b)));
+    GSub(o, a, b) => fsub(assoc(vs, o), fsub(assoc(vs, a), assoc(vs, b))); GMul(o, a, b) => fsub(assoc(vs, o), fmul(assoc(vs, a), assoc(vs, b)));
+    GAssertEq(a, b) => fsub(assoc(vs, a), assoc(vs, b)) }
+fn ordered_w(vs: List<Pair<Int, Int>>, i: Int, n: Int) : List<Int> = if i >= n then [] else [assoc(vs, i)] ++ ordered_w(vs, i + 1, n)
+fn rlc(gates: List<Gate>, vs: List<Pair<Int, Int>>, r: Int, rpow: Int) : Int = match gates { [] => 0; [g, ...rest] => fadd(fmul(rpow, residual(g, vs)), rlc(rest, vs, r, fmul(rpow, r))) }
+fn hash_fold(xs: List<Int>, acc: Int) : Int = match xs { [] => acc; [x, ...r] => hash_fold(r, hash2(acc, x)) }
+fn prove_ok(gates: List<Gate>, vs: List<Pair<Int, Int>>, n: Int) : Bool = rlc(gates, vs, hash2(hash_fold(ordered_w(vs, 0, n), 0), 777), 1) == 0
+
+# --- Pane core (inlined from pane.glass — the SAME ASTs Frost is a backend for)
+type Val   = | VInt(Int) | VStr(String) | VBool(Bool)
+type Row   = | Row(List<Pair<String, Val>>)
+type Table = | Table(List<Row>)
+type PExpr = | Col(String) | LitI(Int) | LitS(String) | LitB(Bool)
+             | EqE(PExpr, PExpr) | LtE(PExpr, PExpr) | GtE(PExpr, PExpr)
+             | AndE(PExpr, PExpr) | OrE(PExpr, PExpr) | NotE(PExpr)
+             | AddE(PExpr, PExpr) | SubE(PExpr, PExpr) | MulE(PExpr, PExpr)
+type Query = | From(Table) | Where(PExpr, Query) | Select(List<String>, Query)
+             | Limit(Int, Query) | CountQ(Query) | SumQ(String, Query)
+fn plen(xs: List<Row>) : Int = match xs { [] => 0; [x, ...rest] => 1 + plen(rest) }
+fn lookup_cell(cells: List<Pair<String, Val>>, name: String) : Val = match cells { [] => VBool(false); [Pair(k, v), ...rest] => if k == name then v else lookup_cell(rest, name) }
+fn row_get(r: Row, name: String) : Val = match r { Row(cells) => lookup_cell(cells, name) }
+fn vint(v: Val) : Int = match v { VInt(n) => n; _ => 0 }
+fn vbool(v: Val) : Bool = match v { VBool(b) => b; _ => false }
+fn val_eq(a: Val, b: Val) : Bool = match a { VInt(x) => match b { VInt(y) => x == y; _ => false }; VStr(x) => match b { VStr(y) => x == y; _ => false }; VBool(x) => match b { VBool(y) => x == y; _ => false } }
+fn eval_pexpr(e: PExpr, r: Row) : Val =
+  match e { Col(name) => row_get(r, name); LitI(n) => VInt(n); LitS(s) => VStr(s); LitB(b) => VBool(b);
+    EqE(a, b) => VBool(val_eq(eval_pexpr(a, r), eval_pexpr(b, r))); LtE(a, b) => VBool(vint(eval_pexpr(a, r)) < vint(eval_pexpr(b, r)));
+    GtE(a, b) => VBool(vint(eval_pexpr(a, r)) > vint(eval_pexpr(b, r))); AndE(a, b) => VBool(vbool(eval_pexpr(a, r)) && vbool(eval_pexpr(b, r)));
+    OrE(a, b) => VBool(vbool(eval_pexpr(a, r)) || vbool(eval_pexpr(b, r))); NotE(a) => VBool(!vbool(eval_pexpr(a, r)));
+    AddE(a, b) => VInt(vint(eval_pexpr(a, r)) + vint(eval_pexpr(b, r))); SubE(a, b) => VInt(vint(eval_pexpr(a, r)) - vint(eval_pexpr(b, r)));
+    MulE(a, b) => VInt(vint(eval_pexpr(a, r)) * vint(eval_pexpr(b, r))) }
+fn filter_rows(rows: List<Row>, p: PExpr) : List<Row> = match rows { [] => []; [r, ...rest] => if vbool(eval_pexpr(p, r)) then [r] ++ filter_rows(rest, p) else filter_rows(rest, p) }
+fn project_row(r: Row, cols: List<String>) : Row = match cols { [] => Row([]); [c, ...rest] => match project_row(r, rest) { Row(tail) => Row([Pair(c, row_get(r, c))] ++ tail) } }
+fn project_rows(rows: List<Row>, cols: List<String>) : List<Row> = match rows { [] => []; [r, ...rest] => [project_row(r, cols)] ++ project_rows(rest, cols) }
+fn take_rows(rows: List<Row>, n: Int) : List<Row> = if n <= 0 then [] else match rows { [] => []; [r, ...rest] => [r] ++ take_rows(rest, n - 1) }
+fn sum_col(rows: List<Row>, col: String) : Int = match rows { [] => 0; [r, ...rest] => vint(row_get(r, col)) + sum_col(rest, col) }
+fn run_query(q: Query) : Table =
+  match q { From(t) => t;
+    Where(p, sub) => match run_query(sub) { Table(rows) => Table(filter_rows(rows, p)) };
+    Select(cols, sub) => match run_query(sub) { Table(rows) => Table(project_rows(rows, cols)) };
+    Limit(n, sub) => match run_query(sub) { Table(rows) => Table(take_rows(rows, n)) };
+    CountQ(sub) => match run_query(sub) { Table(rows) => Table([Row([Pair("count", VInt(plen(rows)))])]) };
+    SumQ(col, sub) => match run_query(sub) { Table(rows) => Table([Row([Pair("sum", VInt(sum_col(rows, col)))])]) } }
+# extract the single aggregate cell's int from a 1-row result table
+fn result_int(t: Table) : Int = match t { Table(rows) => match rows { [] => 0; [r, ...rr] => match r { Row(cells) => match cells { [] => 0; [Pair(k, v), ...cc] => vint(v) } } } }
+
+# --- the Frost backend: lower a Query over a committed table -----------------
+# schema = the column names in order; the witness is row-major: row i, column j
+# lives on wire (i*ncols + j).
+fn keys(cells: List<Pair<String, Val>>) : List<String> = match cells { [] => []; [Pair(k, v), ...r] => [k] ++ keys(r) }
+fn schema_of(rows: List<Row>) : List<String> = match rows { [] => []; [Row(cells), ...rest] => keys(cells) }
+fn col_index(schema: List<String>, name: String) : Int = match schema { [] => 0; [c, ...r] => if c == name then 0 else 1 + col_index(r, name) }
+fn ncount(xs: List<String>) : Int = match xs { [] => 0; [x, ...r] => 1 + ncount(r) }
+fn rcount(xs: List<Row>) : Int = match xs { [] => 0; [x, ...r] => 1 + rcount(r) }
+fn rows_of(t: Table) : List<Row> = match t { Table(rs) => rs }
+fn row_flat(schema: List<String>, r: Row) : List<Int> = match schema { [] => []; [c, ...rest] => [fnorm(vint(row_get(r, c)))] ++ row_flat(rest, r) }
+fn flatten_table(schema: List<String>, rows: List<Row>) : List<Int> = match rows { [] => []; [r, ...rest] => row_flat(schema, r) ++ flatten_table(schema, rest) }
+fn vs_of(flat: List<Int>, i: Int) : List<Pair<Int, Int>> = match flat { [] => []; [x, ...r] => [Pair(i, x)] ++ vs_of(r, i + 1) }
+
+# range gadget (from prove_glass): a,b ∈ [0,2^16); d = a−b+2^16 ∈ (0,2^17); the
+# 2^16 bit is set iff a ≥ b, so [a < b] = 1 − bit16. Bits are witness hints, each
+# constrained boolean (w·w == w), and their weighted sum is asserted to equal d.
+fn pow2i(i: Int) : Int = if i <= 0 then 1 else 2 * pow2i(i - 1)
+fn wnth(xs: List<Int>, i: Int) : Int = match xs { [] => 0; [x, ...r] => if i == 0 then x else wnth(r, i - 1) }
+fn mk_not(wx: Int, b: Build) : (Int, Build) = match mk_const(1, b) { (one, b1) => mk_sub(one, wx, b1) }
+fn alloc_bits(vv: Int, i: Int, nbits: Int, b: Build) : (List<Int>, Build) =
+  if i >= nbits then ([], b)
+  else let bitval : Int = (vv / pow2i(i)) % 2 in
+    match b_fresh(b) { (w, b1) => let b2 : Build = b_set(w, bitval, b1) in
+      match mk_mul(w, w, b2) { (ww, b3) => let b4 : Build = b_emit(GAssertEq(ww, w), b3) in
+        match alloc_bits(vv, i + 1, nbits, b4) { (rest, b5) => ([w] ++ rest, b5) } } }
+fn weighted_sum(bits: List<Int>, i: Int, b: Build) : (Int, Build) =
+  match bits { [] => mk_const(0, b);
+    [bit, ...rest] => match mk_const(pow2i(i), b) { (p2, b1) => match mk_mul(bit, p2, b1) { (term, b2) =>
+      match weighted_sum(rest, i + 1, b2) { (rs, b3) => mk_add(term, rs, b3) } } } }
+fn lt_gadget(aw: Int, av: Int, bw: Int, bv: Int, b: Build) : (Int, Build) =
+  match mk_const(65536, b) { (k, b1) => match mk_sub(aw, bw, b1) { (amb, b2) => match mk_add(amb, k, b2) { (dw, b3) =>
+    let dv : Int = fadd(fsub(av, bv), 65536) in
+    match alloc_bits(dv, 0, 17, b3) { (bits, b4) => match weighted_sum(bits, 0, b4) { (ws, b5) =>
+      let b6 : Build = b_emit(GAssertEq(ws, dw), b5) in mk_not(wnth(bits, 16), b6) } } } } }
+
+# lower a PExpr to a wire holding its value for the row whose cells start at `rb`.
+fn lower(e: PExpr, rb: Int, schema: List<String>, b: Build) : (Int, Build) =
+  match e {
+    Col(name) => (rb + col_index(schema, name), b);                # an existing witness wire
+    LitI(n)   => mk_const(n, b);
+    LitB(bv)  => mk_const(if bv then 1 else 0, b);
+    LitS(s)   => mk_const(0, b);                                   # strings: not numeric in-circuit
+    EqE(a, c) => match lower(a, rb, schema, b) { (wa, b1) => match lower(c, rb, schema, b1) { (wc, b2) => mk_eq(wa, wc, b2) } };
+    AndE(a, c) => match lower(a, rb, schema, b) { (wa, b1) => match lower(c, rb, schema, b1) { (wc, b2) => mk_mul(wa, wc, b2) } };
+    OrE(a, c) => match lower(a, rb, schema, b) { (wa, b1) => match lower(c, rb, schema, b1) { (wc, b2) =>
+                   match mk_add(wa, wc, b2) { (ws, b3) => match mk_mul(wa, wc, b3) { (wp, b4) => mk_sub(ws, wp, b4) } } } };
+    NotE(a) => match lower(a, rb, schema, b) { (wa, b1) => match mk_const(1, b1) { (w1, b2) => mk_sub(w1, wa, b2) } };
+    AddE(a, c) => match lower(a, rb, schema, b) { (wa, b1) => match lower(c, rb, schema, b1) { (wc, b2) => mk_add(wa, wc, b2) } };
+    SubE(a, c) => match lower(a, rb, schema, b) { (wa, b1) => match lower(c, rb, schema, b1) { (wc, b2) => mk_sub(wa, wc, b2) } };
+    MulE(a, c) => match lower(a, rb, schema, b) { (wa, b1) => match lower(c, rb, schema, b1) { (wc, b2) => mk_mul(wa, wc, b2) } };
+    LtE(a, c) => match lower(a, rb, schema, b) { (wa, b1) => match lower(c, rb, schema, b1) { (wc, b2) => lt_gadget(wa, b_val(b2, wa), wc, b_val(b2, wc), b2) } };
+    GtE(a, c) => match lower(a, rb, schema, b) { (wa, b1) => match lower(c, rb, schema, b1) { (wc, b2) => lt_gadget(wc, b_val(b2, wc), wa, b_val(b2, wa), b2) } }
+  }
+
+# C' = Σ wire_i · γ^i  (binding fingerprint over wires 0..m-1)
+fn commit_go(m: Int, i: Int, gamma: Int, acc: Int, b: Build) : (Int, Build) =
+  if i < 0 then (acc, b)
+  else match mk_const(gamma, b) { (wg, b1) => match mk_mul(acc, wg, b1) { (sc, b2) => match mk_add(sc, i, b2) { (na, b3) => commit_go(m, i - 1, gamma, na, b3) } } }
+fn ref_commit(flat: List<Int>, gamma: Int, gp: Int) : Int = match flat { [] => 0; [x, ...r] => fadd(fmul(x, gp), ref_commit(r, gamma, fmul(gp, gamma))) }
+
+# the query loop: for each row, selector = lower(pred); term = (count? selector : selector*colwire); R = Σ term.
+fn agg_loop(i: Int, nrows: Int, ncols: Int, schema: List<String>, pred: PExpr, is_cnt: Bool, scol: Int, acc: Int, b: Build) : (Int, Build) =
+  if i >= nrows then (acc, b)
+  else let rb : Int = i * ncols in
+    match lower(pred, rb, schema, b) { (sel, b1) =>
+      match (if is_cnt then (sel, b1) else mk_mul(sel, rb + scol, b1)) { (term, b2) =>
+        match mk_add(acc, term, b2) { (na, b3) => agg_loop(i + 1, nrows, ncols, schema, pred, is_cnt, scol, na, b3) } } }
+
+# query deconstruction (SumQ/CountQ over From / Where, one level)
+fn inner_of(q: Query) : Query = match q { SumQ(c, s) => s; CountQ(s) => s; _ => q }
+fn pred_of(inner: Query) : PExpr = match inner { Where(p, sub) => p; _ => LitB(true) }
+fn table_of(inner: Query) : Table = match inner { Where(p, sub) => table_of(sub); From(t) => t; _ => Table([]) }
+fn is_count(q: Query) : Bool = match q { CountQ(s) => true; _ => false }
+fn sum_col_of(q: Query) : String = match q { SumQ(c, s) => c; _ => "sum" }
+
+fn prove_pane(q: Query, gamma: Int, claimedC: Int, claimedR: Int) : Bool =
+  let inner : Query = inner_of(q) in
+  let pred : PExpr = pred_of(inner) in
+  let rows : List<Row> = rows_of(table_of(inner)) in
+  let schema : List<String> = schema_of(rows) in
+  let ncols : Int = ncount(schema) in
+  let nrows : Int = rcount(rows) in
+  let flat : List<Int> = flatten_table(schema, rows) in
+  let m : Int = nrows * ncols in
+  let scol : Int = col_index(schema, sum_col_of(q)) in
+  let b0 : Build = Build(m, [], vs_of(flat, 0)) in
+  match mk_const(0, b0) { (zc, b1) =>
+  match commit_go(m, m - 1, gamma, zc, b1) { (wC, b2) =>
+  match mk_const(claimedC, b2) { (wCpub, b3) => let b4 : Build = b_emit(GAssertEq(wC, wCpub), b3) in
+  match mk_const(0, b4) { (zr, b5) =>
+  match agg_loop(0, nrows, ncols, schema, pred, is_count(q), scol, zr, b5) { (wR, b6) =>
+  match mk_const(claimedR, b6) { (wRpub, b7) => let b8 : Build = b_emit(GAssertEq(wR, wRpub), b7) in
+    match b8 { Build(n, gates, vs) => prove_ok(gates, vs, n) } } } } } } }
+
+fn commit_of(q: Query, gamma: Int) : Int =
+  let rows : List<Row> = rows_of(table_of(inner_of(q))) in
+  ref_commit(flatten_table(schema_of(rows), rows), gamma, 1)
+
+# --- demo --------------------------------------------------------------------
+fn show_a(b: Bool) : String = if b then "ACCEPT" else "REJECT"
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+
+# a private table: (dept, salary, senior).  dept 0 = engineering, 1 = sales.
+let tbl : Table = Table([
+  Row([Pair("dept", VInt(0)), Pair("salary", VInt(100)), Pair("senior", VInt(1))]),
+  Row([Pair("dept", VInt(1)), Pair("salary", VInt(90)),  Pair("senior", VInt(0))]),
+  Row([Pair("dept", VInt(0)), Pair("salary", VInt(150)), Pair("senior", VInt(0))]),
+  Row([Pair("dept", VInt(1)), Pair("salary", VInt(80)),  Pair("senior", VInt(1))])])
+let gamma : Int = 918273645
+
+# three real Pane queries, built from the Pane constructors
+let q1 : Query = SumQ("salary", Where(EqE(Col("dept"), LitI(0)), From(tbl)))                         # eng salary total
+let q2 : Query = CountQ(Where(EqE(Col("dept"), LitI(1)), From(tbl)))                                 # # of sales rows
+let q3 : Query = SumQ("salary", Where(AndE(EqE(Col("dept"), LitI(0)), EqE(Col("senior"), LitI(1))), From(tbl)))  # senior-eng total
+let q4 : Query = SumQ("salary", Where(GtE(Col("salary"), LitI(85)), From(tbl)))                                 # range: salary > 85
+let q5 : Query = SumQ("salary", Where(AndE(EqE(Col("dept"), LitI(0)), GtE(Col("salary"), LitI(120))), From(tbl)))  # eng AND salary > 120
+
+fn report(label: String, q: Query, gamma: Int) : String !{IO} =
+  let want : Int = result_int(run_query(q)) in
+  let c : Int = commit_of(q, gamma) in
+  print(label ++ ": run_query = " ++ int_to_string(want)
+    ++ "  | proof(honest) " ++ show_a(prove_pane(q, gamma, c, want))
+    ++ " | proof(wrong " ++ int_to_string(want + 1) ++ ") " ++ show_a(prove_pane(q, gamma, c, want + 1))
+    ++ " | Frost==Pane: " ++ show_b(prove_pane(q, gamma, c, want)))
+
+let _ : String = print("--- prove_pane.glass: Frost as a second backend over the Pane query algebra (H1) ---")
+let _ : String = print("one AST, two evaluators: run_query interprets it; prove_pane proves it over a committed PRIVATE table")
+let _ : String = print("")
+let _ : String = report("SELECT SUM(salary) WHERE dept=eng           ", q1, gamma)
+let _ : String = report("SELECT COUNT(*)    WHERE dept=sales         ", q2, gamma)
+let _ : String = report("SELECT SUM(salary) WHERE dept=eng AND senior", q3, gamma)
+let _ : String = report("SELECT SUM(salary) WHERE salary > 85          ", q4, gamma)
+let _ : String = report("SELECT SUM(salary) WHERE dept=eng AND sal>120 ", q5, gamma)
+let _ : String = print("")
+let _ : String = print("the Frost circuit's answer ACCEPTs exactly when it equals run_query's; any other claim REJECTs.")
+let _ : String = print("revealed: the commitment, the query, the result. hidden: every row.")
+
+"prove_pane v0.1 (H1) — lower a Pane Query (From/Where/SumQ/CountQ, EqE/And/Or/Not gadgets) to a Frost proof"

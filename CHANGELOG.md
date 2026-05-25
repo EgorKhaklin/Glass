@@ -7,6 +7,12 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [4.85.0] — 2026-05-25 — Pane ⊕ Frost: zero-knowledge queries
+- The founding vision, realized: commit a **private table**, then prove the result of a query — revealing only the commitment, the query, and the answer, never a row. (`examples/prove/prove_query`)
+- **Frost as a second backend over the real Pane query algebra**: a genuine Pane `Query` value (`SumQ`/`CountQ`/`Where`) is *lowered* into a Frost circuit — equality, booleans, arithmetic, and `<`/`>` range comparisons — with one AST and two evaluators (`run_query` interprets, `prove_pane` proves) kept honest by their agreement. (`examples/prove/prove_pane`)
+- **A committed-table query in zero-knowledge**: a SUM, and a `WHERE`-filtered SUM, over a committed private column — lowered to the blinded F_{p⁴} FRI STARK, succinct and leaking nothing. The PLONK gate identity gains a `qassert` selector so the binding/result assertions and the filter's is-zero gadget ride inside the low-degree quotient. (`examples/prove/prove_query_zk`)
+- The reference interpreter now **rejects uppercase value bindings** — an uppercase name is a constructor, and binding one as a value silently miscompiled — closing a glass.py ⟷ compiler divergence.
+
 ## [4.84.0] — 2026-05-25 — A 128-bit bignum field, a hardened runtime, and a written semantics
 - A **production-width field**: a 128-bit prime (2¹²⁸ − 159) built from base-2¹⁶ bignum limbs — arithmetic that overflows a single int64 now works limb-by-limb, and self-hosts byte-for-byte. (`examples/frost/frost_field`)
 - **Hardened the native runtime**: the emitted `run_command` uses process-unique temp files with cleanup (no more fixed-`/tmp` clobber); the bootstrap fixpoint still closes byte-identically.

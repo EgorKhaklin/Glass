@@ -39,7 +39,7 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Shipped (through v4.84)
+## Shipped (through v4.85)
 
 - **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
 - **Pane** — a query language in Glass.
@@ -87,11 +87,37 @@ N1–N5 reached the founding thesis: *write Glass, get a zero-knowledge proof.*
 What's next is making that proof matter — moving from "it can prove" to "it
 proves the things the project was for."
 
-- **H1 — Pane ⊕ Frost: zero-knowledge queries.** The founding vision (*Frost =
-  the ZK extension of Pane*). Commit a private table (a Merkle root), run a Pane
-  query, and prove *"query Q over the committed table yields R"* — revealing only
-  Q, the commitment, and R. End to end: Pane's query algebra → a Frost circuit →
-  a ZK proof. (`frost_zk`'s membership ∧ query is the seed.)
+- **H1 — Pane ⊕ Frost: zero-knowledge queries. 🚧 IN PROGRESS.** The founding
+  vision (*Frost = the ZK extension of Pane*): commit a private table, run a Pane
+  query, prove *"query Q over the committed table yields R"* — revealing only Q,
+  the commitment, and R.
+  - ✅ **The idea, end to end** ([`prove_query.glass`](../examples/prove/prove_query.glass)):
+    `SELECT SUM(salary) WHERE dept = target` over a *private* table, with a binding
+    fingerprint commitment (C = Σ flatᵢ·γⁱ, a Reed–Solomon/poly-eval commitment)
+    tying the witness to the public commitment. Honest ACCEPT; lying about the
+    result or the table REJECTs; differential-tested, byte-identical.
+  - ✅ **Frost as a second backend over the real Pane algebra**
+    ([`prove_pane.glass`](../examples/prove/prove_pane.glass)): a genuine Pane
+    `Query` value (`SumQ`/`CountQ`/`Where` with `EqE`/`AndE`/`OrE`/`NotE`/arith
+    gadgets, **and `LtE`/`GtE` order comparisons via a 17-bit range gadget**) is
+    *lowered* into a Frost circuit — one AST, two evaluators (`run_query`
+    interprets, `prove_pane` proves), with the discipline that they agree.
+    pane.glass's stated plan, realized.
+  - ✅ **The payoff — a committed-table query in zero-knowledge**
+    ([`prove_query_zk.glass`](../examples/prove/prove_query_zk.glass)): a SUM over
+    a committed private column — and a `SUM … WHERE` *filtered* query — lowered to
+    the blinded F_{p⁴} FRI STARK (the `prove_zk` backend), succinct and leaking
+    nothing. The PLONK gate identity gained a `qassert·(l−r)` selector so the
+    binding/result assertions *and the filter's is-zero gadget* ride inside the
+    low-degree quotient (the gadget's inverse hint is supplied as an input wire,
+    not a gate row). Honest ACCEPT, lies REJECT, two blinding seeds give different
+    openings (ZK). Self-hosted byte-identical.
+  - **Next:** `GROUP BY` / multi-column projection; a bigger field (H2) so the
+    proof has cryptographic, not toy, security; lifting the range gadget into the
+    ZK backend (it's ~90 gates per comparison — feasible but pushes the trace up).
+  - **Hardened the discipline along the way:** glass.py now rejects uppercase
+    value bindings (they silently miscompiled — glassc read them as constructors);
+    `dogfood.sh`'s build seed was fixed (it was seeding the wrong path).
 - **H2 — A cryptographic prover.** Wire the 128-bit bignum field (`frost_field`)
   through the FRI/quotient so the end-to-end proof has real security, not the toy
   base field. The field is built (N4); this is the integration.

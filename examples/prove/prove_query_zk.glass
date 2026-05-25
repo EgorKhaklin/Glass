@@ -1,0 +1,266 @@
+# =============================================================================
+# prove_query_zk.glass — H1: a query over a committed table, in ZERO-KNOWLEDGE
+#
+# prove_query.glass proved a query result with a *sound* RLC argument. This file
+# upgrades it to the real thing: a SUCCINCT, ZERO-KNOWLEDGE STARK. The same idea
+# — commit a private table, prove an aggregate over it — but now the proof is
+# the blinded F_{p^4} FRI pipeline from prove_zk (gate quotient → blind → FRI),
+# so it is short and leaks nothing about the rows.
+#
+# The query: SUM over a committed private column. Public: a binding commitment
+# C = Σ vᵢ·γⁱ, and the claimed sum R. Private: the values vᵢ. The circuit
+#   (1) recomputes the commitment from the witness and asserts it equals C,
+#   (2) recomputes the sum and asserts it equals R,
+# and the STARK proves every gate — *including the assertions* — holds.
+#
+# To carry the assertions, the universal PLONK gate identity gains a fifth
+# selector: qassert·(l − r), which vanishes on a row iff the two asserted wires
+# are equal. A cheating prover (wrong values, wrong claimed sum) makes some
+# assertion row's (l − r) ≠ 0, so the gate polynomial no longer vanishes on the
+# trace domain, its quotient is not low-degree, and FRI rejects.
+#
+# Baby Bear field (NTT-friendly + F_{p^4}); self-contained; dogfoods.
+# =============================================================================
+
+fn fadd(a: Int, b: Int) : Int = (a + b) % 2013265921
+fn fmul(a: Int, b: Int) : Int = (a * b) % 2013265921
+fn fsub(a: Int, b: Int) : Int = ((a - b) % 2013265921 + 2013265921) % 2013265921
+fn fnorm(a: Int) : Int = (a % 2013265921 + 2013265921) % 2013265921
+fn fpow(base: Int, e: Int) : Int =
+  if e == 0 then 1 else if e % 2 == 0 then let h : Int = fpow(base, e / 2) in fmul(h, h) else fmul(base, fpow(base, e - 1))
+fn finv(x: Int) : Int = fpow(x, 2013265919)
+fn root_of_unity(n: Int) : Int = fpow(31, 2013265920 / n)
+fn is_nonres_b(x: Int) : Bool = fpow(x, 1006632960) == 2013265920
+fn find_nonres_b(x: Int) : Int = if is_nonres_b(x) then x else find_nonres_b(x + 1)
+fn sbox(x: Int) : Int = let x2 : Int = fmul(x, x) in let x4 : Int = fmul(x2, x2) in fmul(x4, x)
+fn rconst(i: Int) : Int = ((i + 1) * (i + 1) * (i + 1) + i * 1009 + 1234567) % 2013265921
+fn mimc(x: Int, k: Int, i: Int) : Int = if i >= 16 then fadd(x, k) else mimc(sbox(fadd(fadd(x, k), rconst(i))), k, i + 1)
+fn hash2(a: Int, b: Int) : Int = fadd(fadd(mimc(a, b, 0), a), b)
+fn nth(xs: List<Int>, i: Int) : Int = match xs { [] => 0; [x, ...r] => if i == 0 then x else nth(r, i - 1) }
+fn set_nth(xs: List<Int>, i: Int, v: Int) : List<Int> = match xs { [] => []; [x, ...r] => if i == 0 then [v] ++ r else [x] ++ set_nth(r, i - 1, v) }
+fn ilen(xs: List<Int>) : Int = match xs { [] => 0; [x, ...r] => 1 + ilen(r) }
+fn pad(xs: List<Int>, n: Int) : List<Int> = if ilen(xs) >= n then xs else pad(xs ++ [0], n)
+
+# --- F_{p^2}, F_{p^4} (frost_crypto) -----------------------------------------
+type F2 = | F2(Int, Int)
+fn add2(a: F2, b: F2) : F2 = match a { F2(a0, a1) => match b { F2(b0, b1) => F2(fadd(a0, b0), fadd(a1, b1)) } }
+fn sub2(a: F2, b: F2) : F2 = match a { F2(a0, a1) => match b { F2(b0, b1) => F2(fsub(a0, b0), fsub(a1, b1)) } }
+fn scale2(a: F2, s: Int) : F2 = match a { F2(a0, a1) => F2(fmul(a0, s), fmul(a1, s)) }
+fn mul2(a: F2, b: F2, w: Int) : F2 = match a { F2(a0, a1) => match b { F2(b0, b1) => F2(fadd(fmul(a0, b0), fmul(w, fmul(a1, b1))), fadd(fmul(a0, b1), fmul(a1, b0))) } }
+fn eq2(a: F2, b: F2) : Bool = match a { F2(a0, a1) => match b { F2(b0, b1) => a0 == b0 && a1 == b1 } }
+fn pow2(a: F2, e: Int, w: Int) : F2 = if e == 0 then F2(1, 0) else if e % 2 == 0 then let h : F2 = pow2(a, e / 2, w) in mul2(h, h, w) else mul2(a, pow2(a, e - 1, w), w)
+fn is_nonsq2(v: F2, w: Int) : Bool = eq2(pow2(v, (2013265921 * 2013265921 - 1) / 2, w), F2(2013265920, 0))
+fn find_v(i: Int, w: Int) : F2 = if is_nonsq2(F2(i, 1), w) then F2(i, 1) else find_v(i + 1, w)
+type F4 = | F4(F2, F2)
+fn add4(a: F4, b: F4) : F4 = match a { F4(c0, c1) => match b { F4(d0, d1) => F4(add2(c0, d0), add2(c1, d1)) } }
+fn sub4(a: F4, b: F4) : F4 = match a { F4(c0, c1) => match b { F4(d0, d1) => F4(sub2(c0, d0), sub2(c1, d1)) } }
+fn scale4(a: F4, s: Int) : F4 = match a { F4(c0, c1) => F4(scale2(c0, s), scale2(c1, s)) }
+fn mul4(a: F4, b: F4, v: F2, w: Int) : F4 = match a { F4(c0, c1) => match b { F4(d0, d1) => F4(add2(mul2(c0, d0, w), mul2(v, mul2(c1, d1, w), w)), add2(mul2(c0, d1, w), mul2(c1, d0, w))) } }
+fn eq4(a: F4, b: F4) : Bool = match a { F4(c0, c1) => match b { F4(d0, d1) => eq2(c0, d0) && eq2(c1, d1) } }
+fn embed4(x: Int) : F4 = F4(F2(x, 0), F2(0, 0))
+fn hash4(a: F4) : Int = match a { F4(F2(a0, a1), F2(b0, b1)) => hash2(hash2(hash2(hash2(7, a0), a1), b0), b1) }
+
+# --- Merkle over F4 + FRI fold + commit + verify (frost_crypto) --------------
+fn ilen4(cw: List<F4>) : Int = match cw { [] => 0; [x, ...r] => 1 + ilen4(r) }
+fn nth4(cw: List<F4>, i: Int) : F4 = match cw { [] => F4(F2(0, 0), F2(0, 0)); [x, ...r] => if i == 0 then x else nth4(r, i - 1) }
+fn leaf_hashes(cw: List<F4>) : List<Int> = match cw { [] => []; [x, ...r] => [hash4(x)] ++ leaf_hashes(r) }
+fn append_zeros(xs: List<Int>, k: Int) : List<Int> = if k <= 0 then xs else append_zeros(xs ++ [0], k - 1)
+fn next_pow2(n: Int, p: Int) : Int = if p >= n then p else next_pow2(n, p * 2)
+fn pad_pow2(xs: List<Int>) : List<Int> = let n : Int = ilen(xs) in append_zeros(xs, next_pow2(n, 1) - n)
+fn level_up(xs: List<Int>) : List<Int> = match xs { [] => []; [a, ...rest] => match rest { [] => [a]; [b, ...r2] => [hash2(a, b)] ++ level_up(r2) } }
+fn root_of(xs: List<Int>) : Int = match xs { [] => 0; [a, ...rest] => match rest { [] => a; _ => root_of(level_up(xs)) } }
+fn merkle_root4(cw: List<F4>) : Int = root_of(pad_pow2(leaf_hashes(cw)))
+fn path_of(xs: List<Int>, index: Int) : List<Int> =
+  match xs { [] => []; [a, ...rest] => match rest { [] => []; _ => let sib : Int = if index % 2 == 0 then nth(xs, index + 1) else nth(xs, index - 1) in [sib] ++ path_of(level_up(xs), index / 2) } }
+fn merkle_path4(cw: List<F4>, index: Int) : List<Int> = path_of(pad_pow2(leaf_hashes(cw)), index)
+fn fold_path(h: Int, index: Int, path: List<Int>) : Int = match path { [] => h; [s, ...rest] => let up : Int = if index % 2 == 0 then hash2(h, s) else hash2(s, h) in fold_path(up, index / 2, rest) }
+fn merkle_verify4(leaf: F4, index: Int, path: List<Int>, root: Int) : Bool = fold_path(hash4(leaf), index, path) == root
+fn fold_pair4(fx: F4, fmx: F4, x: Int, beta: F4, v: F2, w: Int) : F4 =
+  let fe : F4 = scale4(add4(fx, fmx), finv(2)) in let fo : F4 = scale4(sub4(fx, fmx), finv(fmul(2, x))) in add4(fe, mul4(beta, fo, v, w))
+fn fold_at4(cw: List<F4>, dom: List<Int>, beta: F4, i: Int, half: Int, v: F2, w: Int) : List<F4> =
+  if i >= half then [] else [fold_pair4(nth4(cw, i), nth4(cw, i + half), nth(dom, i), beta, v, w)] ++ fold_at4(cw, dom, beta, i + 1, half, v, w)
+fn square_dom(dom: List<Int>, i: Int, half: Int) : List<Int> = if i >= half then [] else [fmul(nth(dom, i), nth(dom, i))] ++ square_dom(dom, i + 1, half)
+type Layer = | Layer(List<F4>, List<Int>, Int, F4)
+fn beta_of_root(root: Int) : F4 = F4(F2(hash2(root, 101), hash2(root, 102)), F2(hash2(root, 103), hash2(root, 104)))
+fn commit(cw: List<F4>, dom: List<Int>, acc: List<Layer>, v: F2, w: Int) : (List<Layer>, List<F4>) =
+  if ilen4(cw) <= 2 then (acc, cw)
+  else let root : Int = merkle_root4(cw) in let beta : F4 = beta_of_root(root) in let half : Int = ilen4(cw) / 2 in
+    commit(fold_at4(cw, dom, beta, 0, half, v, w), square_dom(dom, 0, half), acc ++ [Layer(cw, dom, root, beta)], v, w)
+fn transcript_seed(layers: List<Layer>, acc: Int) : Int = match layers { [] => acc; [Layer(cw, dom, root, beta), ...rest] => transcript_seed(rest, hash2(acc, root)) }
+fn sample_queries(seed: Int, count: Int, dsize: Int) : List<Int> = if count <= 0 then [] else [hash2(seed, count) % dsize] ++ sample_queries(seed, count - 1, dsize)
+fn next_val4(rest: List<Layer>, final: List<F4>, j: Int) : F4 = match rest { [] => nth4(final, j); [Layer(cw, dom, root, beta), ...more] => nth4(cw, j) }
+fn verify_query(layers: List<Layer>, final: List<F4>, p: Int, v: F2, w: Int) : Bool =
+  match layers { [] => true;
+    [Layer(cw, dom, root, beta), ...rest] =>
+      let half : Int = ilen4(cw) / 2 in let j : Int = p % half in
+      let lx : F4 = nth4(cw, j) in let lmx : F4 = nth4(cw, j + half) in
+      let ok1 : Bool = merkle_verify4(lx, j, merkle_path4(cw, j), root) in
+      let ok2 : Bool = merkle_verify4(lmx, j + half, merkle_path4(cw, j + half), root) in
+      let folded : F4 = fold_pair4(lx, lmx, nth(dom, j), beta, v, w) in
+      if ok1 then if ok2 then if eq4(folded, next_val4(rest, final, j)) then verify_query(rest, final, j, v, w) else false else false else false }
+fn count_catches(layers: List<Layer>, final: List<F4>, qs: List<Int>, v: F2, w: Int) : Int =
+  match qs { [] => 0; [p, ...rest] => (if verify_query(layers, final, p, v, w) then 0 else 1) + count_catches(layers, final, rest, v, w) }
+fn all_eq4(cw: List<F4>, x: F4) : Bool = match cw { [] => true; [y, ...r] => if eq4(y, x) then all_eq4(r, x) else false }
+fn is_constant4(cw: List<F4>) : Bool = match cw { [] => true; [x, ...r] => all_eq4(r, x) }
+fn fri_verify(layers: List<Layer>, final: List<F4>, qs: List<Int>, v: F2, w: Int) : Bool =
+  if is_constant4(final) then count_catches(layers, final, qs, v, w) == 0 else false
+
+# --- polynomials -------------------------------------------------------------
+fn powers(w: Int, cur: Int, k: Int) : List<Int> = if k <= 0 then [] else [cur] ++ powers(w, fmul(cur, w), k - 1)
+fn coset_domain(n: Int) : List<Int> = powers(root_of_unity(n), 31, n)
+fn poly_eval(coeffs: List<Int>, x: Int) : Int = match coeffs { [] => 0; [c, ...r] => fadd(c, fmul(x, poly_eval(r, x))) }
+fn intt_sum(ev: List<Int>, k: Int, j: Int, n: Int, wi: Int) : Int = if j >= n then 0 else fadd(fmul(nth(ev, j), fpow(wi, (j * k) % n)), intt_sum(ev, k, j + 1, n, wi))
+fn interp_go(ev: List<Int>, k: Int, n: Int, wi: Int, ni: Int) : List<Int> = if k >= n then [] else [fmul(ni, intt_sum(ev, k, 0, n, wi))] ++ interp_go(ev, k + 1, n, wi, ni)
+fn interpolate(ev: List<Int>) : List<Int> = let n : Int = ilen(ev) in let w : Int = root_of_unity(n) in interp_go(ev, 0, n, finv(w), finv(n))
+
+# --- the circuit: now with an ASSERT gate (GAssertEq) ------------------------
+type Gate = | GConst(Int, Int) | GAdd(Int, Int, Int) | GSub(Int, Int, Int) | GMul(Int, Int, Int) | GAssertEq(Int, Int)
+type Build = | Build(Int, List<Gate>, List<Int>)
+fn mkc(c: Int, b: Build) : (Int, Build) = match b { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GConst(n, fnorm(c))], w ++ [fnorm(c)])) }
+fn mka(x: Int, y: Int, b: Build) : (Int, Build) = match b { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GAdd(n, x, y)], w ++ [fadd(nth(w, x), nth(w, y))])) }
+fn mks(x: Int, y: Int, b: Build) : (Int, Build) = match b { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GSub(n, x, y)], w ++ [fsub(nth(w, x), nth(w, y))])) }
+fn mkm(x: Int, y: Int, b: Build) : (Int, Build) = match b { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GMul(n, x, y)], w ++ [fmul(nth(w, x), nth(w, y))])) }
+fn asrt(x: Int, y: Int, b: Build) : Build = match b { Build(n, gs, w) => Build(n, gs ++ [GAssertEq(x, y)], w) }
+
+# selectors (one per gate kind)
+fn sa(g: Gate) : Int = match g { GAdd(o, a, b) => 1; _ => 0 }
+fn sm(g: Gate) : Int = match g { GMul(o, a, b) => 1; _ => 0 }
+fn ss(g: Gate) : Int = match g { GSub(o, a, b) => 1; _ => 0 }
+fn sc(g: Gate) : Int = match g { GConst(o, c) => 1; _ => 0 }
+fn sas(g: Gate) : Int = match g { GAssertEq(a, b) => 1; _ => 0 }
+fn cv(g: Gate) : Int = match g { GConst(o, c) => fnorm(c); _ => 0 }
+fn lv(g: Gate, w: List<Int>) : Int = match g { GConst(o, c) => 0; GAdd(o, a, b) => nth(w, a); GSub(o, a, b) => nth(w, a); GMul(o, a, b) => nth(w, a); GAssertEq(a, b) => nth(w, a) }
+fn rv(g: Gate, w: List<Int>) : Int = match g { GConst(o, c) => 0; GAdd(o, a, b) => nth(w, b); GSub(o, a, b) => nth(w, b); GMul(o, a, b) => nth(w, b); GAssertEq(a, b) => nth(w, b) }
+fn ov(g: Gate, w: List<Int>) : Int = match g { GConst(o, c) => nth(w, o); GAdd(o, a, b) => nth(w, o); GSub(o, a, b) => nth(w, o); GMul(o, a, b) => nth(w, o); GAssertEq(a, b) => 0 }
+fn vqa(gs: List<Gate>) : List<Int> = match gs { [] => []; [g, ...r] => [sa(g)] ++ vqa(r) }
+fn vqm(gs: List<Gate>) : List<Int> = match gs { [] => []; [g, ...r] => [sm(g)] ++ vqm(r) }
+fn vqs(gs: List<Gate>) : List<Int> = match gs { [] => []; [g, ...r] => [ss(g)] ++ vqs(r) }
+fn vqc(gs: List<Gate>) : List<Int> = match gs { [] => []; [g, ...r] => [sc(g)] ++ vqc(r) }
+fn vqx(gs: List<Gate>) : List<Int> = match gs { [] => []; [g, ...r] => [sas(g)] ++ vqx(r) }
+fn vc(gs: List<Gate>) : List<Int> = match gs { [] => []; [g, ...r] => [cv(g)] ++ vc(r) }
+fn vl(gs: List<Gate>, w: List<Int>) : List<Int> = match gs { [] => []; [g, ...r] => [lv(g, w)] ++ vl(r, w) }
+fn vr(gs: List<Gate>, w: List<Int>) : List<Int> = match gs { [] => []; [g, ...r] => [rv(g, w)] ++ vr(r, w) }
+fn vo(gs: List<Gate>, w: List<Int>) : List<Int> = match gs { [] => []; [g, ...r] => [ov(g, w)] ++ vo(r, w) }
+
+# the universal gate identity, now with qassert·(l − r) for the ASSERT rows.
+fn gate_G(qa: List<Int>, qm: List<Int>, qs: List<Int>, qc: List<Int>, qx: List<Int>, l: List<Int>, r: List<Int>, o: List<Int>, c: List<Int>, x: Int) : Int =
+  let va : Int = poly_eval(qa, x) in let vm : Int = poly_eval(qm, x) in let vs : Int = poly_eval(qs, x) in let vk : Int = poly_eval(qc, x) in let vx : Int = poly_eval(qx, x) in
+  let vl : Int = poly_eval(l, x) in let vr2 : Int = poly_eval(r, x) in let vo2 : Int = poly_eval(o, x) in let vc2 : Int = poly_eval(c, x) in
+  fadd(fmul(va, fsub(vo2, fadd(vl, vr2))),
+    fadd(fmul(vm, fsub(vo2, fmul(vl, vr2))),
+      fadd(fmul(vs, fsub(vo2, fsub(vl, vr2))),
+        fadd(fmul(vk, fsub(vo2, vc2)),
+          fmul(vx, fsub(vl, vr2))))))
+fn rand_poly(seed: Int) : List<Int> = [hash2(seed, 0), hash2(seed, 1), hash2(seed, 2)]
+fn qcode(qa: List<Int>, qm: List<Int>, qs: List<Int>, qc: List<Int>, qx: List<Int>, l: List<Int>, r: List<Int>, o: List<Int>, c: List<Int>, blind: List<Int>, coset: List<Int>, bn: Int) : List<F4> =
+  match coset { [] => []; [x, ...rest] =>
+    let q : Int = fmul(gate_G(qa, qm, qs, qc, qx, l, r, o, c, x), finv(fsub(fpow(x, bn), 1))) in
+    [embed4(fadd(q, poly_eval(blind, x)))] ++ qcode(qa, qm, qs, qc, qx, l, r, o, c, blind, rest, bn) }
+
+# build the 8+selector columns over trace domain size n*=next_pow2(#gates), the
+# blinded quotient over a coset of size 4n*, and FRI-verify it.
+fn ng(gates: List<Gate>) : Int = next_pow2(len(gates), 1)
+fn stark_ok(gates: List<Gate>, w: List<Int>, seed: Int, nv: F2, nw: Int) : Bool =
+  let n : Int = ng(gates) in
+  let qa : List<Int> = interpolate(pad(vqa(gates), n)) in let qm : List<Int> = interpolate(pad(vqm(gates), n)) in
+  let qs : List<Int> = interpolate(pad(vqs(gates), n)) in let qc : List<Int> = interpolate(pad(vqc(gates), n)) in
+  let qx : List<Int> = interpolate(pad(vqx(gates), n)) in let cc : List<Int> = interpolate(pad(vc(gates), n)) in
+  let ll : List<Int> = interpolate(pad(vl(gates, w), n)) in let rr : List<Int> = interpolate(pad(vr(gates, w), n)) in
+  let oo : List<Int> = interpolate(pad(vo(gates, w), n)) in
+  let coset : List<Int> = coset_domain(4 * n) in
+  let qcw : List<F4> = qcode(qa, qm, qs, qc, qx, ll, rr, oo, cc, rand_poly(seed), coset, n) in
+  match commit(qcw, coset, [], nv, nw) { (layers, final) =>
+    fri_verify(layers, final, sample_queries(transcript_seed(layers, 0), 24, 4 * n), nv, nw) }
+fn qopen5(gates: List<Gate>, w: List<Int>, seed: Int) : F4 =
+  let n : Int = ng(gates) in
+  nth4(qcode(interpolate(pad(vqa(gates), n)), interpolate(pad(vqm(gates), n)), interpolate(pad(vqs(gates), n)), interpolate(pad(vqc(gates), n)), interpolate(pad(vqx(gates), n)),
+             interpolate(pad(vl(gates, w), n)), interpolate(pad(vr(gates, w), n)), interpolate(pad(vo(gates, w), n)), interpolate(pad(vc(gates), n)),
+             rand_poly(seed), coset_domain(4 * n), n), 5)
+
+# --- lower a SUM-over-committed-table query into the circuit -----------------
+# witness wires 0..k-1 hold the private values; commit C = Σ vᵢ·γⁱ (Horner with
+# v₀ as the constant term), sum R = Σ vᵢ. Assert both against the public claims.
+# Horner seeded from the top value (wire k-1, no const-0 gate): C = v₀+γ(v₁+γ(…)).
+fn commit_c(i: Int, gamma: Int, accw: Int, b: Build) : (Int, Build) =
+  if i < 0 then (accw, b)
+  else match mkc(gamma, b) { (wg, b1) => match mkm(accw, wg, b1) { (p, b2) => match mka(i, p, b2) { (na, b3) => commit_c(i - 1, gamma, na, b3) } } }
+# sum seeded from v₀ (wire 0): R = v₀+v₁+…
+fn sum_c(i: Int, k: Int, accw: Int, b: Build) : (Int, Build) =
+  if i >= k then (accw, b) else match mka(accw, i, b) { (na, b1) => sum_c(i + 1, k, na, b1) }
+fn build_query(vals: List<Int>, gamma: Int, claimedC: Int, claimedR: Int) : Build =
+  let k : Int = ilen(vals) in
+  let b0 : Build = Build(k, [], vals) in
+  match commit_c(k - 2, gamma, k - 1, b0) { (wC, b2) =>
+  match mkc(claimedC, b2) { (wCp, b3) => let b4 : Build = asrt(wC, wCp, b3) in
+  match sum_c(1, k, 0, b4) { (wR, b6) =>
+  match mkc(claimedR, b6) { (wRp, b7) => asrt(wR, wRp, b7) } } } }
+fn ref_commit(vals: List<Int>, gamma: Int, gp: Int) : Int = match vals { [] => 0; [x, ...r] => fadd(fmul(x, gp), ref_commit(r, gamma, fmul(gp, gamma))) }
+fn ref_sum(vals: List<Int>) : Int = match vals { [] => 0; [x, ...r] => fadd(x, ref_sum(r)) }
+
+fn prove(vals: List<Int>, gamma: Int, claimedC: Int, claimedR: Int, seed: Int, nv: F2, nw: Int) : Bool =
+  match build_query(vals, gamma, claimedC, claimedR) { Build(n, gates, w) => stark_ok(gates, w, seed, nv, nw) }
+
+# --- a FILTERED query in ZK: SUM(value) WHERE key == 0 -----------------------
+# The filter is the is-zero gadget out = 1 − key·inv, where inv is a witness
+# HINT (not a gate output). Such hints can't be gate rows, so they ride in the
+# input section of the witness (wires k..k+nrows−1) — referenced by gates, but
+# not themselves trace rows. The assert key·out == 0 (carried by qassert) forces
+# out = [key == 0]: a matching row can't be dropped (out is forced to 1) and a
+# non-matching row can't be smuggled in (it would make key·out ≠ 0). Then the
+# public sum == R assertion forces every matching row to be counted.
+fn flat_kv(rows: List<Pair<Int, Int>>) : List<Int> = match rows { [] => []; [Pair(k, v), ...r] => [k, v] ++ flat_kv(r) }
+fn inv_hints(rows: List<Pair<Int, Int>>) : List<Int> = match rows { [] => []; [Pair(k, v), ...r] => [if k == 0 then 0 else finv(k)] ++ inv_hints(r) }
+fn ref_filter(rows: List<Pair<Int, Int>>) : Int = match rows { [] => 0; [Pair(k, v), ...r] => fadd(if k == 0 then v else 0, ref_filter(r)) }
+fn filter_rows_c(i: Int, nrows: Int, invbase: Int, accw: Int, wone: Int, wzero: Int, b: Build) : (Int, Build) =
+  if i >= nrows then (accw, b)
+  else match mkm(2 * i, invbase + i, b) { (p, b1) =>          # key·inv   (key wire = 2i, target 0)
+    match mks(wone, p, b1) { (out, b2) =>                      # out = 1 − key·inv  = [key == 0]
+      match mkm(2 * i, out, b2) { (wz, b3) =>                  # key·out  (must be 0)
+        let b4 : Build = asrt(wz, wzero, b3) in
+        match mkm(out, 2 * i + 1, b4) { (contrib, b5) =>       # out · value
+          match mka(accw, contrib, b5) { (na, b6) => filter_rows_c(i + 1, nrows, invbase, na, wone, wzero, b6) } } } } }
+fn build_filter(rows: List<Pair<Int, Int>>, claimedR: Int) : Build =
+  let nrows : Int = len(rows) in
+  let m : Int = 2 * nrows in
+  let w0 : List<Int> = flat_kv(rows) ++ inv_hints(rows) in
+  let b0 : Build = Build(m + nrows, [], w0) in
+  match mkc(1, b0) { (wone, b1) => match mkc(0, b1) { (wzero, b2) =>
+  match filter_rows_c(0, nrows, m, wzero, wone, wzero, b2) { (wsum, b3) =>
+  match mkc(claimedR, b3) { (wRp, b4) => asrt(wsum, wRp, b4) } } } }
+fn prove_filter(rows: List<Pair<Int, Int>>, claimedR: Int, seed: Int, nv: F2, nw: Int) : Bool =
+  match build_filter(rows, claimedR) { Build(n, gates, w) => stark_ok(gates, w, seed, nv, nw) }
+
+# --- demo --------------------------------------------------------------------
+fn show_a(b: Bool) : String = if b then "ACCEPT" else "REJECT"
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+let bbw : Int = find_nonres_b(2)
+let bbv : F2 = find_v(0, bbw)
+let vals : List<Int> = [100, 150]          # a private salary column
+let gamma : Int = 1234567                  # public Fiat-Shamir point
+let comm : Int = ref_commit(vals, gamma, 1)  # public commitment to the column
+let res : Int = ref_sum(vals)                # public claimed sum = 250
+
+let _ : String = print("--- prove_query_zk.glass: a query over a committed table, in ZERO-KNOWLEDGE (H1) ---")
+let _ : String = print("SUM over a committed PRIVATE column -> blinded gate quotient -> FRI over F_{p^4}")
+let _ : String = print("public: commitment C = " ++ int_to_string(comm) ++ ",  sum R = " ++ int_to_string(res) ++ "   (values stay private)")
+let _ : String = print("")
+let _ : String = print("honest proof (R = " ++ int_to_string(res) ++ "):    " ++ show_a(prove(vals, gamma, comm, res, 11111, bbv, bbw)))
+let _ : String = print("lying about the sum (R = 999):  " ++ show_a(prove(vals, gamma, comm, 999, 11111, bbv, bbw)) ++ "  (assert row's l-r != 0 => quotient not low-degree)")
+let _ : String = print("lying about the table (wrong C):" ++ show_a(prove(vals, gamma, fadd(comm, 1), res, 11111, bbv, bbw)))
+let _ : String = print("")
+let _ : String =
+  match build_query(vals, gamma, comm, res) { Build(n, gates, w) =>
+    print("ZERO-KNOWLEDGE: two blinding seeds both verify: "
+      ++ show_a(stark_ok(gates, w, 11111, bbv, bbw)) ++ " / " ++ show_a(stark_ok(gates, w, 22222, bbv, bbw))
+      ++ "; quotient opening #5 differs: " ++ show_b(eq4(qopen5(gates, w, 11111), qopen5(gates, w, 22222)) == false)) }
+let _ : String = print("")
+# a FILTERED query in ZK: SUM(salary) WHERE dept = engineering (dept 0), over a private table
+let frows : List<Pair<Int, Int>> = [Pair(0, 100), Pair(1, 90)]   # (dept, salary); only row 0 matches
+let fres : Int = ref_filter(frows)                               # = 100
+let _ : String = print("FILTERED query  SUM(salary) WHERE dept=eng, in zero-knowledge (the is-zero gadget through the STARK):")
+let _ : String = print("  honest (R = " ++ int_to_string(fres) ++ "):   " ++ show_a(prove_filter(frows, fres, 11111, bbv, bbw)))
+let _ : String = print("  lying (R = 999):  " ++ show_a(prove_filter(frows, 999, 11111, bbv, bbw)) ++ "  (a dropped/forged match breaks the assert => REJECT)")
+let _ : String = print("")
+let _ : String = print("a query over a committed table -> a succinct (FRI), zero-knowledge (blinded) proof. H1's payoff.")
+
+"prove_query_zk v0.1 (H1) — a committed-table query proven with the blinded F_{p^4} FRI STARK"

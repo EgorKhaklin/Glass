@@ -28,7 +28,7 @@ T=/tmp/glass-dogfood; mkdir -p "$T"
 GLASSC="${GLASSC:-$T/native_glassc}"
 if [ ! -x "$GLASSC" ]; then
   echo "[build] compiling native_glassc via quartz (one-time)…"
-  printf '0\n' > "$T/seed.glass"
+  printf '0\n' > /tmp/in.glass   # glassc.glass evals /tmp/in.glass at compile time; keep it trivial
   "$PY" "$ROOT/quartz.py" "$ROOT/examples/selfhost/glassc.glass" -o "$GLASSC" >/dev/null
 fi
 

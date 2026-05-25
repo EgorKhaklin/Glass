@@ -1,0 +1,120 @@
+# =============================================================================
+# prove_query.glass — H1: a zero-knowledge query (Pane ⊕ Frost)
+#
+# The founding vision: *Frost is the zero-knowledge extension of Pane.* You hold
+# a private table; you publish a COMMITMENT to it; then you prove the result of a
+# QUERY over that table — revealing only the query, the commitment, and the
+# answer, never the rows.
+#
+# Here the query is the Pane classic SELECT SUM(salary) WHERE dept = target.
+# The table is private; public are: a binding commitment C to the table, the
+# target dept, and the claimed result R. The circuit proves, over the table as
+# private witness:
+#   1. BINDING — the witness really is the committed table: a fingerprint
+#      commitment C' = Σ flat_i · γ^i  (a polynomial-evaluation/Reed–Solomon
+#      fingerprint at a Fiat-Shamir point γ) must equal the public C. Two
+#      different tables collide only with probability ≤ n/|field|.
+#   2. QUERY — running the query yields R: for each row a selector
+#      [dept = target] (is-zero gadget) times its salary, summed, must equal R.
+# A sound proof (here the RLC protocol) then attests "the table committed as C
+# has SUM(salary WHERE dept=target) = R" without exposing a single salary. Feed
+# the same circuit to prove_zk for the succinct, zero-knowledge STARK.
+#
+# Self-contained; field 2^31-1; dogfoods.
+# =============================================================================
+
+fn fadd(a: Int, b: Int) : Int = (a + b) % 2147483647
+fn fmul(a: Int, b: Int) : Int = (a * b) % 2147483647
+fn fsub(a: Int, b: Int) : Int = ((a - b) % 2147483647 + 2147483647) % 2147483647
+fn fnorm(a: Int) : Int = (a % 2147483647 + 2147483647) % 2147483647
+fn fpow(base: Int, e: Int) : Int = if e == 0 then 1 else if e % 2 == 0 then let h : Int = fpow(base, e / 2) in fmul(h, h) else fmul(base, fpow(base, e - 1))
+fn finv(x: Int) : Int = fpow(x, 2147483645)
+fn sbox(x: Int) : Int = let x2 : Int = fmul(x, x) in let x4 : Int = fmul(x2, x2) in fmul(x4, x)
+fn rconst(i: Int) : Int = fnorm((i + 1) * (i + 1) * (i + 1) + i * 1009 + 1234567)
+fn mimc(x: Int, k: Int, i: Int) : Int = if i >= 16 then fadd(x, k) else mimc(sbox(fadd(fadd(x, k), rconst(i))), k, i + 1)
+fn hash2(a: Int, b: Int) : Int = fadd(fadd(mimc(a, b, 0), a), b)
+
+# --- builder (the prove-bridge constraint system) ----------------------------
+type Gate = | GConst(Int, Int) | GAdd(Int, Int, Int) | GSub(Int, Int, Int) | GMul(Int, Int, Int) | GAssertEq(Int, Int)
+fn glen(gs: List<Gate>) : Int = match gs { [] => 0; [g, ...r] => 1 + glen(r) }
+type Build = | Build(Int, List<Gate>, List<Pair<Int, Int>>)
+fn assoc(vs: List<Pair<Int, Int>>, w: Int) : Int = match vs { [] => 0; [Pair(k, v), ...r] => if k == w then v else assoc(r, w) }
+fn b_fresh(b: Build) : (Int, Build) = match b { Build(n, gs, vs) => (n, Build(n + 1, gs, vs)) }
+fn b_emit(g: Gate, b: Build) : Build = match b { Build(n, gs, vs) => Build(n, [g] ++ gs, vs) }
+fn b_set(w: Int, v: Int, b: Build) : Build = match b { Build(n, gs, vs) => Build(n, gs, [Pair(w, v)] ++ vs) }
+fn b_val(b: Build, w: Int) : Int = match b { Build(n, gs, vs) => assoc(vs, w) }
+fn mk_const(c: Int, b: Build) : (Int, Build) = match b_fresh(b) { (w, b1) => (w, b_set(w, fnorm(c), b_emit(GConst(w, fnorm(c)), b1))) }
+fn mk_add(a: Int, bw: Int, b: Build) : (Int, Build) = match b_fresh(b) { (o, b1) => (o, b_set(o, fadd(b_val(b1, a), b_val(b1, bw)), b_emit(GAdd(o, a, bw), b1))) }
+fn mk_mul(a: Int, bw: Int, b: Build) : (Int, Build) = match b_fresh(b) { (o, b1) => (o, b_set(o, fmul(b_val(b1, a), b_val(b1, bw)), b_emit(GMul(o, a, bw), b1))) }
+fn mk_sub(a: Int, bw: Int, b: Build) : (Int, Build) = match b_fresh(b) { (o, b1) => (o, b_set(o, fsub(b_val(b1, a), b_val(b1, bw)), b_emit(GSub(o, a, bw), b1))) }
+fn mk_eq(wx: Int, wy: Int, b: Build) : (Int, Build) =
+  match mk_sub(wx, wy, b) { (wd, b1) => let dv : Int = b_val(b1, wd) in let inv : Int = if dv == 0 then 0 else finv(dv) in
+    match b_fresh(b1) { (winv, b2) => let b3 : Build = b_set(winv, inv, b2) in
+      match mk_mul(wd, winv, b3) { (wp, b4) => match mk_const(1, b4) { (wone, b5) =>
+        match mk_sub(wone, wp, b5) { (wout, b6) => match mk_mul(wd, wout, b6) { (wz, b7) =>
+          match mk_const(0, b7) { (wzero, b8) => (wout, b_emit(GAssertEq(wz, wzero), b8)) } } } } } } }
+fn residual(g: Gate, vs: List<Pair<Int, Int>>) : Int =
+  match g { GConst(o, c) => fsub(assoc(vs, o), fnorm(c)); GAdd(o, a, b) => fsub(assoc(vs, o), fadd(assoc(vs, a), assoc(vs, b)));
+    GSub(o, a, b) => fsub(assoc(vs, o), fsub(assoc(vs, a), assoc(vs, b))); GMul(o, a, b) => fsub(assoc(vs, o), fmul(assoc(vs, a), assoc(vs, b)));
+    GAssertEq(a, b) => fsub(assoc(vs, a), assoc(vs, b)) }
+
+# --- the table (private witness): flat [dept0, sal0, dept1, sal1, …] ---------
+fn flatten(rows: List<Pair<Int, Int>>) : List<Int> = match rows { [] => []; [Pair(d, s), ...r] => [d, s] ++ flatten(r) }
+fn vs_of(flat: List<Int>, i: Int) : List<Pair<Int, Int>> = match flat { [] => []; [x, ...r] => [Pair(i, x)] ++ vs_of(r, i + 1) }
+fn nflat(flat: List<Int>) : Int = match flat { [] => 0; [x, ...r] => 1 + nflat(r) }
+
+# (1) BINDING fingerprint over wires 0..m-1:  C' = Σ wire_i · γ^i, Horner from the top.
+fn commit_go(m: Int, i: Int, gamma: Int, acc: Int, b: Build) : (Int, Build) =
+  if i < 0 then (acc, b)
+  else match mk_const(gamma, b) { (wg, b1) => match mk_mul(acc, wg, b1) { (sc, b2) => match mk_add(sc, i, b2) { (na, b3) => commit_go(m, i - 1, gamma, na, b3) } } }
+# (2) QUERY: Σ over rows of [dept_i == target]·salary_i.   dept wire = 2i, salary wire = 2i+1.
+fn query_go(nrows: Int, i: Int, wtarget: Int, acc: Int, b: Build) : (Int, Build) =
+  if i >= nrows then (acc, b)
+  else match mk_eq(2 * i, wtarget, b) { (sel, b1) => match mk_mul(sel, 2 * i + 1, b1) { (contrib, b2) => match mk_add(acc, contrib, b2) { (na, b3) => query_go(nrows, i + 1, wtarget, na, b3) } } }
+
+fn ordered_w(vs: List<Pair<Int, Int>>, i: Int, n: Int) : List<Int> = if i >= n then [] else [assoc(vs, i)] ++ ordered_w(vs, i + 1, n)
+fn rlc(gates: List<Gate>, vs: List<Pair<Int, Int>>, r: Int, rpow: Int) : Int = match gates { [] => 0; [g, ...rest] => fadd(fmul(rpow, residual(g, vs)), rlc(rest, vs, r, fmul(rpow, r))) }
+fn hash_fold(xs: List<Int>, acc: Int) : Int = match xs { [] => acc; [x, ...r] => hash_fold(r, hash2(acc, x)) }
+fn prove_ok(gates: List<Gate>, vs: List<Pair<Int, Int>>, n: Int) : Bool = rlc(gates, vs, hash2(hash_fold(ordered_w(vs, 0, n), 0), 777), 1) == 0
+
+# reference: the honest commitment + query result for a table.
+# Must match commit_go's coefficient order: C = Σ flat[i]·γ^i (flat[0] = constant term).
+fn ref_commit(flat: List<Int>, gamma: Int, gp: Int) : Int = match flat { [] => 0; [x, ...r] => fadd(fmul(x, gp), ref_commit(r, gamma, fmul(gp, gamma))) }
+fn ref_query(rows: List<Pair<Int, Int>>, target: Int) : Int = match rows { [] => 0; [Pair(d, s), ...r] => fadd(if d == target then s else 0, ref_query(r, target)) }
+
+# build the proof circuit and check it (binding C, query R both asserted)
+fn prove_query(rows: List<Pair<Int, Int>>, gamma: Int, target: Int, claimedC: Int, claimedR: Int) : Bool =
+  let flat : List<Int> = flatten(rows) in
+  let m : Int = nflat(flat) in
+  let nrows : Int = m / 2 in
+  let b0 : Build = Build(m, [], vs_of(flat, 0)) in
+  match mk_const(target, b0) { (wtarget, b1) =>
+  match mk_const(0, b1) { (zc, b2) =>
+  match commit_go(m, m - 1, gamma, zc, b2) { (wC, b3) =>          # C' = Σ wire_i γ^i
+  match mk_const(claimedC, b3) { (wCpub, b4) => let b5 : Build = b_emit(GAssertEq(wC, wCpub), b4) in   # assert C' == C
+  match mk_const(0, b5) { (zr, b6) =>
+  match query_go(nrows, 0, wtarget, zr, b6) { (wR, b7) =>         # R' = filtered sum
+  match mk_const(claimedR, b7) { (wRpub, b8) => let b9 : Build = b_emit(GAssertEq(wR, wRpub), b8) in   # assert R' == R
+    match b9 { Build(n, gates, vs) => prove_ok(gates, vs, n) } } } } } } } }
+
+# --- demo --------------------------------------------------------------------
+fn show_a(b: Bool) : String = if b then "ACCEPT" else "REJECT"
+# private salary table: (dept, salary).  dept 0 = engineering, 1 = sales.
+let tbl : List<Pair<Int, Int>> = [Pair(0, 100), Pair(1, 90), Pair(0, 150), Pair(1, 80)]
+let gamma : Int = 918273645                                       # Fiat-Shamir challenge (public)
+let target : Int = 0                                              # query: WHERE dept = engineering
+let comm : Int = ref_commit(flatten(tbl), gamma, 1)               # public commitment to the table
+let res : Int = ref_query(tbl, target)                            # the (public) claimed result
+
+let _ : String = print("--- prove_query.glass: a zero-knowledge query (Pane ⊕ Frost, H1) ---")
+let _ : String = print("query: SELECT SUM(salary) WHERE dept = engineering, over a PRIVATE table")
+let _ : String = print("public: commitment C = " ++ int_to_string(comm) ++ ",  result R = " ++ int_to_string(res) ++ "  (the 4 salaries stay private)")
+let _ : String = print("")
+let _ : String = print("honest proof (R = " ++ int_to_string(res) ++ "):       " ++ show_a(prove_query(tbl, gamma, target, comm, res)))
+let _ : String = print("lying about the result (R = 999):  " ++ show_a(prove_query(tbl, gamma, target, comm, 999)))
+let _ : String = print("lying about the table (wrong C):   " ++ show_a(prove_query(tbl, gamma, target, fadd(comm, 1), res)))
+let _ : String = print("")
+let _ : String = print("proven: the table committed as C has SUM(salary WHERE dept=eng) = R, no salary revealed.")
+let _ : String = print("the same circuit feeds prove_zk for the succinct, zero-knowledge STARK.")
+
+"prove_query v0.1 (H1) — prove a Pane query (filtered sum) over a committed private table"

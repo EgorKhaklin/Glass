@@ -1,5 +1,5 @@
 """
-Glass v4.84 — reference implementation.
+Glass v4.85 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -610,6 +610,17 @@ class Parser:
     def parse_let_decl(self) -> LetDecl:
         self.eat("let")
         name = self.eat("IDENT").value
+        # A value binding must be lowercase: Glass reads an uppercase-leading
+        # identifier as a constructor, and the self-hosted compiler compiles a
+        # reference to it as one (so `let C = 5; ... C ...` silently stringifies
+        # a constructor, not 5). Reject it here so the reference interpreter and
+        # the compiler agree — the convention, enforced at the binding site.
+        if name != "_" and name[:1].isupper():
+            raise SyntaxError(
+                f"top-level `let {name} = ...`: a value binding must be "
+                f"lowercase — {name!r} is uppercase, which Glass reads as a "
+                f"constructor. Rename it (e.g. {name.lower()!r})."
+            )
         ann: Ty | None = None
         if self.accept("COLON"):
             ann = self.parse_type(accept_refinement=True)
@@ -3384,7 +3395,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v4.84 — interactive REPL")
+    print("Glass v4.85 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3496,7 +3507,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 4.84.0")
+        print("Glass 4.85.0")
     else:
         # -q/--quiet: run a file printing only its output (no type-signature
         # echoes) — handy for diffing against the self-hosted compiler.
