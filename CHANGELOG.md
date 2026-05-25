@@ -7,6 +7,13 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [4.89.0] — 2026-05-25 — Parser parity: reference ⟷ self-hosted front end
+- A parser-parity audit aligned the reference interpreter (`glass.py`) with the self-hosted front end (`prism`), so a program that runs on `glass` is one that self-hosts:
+  - **chained comparison** (`a == b == c`) is now a parse error in the reference too — comparison operators don't associate; write `(a == b) == c`.
+  - **negative integer literals** (`-5`) now lex in prism, matching the reference's `-?\d+` — examples that used them (`quartz/lookup`, `basic/option_result`) now self-host.
+  - **fixed-length list patterns** (`[a, b]`) now parse in the reference, matching prism, alongside the `[x, ...rest]` cons form.
+- Documented the two remaining self-hosting gaps honestly in [`docs/self-hosting.md`](docs/self-hosting.md): record patterns in `match` (interpreter + Quartz, not prism) and a bare top-level function used as a value (interpreter only — wrap it in a lambda). Bootstrap fixpoint re-verified byte-identical; suite 381/381.
+
 ## [4.88.0] — 2026-05-25 — Poseidon: a permutation-based hash
 - Frost gains **Poseidon**, the hash production STARKs actually use, built from scratch: an `x⁷` S-box (a real *permutation* on Baby Bear — MiMC's `x⁵` is not, since 5 ∣ p−1), full + partial rounds, and an MDS mixing layer. It even proves the S-box is a bijection — `(x⁷)^d == x` for `d = 7⁻¹ mod (p−1)` — and powers a Poseidon Merkle root. A genuine upgrade over the toy MiMC. (`examples/frost/frost_poseidon.glass`)
 - Frost's README gains a **"Sharper primitives"** section gathering the drop-in upgrades: Poseidon, the recursive O(n log n) NTT, and the 128-bit bignum field.
