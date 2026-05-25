@@ -7,6 +7,10 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [4.87.0] — 2026-05-25 — A faster reference interpreter
+- The reference interpreter (`glass.py`) runs the heavy STARK demos **~24% faster** — `dataclass(slots=True)` on the runtime value classes (Python 3.10+, graceful on 3.9), plus inlining the leaf-operand cases (`Ident` / `IntLit` / `BinOp`) in the binop, function-call, and tail-call paths to skip millions of `eval_expr` dispatch calls. Output is byte-identical: suite 381/381, dogfoods unchanged, Python 3.9 ≡ 3.12.
+- **MIN/MAX now support `WHERE`**, so every aggregate (SUM, COUNT, AVG, MIN, MAX, GROUP BY) filters uniformly — each proven over the same committed table. (`examples/prove/prove_pane.glass`)
+
 ## [4.86.0] — 2026-05-25 — The complete aggregate set
 - Pane's query algebra (and its Frost proof backend) now covers the full analytics surface over a committed private table: **SUM, COUNT, AVG, MIN, MAX, and GROUP BY**, on top of equality / boolean / arithmetic / `<`–`>` range filters. (`examples/pane/pane.glass`, `examples/prove/prove_pane.glass`)
 - **AVG** is revealed as a proven `sum` + `count` (a finite field has no exact division, so the verifier forms the average); **MIN/MAX** claim a value and prove it is both a *bound* (via the range gadget) and *present* (via an inverse hint); **GROUP BY** decomposes into per-group filtered sums — each proven over the *same* committed table.

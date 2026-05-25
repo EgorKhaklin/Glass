@@ -1,5 +1,5 @@
 """
-Glass v4.86 — reference implementation.
+Glass v4.87 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -30,6 +30,11 @@ import re
 import subprocess
 
 sys.setrecursionlimit(20000)
+
+# Perf: dataclass(slots=True) speeds the hot runtime value classes — attribute
+# reads (tens of millions of `.v`) and allocation (millions of IntV) — on Python
+# 3.10+. On 3.9 it degrades to a plain dataclass: still correct, just no slots.
+_SLOTS = {"slots": True} if sys.version_info >= (3, 10) else {}
 
 
 # =============================================================================
@@ -2209,36 +2214,36 @@ class TypeChecker:
 # =============================================================================
 
 class Value:
-    pass
+    __slots__ = ()
 
-@dataclass
+@dataclass(**_SLOTS)
 class IntV(Value):
     v: int
     def __str__(self): return str(self.v)
 
-@dataclass
+@dataclass(**_SLOTS)
 class StringV(Value):
     v: str
     def __str__(self): return self.v
 
-@dataclass
+@dataclass(**_SLOTS)
 class BoolV(Value):
     v: bool
     def __str__(self): return "true" if self.v else "false"
 
-@dataclass
+@dataclass(**_SLOTS)
 class ListV(Value):
     items: list[Value]
     def __str__(self):
         return "[" + ", ".join(str(x) for x in self.items) + "]"
 
-@dataclass
+@dataclass(**_SLOTS)
 class TupleV(Value):
     items: list[Value]
     def __str__(self):
         return "(" + ", ".join(str(x) for x in self.items) + ")"
 
-@dataclass
+@dataclass(**_SLOTS)
 class RecordV(Value):
     name: str
     fields: dict[str, Value]
@@ -2246,7 +2251,7 @@ class RecordV(Value):
         body = ", ".join(f"{k}: {v}" for k, v in self.fields.items())
         return f"{self.name} {{ {body} }}"
 
-@dataclass
+@dataclass(**_SLOTS)
 class FnV(Value):
     """A user-defined function value. params carries (name, declared_type)
     so the interpreter can run refinement checks at call boundaries.
@@ -2260,13 +2265,13 @@ class FnV(Value):
         names = ", ".join(p for p, _ in self.params)
         return f"<fn({names})>"
 
-@dataclass
+@dataclass(**_SLOTS)
 class BuiltinV(Value):
     name: str
     fn: Callable[..., Value]
     def __str__(self): return f"<builtin {self.name}>"
 
-@dataclass
+@dataclass(**_SLOTS)
 class ADTValue(Value):
     """A constructed value of an algebraic data type, e.g. Some(42), Ok("ok")."""
     ctor: str
@@ -2276,7 +2281,7 @@ class ADTValue(Value):
             return self.ctor
         return f"{self.ctor}(" + ", ".join(str(a) for a in self.args) + ")"
 
-@dataclass
+@dataclass(**_SLOTS)
 class CtorV(Value):
     """A constructor used as a function (Some, Ok). Zero-arg constructors are
     bound directly as ADTValue, not as CtorV."""
@@ -2555,7 +2560,8 @@ def apply_fn(
         while True:
             bt = type(body)
             if bt is If:
-                c = eval_expr(body.cond, env)
+                cond = body.cond
+                c = eval_binop(cond, env) if type(cond) is BinOp else eval_expr(cond, env)
                 body = body.then_b if c.v else body.else_b
                 continue
             if bt is LetIn:
@@ -2582,8 +2588,15 @@ def apply_fn(
                     raise RuntimeError("non-exhaustive match")
                 continue
             if bt is Call and not has_ret_ref:
-                callee = eval_expr(body.fn, env)
-                call_args = [eval_expr(a, env) for a in body.args]
+                bfn = body.fn
+                callee = env[bfn.name] if type(bfn) is Ident else eval_expr(bfn, env)
+                call_args = []
+                for a in body.args:
+                    ta = type(a)
+                    if   ta is Ident:  call_args.append(env[a.name])
+                    elif ta is IntLit: call_args.append(IntV(a.value))
+                    elif ta is BinOp:  call_args.append(eval_binop(a, env))
+                    else:              call_args.append(eval_expr(a, env))
                 skip = getattr(body, "discharged_args", None)
                 if type(callee) is FnV:
                     # Trampoline: outer loop will set up the new fn's env.
@@ -2943,8 +2956,17 @@ def eval_expr(e: Node, env: dict[str, Value]) -> Value:
             raise RuntimeError(f"unbound at runtime: {e.name}")
         return env[e.name]
     if t is Call:
-        f = eval_expr(e.fn, env)
-        args = [eval_expr(a, env) for a in e.args]
+        fn_node = e.fn
+        f = env[fn_node.name] if type(fn_node) is Ident else eval_expr(fn_node, env)
+        # Inline the leaf arg cases (Ident / IntLit / BinOp) — same skip-a-call
+        # win as in eval_binop, for the very hot fn-application path.
+        args = []
+        for a in e.args:
+            ta = type(a)
+            if   ta is Ident:  args.append(env[a.name])
+            elif ta is IntLit: args.append(IntV(a.value))
+            elif ta is BinOp:  args.append(eval_binop(a, env))
+            else:              args.append(eval_expr(a, env))
         # If the type checker statically discharged any refinement at this
         # call site, pass that to apply_fn so the runtime check is skipped.
         skip = getattr(e, "discharged_args", None)
@@ -2957,7 +2979,8 @@ def eval_expr(e: Node, env: dict[str, Value]) -> Value:
         v = eval_expr(e.expr, env)
         return BoolV(not v.v)
     if t is If:
-        c = eval_expr(e.cond, env)
+        cond = e.cond
+        c = eval_binop(cond, env) if type(cond) is BinOp else eval_expr(cond, env)
         return eval_expr(e.then_b if c.v else e.else_b, env)
     if t is IntLit:    return IntV(e.value)
     if t is StringLit: return StringV(e.value)
@@ -3015,8 +3038,20 @@ def eval_binop(e: BinOp, env: dict[str, Value]) -> Value:
         if lv.v:
             return BoolV(True)
         return eval_expr(e.rhs, env)
-    lv = eval_expr(e.lhs, env)
-    rv = eval_expr(e.rhs, env)
+    # Inline the leaf operand cases (Ident / IntLit / nested BinOp) to skip an
+    # eval_expr dispatch+call each — binop operands are overwhelmingly these in
+    # arithmetic-heavy code. Other forms fall back to eval_expr. Semantics are
+    # identical (a well-typed program never hits an unbound Ident here).
+    lhs = e.lhs; tl = type(lhs)
+    if   tl is Ident:  lv = env[lhs.name]
+    elif tl is BinOp:  lv = eval_binop(lhs, env)
+    elif tl is IntLit: lv = IntV(lhs.value)
+    else:              lv = eval_expr(lhs, env)
+    rhs = e.rhs; tr = type(rhs)
+    if   tr is Ident:  rv = env[rhs.name]
+    elif tr is BinOp:  rv = eval_binop(rhs, env)
+    elif tr is IntLit: rv = IntV(rhs.value)
+    else:              rv = eval_expr(rhs, env)
     if op == "+":  return IntV(lv.v + rv.v)
     if op == "-":  return IntV(lv.v - rv.v)
     if op == "*":  return IntV(lv.v * rv.v)
@@ -3395,7 +3430,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v4.86 — interactive REPL")
+    print("Glass v4.87 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3507,7 +3542,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 4.86.0")
+        print("Glass 4.87.0")
     else:
         # -q/--quiet: run a file printing only its output (no type-signature
         # echoes) — handy for diffing against the self-hosted compiler.

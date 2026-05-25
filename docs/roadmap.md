@@ -39,7 +39,7 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Shipped (through v4.86)
+## Shipped (through v4.87)
 
 - **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
 - **Pane** — a query language in Glass.
@@ -133,8 +133,18 @@ proves the things the project was for."
   base field. The field is built (N4); this is the integration.
 - **H3 — Recursive proofs.** A proof that verifies another proof — aggregation,
   the path to scalable and on-chain-style verification.
-- **H4 — Performance.** Use the recursive NTT throughout; benchmark and optimize
-  the prover on larger circuits.
+- **H4 — Performance. 🚧 STARTED.** The reference interpreter (`glass.py`) is the
+  bottleneck for the heavy STARK demos (the compiled `native_glassc` is ~10× faster).
+  Profiling showed the cost is sheer node-visit volume (tens of millions of
+  `eval_expr`/`eval_binop`/`apply_fn` calls), not attribute access or dict copies.
+  Banked a **~24% speedup** (prove_zk 28.6s → 21.8s on 3.12) with semantics-preserving
+  changes: `dataclass(slots=True)` on the runtime value classes (3.10+, graceful on
+  3.9), and inlining the leaf-operand cases (`Ident`/`IntLit`/`BinOp`) in `eval_binop`,
+  the `Call` argument path, and the tail-call trampoline — skipping millions of
+  `eval_expr` dispatch+calls. Suite 381/381, dogfoods byte-identical, 3.9 ≡ 3.12 output.
+  *Honest ceiling:* a tree-walker is ~0.4µs/node; a transformative (2–5×) win needs
+  closure/bytecode compilation of the AST (a larger, riskier rewrite) — or simply
+  leaning on the native path, which already is the fast workhorse.
 
 The recommended next step is **H1** — it's concrete, demonstrable, uses pieces
 that already exist, and is the literal payoff of the whole project.

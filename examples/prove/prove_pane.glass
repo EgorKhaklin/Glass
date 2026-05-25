@@ -256,14 +256,19 @@ fn avg_line(label: String, col: String, sub: Query, gamma: Int) : String =
 # for every row, via the range gadget — and (b) M is *present* — Σ[sᵢ == M] ≠ 0,
 # proven by an inverse hint (count·count⁻¹ == 1). Both ⟹ M is exactly the min/max.
 fn commit_rows(rows: List<Row>, gamma: Int) : Int = ref_commit(flatten_table(schema_of(rows), rows), gamma, 1)
-fn minmax_loop(i: Int, nrows: Int, ncols: Int, colidx: Int, mw: Int, mv: Int, cntacc: Int, wone: Int, ismax: Bool, b: Build) : (Int, Build) =
+# filtered MIN/MAX: per row a selector sel = [predicate]; the bound must hold only
+# where selected (sel·(1−bound) == 0), and presence counts only matching rows
+# (cnt = Σ sel·[sᵢ == M]). pred = LitB(true) recovers the whole-table case.
+fn minmax_loop(i: Int, nrows: Int, ncols: Int, colidx: Int, schema: List<String>, pred: PExpr, mw: Int, mv: Int, cntacc: Int, wzero: Int, wone: Int, ismax: Bool, b: Build) : (Int, Build) =
   if i >= nrows then (cntacc, b)
-  else let sw : Int = i * ncols + colidx in let sv : Int = b_val(b, sw) in
-    match (if ismax then lt_gadget(mw, mv, sw, sv, b) else lt_gadget(sw, sv, mw, mv, b)) { (slt, b1) =>   # min:[sᵢ<M] max:[M<sᵢ]
-      match mk_not(slt, b1) { (bound, b2) => let b3 : Build = b_emit(GAssertEq(bound, wone), b2) in        # assert the bound holds
-        match mk_eq(sw, mw, b3) { (eq, b4) => match mk_add(cntacc, eq, b4) { (na, b5) =>
-          minmax_loop(i + 1, nrows, ncols, colidx, mw, mv, na, wone, ismax, b5) } } } }
-fn prove_minmax(rows: List<Row>, col: String, gamma: Int, claimedC: Int, claimedM: Int, ismax: Bool) : Bool =
+  else let rb : Int = i * ncols in let sw : Int = rb + colidx in let sv : Int = b_val(b, sw) in
+    match lower(pred, rb, schema, b) { (sel, b1) =>
+      match (if ismax then lt_gadget(mw, mv, sw, sv, b1) else lt_gadget(sw, sv, mw, mv, b1)) { (slt, b2) =>   # min:[sᵢ<M] max:[M<sᵢ]
+        match mk_not(slt, b2) { (bound, b3) =>                                       # [bound holds for this row]
+          match mk_sub(wone, bound, b3) { (nb, b4) => match mk_mul(sel, nb, b4) { (viol, b5) => let b6 : Build = b_emit(GAssertEq(viol, wzero), b5) in   # selected & bound violated => fail
+            match mk_eq(sw, mw, b6) { (eq, b7) => match mk_mul(sel, eq, b7) { (seleq, b8) => match mk_add(cntacc, seleq, b8) { (na, b9) =>
+              minmax_loop(i + 1, nrows, ncols, colidx, schema, pred, mw, mv, na, wzero, wone, ismax, b9) } } } } } } } }
+fn prove_minmax(rows: List<Row>, col: String, pred: PExpr, gamma: Int, claimedC: Int, claimedM: Int, ismax: Bool) : Bool =
   let schema : List<String> = schema_of(rows) in
   let ncols : Int = ncount(schema) in let nrows : Int = rcount(rows) in
   let colidx : Int = col_index(schema, col) in
@@ -271,18 +276,23 @@ fn prove_minmax(rows: List<Row>, col: String, gamma: Int, claimedC: Int, claimed
   let b0 : Build = Build(m, [], vs_of(flat, 0)) in
   match mk_const(0, b0) { (zc, b1) => match commit_go(m, m - 1, gamma, zc, b1) { (wC, b2) =>
   match mk_const(claimedC, b2) { (wCp, b3) => let b4 : Build = b_emit(GAssertEq(wC, wCp), b3) in
-  match mk_const(claimedM, b4) { (mw, b5) => match mk_const(1, b5) { (wone, b6) =>
-  match mk_const(0, b6) { (zcnt, b7) =>
-  match minmax_loop(0, nrows, ncols, colidx, mw, claimedM, zcnt, wone, ismax, b7) { (cntw, b8) =>
-    let cntv : Int = b_val(b8, cntw) in let invc : Int = if cntv == 0 then 0 else finv(cntv) in
-    match b_fresh(b8) { (wiv, b9) => let b10 : Build = b_set(wiv, invc, b9) in
-    match mk_mul(cntw, wiv, b10) { (prod, b11) => let b12 : Build = b_emit(GAssertEq(prod, wone), b11) in
-    match b12 { Build(n, gates, vs) => prove_ok(gates, vs, n) } } } } } } } } } }
-fn mm_line(label: String, col: String, rows: List<Row>, gamma: Int, ismax: Bool) : String =
-  let want : Int = if ismax then max_col(rows, col) else min_col(rows, col) in
+  match mk_const(claimedM, b4) { (mw, b5) => match mk_const(1, b5) { (wone, b6) => match mk_const(0, b6) { (wzero, b7) =>
+  match mk_const(0, b7) { (zcnt, b8) =>
+  match minmax_loop(0, nrows, ncols, colidx, schema, pred, mw, claimedM, zcnt, wzero, wone, ismax, b8) { (cntw, b9) =>
+    let cntv : Int = b_val(b9, cntw) in let invc : Int = if cntv == 0 then 0 else finv(cntv) in
+    match b_fresh(b9) { (wiv, b10) => let b11 : Build = b_set(wiv, invc, b10) in
+    match mk_mul(cntw, wiv, b11) { (prod, b12) => let b13 : Build = b_emit(GAssertEq(prod, wone), b12) in
+    match b13 { Build(n, gates, vs) => prove_ok(gates, vs, n) } } } } } } } } } } }
+fn mm_col(q: Query) : String = match q { MinQ(c, s) => c; MaxQ(c, s) => c; _ => "" }
+fn mm_is_max(q: Query) : Bool = match q { MaxQ(c, s) => true; _ => false }
+fn mm_sub(q: Query) : Query = match q { MinQ(c, s) => s; MaxQ(c, s) => s; _ => q }
+fn mm_line(label: String, q: Query, gamma: Int) : String =
+  let col : String = mm_col(q) in let ismax : Bool = mm_is_max(q) in let sub : Query = mm_sub(q) in
+  let pred : PExpr = pred_of(sub) in let rows : List<Row> = rows_of(table_of(sub)) in
+  let want : Int = result_int(run_query(q)) in
   let c : Int = commit_rows(rows, gamma) in
   let lie : Int = if ismax then want - 7 else want + 7 in    # a value that can't be the bound
-  label ++ " = " ++ int_to_string(want) ++ "  honest " ++ show_a(prove_minmax(rows, col, gamma, c, want, ismax)) ++ ", lying(" ++ int_to_string(lie) ++ ") " ++ show_a(prove_minmax(rows, col, gamma, c, lie, ismax))
+  label ++ " = " ++ int_to_string(want) ++ "  honest " ++ show_a(prove_minmax(rows, col, pred, gamma, c, want, ismax)) ++ ", lying(" ++ int_to_string(lie) ++ ") " ++ show_a(prove_minmax(rows, col, pred, gamma, c, lie, ismax))
 
 let _ : String = print("--- prove_pane.glass: Frost as a second backend over the Pane query algebra (H1) ---")
 let _ : String = print("one AST, two evaluators: run_query interprets it; prove_pane proves it over a committed PRIVATE table")
@@ -301,8 +311,10 @@ let _ : String = print("AVG via sum + count (a field has no exact division — t
 let _ : String = print("  " ++ avg_line("AVG(salary) WHERE dept=eng", "salary", Where(EqE(Col("dept"), LitI(0)), From(tbl)), gamma))
 let _ : String = print("")
 let _ : String = print("MIN / MAX over the committed table (range gadget proves the bound; an inverse hint proves it's present):")
-let _ : String = print("  " ++ mm_line("MIN(salary)", "salary", rows_of(tbl), gamma, false))
-let _ : String = print("  " ++ mm_line("MAX(salary)", "salary", rows_of(tbl), gamma, true))
+let _ : String = print("  " ++ mm_line("MIN(salary)                ", MinQ("salary", From(tbl)), gamma))
+let _ : String = print("  " ++ mm_line("MAX(salary)                ", MaxQ("salary", From(tbl)), gamma))
+let _ : String = print("  " ++ mm_line("MIN(salary) WHERE dept=eng ", MinQ("salary", Where(EqE(Col("dept"), LitI(0)), From(tbl))), gamma))
+let _ : String = print("  " ++ mm_line("MAX(salary) WHERE dept=sales", MaxQ("salary", Where(EqE(Col("dept"), LitI(1)), From(tbl))), gamma))
 let _ : String = print("")
 let _ : String = print("the Frost circuit's answer ACCEPTs exactly when it equals run_query's; any other claim REJECTs.")
 let _ : String = print("revealed: the commitment, the query, the result. hidden: every row.")
