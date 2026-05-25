@@ -301,6 +301,7 @@ fn pat_vars(p: Pattern) : List<String> =
     PVar(x) => [x];
     PCtor(n, subs) => pat_vars_list(subs);
     PTuple(subs) => pat_vars_list(subs);
+    PRecord(_, fields) => fields;
     _ => []
   }
 
@@ -693,7 +694,8 @@ fn ptest(p: Pattern, sv: String) : String =
     PCtor(name, subs) =>
       "(!strcmp(((q_value_t*)(intptr_t)(" ++ sv ++ "))->ctor, " ++
       c_str_raw(name) ++ ")" ++ ptest_subs(subs, sv, 0) ++ ")";
-    PTuple(subs) => "(1" ++ ptest_subs(subs, sv, 0) ++ ")"
+    PTuple(subs) => "(1" ++ ptest_subs(subs, sv, 0) ++ ")";
+    PRecord(_, _) => "1"
   }
 
 fn ptest_subs(subs: List<Pattern>, sv: String, i: Int) : String =
@@ -711,13 +713,23 @@ fn pbind(p: Pattern, sv: String) : String =
     PStr(s) => "";
     PVar(x) => "long long " ++ cmangle(x) ++ " = (long long)(" ++ sv ++ "); ";
     PCtor(name, subs) => pbind_subs(subs, sv, 0);
-    PTuple(subs) => pbind_subs(subs, sv, 0)
+    PTuple(subs) => pbind_subs(subs, sv, 0);
+    PRecord(_, fields) => pbind_record(fields, sv)
   }
 
 fn pbind_subs(subs: List<Pattern>, sv: String, i: Int) : String =
   match subs {
     [] => "";
     [s, ...rest] => pbind(s, field_acc(sv, i)) ++ pbind_subs(rest, sv, i + 1)
+  }
+
+# Record pattern: bind each named field via q_field (lookup by name, not index).
+fn pbind_record(fields: List<String>, sv: String) : String =
+  match fields {
+    [] => "";
+    [f, ...rest] =>
+      "long long " ++ cmangle(f) ++ " = q_field((long long)(" ++ sv ++ "), " ++ c_str_raw(f) ++ "); " ++
+      pbind_record(rest, sv)
   }
 
 # Emit the arm chain as real if/else-if statements assigning to mv; the

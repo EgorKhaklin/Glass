@@ -121,6 +121,7 @@ type Pattern =
   | PInt(Int)
   | PBool(Bool)
   | PStr(String)
+  | PRecord(String, List<String>)   # Name { field1, field2 } — binds each field by name
 
 type Expr =
   | EInt(Int)
@@ -702,7 +703,30 @@ fn parse_ctor_pattern(
         match p { (subs, rest) =>
           Ok((PCtor(name, subs), rest))
         });
+    TLBrace =>
+      bind_result(parse_record_pattern_fields(rest_tok(ts), []),
+                  fn(p: (List<String>, List<Token>)) ->
+        match p { (fields, rest) =>
+          Ok((PRecord(name, fields), rest))
+        });
     _ => Ok((PCtor(name, []), ts))
+  }
+
+# Parse the `{ field1, field2 }` body of a record pattern — bare field names.
+fn parse_record_pattern_fields(
+  ts: List<Token>,
+  acc: List<String>
+) : Result<(List<String>, List<Token>), String> =
+  match peek_tok(ts) {
+    TRBrace => Ok((acc, rest_tok(ts)));
+    TIdent(f) =>
+      let acc2 : List<String> = acc ++ [f] in
+      match peek_tok(rest_tok(ts)) {
+        TComma  => parse_record_pattern_fields(rest_tok(rest_tok(ts)), acc2);
+        TRBrace => Ok((acc2, rest_tok(rest_tok(ts))));
+        _ => Err("parse: expected , or } in record pattern")
+      };
+    _ => Err("parse: expected field name in record pattern")
   }
 
 fn parse_pattern_list(
@@ -835,7 +859,8 @@ fn pat_binds(p: Pattern, name: String) : Bool =
     PTuple(items) => any_pat_binds(items, name);
     PInt(_)       => false;
     PBool(_)      => false;
-    PStr(_)       => false
+    PStr(_)       => false;
+    PRecord(_, fields) => fold(fields, false, fn(acc: Bool, f: String) -> acc || (f == name))
   }
 
 fn any_pat_binds(ps: List<Pattern>, name: String) : Bool =
@@ -3291,7 +3316,12 @@ fn check_pattern(
                   fn(r: (Sub, Int)) ->
         match r { (s1, n1) =>
           check_tuple_patterns(sub_pats, fresh_tvs, env, s1, n1)
-        })
+        });
+    # Record patterns compile fine (glassc binds fields by name); the
+    # self-hosted type inference doesn't model them, so only a record pattern
+    # in the *main expression* hits this — and infer_main_type falls back.
+    PRecord(rname, fields) =>
+      Err("type: record pattern '" ++ rname ++ "' is not modeled by the self-hosted inference (it still compiles)")
   }
 
 fn check_tuple_patterns(
@@ -4702,7 +4732,24 @@ fn match_pattern(
             then match_patterns(sub_vals, sub_pats)
             else None;
         _ => None
+      };
+    PRecord(rname, fields) =>
+      match v {
+        VRec(pairs) => Some(record_pattern_binds(fields, pairs));
+        _ => None
       }
+  }
+
+fn rec_field_val(pairs: List<Pair<String, Value>>, name: String) : Value =
+  match pairs {
+    [] => VInt(0);
+    [Pair(k, vv), ...rest] => if k == name then vv else rec_field_val(rest, name)
+  }
+fn record_pattern_binds(fields: List<String>, pairs: List<Pair<String, Value>>)
+  : List<Pair<String, Value>> =
+  match fields {
+    [] => [];
+    [f, ...rest] => [Pair(f, rec_field_val(pairs, f))] ++ record_pattern_binds(rest, pairs)
   }
 
 # Match a list of sub-values against a list of sub-patterns,
