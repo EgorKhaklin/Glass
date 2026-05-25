@@ -112,7 +112,7 @@ glass/
 Glass is a research language and a labor of love. It self-hosts, ships 381
 passing tests, runs in the browser, and is the foundation for the experiments
 in [`examples/frost/`](examples/frost/) and [`examples/prove/`](examples/prove/).
-It is not production-hardened, and it doesn't pretend to be — see the honest
+It is not production-hardened, and it doesn't pretend to be; see the honest
 notes throughout.
 
 ## License
