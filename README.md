@@ -2,7 +2,6 @@
 
 <img src="assets/glass-logo.jpg" alt="Glass" width="460"/>
 
-# Glass
 
 ### You can see straight through it.
 
