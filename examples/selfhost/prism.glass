@@ -402,6 +402,10 @@ fn next_token(s: String, i: Int) : (Token, Int) =
     else if c == "?" then (TQmark, j + 1)
     else if c == "-" then
       if char_at(s, j + 1) == ">" then (TArrow, j + 2)
+      # `-` immediately before a digit is a negative INT literal (matching the
+      # reference lexer's `-?\d+`): `-5` is a literal, `a - 5` (spaced) is binary.
+      else if is_digit(char_at(s, j + 1)) then
+        match read_int(s, j + 1, 0) { (n, k) => (TInt(0 - n), k) }
       else (TMinus, j + 1)
     else (TEnd, j)
 
