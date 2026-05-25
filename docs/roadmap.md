@@ -39,7 +39,7 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Shipped (through v4.93)
+## Shipped (through v4.94)
 
 - **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
 - **Pane** — a query language in Glass.
@@ -129,9 +129,19 @@ proves the things the project was for."
   - **Hardened the discipline along the way:** glass.py now rejects uppercase
     value bindings (they silently miscompiled — glassc read them as constructors);
     `dogfood.sh`'s build seed was fixed (it was seeding the wrong path).
-- **H2 — A cryptographic prover.** Wire the 128-bit bignum field (`frost_field`)
-  through the FRI/quotient so the end-to-end proof has real security, not the toy
-  base field. The field is built (N4); this is the integration.
+- **H2 — A cryptographic prover. 🚧 IN PROGRESS.** Wire a real field through the
+  FRI/quotient so the end-to-end proof has cryptographic security, not the toy
+  base field.
+  - ✅ **The field STARKs actually use, built from scratch**
+    ([`frost_goldilocks.glass`](../examples/frost/frost_goldilocks.glass)):
+    **Goldilocks** p = 2⁶⁴ − 2³² + 1 (Plonky2, RISC Zero), with its signature
+    division-free reduction (2⁶⁴ ≡ 2³² − 1), a real Fermat inverse (p − 2 overflows
+    int64, so the exponent is walked in limbs), and the **2³²-th root of unity**
+    that gives radix-2 NTT layers for any practical trace. All int64-safe via
+    base-2¹⁶ limbs — so it dogfoods (Python bignum ≡ C int64). (A 128-bit field
+    `frost_field` exists too, from N4.)
+  - **Next:** the integration — swap the STARK's base field from toy Baby Bear to
+    Goldilocks (the NTT roots, FRI domain, and Merkle hashing over the wider field).
 - **H3 — Recursive proofs. 🚧 IN PROGRESS.** A proof that verifies another proof. The
   hard core is expressing a verifier as a circuit; a STARK verifier's algebraic
   heart is the FRI **fold check**.
@@ -148,9 +158,19 @@ proves the things the project was for."
     inverse supplied on an input wire. Honest ACCEPT, tampered REJECT, two blinding
     seeds give different openings. Self-hosted byte-identical; ~1.1s native vs ~46s
     interpreted (~42×) — exactly why the native path matters.
-  - **Next:** compose with `frost_zk`'s in-circuit Merkle membership for a full
-    recursive STARK verifier (the opened codeword values authenticated against the
-    commitment, in-circuit).
+  - ✅ **The canonical ZK statement — knowledge of a hash preimage**
+    ([`prove_preimage_zk.glass`](../examples/prove/prove_preimage_zk.glass)):
+    *"I know a secret `x` with `Hash(x) = H`"*, in zero-knowledge. `Hash` is a
+    2-to-1 compression from Poseidon's own heart — the **x⁷ S-box**, round
+    constants, and the **MDS mix** — lowered gate-for-gate into a circuit, with the
+    secret preimage on private input wires and a `qassert` forcing the truncated
+    output to the public digest. Proven by the blinded F_{p⁴} FRI STARK: honest
+    ACCEPT, wrong preimage REJECT, two seeds give different openings. Reduced rounds
+    so it dogfoods on the interpreter; the full 30-round Poseidon runs the same way
+    (`run_native.sh`).
+  - **Next:** compose the fold-step verifier with `frost_zk`'s in-circuit Merkle
+    membership for a full recursive STARK verifier (the opened codeword values
+    authenticated against the commitment, in-circuit).
 - **H4 — Performance. 🚧 STARTED.** The reference interpreter (`glass.py`) is the
   bottleneck for the heavy STARK demos (the compiled `native_glassc` is ~10× faster).
   Profiling showed the cost is sheer node-visit volume (tens of millions of

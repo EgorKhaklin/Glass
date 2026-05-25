@@ -1,0 +1,128 @@
+# =============================================================================
+# frost_goldilocks.glass — the Goldilocks field, from scratch, int64-safe
+#
+# Goldilocks  p = 2^64 − 2^32 + 1 = 18446744069414584321  is THE field modern
+# STARK provers run on (Plonky2, RISC Zero, …). Two properties make it special:
+#
+#   1. Fast reduction. 2^64 ≡ 2^32 − 1 (mod p), so reducing a 128-bit product
+#      is a couple of shifts and adds — no division. This file builds exactly
+#      that fold.
+#   2. Huge 2-adicity. p − 1 = 2^32 · (2^32 − 1), so there is a 2^32-th root of
+#      unity — enough radix-2 NTT layers for any practical trace. Demonstrated
+#      below: a 2^32-th root w with w^(2^32) = 1 but w^(2^31) ≠ 1.
+#
+# The catch: p ≈ 1.8·10^19 is larger than a signed int64 (≈9.2·10^18), and a
+# product of two field elements is ~128-bit — so naive arithmetic overflows the
+# compiled (int64) backend. The fix is bignum: base-2^16 LIMBS (little-endian),
+# so every limb product (2^16·2^16 = 2^32) and carry stays inside int64. Even the
+# inverse exponent p−2 overflows int64, so square-and-multiply walks the exponent
+# in limbs too. Every step is int64-safe — so this DOGFOODS: native_glassc (int64)
+# and glass.py (bignum) agree, proving the int64 wall is genuinely lifted.
+#
+# (Shares the limb toolkit with frost_field.glass; the modulus and its fast
+# reduction are what's new — plus a bignum-exponent power and a real inverse.)
+# =============================================================================
+
+fn lmod(x: Int) : Int = x % 65536
+fn ldiv(x: Int) : Int = x / 65536
+# local reverse (the builtin `reverse` isn't emitted by glassc; keep self-hosting)
+fn rev_go(xs: List<Int>, acc: List<Int>) : List<Int> = match xs { [] => acc; [h, ...t] => rev_go(t, [h] ++ acc) }
+fn rev(xs: List<Int>) : List<Int> = rev_go(xs, [])
+
+# strip high zero limbs -> canonical form
+fn drop_zeros(xs: List<Int>) : List<Int> = match xs { [] => []; [h, ...t] => if h == 0 then drop_zeros(t) else xs }
+fn trim(xs: List<Int>) : List<Int> = rev(drop_zeros(rev(xs)))
+
+# add with carry (handles unequal lengths)
+fn addc(a: List<Int>, b: List<Int>, carry: Int) : List<Int> =
+  match a {
+    [] => match b { [] => if carry == 0 then [] else [carry]; [hb, ...tb] => let s : Int = hb + carry in [lmod(s)] ++ addc([], tb, ldiv(s)) };
+    [ha, ...ta] => match b { [] => let s : Int = ha + carry in [lmod(s)] ++ addc(ta, [], ldiv(s)); [hb, ...tb] => let s : Int = ha + hb + carry in [lmod(s)] ++ addc(ta, tb, ldiv(s)) }
+  }
+fn bn_add(a: List<Int>, b: List<Int>) : List<Int> = trim(addc(a, b, 0))
+
+# multiply a limb-list by a small scalar k (k·limb + carry fits int64)
+fn smul(xs: List<Int>, k: Int, carry: Int) : List<Int> =
+  match xs { [] => if carry == 0 then [] else [carry]; [h, ...t] => let p : Int = h * k + carry in [lmod(p)] ++ smul(t, k, ldiv(p)) }
+fn shift(xs: List<Int>, n: Int) : List<Int> = if n <= 0 then xs else [0] ++ shift(xs, n - 1)
+# schoolbook multiply
+fn mul_go(a: List<Int>, b: List<Int>, i: Int) : List<Int> =
+  match b { [] => []; [hb, ...tb] => bn_add(shift(smul(a, hb, 0), i), mul_go(a, tb, i + 1)) }
+fn bn_mul(a: List<Int>, b: List<Int>) : List<Int> = trim(mul_go(a, b, 0))
+
+# compare trimmed bignums: -1 / 0 / 1
+fn cmp_hi(a: List<Int>, b: List<Int>) : Int = match a { [] => 0; [ha, ...ta] => match b { [] => 0; [hb, ...tb] => if ha == hb then cmp_hi(ta, tb) else (if ha < hb then 0 - 1 else 1) } }
+fn bn_cmp(a: List<Int>, b: List<Int>) : Int =
+  let ta : List<Int> = trim(a) in let tb : List<Int> = trim(b) in
+  if len(ta) == len(tb) then cmp_hi(rev(ta), rev(tb)) else (if len(ta) < len(tb) then 0 - 1 else 1)
+# subtract (a >= b) with borrow
+fn subb(a: List<Int>, b: List<Int>, borrow: Int) : List<Int> =
+  match a { [] => [];
+    [ha, ...ta] => match b {
+      [] => let d : Int = ha - borrow in if d < 0 then [d + 65536] ++ subb(ta, [], 1) else [d] ++ subb(ta, [], 0);
+      [hb, ...tb] => let d : Int = ha - hb - borrow in if d < 0 then [d + 65536] ++ subb(ta, tb, 1) else [d] ++ subb(ta, tb, 0) } }
+fn bn_sub(a: List<Int>, b: List<Int>) : List<Int> = trim(subb(a, b, 0))
+
+fn take(xs: List<Int>, n: Int) : List<Int> = if n <= 0 then [] else match xs { [] => []; [h, ...t] => [h] ++ take(t, n - 1) }
+fn drop(xs: List<Int>, n: Int) : List<Int> = if n <= 0 then xs else match xs { [] => []; [h, ...t] => drop(t, n - 1) }
+
+# --- Goldilocks: p = 2^64 − 2^32 + 1, 4 base-2^16 limbs -----------------------
+# p = 0xFFFFFFFF00000001 -> little-endian limbs [1, 0, 65535, 65535].
+fn pg(d: Int) : List<Int> = [1, 0, 65535, 65535]
+# 2^64 ≡ 2^32 − 1 (mod p); 2^32 − 1 in limbs = [65535, 65535]. So a value with
+# limbs above index 3 (the part ≥ 2^64) folds back: hi·2^64 ≡ hi·(2^32 − 1).
+fn fold_hi(d: Int) : List<Int> = [65535, 65535]
+fn bn_mod_p(a: List<Int>) : List<Int> =
+  let t : List<Int> = trim(a) in
+  if len(t) > 4 then bn_mod_p(bn_add(take(t, 4), bn_mul(drop(t, 4), fold_hi(0))))
+  else if bn_cmp(t, pg(0)) >= 0 then bn_sub(t, pg(0)) else t
+
+fn fadd(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_add(a, b))
+fn fsub(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_add(a, bn_sub(pg(0), bn_mod_p(b))))
+fn fmul(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_mul(a, b))
+fn bn_eq(a: List<Int>, b: List<Int>) : Bool = bn_cmp(a, b) == 0
+
+# --- power with a BIGNUM exponent (p−2 overflows int64, so walk it in limbs) --
+fn bn_is_zero(e: List<Int>) : Bool = match trim(e) { [] => true; _ => false }
+fn bn_is_odd(e: List<Int>) : Bool = match e { [] => false; [h, ...t] => h % 2 == 1 }
+# divide by 2: process most-significant limb first, carrying the remainder down.
+fn half_hl(xs: List<Int>, rem: Int) : List<Int> = match xs { [] => []; [h, ...t] => let cur : Int = rem * 65536 + h in [cur / 2] ++ half_hl(t, cur % 2) }
+fn bn_half(e: List<Int>) : List<Int> = trim(rev(half_hl(rev(trim(e)), 0)))
+fn fpow_bn(base: List<Int>, e: List<Int>) : List<Int> =
+  if bn_is_zero(e) then [1]
+  else let h : List<Int> = fpow_bn(fmul(base, base), bn_half(e)) in
+       if bn_is_odd(e) then fmul(base, h) else h
+# Fermat inverse: a^(p−2).
+fn finv(a: List<Int>) : List<Int> = fpow_bn(a, bn_sub(pg(0), [2]))
+
+# --- demo --------------------------------------------------------------------
+fn show(xs: List<Int>) : String = match trim(xs) { [] => "0"; [h, ...t] => match t { [] => int_to_string(h); _ => int_to_string(h) ++ "+…(" ++ int_to_string(len(trim(xs))) ++ " limbs)" } }
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+
+let two64 : List<Int> = [0, 0, 0, 0, 1]                 # 2^64
+let two32 : List<Int> = [0, 0, 1]                        # 2^32
+let two31 : List<Int> = [0, 32768]                       # 2^31
+let a : List<Int> = [12345, 6789]                        # an element < p
+let b : List<Int> = [4242, 111, 9]
+let c : List<Int> = [7, 8, 9]
+let w : List<Int> = fpow_bn([7], bn_sub(two32, [1]))     # g^((p−1)/2^32), g = 7
+
+let _ : String = print("--- frost_goldilocks.glass: the Goldilocks field p = 2^64 − 2^32 + 1, int64-safe ---")
+let _ : String = print("the field real STARKs run on. base-2^16 limbs; 2^64 ≡ 2^32 − 1 gives division-free reduction.")
+let _ : String = print("")
+let _ : String = print("FAST REDUCTION  2^64 mod p  = " ++ show(bn_mod_p(two64)) ++ "   (≡ 2^32 − 1 = 65535+65535·2^16): " ++ show_b(bn_eq(bn_mod_p(two64), [65535, 65535])))
+let _ : String = print("p ≡ 0 (mod p):                      " ++ show_b(bn_eq(bn_mod_p(pg(0)), [])))
+let _ : String = print("a · 1 == a:                         " ++ show_b(bn_eq(fmul(a, [1]), a)))
+let _ : String = print("distributivity (a+b)·c == a·c+b·c:  " ++ show_b(bn_eq(fmul(fadd(a, b), c), fadd(fmul(a, c), fmul(b, c)))))
+let _ : String = print("")
+let _ : String = print("INVERSE  a · a^(p−2) == 1:           " ++ show_b(bn_eq(fmul(a, finv(a)), [1])) ++ "   (exponent p−2 ≈ 1.8e19 walked in limbs)")
+let _ : String = print("Fermat   7^(p−1) == 1:               " ++ show_b(bn_eq(fpow_bn([7], bn_sub(pg(0), [1])), [1])))
+let _ : String = print("")
+let _ : String = print("2-ADICITY  a 2^32-th root of unity w = 7^((p−1)/2^32):")
+let _ : String = print("  w^(2^32) == 1 (so w is a 2^32-th root):  " ++ show_b(bn_eq(fpow_bn(w, two32), [1])))
+let _ : String = print("  w^(2^31) == 1 (would mean not primitive): " ++ show_b(bn_eq(fpow_bn(w, two31), [1])) ++ "   (no => w has order exactly 2^32 -> 32 NTT layers)")
+let _ : String = print("")
+let _ : String = print("a from-scratch Goldilocks field — fast reduction, real inverse, 2^32-th roots — all")
+let _ : String = print("int64-safe, so it dogfoods. this is the base field a production STARK prover wants.")
+
+"frost goldilocks v0.1 — the Goldilocks STARK field (p = 2^64−2^32+1) via int64-safe limbs"

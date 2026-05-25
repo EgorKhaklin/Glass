@@ -43,6 +43,7 @@ compiles identically through the self-hosted toolchain.
 - [`frost_poseidon.glass`](frost_poseidon.glass) — **Poseidon**, the standard ZK hash, from scratch: an `x⁷` S-box (a real *permutation* on Baby Bear, unlike MiMC's `x⁵`), full/partial rounds, and an MDS mix — the construction production STARKs actually use.
 - [`frost_ntt.glass`](frost_ntt.glass) — a recursive **O(n log n) NTT** (Cooley–Tukey), replacing the O(n²) transform under interpolation and FRI.
 - [`frost_field.glass`](frost_field.glass) — a **128-bit field** (2¹²⁸ − 159) from base-2¹⁶ bignum limbs: arithmetic past the single-int64 ceiling.
+- [`frost_goldilocks.glass`](frost_goldilocks.glass) — the **Goldilocks field** (2⁶⁴ − 2³² + 1), the one real STARK provers (Plonky2, RISC Zero) run on: its signature division-free fast reduction (2⁶⁴ ≡ 2³² − 1), a real Fermat inverse (the exponent p − 2 overflows int64, so it's walked in limbs too), and the 2³²-th root of unity that gives it 32 NTT layers — all int64-safe, so it dogfoods.
 
 > Honest note: the field and parameters are real enough to be *correct* and to
 > demonstrate every property; the sizes are kept small so each file reads in one
