@@ -7,6 +7,9 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [4.91.0] — 2026-05-25 — Record patterns self-host
+- Record patterns in `match` (`Point { x, y } => …`) now parse in `prism` and compile through `glassc` — they previously ran on the reference interpreter and Quartz but not the self-hosted native compiler. With this, the parser-parity audit has closed **every practical divergence**: the reference, Quartz, and the self-hosted compiler now agree on the whole language. Bootstrap fixpoint byte-identical (972 lines of C, gen1 == gen2); suite 381/381.
+
 ## [4.90.0] — 2026-05-25 — The prelude self-hosts
 - The entire standard prelude now compiles through the **self-hosted** compiler, not just the reference: `fst`, `snd`, `reverse`, `map_option`, `bind_option`, and `map_result` join `bind_result`/`string_contains` — all emitted by `glassc` (Pair field access, a `q_reverse` list walker, and closure-applying Option/Result mappers built on `q_apply1`). Every prelude function now runs identically on the interpreter, Quartz, and the self-hosted compiler. Bootstrap fixpoint byte-identical (963 lines of C, gen1 == gen2); suite 381/381.
 
