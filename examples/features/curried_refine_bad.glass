@@ -1,0 +1,15 @@
+# =============================================================================
+# curried_refine_bad.glass — negative demo for v4.24.
+#
+# Same shape as curried_refine.glass, but the let-bound value violates
+# the second param's refinement. v4.23 silently produced 10 + 0 = 10
+# because the second-param check didn't exist. v4.24's VRefinedClos
+# wrapper catches it at apply time and the eval returns
+# `Err "refinement violated at runtime: b = 0 fails predicate"`,
+# which the demo loop in prism.glass surfaces.
+# =============================================================================
+
+fn safe_add(a: Int, b: Int where (b != 0)) : Int = a + b
+
+let zero : Int = 0
+safe_add(10, zero)

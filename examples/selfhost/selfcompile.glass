@@ -1,8 +1,9 @@
 # =============================================================================
-# selfcompile.glass — Stage 5 endpoint (v4.0)
+# selfcompile.glass — Stage 5 endpoint (v4.4)
 #
-# End-to-end self-compile script. Takes one or more Glass source strings,
-# routes each through the Glass-side compilation pipeline:
+# End-to-end self-compile script. Takes Glass programs (either inline
+# source strings or files read from disk) and routes each through the
+# Glass-side compilation pipeline:
 #
 #   1. write_file("/tmp/qp_input.glass", source)
 #   2. run_command("glass", ["examples/selfhost/quartz_parser.glass"])
@@ -11,19 +12,21 @@
 #        `COMPILED: <stdout>`
 #   3. Read the captured stdout, extract the COMPILED: line, report.
 #
-# This is the v4.0 milestone: the entire compilation pipeline runs from
-# Glass-driven scripts, end to end. selfcompile.glass orchestrates;
-# quartz_parser.glass parses + generates C; build_and_run drives cc.
-# A user can drop Glass source into a variable and get a native binary
-# whose output is captured back to the caller, all without leaving Glass.
+# v4.0: introduced the pipeline with hardcoded source strings.
+# v4.1: added string-escape demos.
+# v4.2: added fn-chain demos.
+# v4.3: added nested-pattern demos.
+# v4.4 (this release): adds `compile_path(label, path)` — reads a
+#   user .glass file from disk via read_file, then routes through the
+#   same pipeline. Demonstrates: drop a .glass file into
+#   examples/selfhost/programs/, add a compile_path call, get the
+#   native output captured back. No need to inline source as strings.
 #
 # Architecture notes:
 #   - Two layers of glass interpretation: the host runs selfcompile,
 #     which subprocess-invokes a fresh glass that runs quartz_parser.
 #   - quartz_parser self-cleans the trigger file after reading it, so
 #     subsequent default-mode invocations work cleanly.
-#   - selfcompile compiles SEVERAL test cases in sequence to demonstrate
-#     the pipeline handles arbitrary Glass programs uniformly.
 #   - True Stage 5 (prism interpreting quartz_parser) would require
 #     prism to support write_file/read_file/run_command builtins;
 #     deferred. The host-direct path here is operationally equivalent.
@@ -72,6 +75,17 @@ fn compile_one(label: String, src: String)
       }
   }
 
+# v4.4: Compile a Glass program read from disk. Reads the file via
+# read_file, then routes through compile_one. Lets users drop .glass
+# files into examples/selfhost/programs/ and have selfcompile pick
+# them up — no need to embed source as a string literal here.
+fn compile_path(label: String, path: String)
+    : Result<String, String> !{File, Process} =
+  match read_file(path) {
+    Err(msg) => Err("read_file " ++ path ++ " failed: " ++ msg);
+    Ok(src) => compile_one(label, src)
+  }
+
 # Top-level: compile several test programs and print results.
 # Each compile_one call drives the FULL pipeline:
 #   user .glass source string
@@ -118,6 +132,359 @@ let r7 : Result<String, String> =
   compile_one("string_fn",
     "fn greet(n) = \"hi, \" ++ n  greet(\"Glass\")")
 
+# v4.1: escape sequences in string literals (newline, quote, backslash).
+# `\t` is intentionally absent — the host Glass tokenizer doesn't
+# decode it (see escape_char_for comment in quartz_parser.glass).
+
+# 8. Newline escape — output spans two lines
+let r8 : Result<String, String> =
+  compile_one("esc_nl",
+    "\"line1\\nline2\"")
+
+# 9. Quote escape — output contains a literal "
+let r9 : Result<String, String> =
+  compile_one("esc_quote",
+    "\"with \\\"quotes\\\"\"")
+
+# 10. Backslash escape
+let r10 : Result<String, String> =
+  compile_one("esc_bs",
+    "\"path: \\\\home\\\\me\"")
+
+# v4.2: fn-chain return-type inference via fixed-point.
+# 11. Chain length 2 — greet calls helper which returns a string.
+# v3.20 would mis-classify greet as Int; v4.2 fixed-point gets it right.
+let r11 : Result<String, String> =
+  compile_one("chain2",
+    "fn helper(n) = \"hi, \" ++ n  fn greet(n) = helper(n)  greet(\"Glass\")")
+
+# 12. Chain length 3 — outer wraps middle wraps inner.
+let r12 : Result<String, String> =
+  compile_one("chain3",
+    "fn inner(n) = \"[\" ++ n ++ \"]\"  fn middle(n) = inner(n)  fn outer(n) = middle(n)  outer(\"v4.2\")")
+
+# v4.3: nested PCtor sub-patterns.
+# 13. Some(Some(_)) — match a doubly-wrapped value, bind the inner Int.
+# At runtime the value is q_value_t* { tag=0, fields=[q_value_t*] }
+# where the inner is { tag=0, fields=[42] }. The pattern descends two
+# levels, binding n to the innermost int.
+let r13 : Result<String, String> =
+  compile_one("nest_some",
+    "type Maybe = | Some(Int) | None  match Some(Some(42)) { Some(Some(n)) => n + 100; None => 0 }")
+
+# 14. Discrimination: Some(Some(_)) vs Some(None) — pattern must
+# differentiate based on the INNER ctor's tag.
+let r14 : Result<String, String> =
+  compile_one("nest_disc",
+    "type Maybe = | Some(Int) | None  match Some(None) { Some(Some(_)) => 1; Some(None) => 2; None => 3 }")
+
+# 15. Three-level nesting: Some(Some(Some(_)))
+let r15 : Result<String, String> =
+  compile_one("nest_deep",
+    "type Maybe = | Some(Int) | None  match Some(Some(Some(7))) { Some(Some(Some(n))) => n * 11; _ => 0 }")
+
+# v4.4: file-based demos. The Glass programs below live in
+# examples/selfhost/programs/ as standalone .glass files. compile_path
+# reads each and routes through the same pipeline as the inline demos.
+# Drop a new .glass file into that directory and add a compile_path
+# call to test it — no need to inline the source as a string literal.
+
+let r16 : Result<String, String> =
+  compile_path("file_hello", "examples/selfhost/programs/hello.glass")
+
+let r17 : Result<String, String> =
+  compile_path("file_arith", "examples/selfhost/programs/arith.glass")
+
+let r18 : Result<String, String> =
+  compile_path("file_fact", "examples/selfhost/programs/fact.glass")
+
+let r19 : Result<String, String> =
+  compile_path("file_tree", "examples/selfhost/programs/tree_sum.glass")
+
+let r20 : Result<String, String> =
+  compile_path("file_nest", "examples/selfhost/programs/nested.glass")
+
+# v4.5: line comments. The user program below has #-prefixed comments
+# at line starts and after tokens. quartz_parser elides them in skip_ws.
+let r21 : Result<String, String> =
+  compile_path("file_cmt", "examples/selfhost/programs/commented.glass")
+
+# v4.6: modulo and unary minus.
+let r22 : Result<String, String> =
+  compile_one("mod_gcd",
+    "fn gcd(a, b) = if b < 1 then a else gcd(b, a % b)  gcd(48, 18)")
+
+let r23 : Result<String, String> =
+  compile_one("mod_par",
+    "if 13 % 5 < 3 then 100 else 200")
+
+let r24 : Result<String, String> =
+  compile_one("neg",
+    "let x = -5 in x * x + -10")
+
+let r25 : Result<String, String> =
+  compile_path("file_gcd", "examples/selfhost/programs/gcd.glass")
+
+# v4.7: equality + logical operators.
+# Equality
+let r26 : Result<String, String> =
+  compile_one("eq",
+    "if 7 == 7 then 100 else 200")
+
+# Logical AND — short-circuit semantics from C
+let r27 : Result<String, String> =
+  compile_one("and",
+    "if 5 < 10 && 10 < 20 then 1 else 0")
+
+# Logical OR — combined with comparison
+let r28 : Result<String, String> =
+  compile_one("or",
+    "if 1 < 0 || 2 > 1 then 7 else 8")
+
+# Composite predicate: precedence test. == binds tighter than &&,
+# && tighter than ||. Should evaluate (3 == 3) && (5 < 10).
+let r29 : Result<String, String> =
+  compile_one("composite",
+    "if 3 == 3 && 5 < 10 || 0 > 1 then 42 else 0")
+
+# Even/odd via modulo + equality
+let r30 : Result<String, String> =
+  compile_one("even",
+    "fn even(n) = n % 2 == 0  if even(8) then 1 else 0")
+
+let r31 : Result<String, String> =
+  compile_path("file_prime", "examples/selfhost/programs/prime.glass")
+
+# v4.8: != operator and block comments.
+let r32 : Result<String, String> =
+  compile_one("neq",
+    "if 3 != 4 then 100 else 200")
+
+let r33 : Result<String, String> =
+  compile_one("neq_false",
+    "if 5 != 5 then 1 else 2")
+
+# Block comment: the /* ... */ section is elided; the actual code is
+# `42 + 8` → 50.
+let r34 : Result<String, String> =
+  compile_one("block_cmt",
+    "/* this is a comment\n   spanning multiple lines */ 42 + 8")
+
+let r35 : Result<String, String> =
+  compile_path("file_fizz", "examples/selfhost/programs/fizzbuzz.glass")
+
+# v4.9: string_eq builtin + identifier mangling.
+let r36 : Result<String, String> =
+  compile_one("str_eq_t",
+    "if string_eq(\"abc\", \"abc\") then 100 else 200")
+
+let r37 : Result<String, String> =
+  compile_one("str_eq_f",
+    "if string_eq(\"abc\", \"xyz\") then 100 else 200")
+
+let r38 : Result<String, String> =
+  compile_one("str_neq",
+    "if string_neq(\"a\", \"b\") then 7 else 8")
+
+# Identifier mangling: `double` is a C reserved word. v4.9 prefixes
+# user-defined names that collide. v4.8 would fail with link error.
+let r39 : Result<String, String> =
+  compile_one("mangle_fn",
+    "fn double(x) = x * 2  double(21)")
+
+let r40 : Result<String, String> =
+  compile_one("mangle_let",
+    "let return = 5 in return + 1")
+
+# v4.11: char_at builtin for symbolic string processing.
+let r41 : Result<String, String> =
+  compile_one("char_at",
+    "char_at(\"ABC\", 0)")
+
+let r42 : Result<String, String> =
+  compile_one("char_at_mid",
+    "char_at(\"hello\", 2)")
+
+# First-char vowel check: 'A' (65) is a vowel → 1
+let r43 : Result<String, String> =
+  compile_one("vowel_check",
+    "fn is_vowel(c) = c == 65 || c == 69 || c == 73 || c == 79 || c == 85  if is_vowel(char_at(\"Apple\", 0)) then 1 else 0")
+
+let r44 : Result<String, String> =
+  compile_path("file_vowel", "examples/selfhost/programs/vowel.glass")
+
+# v4.12: >= and <= operators + int_to_char.
+let r45 : Result<String, String> =
+  compile_one("gte",
+    "if 5 >= 5 then 100 else 200")
+
+let r46 : Result<String, String> =
+  compile_one("lte",
+    "if 3 <= 5 then 7 else 8")
+
+let r47 : Result<String, String> =
+  compile_one("lte_false",
+    "if 9 <= 5 then 1 else 0")
+
+let r48 : Result<String, String> =
+  compile_one("int_char",
+    "int_to_char(72) ++ int_to_char(73)")
+
+let r49 : Result<String, String> =
+  compile_path("file_caesar", "examples/selfhost/programs/caesar.glass")
+
+# v4.13: string_length, string_to_upper, string_to_lower builtins.
+let r50 : Result<String, String> =
+  compile_one("strlen",
+    "string_length(\"hello world\")")
+
+let r51 : Result<String, String> =
+  compile_one("strlen_empty",
+    "string_length(\"\")")
+
+let r52 : Result<String, String> =
+  compile_one("upper",
+    "string_to_upper(\"Hello World\")")
+
+let r53 : Result<String, String> =
+  compile_one("lower",
+    "string_to_lower(\"MIXed Case\")")
+
+# Roundtrip: lower then upper should equal original-upper.
+let r54 : Result<String, String> =
+  compile_one("round",
+    "string_to_upper(string_to_lower(\"ABC\"))")
+
+let r55 : Result<String, String> =
+  compile_path("file_title", "examples/selfhost/programs/titlecase.glass")
+
+# v4.14: substring + string_at.
+let r56 : Result<String, String> =
+  compile_one("subs",
+    "substring(\"hello world\", 6, 11)")
+
+let r57 : Result<String, String> =
+  compile_one("subs_empty",
+    "substring(\"abc\", 1, 1)")
+
+let r58 : Result<String, String> =
+  compile_one("str_at",
+    "string_at(\"hello\", 2)")
+
+# Compose: extract substring then uppercase it.
+let r59 : Result<String, String> =
+  compile_one("subs_upper",
+    "string_to_upper(substring(\"hello world\", 0, 5))")
+
+let r60 : Result<String, String> =
+  compile_path("file_palin", "examples/selfhost/programs/palindrome.glass")
+
+# v4.15: string_index_of (returns Int, -1 if not found).
+let r61 : Result<String, String> =
+  compile_one("idx_hit",
+    "string_index_of(\"hello world\", \"world\")")
+
+let r62 : Result<String, String> =
+  compile_one("idx_miss",
+    "string_index_of(\"hello\", \"xyz\")")
+
+let r63 : Result<String, String> =
+  compile_one("idx_first",
+    "string_index_of(\"aaaa\", \"a\")")
+
+let r64 : Result<String, String> =
+  compile_one("idx_empty",
+    "string_index_of(\"hello\", \"\")")
+
+let r65 : Result<String, String> =
+  compile_path("file_email", "examples/selfhost/programs/email.glass")
+
+# v4.16: bitwise builtins.
+let r66 : Result<String, String> =
+  compile_one("band", "bit_and(12, 10)")
+
+let r67 : Result<String, String> =
+  compile_one("bor", "bit_or(12, 10)")
+
+let r68 : Result<String, String> =
+  compile_one("bxor", "bit_xor(12, 10)")
+
+let r69 : Result<String, String> =
+  compile_one("bnot", "bit_not(0)")
+
+let r70 : Result<String, String> =
+  compile_one("bshl", "bit_shl(1, 4)")
+
+let r71 : Result<String, String> =
+  compile_one("bshr", "bit_shr(16, 2)")
+
+# Compose: extract low byte of 0x1234 via mask.
+let r72 : Result<String, String> =
+  compile_one("low_byte", "bit_and(4660, 255)")
+
+let r73 : Result<String, String> =
+  compile_path("file_bitpack", "examples/selfhost/programs/bitpack.glass")
+
+# v4.17: hex literals.
+let r74 : Result<String, String> =
+  compile_one("hex_ff", "0xFF")
+
+let r75 : Result<String, String> =
+  compile_one("hex_lc", "0xcafe")
+
+let r76 : Result<String, String> =
+  compile_one("hex_zero", "0x0")
+
+let r77 : Result<String, String> =
+  compile_one("hex_arith", "0xFF + 0x01")
+
+let r78 : Result<String, String> =
+  compile_one("hex_bits", "bit_and(0xCAFE, 0x00FF)")
+
+# v4.18: division operator + calculator demo.
+let r79 : Result<String, String> =
+  compile_one("div", "10 / 2")
+
+let r80 : Result<String, String> =
+  compile_one("div_int", "20 / 3")
+
+let r81 : Result<String, String> =
+  compile_one("div_prec", "2 + 10 / 5")
+
+let r82 : Result<String, String> =
+  compile_one("div_assoc", "100 / 4 / 5")
+
+let r83 : Result<String, String> =
+  compile_path("file_calc", "examples/selfhost/programs/calc.glass")
+
+# v4.19: typed parameters + parameter-type-aware inference.
+let r84 : Result<String, String> =
+  compile_one("typed_int",
+    "fn double(x: Int) = x * 2  double(21)")
+
+let r85 : Result<String, String> =
+  compile_one("typed_str",
+    "fn echo(s: String) = s  echo(\"hello world\")")
+
+let r86 : Result<String, String> =
+  compile_one("typed_if_then_s",
+    "fn pick(s: String, n: Int) = if n < 1 then s else \"BIG\"  pick(\"keep\", 0)")
+
+let r87 : Result<String, String> =
+  compile_one("typed_if_else_s",
+    "fn pick(s: String, n: Int) = if n < 1 then \"\" else s  pick(\"keep\", 99)")
+
+let r88 : Result<String, String> =
+  compile_one("typed_accum",
+    "fn build(s: String, len: Int, i: Int, acc: String) = if i < len then build(s, len, i + 1, acc ++ int_to_char(char_at(s, i))) else acc  build(\"ABCDE\", 5, 0, \"\")")
+
+# v4.20: calc with parens + djb2 hash demo.
+let r89 : Result<String, String> =
+  compile_path("file_calc2", "examples/selfhost/programs/calc.glass")
+
+let r90 : Result<String, String> =
+  compile_path("file_djb2", "examples/selfhost/programs/djb2.glass")
+
 fn show(label: String, r: Result<String, String>) : String =
   match r {
     Ok(out) => label ++ " => " ++ out;
@@ -131,5 +498,88 @@ let _p4 : String = print(show("adt       (Some(77))", r4))
 let _p5 : String = print(show("record    (p.x * p.y)", r5))
 let _p6 : String = print(show("string    (hello ++ world)", r6))
 let _p7 : String = print(show("string_fn (greet Glass)", r7))
+let _p8 : String = print(show("esc_nl    (line1\\nline2)", r8))
+let _p9 : String = print(show("esc_quote (with \\\"quotes\\\")", r9))
+let _p10 : String = print(show("esc_bs    (path: \\\\home\\\\me)", r10))
+let _p11 : String = print(show("chain2    (greet via helper)", r11))
+let _p12 : String = print(show("chain3    (outer→middle→inner)", r12))
+let _p13 : String = print(show("nest_some (Some(Some(42)))", r13))
+let _p14 : String = print(show("nest_disc (Some(None) vs Some(Some))", r14))
+let _p15 : String = print(show("nest_deep (Some(Some(Some(7))))", r15))
+let _p16 : String = print(show("file_hello  (programs/hello.glass)", r16))
+let _p17 : String = print(show("file_arith  (programs/arith.glass)", r17))
+let _p18 : String = print(show("file_fact   (programs/fact.glass)", r18))
+let _p19 : String = print(show("file_tree   (programs/tree_sum.glass)", r19))
+let _p20 : String = print(show("file_nest   (programs/nested.glass)", r20))
+let _p21 : String = print(show("file_cmt    (programs/commented.glass)", r21))
+let _p22 : String = print(show("mod_gcd     (gcd(48, 18) via %)", r22))
+let _p23 : String = print(show("mod_par     (13 % 5 < 3 ? 100 : 200)", r23))
+let _p24 : String = print(show("neg         (-5 * -5 + -10)", r24))
+let _p25 : String = print(show("file_gcd    (programs/gcd.glass)", r25))
+let _p26 : String = print(show("eq          (7 == 7)", r26))
+let _p27 : String = print(show("and         (5 < 10 && 10 < 20)", r27))
+let _p28 : String = print(show("or          (1 < 0 || 2 > 1)", r28))
+let _p29 : String = print(show("composite   (3 == 3 && 5 < 10 || ...)", r29))
+let _p30 : String = print(show("even        (even(8) via %2 == 0)", r30))
+let _p31 : String = print(show("file_prime  (programs/prime.glass)", r31))
+let _p32 : String = print(show("neq         (3 != 4)", r32))
+let _p33 : String = print(show("neq_false   (5 != 5)", r33))
+let _p34 : String = print(show("block_cmt   (/* ... */ 42 + 8)", r34))
+let _p35 : String = print(show("file_fizz   (programs/fizzbuzz.glass)", r35))
+let _p36 : String = print(show("str_eq_t    (string_eq abc abc)", r36))
+let _p37 : String = print(show("str_eq_f    (string_eq abc xyz)", r37))
+let _p38 : String = print(show("str_neq     (string_neq a b)", r38))
+let _p39 : String = print(show("mangle_fn   (fn double — C reserved)", r39))
+let _p40 : String = print(show("mangle_let  (let return — C reserved)", r40))
+let _p41 : String = print(show("char_at     (char_at ABC 0)", r41))
+let _p42 : String = print(show("char_at_mid (char_at hello 2)", r42))
+let _p43 : String = print(show("vowel_check (first char of Apple)", r43))
+let _p44 : String = print(show("file_vowel  (programs/vowel.glass)", r44))
+let _p45 : String = print(show("gte         (5 >= 5)", r45))
+let _p46 : String = print(show("lte         (3 <= 5)", r46))
+let _p47 : String = print(show("lte_false   (9 <= 5)", r47))
+let _p48 : String = print(show("int_char    (int_to_char 72 ++ 73)", r48))
+let _p49 : String = print(show("file_caesar (programs/caesar.glass)", r49))
+let _p50 : String = print(show("strlen      (string_length hello world)", r50))
+let _p51 : String = print(show("strlen_empty (string_length empty)", r51))
+let _p52 : String = print(show("upper       (string_to_upper Hello World)", r52))
+let _p53 : String = print(show("lower       (string_to_lower MIXed Case)", r53))
+let _p54 : String = print(show("round       (upper(lower(ABC)))", r54))
+let _p55 : String = print(show("file_title  (programs/titlecase.glass)", r55))
+let _p56 : String = print(show("subs        (substring hello world 6 11)", r56))
+let _p57 : String = print(show("subs_empty  (substring abc 1 1)", r57))
+let _p58 : String = print(show("str_at      (string_at hello 2)", r58))
+let _p59 : String = print(show("subs_upper  (upper(substring 0..5))", r59))
+let _p60 : String = print(show("file_palin  (programs/palindrome.glass)", r60))
+let _p61 : String = print(show("idx_hit     (index_of hello world, world)", r61))
+let _p62 : String = print(show("idx_miss    (index_of hello, xyz)", r62))
+let _p63 : String = print(show("idx_first   (index_of aaaa, a)", r63))
+let _p64 : String = print(show("idx_empty   (index_of hello, '')", r64))
+let _p65 : String = print(show("file_email  (programs/email.glass)", r65))
+let _p66 : String = print(show("band        (bit_and 12 10)", r66))
+let _p67 : String = print(show("bor         (bit_or 12 10)", r67))
+let _p68 : String = print(show("bxor        (bit_xor 12 10)", r68))
+let _p69 : String = print(show("bnot        (bit_not 0)", r69))
+let _p70 : String = print(show("bshl        (bit_shl 1 4)", r70))
+let _p71 : String = print(show("bshr        (bit_shr 16 2)", r71))
+let _p72 : String = print(show("low_byte    (bit_and 0x1234 0xFF)", r72))
+let _p73 : String = print(show("file_bitpack (programs/bitpack.glass)", r73))
+let _p74 : String = print(show("hex_ff      (0xFF)", r74))
+let _p75 : String = print(show("hex_lc      (0xcafe)", r75))
+let _p76 : String = print(show("hex_zero    (0x0)", r76))
+let _p77 : String = print(show("hex_arith   (0xFF + 0x01)", r77))
+let _p78 : String = print(show("hex_bits    (bit_and 0xCAFE 0x00FF)", r78))
+let _p79 : String = print(show("div         (10 / 2)", r79))
+let _p80 : String = print(show("div_int     (20 / 3)", r80))
+let _p81 : String = print(show("div_prec    (2 + 10 / 5)", r81))
+let _p82 : String = print(show("div_assoc   (100 / 4 / 5)", r82))
+let _p83 : String = print(show("file_calc   (programs/calc.glass: eval 2+3*4)", r83))
+let _p84 : String = print(show("typed_int   (fn double(x: Int) = x * 2)", r84))
+let _p85 : String = print(show("typed_str   (fn echo(s: String) = s)", r85))
+let _p86 : String = print(show("typed_if_then_s (then s, untyped before broke)", r86))
+let _p87 : String = print(show("typed_if_else_s (else s, symmetry)", r87))
+let _p88 : String = print(show("typed_accum (accumulator pattern now works)", r88))
+let _p89 : String = print(show("file_calc2  (programs/calc.glass: (2+3)*4 — parens)", r89))
+let _p90 : String = print(show("file_djb2   (programs/djb2.glass: djb2 hello)", r90))
 
-"v4.0 selfcompile complete"
+"v4.20 selfcompile complete"

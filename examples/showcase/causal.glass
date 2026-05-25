@@ -1,0 +1,75 @@
+# =============================================================================
+# Temporal / causal types — happens-before and Lamport clocks, in Glass.
+#
+# Time in a distributed system is a PARTIAL order, not a line: some
+# events cause others, some are concurrent (neither causes the other).
+# The causal structure is a DAG of events; Lamport's logical clock
+# assigns each event an integer so that
+#
+#       a happens-before b   ⟹   clock(a) < clock(b)
+#
+# (the converse need not hold — that's the price of a single integer).
+# We build the DAG, compute clocks as 1 + the max over causes, verify
+# the Lamport invariant on every edge, and detect concurrency as mutual
+# unreachability.
+# =============================================================================
+
+# Events are ids 0..n; the causal order is a list of (cause, effect) edges.
+# Diamond:  a → b, a → c, b → d, c → d   (b and c are concurrent)
+fn edges() : List<Pair<Int, Int>> =
+  [Pair(0, 1), Pair(0, 2), Pair(1, 3), Pair(2, 3)]
+
+# Direct causes of e.
+fn causes_of(e: Int, es: List<Pair<Int, Int>>) : List<Int> =
+  fold(es, [], fn(acc: List<Int>, edge: Pair<Int, Int>) ->
+    match edge { Pair(s, d) => if d == e then acc ++ [s] else acc })
+
+# Lamport clock: 1 + the max clock over direct causes (1 if none).
+fn clock(e: Int, es: List<Pair<Int, Int>>) : Int =
+  fold(causes_of(e, es), 1, fn(acc: Int, p: Int) ->
+    let cp = clock(p, es) + 1 in if cp > acc then cp else acc)
+
+# Reachability (reflexive) in the DAG: can a reach b by following edges?
+fn reachable(a: Int, b: Int, es: List<Pair<Int, Int>>) : Bool =
+  if a == b then true
+  else fold(es, false, fn(acc: Bool, edge: Pair<Int, Int>) ->
+    match edge { Pair(s, d) => if s == a then acc || reachable(d, b, es) else acc })
+
+# a strictly causes b (happens-before, ≥ 1 step).
+fn causes(a: Int, b: Int, es: List<Pair<Int, Int>>) : Bool =
+  a != b && reachable(a, b, es)
+
+# Concurrent: distinct events, neither causes the other.
+fn concurrent(a: Int, b: Int, es: List<Pair<Int, Int>>) : Bool =
+  a != b && !causes(a, b, es) && !causes(b, a, es)
+
+# The Lamport invariant over every edge: cause's clock < effect's clock.
+fn lamport_ok(es: List<Pair<Int, Int>>) : Bool =
+  fold(es, true, fn(acc: Bool, edge: Pair<Int, Int>) ->
+    match edge { Pair(s, d) => acc && clock(s, es) < clock(d, es) })
+
+# ---- Demo -------------------------------------------------------------------
+
+fn name(e: Int) : String =
+  if e == 0 then "a" else if e == 1 then "b" else if e == 2 then "c" else "d"
+
+fn show_clock(e: Int) : String =
+  "  clock(" ++ name(e) ++ ") = " ++ int_to_string(clock(e, edges()))
+
+let _ = print("=== Causal DAG  a→b, a→c, b→d, c→d  (Lamport clocks) ===")
+let _ = print(show_clock(0))
+let _ = print(show_clock(1))
+let _ = print(show_clock(2))
+let _ = print(show_clock(3))
+
+let _ = print("")
+let _ = print("=== Causality vs concurrency ===")
+let _ = print("  a causes d?     " ++ (if causes(0, 3, edges()) then "yes" else "no"))
+let _ = print("  b causes c?     " ++ (if causes(1, 2, edges()) then "yes" else "no"))
+let _ = print("  b, c concurrent? " ++ (if concurrent(1, 2, edges()) then "yes" else "no"))
+
+let _ = print("")
+let _ = print("  Lamport invariant (cause < effect on every edge)? " ++
+              (if lamport_ok(edges()) then "holds" else "FAILS"))
+
+"done"

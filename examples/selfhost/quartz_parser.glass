@@ -1,33 +1,31 @@
 # =============================================================================
-# quartz_parser.glass — Source-to-native pipeline, written in Glass (v4.0)
+# quartz_parser.glass — Source-to-native pipeline, written in Glass (v4.20)
 #
-# Reads a String of source code (full Glass core: arithmetic, identifiers,
-# let, if, fn decls + ECall, ADTs + match, records + field access,
-# strings + ++, generics + multi-type fields + fn return-type tracking)
-# and produces a native binary via Glass-driven cc invocation.
+# Reads a String of source code (full Glass core) and produces a native
+# binary via Glass-driven cc invocation.
 #
-# v4.0 (this release) adds file-mode dispatch at the bottom: if
-# `/tmp/qp_input.glass` exists, its contents are treated as the source
-# to compile (Stage 5 endpoint). If not, the original 26 hardcoded
-# demo cases run. This split is what lets selfcompile.glass drive an
-# end-to-end self-compile pipeline from a single user-facing script.
-#
-# Feature parity with quartz_min reached in v3.20:
-#   v3.14: integer literals + arithmetic + parentheses
-#   v3.15: identifiers + let bindings
-#   v3.16: top-level fn decls + ECall + if/then/else + comparison
-#   v3.17: ADTs + match expressions + patterns
-#   v3.18: records + field access
-#   v3.19: string literals + ++ concatenation
-#   v3.20: generics + multi-type fields + fn return-type inference
-#   v4.0:  file-mode dispatch + Stage 5 endpoint
+# v4.0–v4.19: file-mode dispatch, escapes, fn-chain inference, nested
+#   patterns, direct file read, comments, modulo + unary minus,
+#   equality/logical/inequality operators, block comments, string
+#   semantic equality + identifier mangling, full symbolic-string
+#   vocabulary, bitwise builtins, hex literals, division operator,
+#   typed parameters + param-type-aware return inference.
+# v4.20 (this release): pure demo expansion. Calc gains parenthesized
+#   sub-expressions via mutual recursion (parse_atom calls
+#   parse_expr). djb2 hash function in compiled Glass: composes
+#   bit_shl, arithmetic, char_at, and the v4.19 typed accumulator.
+#   No compiler changes — proves the v4.x toolkit is complete enough
+#   for real algorithms.
 #
 # Limitations carried forward:
-#   - Fn-chain return-type detection (length 2+) needs fixed-point
-#   - String escapes (`\n`, `\t`, `\"`, `\\`) deferred
+#   - Tab (`\t`) as whitespace — Glass host tokenizer limitation
 #   - Nested generics (`<List<T>>`) close at first `>`
-#   - Field-name uniqueness across records (first-match lookup)
-#   - Nested PCtor sub-patterns still flat only
+#   - No infix bitwise operators (use bit_* builtins)
+#   - No binary literals (0b1010); hex covers most cases
+#   - Untyped parameters still don't get inference (write `: String`
+#     to opt in for fns that need it)
+#   - Host Glass lacks `&&` / `||` — quartz_parser internal logic
+#     uses nested if-else chains
 # =============================================================================
 
 # --- Token type --------------------------------------------------------------
@@ -45,13 +43,21 @@ type Token =
   | TType
   | TMatch
   | TEq
+  | TEqEq
+  | TNotEq
+  | TAnd
+  | TOr
   | TFatArrow
   | TPlus
   | TMinus
   | TStar
+  | TSlash
+  | TPercent
   | TConcat
   | TLt
   | TGt
+  | TLtEq
+  | TGtEq
   | TComma
   | TSemi
   | TPipe
@@ -71,9 +77,17 @@ type Expr =
   | EAdd(Expr, Expr)
   | ESub(Expr, Expr)
   | EMul(Expr, Expr)
+  | EDiv(Expr, Expr)
+  | EMod(Expr, Expr)
   | EConcat(Expr, Expr)
   | ELt(Expr, Expr)
   | EGt(Expr, Expr)
+  | ELte(Expr, Expr)
+  | EGte(Expr, Expr)
+  | EEq(Expr, Expr)
+  | ENeq(Expr, Expr)
+  | EAnd(Expr, Expr)
+  | EOr(Expr, Expr)
   | EIf(Expr, Expr, Expr)
   | EVar(String)
   | ELet(String, Expr, Expr)
@@ -91,7 +105,13 @@ type Expr =
 # parser builds directly. Codegen walks them the same way it'd walk
 # any other list-shaped recursive structure.
 type Args = | ANil | ACons(Expr, Args)
-type Params = | PNil | PCons(String, Params)
+# v4.19: Params now carries an optional type annotation per parameter.
+# The middle String is the type name ("Int", "String", a user type, or
+# "" for untyped). Used for parameter-type-aware return inference: if
+# a param is declared `String`, is_string_expr(EVar(name)) returns
+# true. Codegen still emits `long long name` regardless of declared
+# type (all values are q_value_t / long long at the C level).
+type Params = | PNil | PCons(String, String, Params)
 type FnDecl = | FnDecl(String, Params, Expr)
 type FnDecls = | FDNil | FDCons(FnDecl, FnDecls)
 
@@ -176,9 +196,59 @@ fn is_upper_first(s: String) : Bool =
       None => false
     }
 
+# v4.9: C-reserved-word check. User-defined Glass identifiers that
+# collide with C keywords would generate uncompilable C output (e.g.
+# `fn double(x) = ...` → `long long double(...)`). Mangling prefixes
+# such names with `g_` at every emission site.
+fn is_c_reserved(name: String) : Bool =
+  if name == "int" then true
+  else if name == "char" then true
+  else if name == "short" then true
+  else if name == "long" then true
+  else if name == "float" then true
+  else if name == "double" then true
+  else if name == "void" then true
+  else if name == "signed" then true
+  else if name == "unsigned" then true
+  else if name == "if" then true
+  else if name == "else" then true
+  else if name == "while" then true
+  else if name == "for" then true
+  else if name == "do" then true
+  else if name == "switch" then true
+  else if name == "case" then true
+  else if name == "default" then true
+  else if name == "break" then true
+  else if name == "continue" then true
+  else if name == "return" then true
+  else if name == "goto" then true
+  else if name == "struct" then true
+  else if name == "union" then true
+  else if name == "enum" then true
+  else if name == "typedef" then true
+  else if name == "static" then true
+  else if name == "extern" then true
+  else if name == "register" then true
+  else if name == "auto" then true
+  else if name == "const" then true
+  else if name == "volatile" then true
+  else if name == "sizeof" then true
+  else if name == "inline" then true
+  else false
+
+fn mangle(name: String) : String =
+  if is_c_reserved(name) then "g_" ++ name
+  else name
+
 fn is_space(c: String) : Bool =
   match c {
     " " => true;
+    "\n" => true;
+    # NOTE: tab (`\t`) intentionally absent. Glass host tokenizer
+    # treats `"\t"` as backslash-`t` (length 2), so a match arm
+    # against it would never fire against an actual tab byte. Users
+    # with tab-indented .glass files: convert tabs to spaces, or wait
+    # for the host fix. See v4.1 CHANGELOG.
     _ => false
   }
 
@@ -190,6 +260,39 @@ fn lex_int(src: String, pos: Int, acc: Int) : (Int, Int) =
     let c : String = substring(src, pos, pos + 1) in
     let d : Int = digit_value(c) in
     if d >= 0 then lex_int(src, pos + 1, acc * 10 + d)
+    else (acc, pos)
+
+# v4.17: hex literal support. `hex_digit_value` returns 0-15 for hex
+# chars (case-insensitive), -1 otherwise. `lex_hex` is the hex
+# counterpart of `lex_int`: read digits, accumulate in base 16.
+# Caller is responsible for skipping the `0x` / `0X` prefix.
+#
+# Implementation note: host Glass doesn't support `||`, so case-
+# insensitive matching uses nested if-else chain. Tedious but the
+# only host-compatible form.
+fn hex_digit_value(c: String) : Int =
+  let d : Int = digit_value(c) in
+  if d >= 0 then d
+  else if c == "a" then 10
+  else if c == "A" then 10
+  else if c == "b" then 11
+  else if c == "B" then 11
+  else if c == "c" then 12
+  else if c == "C" then 12
+  else if c == "d" then 13
+  else if c == "D" then 13
+  else if c == "e" then 14
+  else if c == "E" then 14
+  else if c == "f" then 15
+  else if c == "F" then 15
+  else -1
+
+fn lex_hex(src: String, pos: Int, acc: Int) : (Int, Int) =
+  if pos >= string_length(src) then (acc, pos)
+  else
+    let c : String = substring(src, pos, pos + 1) in
+    let d : Int = hex_digit_value(c) in
+    if d >= 0 then lex_hex(src, pos + 1, acc * 16 + d)
     else (acc, pos)
 
 # Pull identifier characters off `src` starting at `start`. Caller
@@ -205,12 +308,42 @@ fn lex_ident(src: String, pos: Int, start: Int) : (String, Int) =
 # Caller has consumed the opening `"`; we consume the closing one too.
 # v3.19 limitation: no escape support — strings can't contain `\` or
 # the `"` character. Documented in CHANGELOG.
-fn lex_string(src: String, pos: Int, start: Int) : (String, Int) =
-  if pos >= string_length(src) then (substring(src, start, pos), pos)
+# v4.1: escape sequence helper. Given a single char (the one AFTER a
+# `\`), returns its escaped value. Unknown escapes pass through
+# unchanged.
+#
+# Supports `\n`, `\"`, `\\`. Notably absent: `\t`. The host Glass
+# tokenizer's string-literal lexer recognizes `\n`, `\"`, `\\` but
+# NOT `\t` (verified by `string_length` test: `"\t"` is length 2,
+# while `"\n"` is length 1). So we can't produce a tab character
+# in the result string from Glass source without reading it from a
+# file or similar workaround. v4.1 documents the limitation; users
+# wanting tabs in compiled strings can use a workaround via
+# read_file or wait for the host fix.
+fn escape_char_for(c: String) : String =
+  if c == "n" then "\n"
+  else if c == "\"" then "\""
+  else if c == "\\" then "\\"
+  else c
+
+# Walk chars from `start` until the closing `"`, building the string
+# value via concatenation. v4.1 adds escape support — when a `\` is
+# encountered, the next char is consumed and translated via
+# escape_char_for. Position semantics: returns (value, position_after_closing_quote).
+fn lex_string(src: String, pos: Int, acc: String) : (String, Int) =
+  if pos >= string_length(src) then (acc, pos)
   else
     let c : String = substring(src, pos, pos + 1) in
-    if c == "\"" then (substring(src, start, pos), pos + 1)
-    else lex_string(src, pos + 1, start)
+    if c == "\"" then (acc, pos + 1)
+    else if c == "\\" then
+      # Escape sequence: consume the backslash + the next char.
+      if pos + 1 < string_length(src) then
+        let nxt : String = substring(src, pos + 1, pos + 2) in
+        lex_string(src, pos + 2, acc ++ escape_char_for(nxt))
+      else
+        # Dangling backslash at EOF — emit it and stop.
+        (acc ++ "\\", pos + 1)
+    else lex_string(src, pos + 1, acc ++ c)
 
 # Classify an identifier string: keywords get their own tokens.
 fn classify_ident(name: String) : Token =
@@ -225,11 +358,45 @@ fn classify_ident(name: String) : Token =
   else TIdent(name)
 
 # Skip ahead over any whitespace. Returns the next position.
+# v4.5: walk forward from a `#` to the next newline (or end of source).
+# Used by skip_ws to elide line comments. Returns the position AT the
+# newline so skip_ws can then consume it as whitespace and continue.
+fn skip_to_newline(src: String, pos: Int) : Int =
+  if pos >= string_length(src) then pos
+  else
+    let c : String = substring(src, pos, pos + 1) in
+    if c == "\n" then pos
+    else skip_to_newline(src, pos + 1)
+
+# v4.8: walk forward from inside a `/* */` block comment to the
+# position past the closing `*/`. Returns end-of-src if unterminated.
+fn skip_to_block_end(src: String, pos: Int) : Int =
+  if pos + 1 >= string_length(src) then string_length(src)
+  else
+    let c : String = substring(src, pos, pos + 1) in
+    if c == "*" then
+      let c2 : String = substring(src, pos + 1, pos + 2) in
+      if c2 == "/" then pos + 2
+      else skip_to_block_end(src, pos + 1)
+    else skip_to_block_end(src, pos + 1)
+
 fn skip_ws(src: String, pos: Int) : Int =
   if pos >= string_length(src) then pos
   else
     let c : String = substring(src, pos, pos + 1) in
     if is_space(c) then skip_ws(src, pos + 1)
+    else if c == "#" then
+      # v4.5: line comment. Skip to the newline; the recursive call
+      # then consumes the newline itself (as whitespace) and continues.
+      skip_ws(src, skip_to_newline(src, pos))
+    else if c == "/" then
+      # v4.8: maybe a `/*` block comment. Peek next char.
+      if pos + 1 < string_length(src) then
+        let c2 : String = substring(src, pos + 1, pos + 2) in
+        if c2 == "*" then
+          skip_ws(src, skip_to_block_end(src, pos + 2))
+        else pos
+      else pos
     else pos
 
 # --- Lexer -------------------------------------------------------------------
@@ -252,11 +419,34 @@ fn next_token(src: String, pos: Int) : (Token, Int) =
         else (TPlus, p + 1);
       "-" => (TMinus, p + 1);
       "*" => (TStar, p + 1);
-      "<" => (TLt, p + 1);
-      ">" => (TGt, p + 1);
+      # v4.18: integer division. Block comments are already handled
+      # in skip_ws (which checks for `/*` before this dispatch runs),
+      # so a bare `/` reaching here always means division.
+      "/" => (TSlash, p + 1);
+      "%" => (TPercent, p + 1);
+      "<" =>
+        # v4.12: peek for `<=`.
+        if p + 1 < string_length(src) then
+          let c2 : String = substring(src, p + 1, p + 2) in
+          if c2 == "=" then (TLtEq, p + 2)
+          else (TLt, p + 1)
+        else (TLt, p + 1);
+      ">" =>
+        # v4.12: peek for `>=`.
+        if p + 1 < string_length(src) then
+          let c2 : String = substring(src, p + 1, p + 2) in
+          if c2 == "=" then (TGtEq, p + 2)
+          else (TGt, p + 1)
+        else (TGt, p + 1);
       "," => (TComma, p + 1);
       ";" => (TSemi, p + 1);
-      "|" => (TPipe, p + 1);
+      "|" =>
+        # v4.7: `||` is TOr, `|` alone is TPipe (used in type decls).
+        if p + 1 < string_length(src) then
+          let c2 : String = substring(src, p + 1, p + 2) in
+          if c2 == "|" then (TOr, p + 2)
+          else (TPipe, p + 1)
+        else (TPipe, p + 1);
       "(" => (TLParen, p + 1);
       ")" => (TRParen, p + 1);
       "{" => (TLBrace, p + 1);
@@ -265,21 +455,61 @@ fn next_token(src: String, pos: Int) : (Token, Int) =
       ":" => (TColon, p + 1);
       "\"" =>
         # String literal: consume content until closing ".
-        match lex_string(src, p + 1, p + 1) {
+        match lex_string(src, p + 1, "") {
           (s, p2) => (TStr(s), p2)
         };
       "=" =>
-        # Peek next char — `=>` is TFatArrow, `=` alone is TEq.
+        # Peek next char — `=>` is TFatArrow, `==` is TEqEq, `=` alone is TEq.
         if p + 1 < string_length(src) then
           let c2 : String = substring(src, p + 1, p + 2) in
           if c2 == ">" then (TFatArrow, p + 2)
+          else if c2 == "=" then (TEqEq, p + 2)
           else (TEq, p + 1)
         else (TEq, p + 1);
+      # v4.7: && and ||. Single & isn't a valid token (no use case yet).
+      "&" =>
+        if p + 1 < string_length(src) then
+          let c2 : String = substring(src, p + 1, p + 2) in
+          if c2 == "&" then (TAnd, p + 2)
+          else (TEnd, p + 1)
+        else (TEnd, p + 1);
+      # v4.8: != for inequality. Bare ! has no other use yet.
+      "!" =>
+        if p + 1 < string_length(src) then
+          let c2 : String = substring(src, p + 1, p + 2) in
+          if c2 == "=" then (TNotEq, p + 2)
+          else (TEnd, p + 1)
+        else (TEnd, p + 1);
       _ =>
         if is_digit(c) then
-          match lex_int(src, p, 0) {
-            (n, p2) => (TInt(n), p2)
-          }
+          # v4.17: check for `0x` / `0X` hex prefix. If found, skip
+          # the two-char prefix and call lex_hex. Otherwise fall
+          # through to standard decimal lex_int. Host Glass has no
+          # `&&`, so this is nested ifs rather than one combined
+          # predicate.
+          if c == "0" then
+            if p + 1 < string_length(src) then
+              let c2 : String = substring(src, p + 1, p + 2) in
+              if c2 == "x" then
+                match lex_hex(src, p + 2, 0) {
+                  (n, p2) => (TInt(n), p2)
+                }
+              else if c2 == "X" then
+                match lex_hex(src, p + 2, 0) {
+                  (n, p2) => (TInt(n), p2)
+                }
+              else
+                match lex_int(src, p, 0) {
+                  (n, p2) => (TInt(n), p2)
+                }
+            else
+              match lex_int(src, p, 0) {
+                (n, p2) => (TInt(n), p2)
+              }
+          else
+            match lex_int(src, p, 0) {
+              (n, p2) => (TInt(n), p2)
+            }
         else if is_alpha(c) then
           match lex_ident(src, p, p) {
             (name, p2) => (classify_ident(name), p2)
@@ -317,13 +547,24 @@ fn parse_atom(src: String, pos: Int) : (Expr, Int) =
       match tok {
         TInt(n) => (EInt(n), p1);
         TStr(s) => (EStr(s), p1);
+        # v4.6: unary minus. Treat `-x` as `0 - x`. Avoids new AST
+        # variant; codegen of ESub already does the right thing.
+        TMinus =>
+          match parse_atom(src, p1) {
+            (inner, p2) => (ESub(EInt(0), inner), p2)
+          };
         TIdent(name) =>
           # Peek for an opening paren or brace.
           #   `name (` → ECall (or ctor; codegen disambiguates)
           #   `Name {` → ERecord (record literal; requires uppercase
           #              first letter to avoid colliding with `match e {`,
           #              which is reached via TMatch keyword instead)
-          #   otherwise → EVar
+          #   `Name` alone (uppercase first, no args) → nullary ctor.
+          #     v4.3 fix: was treating bare `None` etc. as `EVar` which
+          #     codegen then emitted as an undefined C identifier.
+          #     Now emit `ECall(name, ANil)` so codegen's is_known_ctor
+          #     check routes it to q_ctor_alloc with the right tag.
+          #   otherwise → EVar (lowercase identifier reference)
           match next_token(src, p1) {
             (peek_tok, p2) =>
               match peek_tok {
@@ -338,7 +579,13 @@ fn parse_atom(src: String, pos: Int) : (Expr, Int) =
                     }
                   else
                     (EVar(name), p1);
-                _ => (EVar(name), p1)
+                _ =>
+                  if is_upper_first(name) then
+                    # Nullary ctor (None, etc.) — emit as ECall with
+                    # empty args; codegen disambiguates via TypeDecls.
+                    (ECall(name, ANil), p1)
+                  else
+                    (EVar(name), p1)
               }
           };
         TLet => parse_let(src, p1);
@@ -826,6 +1073,22 @@ fn parse_args(src: String, pos: Int) : (Args, Int) =
 
 # Parse a comma-separated list of identifiers terminated by `)`.
 # Builds a Params ADT. Consumes the closing `)`.
+# v4.19: each parameter may be followed by `: <TypeName>`. The type
+# is captured as a String (just the ident name; we don't model
+# generic application etc. in this minimal form). Empty string ""
+# means untyped.
+fn parse_type_after_colon(src: String, pos: Int) : (String, Int) =
+  # Caller has seen TColon at p1 and is calling us at p1+1 (after the
+  # colon). Slurp a single TIdent as the type name. If anything else
+  # appears, return "" without consuming (best-effort).
+  match next_token(src, pos) {
+    (tok, p1) =>
+      match tok {
+        TIdent(t) => (t, p1);
+        _ => ("", pos)
+      }
+  }
+
 fn parse_params(src: String, pos: Int) : (Params, Int) =
   match next_token(src, pos) {
     (first_tok, p1) =>
@@ -835,12 +1098,29 @@ fn parse_params(src: String, pos: Int) : (Params, Int) =
           match next_token(src, p1) {
             (sep_tok, p2) =>
               match sep_tok {
+                TColon =>
+                  # Typed parameter: read type ident, then expect
+                  # TComma or TRParen.
+                  match parse_type_after_colon(src, p2) {
+                    (tname, p3) =>
+                      match next_token(src, p3) {
+                        (next, p4) =>
+                          match next {
+                            TComma =>
+                              match parse_params(src, p4) {
+                                (rest, p5) => (PCons(name, tname, rest), p5)
+                              };
+                            TRParen => (PCons(name, tname, PNil), p4);
+                            _ => (PCons(name, tname, PNil), p3)
+                          }
+                      }
+                  };
                 TComma =>
                   match parse_params(src, p2) {
-                    (rest, p3) => (PCons(name, rest), p3)
+                    (rest, p3) => (PCons(name, "", rest), p3)
                   };
-                TRParen => (PCons(name, PNil), p2);
-                _ => (PCons(name, PNil), p1)
+                TRParen => (PCons(name, "", PNil), p2);
+                _ => (PCons(name, "", PNil), p1)
               }
           };
         _ => (PNil, p1)
@@ -936,6 +1216,14 @@ fn parse_term_rest(src: String, lhs: Expr, pos: Int) : (Expr, Int) =
           match parse_postfix(src, p1) {
             (rhs, p2) => parse_term_rest(src, EMul(lhs, rhs), p2)
           };
+        TSlash =>
+          match parse_postfix(src, p1) {
+            (rhs, p2) => parse_term_rest(src, EDiv(lhs, rhs), p2)
+          };
+        TPercent =>
+          match parse_postfix(src, p1) {
+            (rhs, p2) => parse_term_rest(src, EMod(lhs, rhs), p2)
+          };
         _ => (lhs, pos)
       }
   }
@@ -970,9 +1258,46 @@ fn parse_addsub_rest(src: String, lhs: Expr, pos: Int) : (Expr, Int) =
 
 # parse_expr / parse_rel — top-level entry. Lowest precedence
 # (relational) wraps everything else.
-fn parse_expr(src: String, pos: Int) : (Expr, Int) =
+fn parse_cmp(src: String, pos: Int) : (Expr, Int) =
   match parse_addsub(src, pos) {
     (lhs, p1) => parse_rel_rest(src, lhs, p1)
+  }
+
+# v4.7: logical-AND layer. Lower precedence than comparison, higher
+# than OR. Left-associative.
+fn parse_and(src: String, pos: Int) : (Expr, Int) =
+  match parse_cmp(src, pos) {
+    (lhs, p1) => parse_and_rest(src, lhs, p1)
+  }
+
+fn parse_and_rest(src: String, lhs: Expr, pos: Int) : (Expr, Int) =
+  match next_token(src, pos) {
+    (tok, p1) =>
+      match tok {
+        TAnd =>
+          match parse_cmp(src, p1) {
+            (rhs, p2) => parse_and_rest(src, EAnd(lhs, rhs), p2)
+          };
+        _ => (lhs, pos)
+      }
+  }
+
+# v4.7: logical-OR layer. Lowest binary-op precedence. Left-associative.
+fn parse_expr(src: String, pos: Int) : (Expr, Int) =
+  match parse_and(src, pos) {
+    (lhs, p1) => parse_or_rest(src, lhs, p1)
+  }
+
+fn parse_or_rest(src: String, lhs: Expr, pos: Int) : (Expr, Int) =
+  match next_token(src, pos) {
+    (tok, p1) =>
+      match tok {
+        TOr =>
+          match parse_and(src, p1) {
+            (rhs, p2) => parse_or_rest(src, EOr(lhs, rhs), p2)
+          };
+        _ => (lhs, pos)
+      }
   }
 
 fn parse_rel_rest(src: String, lhs: Expr, pos: Int) : (Expr, Int) =
@@ -986,6 +1311,22 @@ fn parse_rel_rest(src: String, lhs: Expr, pos: Int) : (Expr, Int) =
         TGt =>
           match parse_addsub(src, p1) {
             (rhs, p2) => parse_rel_rest(src, EGt(lhs, rhs), p2)
+          };
+        TLtEq =>
+          match parse_addsub(src, p1) {
+            (rhs, p2) => parse_rel_rest(src, ELte(lhs, rhs), p2)
+          };
+        TGtEq =>
+          match parse_addsub(src, p1) {
+            (rhs, p2) => parse_rel_rest(src, EGte(lhs, rhs), p2)
+          };
+        TEqEq =>
+          match parse_addsub(src, p1) {
+            (rhs, p2) => parse_rel_rest(src, EEq(lhs, rhs), p2)
+          };
+        TNotEq =>
+          match parse_addsub(src, p1) {
+            (rhs, p2) => parse_rel_rest(src, ENeq(lhs, rhs), p2)
           };
         _ => (lhs, pos)
       }
@@ -1156,17 +1497,43 @@ fn fields_to_args_in_order(fdefs: FieldDefs, fields: Fields) : Args =
       }
   }
 
+# v4.1: emit a C-source-compatible escape for one character. Used by
+# c_escape when lowering EStr values into C string literals. Unknown
+# chars pass through unchanged.
+#
+# Glass-quirk workaround: the tokenizer treats `"\\n"` as
+# backslash-newline (2 chars), not the intended backslash-`n`. To get
+# the literal 2-char sequence `\n` (BS + 'n') we build it via
+# `"\\" ++ "n"` (1-char backslash concat with 1-char 'n'). Same for `\t`.
+fn c_escape_char(c: String) : String =
+  if c == "\n" then "\\" ++ "n"
+  else if c == "\t" then "\\" ++ "t"
+  else if c == "\"" then "\\" ++ "\""
+  else if c == "\\" then "\\" ++ "\\"
+  else c
+
+# v4.1: scan a Glass-side string value and emit a C-string-literal
+# equivalent (without the surrounding quotes — caller adds them).
+# Walks char-by-char via recursion + concatenation.
+fn c_escape(s: String, pos: Int, acc: String) : String =
+  if pos >= string_length(s) then acc
+  else
+    let c : String = substring(s, pos, pos + 1) in
+    c_escape(s, pos + 1, acc ++ c_escape_char(c))
+
 fn compile_expr(e: Expr, decls: TypeDecls, rdecls: RecordDecls) : String =
   match e {
     EInt(n) => int_to_string(n);
-    # v3.19: emit as a C string literal. The lexer rejects ` " ` inside
-    # the value (closes the literal early), so the only chars we'd need
-    # to escape are `\` and newlines. v3.19 documented limitation: no
-    # such chars in string values. Future v3.x: full C-string escaping.
-    EStr(s) => "\"" ++ s ++ "\"";
+    # v4.1: emit a properly-escaped C string literal. The Glass-side
+    # value may contain raw newlines, tabs, quotes, backslashes (from
+    # v4.1 lex_string escape decoding); c_escape re-encodes them as
+    # the appropriate C escape sequences before output.
+    EStr(s) => "\"" ++ c_escape(s, 0, "") ++ "\"";
     EAdd(a, b) => "(" ++ compile_expr(a, decls, rdecls) ++ " + " ++ compile_expr(b, decls, rdecls) ++ ")";
     ESub(a, b) => "(" ++ compile_expr(a, decls, rdecls) ++ " - " ++ compile_expr(b, decls, rdecls) ++ ")";
     EMul(a, b) => "(" ++ compile_expr(a, decls, rdecls) ++ " * " ++ compile_expr(b, decls, rdecls) ++ ")";
+    EDiv(a, b) => "(" ++ compile_expr(a, decls, rdecls) ++ " / " ++ compile_expr(b, decls, rdecls) ++ ")";
+    EMod(a, b) => "(" ++ compile_expr(a, decls, rdecls) ++ " % " ++ compile_expr(b, decls, rdecls) ++ ")";
     # v3.19: string concatenation. q_str_concat takes char* arguments;
     # the intptr_t bridge keeps the calling-convention uniform.
     EConcat(a, b) =>
@@ -1174,19 +1541,183 @@ fn compile_expr(e: Expr, decls: TypeDecls, rdecls: RecordDecls) : String =
                    "(char *)(intptr_t)(" ++ compile_expr(b, decls, rdecls) ++ "))";
     ELt(a, b)  => "(" ++ compile_expr(a, decls, rdecls) ++ " < " ++ compile_expr(b, decls, rdecls) ++ ")";
     EGt(a, b)  => "(" ++ compile_expr(a, decls, rdecls) ++ " > " ++ compile_expr(b, decls, rdecls) ++ ")";
+    ELte(a, b) => "(" ++ compile_expr(a, decls, rdecls) ++ " <= " ++ compile_expr(b, decls, rdecls) ++ ")";
+    EGte(a, b) => "(" ++ compile_expr(a, decls, rdecls) ++ " >= " ++ compile_expr(b, decls, rdecls) ++ ")";
+    EEq(a, b)  => "(" ++ compile_expr(a, decls, rdecls) ++ " == " ++ compile_expr(b, decls, rdecls) ++ ")";
+    ENeq(a, b) => "(" ++ compile_expr(a, decls, rdecls) ++ " != " ++ compile_expr(b, decls, rdecls) ++ ")";
+    EAnd(a, b) => "(" ++ compile_expr(a, decls, rdecls) ++ " && " ++ compile_expr(b, decls, rdecls) ++ ")";
+    EOr(a, b)  => "(" ++ compile_expr(a, decls, rdecls) ++ " || " ++ compile_expr(b, decls, rdecls) ++ ")";
     EIf(c, t, f) =>
       "(" ++ compile_expr(c, decls, rdecls) ++ " ? " ++ compile_expr(t, decls, rdecls) ++ " : " ++ compile_expr(f, decls, rdecls) ++ ")";
-    EVar(name) => name;
+    EVar(name) => mangle(name);
     ELet(name, v, b) =>
-      "({ long long " ++ name ++ " = (long long)(intptr_t)(" ++
+      "({ long long " ++ mangle(name) ++ " = (long long)(intptr_t)(" ++
         compile_expr(v, decls, rdecls) ++ "); " ++ compile_expr(b, decls, rdecls) ++ "; })";
     ECall(name, args) =>
-      if is_known_ctor(decls, name) then
+      # v4.9: string equality / inequality builtins — emit strcmp.
+      # Match the args structure explicitly so each operand is cast
+      # separately. <string.h> is in the C prelude.
+      if name == "string_eq" then
+        match args {
+          ACons(a, ACons(b, ANil)) =>
+            "(strcmp((const char *)(intptr_t)(" ++
+              compile_expr(a, decls, rdecls) ++
+              "), (const char *)(intptr_t)(" ++
+              compile_expr(b, decls, rdecls) ++
+              ")) == 0)";
+          _ => "0 /* string_eq: bad arity */"
+        }
+      else if name == "string_neq" then
+        match args {
+          ACons(a, ACons(b, ANil)) =>
+            "(strcmp((const char *)(intptr_t)(" ++
+              compile_expr(a, decls, rdecls) ++
+              "), (const char *)(intptr_t)(" ++
+              compile_expr(b, decls, rdecls) ++
+              ")) != 0)";
+          _ => "0 /* string_neq: bad arity */"
+        }
+      # v4.11: char_at — return the i-th character of a string as an
+      # Int (ASCII / unsigned-byte value). Foundational for symbolic
+      # string processing — lets users compare chars, classify, build
+      # tokenizers in compiled Glass. Direct array index in C; no
+      # bounds check (matches the rest of Glass codegen's trust model).
+      else if name == "char_at" then
+        match args {
+          ACons(s, ACons(i, ANil)) =>
+            "((long long)((unsigned char *)(intptr_t)(" ++
+              compile_expr(s, decls, rdecls) ++
+              "))[" ++ compile_expr(i, decls, rdecls) ++ "])";
+          _ => "0 /* char_at: bad arity */"
+        }
+      # v4.12: int_to_char — companion to char_at. Promotes an Int
+      # (ASCII code) to a one-char heap-allocated String. Combined
+      # with `++` enables full character round-tripping.
+      else if name == "int_to_char" then
+        match args {
+          ACons(n, ANil) =>
+            "((long long)(intptr_t)q_int_to_char(" ++
+              compile_expr(n, decls, rdecls) ++ "))";
+          _ => "0 /* int_to_char: bad arity */"
+        }
+      # v4.13: string_length — emit strlen call. No new runtime
+      # needed; <string.h> is already in the prelude.
+      else if name == "string_length" then
+        match args {
+          ACons(s, ANil) =>
+            "((long long)strlen((const char *)(intptr_t)(" ++
+              compile_expr(s, decls, rdecls) ++ ")))";
+          _ => "0 /* string_length: bad arity */"
+        }
+      # v4.13: string_to_upper / string_to_lower — uppercase/lowercase
+      # ASCII transforms via runtime helpers q_str_to_upper / _lower.
+      else if name == "string_to_upper" then
+        match args {
+          ACons(s, ANil) =>
+            "((long long)(intptr_t)q_str_to_upper((const char *)(intptr_t)(" ++
+              compile_expr(s, decls, rdecls) ++ ")))";
+          _ => "0 /* string_to_upper: bad arity */"
+        }
+      else if name == "string_to_lower" then
+        match args {
+          ACons(s, ANil) =>
+            "((long long)(intptr_t)q_str_to_lower((const char *)(intptr_t)(" ++
+              compile_expr(s, decls, rdecls) ++ ")))";
+          _ => "0 /* string_to_lower: bad arity */"
+        }
+      # v4.14: substring(s, start, end) — slice the string, exclusive end.
+      # Allocates a fresh buffer; input string untouched. The runtime
+      # helper clamps negative start to 0 and end-below-start to start
+      # (returns empty).
+      else if name == "substring" then
+        match args {
+          ACons(s, ACons(start, ACons(en, ANil))) =>
+            "((long long)(intptr_t)q_substring((const char *)(intptr_t)(" ++
+              compile_expr(s, decls, rdecls) ++ "), " ++
+              compile_expr(start, decls, rdecls) ++ ", " ++
+              compile_expr(en, decls, rdecls) ++ "))";
+          _ => "0 /* substring: bad arity */"
+        }
+      # v4.14: string_at(s, i) — return the i-th char AS A SINGLE-CHAR
+      # STRING (not Int like char_at). Sugar for `substring(s, i, i+1)`.
+      # Useful when composing string transformations without
+      # round-tripping through int_to_char.
+      else if name == "string_at" then
+        match args {
+          ACons(s, ACons(i, ANil)) =>
+            "((long long)(intptr_t)q_substring((const char *)(intptr_t)(" ++
+              compile_expr(s, decls, rdecls) ++ "), " ++
+              compile_expr(i, decls, rdecls) ++ ", (" ++
+              compile_expr(i, decls, rdecls) ++ " + 1)))";
+          _ => "0 /* string_at: bad arity */"
+        }
+      # v4.15: string_index_of(haystack, needle) — first index where
+      # needle appears in haystack, or -1 if not found. Uses strstr.
+      # Diverges from the host's Option<Int> return for pragmatism:
+      # compiled programs can branch on `i < 0` without defining Option
+      # types or having the codegen emit q_ctor_alloc for builtin
+      # returns. Empty needle returns 0 (matches strstr semantics).
+      else if name == "string_index_of" then
+        match args {
+          ACons(h, ACons(n, ANil)) =>
+            "((long long)q_str_index_of((const char *)(intptr_t)(" ++
+              compile_expr(h, decls, rdecls) ++
+              "), (const char *)(intptr_t)(" ++
+              compile_expr(n, decls, rdecls) ++ ")))";
+          _ => "0 /* string_index_of: bad arity */"
+        }
+      # v4.16: bitwise builtins. Shipped as functions (not infix
+      # operators) because `|` collides with TPipe (ADT variants) and
+      # `&` with `&&` prefix — clean tokenization would require
+      # parser surgery that violates simplicity-first. All six map
+      # directly to C operators; no runtime needed.
+      else if name == "bit_and" then
+        match args {
+          ACons(a, ACons(b, ANil)) =>
+            "((" ++ compile_expr(a, decls, rdecls) ++ ") & (" ++
+              compile_expr(b, decls, rdecls) ++ "))";
+          _ => "0 /* bit_and: bad arity */"
+        }
+      else if name == "bit_or" then
+        match args {
+          ACons(a, ACons(b, ANil)) =>
+            "((" ++ compile_expr(a, decls, rdecls) ++ ") | (" ++
+              compile_expr(b, decls, rdecls) ++ "))";
+          _ => "0 /* bit_or: bad arity */"
+        }
+      else if name == "bit_xor" then
+        match args {
+          ACons(a, ACons(b, ANil)) =>
+            "((" ++ compile_expr(a, decls, rdecls) ++ ") ^ (" ++
+              compile_expr(b, decls, rdecls) ++ "))";
+          _ => "0 /* bit_xor: bad arity */"
+        }
+      else if name == "bit_not" then
+        match args {
+          ACons(a, ANil) =>
+            "(~(" ++ compile_expr(a, decls, rdecls) ++ "))";
+          _ => "0 /* bit_not: bad arity */"
+        }
+      else if name == "bit_shl" then
+        match args {
+          ACons(a, ACons(n, ANil)) =>
+            "((" ++ compile_expr(a, decls, rdecls) ++ ") << (" ++
+              compile_expr(n, decls, rdecls) ++ "))";
+          _ => "0 /* bit_shl: bad arity */"
+        }
+      else if name == "bit_shr" then
+        match args {
+          ACons(a, ACons(n, ANil)) =>
+            "((" ++ compile_expr(a, decls, rdecls) ++ ") >> (" ++
+              compile_expr(n, decls, rdecls) ++ "))";
+          _ => "0 /* bit_shr: bad arity */"
+        }
+      else if is_known_ctor(decls, name) then
         let tag : Int = lookup_tag(decls, name, 0) in
         let argc : Int = count_args(args, 0) in
         "q_ctor_alloc(" ++ int_to_string(tag) ++ ", " ++ int_to_string(argc) ++
           (if argc > 0 then ", " ++ compile_args_str(args, decls, rdecls) else "") ++ ")"
-      else name ++ "(" ++ compile_args_str(args, decls, rdecls) ++ ")";
+      else mangle(name) ++ "(" ++ compile_args_str(args, decls, rdecls) ++ ")";
     EMatch(scrut, arms) =>
       "({ q_value_t *_s = (q_value_t *)(intptr_t)(" ++ compile_expr(scrut, decls, rdecls) ++ "); " ++
         compile_arms(arms, decls, rdecls) ++ "; })";
@@ -1229,67 +1760,113 @@ fn compile_arms(arms: MatchArms, decls: TypeDecls, rdecls: RecordDecls) : String
     MACons(arm, rest) =>
       match arm {
         MArm(pat, body) =>
-          let test : String = compile_pattern_test(pat, decls) in
-          let binds : String = compile_pattern_bindings(pat, decls) in
+          let test : String = compile_pattern_test(pat, decls, "_s") in
+          let binds : String = compile_pattern_bindings(pat, decls, "_s") in
           "(" ++ test ++ ") ? (long long)(intptr_t)({ " ++ binds ++
             "(long long)(intptr_t)(" ++ compile_expr(body, decls, rdecls) ++ "); }) : " ++
             compile_arms(rest, decls, rdecls)
       }
   }
 
-# Compile a pattern test against scrutinee variable `_s`. Flat patterns
-# only in v3.17 (no nested PCtor sub-patterns). PWild and PVar always
-# match; PCtor matches when `_s->tag == <ctor's tag>`.
-fn compile_pattern_test(pat: Pattern, decls: TypeDecls) : String =
+# v4.3: Compile a pattern test against a value at `path` (a C
+# expression of type `q_value_t *`). Returns a C boolean expression.
+# Handles nested PCtor sub-patterns by descending the path — each
+# sub-pattern at field index i checks against the cast value at
+# `path->fields[i]`.
+#
+# - PWild and PVar always match → "1"
+# - PCtor checks the tag at `path`, then AND-conjoins each sub-pattern's
+#   test against the descended path. Sub-tests that are "1" (always-
+#   match) are elided to keep the emitted C clean.
+fn compile_pattern_test(pat: Pattern, decls: TypeDecls, path: String) : String =
   match pat {
     PWild => "1";
     PVar(_n) => "1";
-    PCtor(name, _pats) =>
+    PCtor(name, sub_pats) =>
       let tag : Int = lookup_tag(decls, name, 0) in
-      "_s->tag == " ++ int_to_string(tag)
+      let tag_check : String =
+        path ++ "->tag == " ++ int_to_string(tag) in
+      let sub_tests : String =
+        compile_sub_tests(sub_pats, decls, path, 0) in
+      tag_check ++ sub_tests
   }
 
-# Compile any bindings introduced by a pattern. Each sub-pattern in a
-# PCtor's argument list, if it's a PVar, binds the corresponding
-# `_s->fields[i]` to that name.
-fn compile_pattern_bindings(pat: Pattern, _decls: TypeDecls) : String =
+# Walk sub-patterns: for each, build the descended path (cast the
+# parent's field i back to q_value_t *) and run compile_pattern_test
+# recursively. Skip "1" results so the emitted C only contains
+# non-trivial conjuncts.
+fn compile_sub_tests(pats: Patterns, decls: TypeDecls,
+                     parent_path: String, i: Int) : String =
+  match pats {
+    PtsNil => "";
+    PtsCons(p, rest) =>
+      let field_path : String =
+        "((q_value_t *)(intptr_t)(" ++ parent_path ++
+          "->fields[" ++ int_to_string(i) ++ "]))" in
+      let sub : String = compile_pattern_test(p, decls, field_path) in
+      let rest_t : String = compile_sub_tests(rest, decls, parent_path, i + 1) in
+      if sub == "1" then rest_t
+      else " && " ++ sub ++ rest_t
+  }
+
+# v4.3: Compile any bindings introduced by a pattern, against a value
+# at `path`. Walks PCtor sub-patterns recursively.
+#
+# - PWild: no binding
+# - PVar: bind the path value as `long long name`
+# - PCtor: descend into each sub-pattern with the cast field path
+fn compile_pattern_bindings(pat: Pattern, decls: TypeDecls,
+                            path: String) : String =
   match pat {
     PWild => "";
-    PVar(name) => "long long " ++ name ++ " = (long long)(intptr_t)(_s); ";
-    PCtor(_name, pats) => compile_field_bindings(pats, 0)
+    PVar(name) =>
+      "long long " ++ mangle(name) ++ " = (long long)(intptr_t)(" ++ path ++ "); ";
+    PCtor(_n, sub_pats) =>
+      compile_sub_bindings(sub_pats, decls, path, 0)
   }
 
-# Walk a Patterns list, binding any PVar children to `_s->fields[i]`.
-fn compile_field_bindings(pats: Patterns, i: Int) : String =
+# For PVar sub-patterns, bind the long-long field value directly.
+# For PCtor sub-patterns, cast to q_value_t * and recurse. PWild emits
+# nothing.
+fn compile_sub_bindings(pats: Patterns, decls: TypeDecls,
+                        parent_path: String, i: Int) : String =
   match pats {
     PtsNil => "";
     PtsCons(p, rest) =>
       match p {
         PVar(name) =>
-          "long long " ++ name ++ " = _s->fields[" ++ int_to_string(i) ++ "]; " ++
-            compile_field_bindings(rest, i + 1);
-        # PWild or nested patterns: no binding emitted in v3.17.
-        _ => compile_field_bindings(rest, i + 1)
+          "long long " ++ mangle(name) ++ " = " ++ parent_path ++ "->fields[" ++
+            int_to_string(i) ++ "]; " ++
+            compile_sub_bindings(rest, decls, parent_path, i + 1);
+        PCtor(_, _) =>
+          let field_path : String =
+            "((q_value_t *)(intptr_t)(" ++ parent_path ++
+              "->fields[" ++ int_to_string(i) ++ "]))" in
+          compile_pattern_bindings(p, decls, field_path) ++
+            compile_sub_bindings(rest, decls, parent_path, i + 1);
+        _ =>
+          # PWild: no binding for this slot.
+          compile_sub_bindings(rest, decls, parent_path, i + 1)
       }
   }
 
 fn compile_params_str(params: Params) : String =
   match params {
     PNil => "void";
-    PCons(n, PNil) => "long long " ++ n;
-    PCons(n, rest) => "long long " ++ n ++ ", " ++ compile_params_str(rest)
+    PCons(n, _t, PNil) => "long long " ++ mangle(n);
+    PCons(n, _t, rest) => "long long " ++ mangle(n) ++ ", " ++ compile_params_str(rest)
   }
 
 fn compile_fn_forward(fd: FnDecl) : String =
   match fd {
     FnDecl(name, params, _body) =>
-      "long long " ++ name ++ "(" ++ compile_params_str(params) ++ ");"
+      "long long " ++ mangle(name) ++ "(" ++ compile_params_str(params) ++ ");"
   }
 
 fn compile_fn_body(fd: FnDecl, decls: TypeDecls, rdecls: RecordDecls) : String =
   match fd {
     FnDecl(name, params, body) =>
-      "long long " ++ name ++ "(" ++ compile_params_str(params) ++
+      "long long " ++ mangle(name) ++ "(" ++ compile_params_str(params) ++
         ") { return (long long)(intptr_t)(" ++ compile_expr(body, decls, rdecls) ++ "); }"
   }
 
@@ -1336,52 +1913,188 @@ fn emit_str_runtime(nl: String) : String =
   "    char *r = (char *)malloc(la + lb + 1);" ++ nl ++
   "    memcpy(r, a, la); memcpy(r + la, b, lb); r[la + lb] = '\\0';" ++ nl ++
   "    return r;" ++ nl ++
+  "}" ++ nl ++
+  # v4.12: companion to char_at — promote an Int (ASCII code) to a
+  # one-char heap-allocated String. Together they let user code
+  # round-trip characters: `int_to_char(char_at(s, 0) + 32)` for
+  # lowercase mapping, etc.
+  "static char *q_int_to_char(long long n) {" ++ nl ++
+  "    char *r = (char *)malloc(2);" ++ nl ++
+  "    r[0] = (char)n; r[1] = '\\0';" ++ nl ++
+  "    return r;" ++ nl ++
+  "}" ++ nl ++
+  # v4.13: ASCII uppercase/lowercase transforms. Walk the string,
+  # apply the ±32 shift only to alphabetic chars in the relevant
+  # range. Allocate a fresh buffer (no in-place mutation; preserves
+  # the immutability of input strings).
+  "static char *q_str_to_upper(const char *s) {" ++ nl ++
+  "    size_t len = strlen(s);" ++ nl ++
+  "    char *r = (char *)malloc(len + 1);" ++ nl ++
+  "    for (size_t i = 0; i < len; i++) {" ++ nl ++
+  "        char c = s[i];" ++ nl ++
+  "        r[i] = (c >= 'a' && c <= 'z') ? (c - 32) : c;" ++ nl ++
+  "    }" ++ nl ++
+  "    r[len] = '\\0';" ++ nl ++
+  "    return r;" ++ nl ++
+  "}" ++ nl ++
+  "static char *q_str_to_lower(const char *s) {" ++ nl ++
+  "    size_t len = strlen(s);" ++ nl ++
+  "    char *r = (char *)malloc(len + 1);" ++ nl ++
+  "    for (size_t i = 0; i < len; i++) {" ++ nl ++
+  "        char c = s[i];" ++ nl ++
+  "        r[i] = (c >= 'A' && c <= 'Z') ? (c + 32) : c;" ++ nl ++
+  "    }" ++ nl ++
+  "    r[len] = '\\0';" ++ nl ++
+  "    return r;" ++ nl ++
+  "}" ++ nl ++
+  # v4.14: substring helper. Clamps negative start to 0 and end<start
+  # to start (returns empty). No upper-bound clamp — matches char_at's
+  # trust model. Allocates len+1 bytes for the null terminator.
+  "static char *q_substring(const char *s, long long start, long long end) {" ++ nl ++
+  "    if (start < 0) start = 0;" ++ nl ++
+  "    if (end < start) end = start;" ++ nl ++
+  "    size_t len = (size_t)(end - start);" ++ nl ++
+  "    char *r = (char *)malloc(len + 1);" ++ nl ++
+  "    memcpy(r, s + start, len);" ++ nl ++
+  "    r[len] = '\\0';" ++ nl ++
+  "    return r;" ++ nl ++
+  "}" ++ nl ++
+  # v4.15: string_index_of helper. Returns position of needle in
+  # haystack (0-indexed), or -1 if not found. Empty needle returns 0
+  # (strstr semantics, matches host Glass).
+  "static long long q_str_index_of(const char *hay, const char *needle) {" ++ nl ++
+  "    const char *p = strstr(hay, needle);" ++ nl ++
+  "    return p ? (long long)(p - hay) : -1;" ++ nl ++
   "}" ++ nl
 
-# Does this expression unambiguously produce a String result? Walks
-# the outermost form through binders (let, if, match), follows ECall
-# via fn_returns_string (v3.20), and consults RecordDecls for EField.
-#
-# v3.20 limitation: fn_returns_string does ONE-pass analysis with an
-# FDNil-break to avoid infinite recursion. A fn that calls another
-# string-returning fn (chain length 2+) won't be detected. The common
-# direct case (a fn whose body is a literal `++`) works fine.
-fn is_string_expr(e: Expr, fns: FnDecls, rdecls: RecordDecls) : Bool =
+# v4.2: result map for fn return-type analysis. Cons-style ADT mapping
+# fn name → "returns String?" boolean. Built via fixed-point iteration
+# (see compute_fixed_point below) so chains of string-returning fns
+# are correctly propagated, fixing the v3.20 single-pass limitation.
+type ResMap =
+  | RMNil
+  | RMCons(String, Bool, ResMap)
+
+fn lookup_in_map(map: ResMap, name: String) : Bool =
+  match map {
+    RMNil => false;
+    RMCons(n, v, rest) =>
+      if n == name then v
+      else lookup_in_map(rest, name)
+  }
+
+fn update_in_map(map: ResMap, name: String, b: Bool) : ResMap =
+  match map {
+    RMNil => RMCons(name, b, RMNil);
+    RMCons(n, v, rest) =>
+      if n == name then RMCons(n, b, rest)
+      else RMCons(n, v, update_in_map(rest, name, b))
+  }
+
+fn init_map(fns: FnDecls) : ResMap =
+  match fns {
+    FDNil => RMNil;
+    FDCons(fd, rest) =>
+      match fd {
+        FnDecl(name, _params, _body) =>
+          RMCons(name, false, init_map(rest))
+      }
+  }
+
+fn count_fns_local(fns: FnDecls, acc: Int) : Int =
+  match fns {
+    FDNil => acc;
+    FDCons(_, rest) => count_fns_local(rest, acc + 1)
+  }
+
+# v4.19: lookup a parameter's declared type in a Params list. Returns
+# the type-string (or "" if not found / untyped). Used by
+# is_string_expr to recognize EVar(name) as String when `name` is a
+# declared `String` parameter.
+fn param_is_string(name: String, params: Params) : Bool =
+  match params {
+    PNil => false;
+    PCons(pn, pt, rest) =>
+      if pn == name then pt == "String"
+      else param_is_string(name, rest)
+  }
+
+# v4.2: Does this expression unambiguously produce a String result?
+# Walks the outermost form through binders (let, if, match), follows
+# ECall via lookup_in_map (which has already converged via fixed-point
+# iteration in compile_program), and consults RecordDecls for EField.
+# v4.19: also consults `params` for EVar — if the variable is a
+# declared `String` parameter of the enclosing function, it's String.
+# Note that EIf now checks BOTH branches (return true if either is
+# unambiguously String), making `if cond then s else "fallback"`
+# work when `s: String` is a typed parameter.
+fn is_string_expr(e: Expr, map: ResMap, rdecls: RecordDecls, params: Params) : Bool =
   match e {
     EStr(_) => true;
     EConcat(_, _) => true;
-    ELet(_, _, body) => is_string_expr(body, fns, rdecls);
-    EIf(_, t, _) => is_string_expr(t, fns, rdecls);
-    EMatch(_, arms) => is_string_arms(arms, fns, rdecls);
-    ECall(name, _) => fn_returns_string(name, fns, rdecls);
+    EVar(name) => param_is_string(name, params);
+    ELet(_, _, body) => is_string_expr(body, map, rdecls, params);
+    EIf(_, t, el) =>
+      # v4.19: check both branches. Previously only the then-branch
+      # was checked, requiring users to write `then ""` instead of
+      # `then s`. With param-type-aware EVar, the natural form works
+      # — but we also check the else branch for symmetry, so
+      # `if cond then "" else s` works too.
+      if is_string_expr(t, map, rdecls, params) then true
+      else is_string_expr(el, map, rdecls, params);
+    EMatch(_, arms) => is_string_arms(arms, map, rdecls, params);
+    ECall(name, _) =>
+      # v4.12: int_to_char is known to return String (builtin).
+      # v4.13: string_to_upper / string_to_lower also return String.
+      # v4.14: substring / string_at also return String.
+      if name == "int_to_char" then true
+      else if name == "string_to_upper" then true
+      else if name == "string_to_lower" then true
+      else if name == "substring" then true
+      else if name == "string_at" then true
+      else lookup_in_map(map, name);
     EField(_, fname) =>
       let tname : String = lookup_field_type(rdecls, fname) in
       tname == "String";
     _ => false
   }
 
-fn is_string_arms(arms: MatchArms, fns: FnDecls, rdecls: RecordDecls) : Bool =
+fn is_string_arms(arms: MatchArms, map: ResMap, rdecls: RecordDecls, params: Params) : Bool =
   match arms {
     MANil => false;
     MACons(arm, _rest) =>
       match arm {
-        MArm(_, body) => is_string_expr(body, fns, rdecls)
+        MArm(_, body) => is_string_expr(body, map, rdecls, params)
       }
   }
 
-# Look up a fn by name, evaluate its body's result type. Uses FDNil
-# when recursing into the body to prevent infinite recursion in
-# (self-)recursive fns — see v3.20 limitation above.
-fn fn_returns_string(name: String, fns: FnDecls, rdecls: RecordDecls) : Bool =
+# One iteration of fixed-point: for each fn, compute is_string_expr
+# on its body using the current map, then update the map entry. Each
+# iteration can propagate a string result one chain-link further.
+fn compute_pass(fns: FnDecls, map: ResMap, rdecls: RecordDecls) : ResMap =
   match fns {
-    FDNil => false;
+    FDNil => map;
     FDCons(fd, rest) =>
       match fd {
-        FnDecl(fname, _params, body) =>
-          if fname == name then is_string_expr(body, FDNil, rdecls)
-          else fn_returns_string(name, rest, rdecls)
+        FnDecl(name, params, body) =>
+          let returns_str : Bool = is_string_expr(body, map, rdecls, params) in
+          let new_map : ResMap = update_in_map(map, name, returns_str) in
+          compute_pass(rest, new_map, rdecls)
       }
   }
+
+# Bounded fixed-point iteration. After N+1 iterations (N = fn count),
+# any chain that can converge has converged. No equality check needed —
+# bounded iteration is sufficient and simpler. v4.2.
+fn iterate_n(fns: FnDecls, map: ResMap, rdecls: RecordDecls, n: Int) : ResMap =
+  if n <= 0 then map
+  else
+    let new_map : ResMap = compute_pass(fns, map, rdecls) in
+    iterate_n(fns, new_map, rdecls, n - 1)
+
+fn compute_fixed_point(fns: FnDecls, rdecls: RecordDecls) : ResMap =
+  let n : Int = count_fns_local(fns, 0) in
+  iterate_n(fns, init_map(fns), rdecls, n + 1)
 
 # Look up the declared type of a field in any record. Returns the type
 # name (e.g. "Int", "String") or empty string if not found. v3.20:
@@ -1419,15 +2132,39 @@ fn uses_concat_in_expr(e: Expr) : Bool =
     EAdd(a, b) => if uses_concat_in_expr(a) then true else uses_concat_in_expr(b);
     ESub(a, b) => if uses_concat_in_expr(a) then true else uses_concat_in_expr(b);
     EMul(a, b) => if uses_concat_in_expr(a) then true else uses_concat_in_expr(b);
+    EDiv(a, b) => if uses_concat_in_expr(a) then true else uses_concat_in_expr(b);
+    EMod(a, b) => if uses_concat_in_expr(a) then true else uses_concat_in_expr(b);
     ELt(a, b) => if uses_concat_in_expr(a) then true else uses_concat_in_expr(b);
     EGt(a, b) => if uses_concat_in_expr(a) then true else uses_concat_in_expr(b);
+    ELte(a, b) => if uses_concat_in_expr(a) then true else uses_concat_in_expr(b);
+    EGte(a, b) => if uses_concat_in_expr(a) then true else uses_concat_in_expr(b);
+    EEq(a, b) => if uses_concat_in_expr(a) then true else uses_concat_in_expr(b);
+    ENeq(a, b) => if uses_concat_in_expr(a) then true else uses_concat_in_expr(b);
+    EAnd(a, b) => if uses_concat_in_expr(a) then true else uses_concat_in_expr(b);
+    EOr(a, b) => if uses_concat_in_expr(a) then true else uses_concat_in_expr(b);
     EIf(c, t, f) =>
       if uses_concat_in_expr(c) then true
       else if uses_concat_in_expr(t) then true
       else uses_concat_in_expr(f);
     ELet(_, v, b) =>
       if uses_concat_in_expr(v) then true else uses_concat_in_expr(b);
-    ECall(_, args) => uses_concat_in_args(args);
+    # v4.12: int_to_char allocates via q_int_to_char (in str_runtime),
+    # so its presence also requires str_runtime emission.
+    # v4.13: same for string_to_upper / string_to_lower (q_str_to_upper
+    # and q_str_to_lower live in str_runtime).
+    # v4.14: same for substring / string_at (q_substring lives in
+    # str_runtime).
+    # v4.15: same for string_index_of (q_str_index_of lives in
+    # str_runtime). Note: returns Int, not String, so doesn't go in
+    # is_string_expr.
+    ECall(name, args) =>
+      if name == "int_to_char" then true
+      else if name == "string_to_upper" then true
+      else if name == "string_to_lower" then true
+      else if name == "substring" then true
+      else if name == "string_at" then true
+      else if name == "string_index_of" then true
+      else uses_concat_in_args(args);
     EMatch(s, arms) =>
       if uses_concat_in_expr(s) then true else uses_concat_in_arms(arms);
     ERecord(_, fields) => uses_concat_in_fields(fields);
@@ -1502,7 +2239,12 @@ fn compile_program(prog: Program, nl: String) : String =
       let bodies : String = emit_bodies(fns, combined, rdecls, nl) in
       # v3.19: result-type dispatch for printf format. String results
       # get `%s` and a (char *) cast; numeric results get the v3.18 `%lld`.
-      let result_is_str : Bool = is_string_expr(final, fns, rdecls) in
+      # v4.2: compute the fn return-type fixed point ONCE, then pass
+      # the resulting map to is_string_expr. This propagates string-
+      # returning info through fn-call chains (length 2+), fixing the
+      # v3.20 single-pass limitation.
+      let result_map : ResMap = compute_fixed_point(fns, rdecls) in
+      let result_is_str : Bool = is_string_expr(final, result_map, rdecls, PNil) in
       let printf_call : String =
         if result_is_str then
           "    printf(\"%s" ++ nl_escape ++ "\", (char *)(intptr_t)_result);"
@@ -1510,6 +2252,7 @@ fn compile_program(prog: Program, nl: String) : String =
           "    printf(\"%lld" ++ nl_escape ++ "\", _result);" in
       "#include <stdio.h>" ++ nl ++
       "#include <stdint.h>" ++ nl ++
+      "#include <string.h>" ++ nl ++
       stdarg ++
       runtime ++
       str_runtime ++

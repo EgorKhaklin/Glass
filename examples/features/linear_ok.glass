@@ -1,0 +1,6 @@
+# v4.68: a linear resource consumed exactly once — accepted by prism's
+# linearity check (the port of the host's v4.67 `let lin`).
+fn use_once(seed: Int) : Int =
+  let lin token = seed + 1 in
+  token * 10
+use_once(4)

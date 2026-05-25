@@ -53,3 +53,9 @@ coverage.xml
 scratch/
 tmp/
 *.tmp
+
+# Project: keep example libs; ignore stray build artifacts
+!examples/lib/
+a.out
+*.out
+/native_glassc*

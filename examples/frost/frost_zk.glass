@@ -1,0 +1,224 @@
+# =============================================================================
+# frost_zk.glass — verifiable query over committed private data (v0.1)
+#
+# THE CAPSTONE: one arithmetic circuit that proves, together,
+#   (a) the private rows hash to a public Merkle root C  (membership/commitment)
+#   (b) COUNT(WHERE predicate) over those rows = a public R  (the query)
+# revealing only C, the query, and R. This is the full statement a Frost
+# zero-knowledge proof attests to.
+#
+# It integrates the three earlier pieces into ONE constraint system:
+#   - frost.glass        : field F_p + arithmetic-circuit gates.
+#   - frost_commit.glass : the MiMC hash + Merkle tree — now ARITHMETIZED into
+#                          gates (mk_hash2 / mk_root), so the circuit itself
+#                          recomputes the commitment.
+#   - frost_query.glass  : the range gadget + per-row selector + accumulation.
+#
+# The witness is the private rows. The circuit:
+#   1. hashes each row's cells into a leaf wire (in-circuit hash),
+#   2. recomputes the Merkle root from the leaf wires and ASSERTS it == C,
+#   3. compiles the WHERE predicate to a 0/1 selector per row,
+#   4. sums the selectors and ASSERTS the count == R.
+# If every gate holds, the prover knows rows behind C with COUNT = R. Tampering
+# with the data, the root, or the claimed result makes a constraint fail.
+#
+# (Toy field p = 2^31-1, as before — structurally complete, not yet secure.)
+# =============================================================================
+
+# --- field -------------------------------------------------------------------
+fn fadd(a: Int, b: Int) : Int = (a + b) % 2147483647
+fn fmul(a: Int, b: Int) : Int = (a * b) % 2147483647
+fn fsub(a: Int, b: Int) : Int = ((a - b) % 2147483647 + 2147483647) % 2147483647
+fn fnorm(a: Int) : Int = (a % 2147483647 + 2147483647) % 2147483647
+fn pow2(i: Int) : Int = if i <= 0 then 1 else 2 * pow2(i - 1)
+fn round_const(i: Int) : Int = fnorm((i + 1) * (i + 1) * (i + 1) + i * 1009 + 1234567)
+
+# --- REFERENCE hash + Merkle (to compute the public commitment C) ------------
+fn sbox(x: Int) : Int = let x2 : Int = fmul(x, x) in let x4 : Int = fmul(x2, x2) in fmul(x4, x)
+fn mimc_rounds(x: Int, k: Int, i: Int, rounds: Int) : Int =
+  if i >= rounds then fadd(x, k)
+  else mimc_rounds(sbox(fadd(fadd(x, k), round_const(i))), k, i + 1, rounds)
+fn hash2(a: Int, b: Int) : Int = fadd(fadd(mimc_rounds(a, b, 0, 16), a), b)
+fn hash_fold(xs: List<Int>, acc: Int) : Int =
+  match xs { [] => acc; [x, ...r] => hash_fold(r, hash2(acc, x)) }
+fn hash_list(xs: List<Int>) : Int = hash_fold(xs, 0)
+
+fn ilen(xs: List<Int>) : Int = match xs { [] => 0; [x, ...r] => 1 + ilen(r) }
+fn append_zeros(xs: List<Int>, k: Int) : List<Int> =
+  if k <= 0 then xs else append_zeros(xs ++ [0], k - 1)
+fn next_pow2(n: Int, p: Int) : Int = if p >= n then p else next_pow2(n, p * 2)
+fn pad_pow2(xs: List<Int>) : List<Int> =
+  let n : Int = ilen(xs) in append_zeros(xs, next_pow2(n, 1) - n)
+fn level_up(xs: List<Int>) : List<Int> =
+  match xs { []=>[]; [a,...rest] => match rest { []=>[a]; [b,...r2] => [hash2(a,b)] ++ level_up(r2) } }
+fn root_of(xs: List<Int>) : Int =
+  match xs { []=>0; [a,...rest] => match rest { []=>a; _ => root_of(level_up(xs)) } }
+fn cells_of(row: List<Pair<String, Int>>) : List<Int> =
+  match row { []=>[]; [Pair(k,v),...r] => [v] ++ cells_of(r) }
+fn leaves_of(rows: List<List<Pair<String, Int>>>) : List<Int> =
+  match rows { []=>[]; [r,...rest] => [hash_list(cells_of(r))] ++ leaves_of(rest) }
+fn merkle_root(rows: List<List<Pair<String, Int>>>) : Int = root_of(pad_pow2(leaves_of(rows)))
+
+fn cell(cs: List<Pair<String, Int>>, name: String) : Int =
+  match cs { []=>0; [Pair(k,v),...r] => if k == name then v else cell(r, name) }
+fn ref_count_lt(rows: List<List<Pair<String, Int>>>, col: String, lim: Int) : Int =
+  match rows { []=>0; [r,...rest] => (if cell(r,col) < lim then 1 else 0) + ref_count_lt(rest, col, lim) }
+
+# --- circuit / constraint system ---------------------------------------------
+type Gate = | GConst(Int, Int) | GAdd(Int, Int, Int) | GMul(Int, Int, Int) | GAssertEq(Int, Int)
+type Build = | Build(Int, List<Gate>, List<Pair<Int, Int>>)
+fn b_fresh(b: Build) : (Int, Build) = match b { Build(n,gs,vs) => (n, Build(n+1,gs,vs)) }
+fn b_emit(g: Gate, b: Build) : Build = match b { Build(n,gs,vs) => Build(n,[g]++gs,vs) }
+fn b_set(w: Int, v: Int, b: Build) : Build = match b { Build(n,gs,vs) => Build(n,gs,[Pair(w,v)]++vs) }
+fn assoc(vs: List<Pair<Int,Int>>, w: Int) : Int =
+  match vs { []=>0; [Pair(k,v),...r] => if k==w then v else assoc(r,w) }
+fn b_val(b: Build, w: Int) : Int = match b { Build(n,gs,vs) => assoc(vs,w) }
+fn wnth(xs: List<Int>, i: Int) : Int = match xs { []=>0; [x,...r] => if i==0 then x else wnth(r, i - 1) }
+
+fn mk_const(c: Int, b: Build) : (Int, Build) =
+  match b_fresh(b) { (w,b1) => (w, b_set(w, fnorm(c), b_emit(GConst(w, fnorm(c)), b1))) }
+fn mk_add(a: Int, bw: Int, b: Build) : (Int, Build) =
+  match b_fresh(b) { (o,b1) => (o, b_set(o, fadd(b_val(b1,a), b_val(b1,bw)), b_emit(GAdd(o,a,bw), b1))) }
+fn mk_mul(a: Int, bw: Int, b: Build) : (Int, Build) =
+  match b_fresh(b) { (o,b1) => (o, b_set(o, fmul(b_val(b1,a), b_val(b1,bw)), b_emit(GMul(o,a,bw), b1))) }
+fn mk_sub(a: Int, bw: Int, b: Build) : (Int, Build) =
+  match mk_const(2147483646, b) { (n1,b1) => match mk_mul(bw,n1,b1) { (nb,b2) => mk_add(a,nb,b2) } }
+
+# --- in-circuit HASH (the MiMC compression, as gates) ------------------------
+fn mk_sbox(xw: Int, b: Build) : (Int, Build) =
+  match mk_mul(xw,xw,b) { (x2,b1) => match mk_mul(x2,x2,b1) { (x4,b2) => mk_mul(x4,xw,b2) } }
+fn mk_mimc_rounds(xw: Int, kw: Int, i: Int, rounds: Int, b: Build) : (Int, Build) =
+  if i >= rounds then mk_add(xw, kw, b)
+  else match mk_const(round_const(i), b) { (cw,b1) =>
+    match mk_add(xw,kw,b1) { (xk,b2) => match mk_add(xk,cw,b2) { (xkc,b3) =>
+      match mk_sbox(xkc,b3) { (sb,b4) => mk_mimc_rounds(sb,kw,i+1,rounds,b4) } } } }
+fn mk_hash2(aw: Int, bw: Int, b: Build) : (Int, Build) =
+  match mk_mimc_rounds(aw,bw,0,16,b) { (m,b1) => match mk_add(m,aw,b1) { (ma,b2) => mk_add(ma,bw,b2) } }
+fn mk_hash_fold(ws: List<Int>, accw: Int, b: Build) : (Int, Build) =
+  match ws { []=>(accw,b); [w,...rest] => match mk_hash2(accw,w,b) { (h,b1) => mk_hash_fold(rest,h,b1) } }
+fn mk_hash_cells(ws: List<Int>, b: Build) : (Int, Build) =
+  match mk_const(0,b) { (z,b1) => mk_hash_fold(ws, z, b1) }
+
+# --- in-circuit MERKLE root --------------------------------------------------
+fn mk_level_up(ws: List<Int>, b: Build) : (List<Int>, Build) =
+  match ws { []=>([],b); [a,...rest] => match rest { []=>([a],b);
+    [bw,...r2] => match mk_hash2(a,bw,b) { (h,b1) => match mk_level_up(r2,b1) { (up,b2) => ([h]++up,b2) } } } }
+fn mk_root(ws: List<Int>, b: Build) : (Int, Build) =
+  match ws { []=>mk_const(0,b); [a,...rest] => match rest { []=>(a,b);
+    _ => match mk_level_up(ws,b) { (up,b1) => mk_root(up,b1) } } }
+# pad a list of leaf-wires to a power of two with fresh const-0 wires.
+fn pad_wires(ws: List<Int>, k: Int, b: Build) : (List<Int>, Build) =
+  if k <= 0 then (ws, b)
+  else match mk_const(0,b) { (z,b1) => pad_wires(ws ++ [z], k - 1, b1) }
+
+# --- range gadget: lt(a,b) -> selector wire ----------------------------------
+fn alloc_bits(vv: Int, i: Int, nbits: Int, b: Build) : (List<Int>, Build) =
+  if i >= nbits then ([],b)
+  else let bv : Int = (vv / pow2(i)) % 2 in
+    match b_fresh(b) { (w,b1) => let b2 : Build = b_set(w,bv,b1) in
+      match mk_mul(w,w,b2) { (ww,b3) => let b4 : Build = b_emit(GAssertEq(ww,w),b3) in
+        match alloc_bits(vv,i+1,nbits,b4) { (rest,b5) => ([w]++rest,b5) } } }
+fn weighted_sum(bits: List<Int>, i: Int, b: Build) : (Int, Build) =
+  match bits { []=>mk_const(0,b); [bit,...rest] =>
+    match mk_const(pow2(i),b) { (p2,b1) => match mk_mul(bit,p2,b1) { (term,b2) =>
+      match weighted_sum(rest,i+1,b2) { (rs,b3) => mk_add(term,rs,b3) } } } }
+fn lt_gadget(aw: Int, av: Int, bw: Int, bv: Int, b: Build) : (Int, Build) =
+  match mk_const(65536,b) { (k,b1) => match mk_sub(aw,bw,b1) { (amb,b2) =>
+    match mk_add(amb,k,b2) { (dw,b3) => let dv : Int = fadd(fsub(av,bv),65536) in
+      match alloc_bits(dv,0,17,b3) { (bits,b4) => match weighted_sum(bits,0,b4) { (ws,b5) =>
+        let b6 : Build = b_emit(GAssertEq(ws,dw),b5) in let bit16 : Int = wnth(bits,16) in
+        match mk_const(1,b6) { (one,b7) => match mk_const(2147483646,b7) { (n1,b8) =>
+          match mk_mul(bit16,n1,b8) { (nb,b9) => mk_add(one,nb,b9) } } } } } } } }
+
+# --- the integrated circuit: process each row into (leaf wire, selector) -----
+# Returns (leaf_wires, count_wire, builder) for COUNT WHERE col < lim.
+fn process_rows(rows: List<List<Pair<String, Int>>>, col: String, lim: Int,
+                accw: Int, b: Build) : (List<Int>, Int, Build) =
+  match rows {
+    [] => ([], accw, b);
+    [row, ...rest] =>
+      # allocate this row's cells as witness wires (in row order)
+      match alloc_cells(row, b) { (cellws, colenv, b1) =>
+        # leaf = in-circuit hash of the cells
+        match mk_hash_cells(cellws, b1) { (leaf, b2) =>
+          # selector = (row[col] < lim)
+          let cw : Int = assoc_s(colenv, col) in
+          match mk_const(lim, b2) { (limw, b3) =>
+            match lt_gadget(cw, b_val(b3, cw), limw, b_val(b3, limw), b3) { (sel, b4) =>
+              match mk_add(sel, accw, b4) { (acc2, b5) =>
+                match process_rows(rest, col, lim, acc2, b5) { (leaves, cnt, b6) =>
+                  ([leaf] ++ leaves, cnt, b6) } } } } } }
+  }
+fn alloc_cells(cells: List<Pair<String, Int>>, b: Build)
+  : (List<Int>, List<Pair<String, Int>>, Build) =
+  match cells {
+    [] => ([], [], b);
+    [Pair(name, v), ...rest] =>
+      match b_fresh(b) { (w, b1) => let b2 : Build = b_set(w, fnorm(v), b1) in
+        match alloc_cells(rest, b2) { (ws, env, b3) => ([w] ++ ws, [Pair(name,w)] ++ env, b3) } }
+  }
+fn assoc_s(xs: List<Pair<String,Int>>, name: String) : Int =
+  match xs { []=>0; [Pair(k,v),...r] => if k==name then v else assoc_s(r,name) }
+
+# --- checker -----------------------------------------------------------------
+fn gate_ok(g: Gate, b: Build) : Bool =
+  match g {
+    GConst(o,c)=>b_val(b,o)==fnorm(c); GAdd(o,a,bw)=>b_val(b,o)==fadd(b_val(b,a),b_val(b,bw));
+    GMul(o,a,bw)=>b_val(b,o)==fmul(b_val(b,a),b_val(b,bw)); GAssertEq(a,bw)=>b_val(b,a)==b_val(b,bw)
+  }
+fn all_ok(gs: List<Gate>, b: Build) : Bool =
+  match gs { []=>true; [g,...r] => if gate_ok(g,b) then all_ok(r,b) else false }
+fn glen(gs: List<Gate>) : Int = match gs { []=>0; [g,...r] => 1 + glen(r) }
+
+# Build the whole proof circuit for "COUNT(col<lim) == claimedR over rows
+# committed to publicRoot". Returns whether all constraints hold + gate count.
+fn build_proof(rows: List<List<Pair<String, Int>>>, col: String, lim: Int,
+               publicRoot: Int, claimedR: Int) : (Bool, Int) =
+  match mk_const(0, Build(0, [], [])) { (zacc, b0) =>
+    match process_rows(rows, col, lim, zacc, b0) { (leafws, cntw, b1) =>
+      # pad leaf wires to power of two, recompute root, assert == publicRoot
+      let nleaves : Int = wlen(leafws) in
+      match pad_wires(leafws, next_pow2(nleaves, 1) - nleaves, b1) { (padded, b2) =>
+        match mk_root(padded, b2) { (rootw, b3) =>
+          match mk_const(publicRoot, b3) { (rc, b4) =>
+            let b5 : Build = b_emit(GAssertEq(rootw, rc), b4) in
+            # assert the count equals the claimed public result
+            match mk_const(claimedR, b5) { (rw, b6) =>
+              let b7 : Build = b_emit(GAssertEq(cntw, rw), b6) in
+              match b7 { Build(n, gs, vs) => (all_ok(gs, b7), glen(gs)) } } } } } } }
+fn wlen(xs: List<Int>) : Int = match xs { []=>0; [x,...r] => 1 + wlen(r) }
+
+# --- demo --------------------------------------------------------------------
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+fn row3(age: Int, score: Int) : List<Pair<String, Int>> = [Pair("age", age), Pair("score", score)]
+
+let tbl : List<List<Pair<String, Int>>> =
+  [row3(36,100), row3(41,100), row3(28,200), row3(25,300), row3(31,200)]
+let croot : Int = merkle_root(tbl)                 # public commitment to the private rows
+let rcount : Int = ref_count_lt(tbl, "age", 30)     # the true answer (= 2)
+
+let _ : String = print("--- frost_zk.glass: verifiable query over committed private data ---")
+let _ : String = print("public commitment C (Merkle root): " ++ int_to_string(croot))
+let _ : String = print("claim: COUNT(age < 30) over the rows behind C = " ++ int_to_string(rcount))
+let _ : String = print("")
+
+let _ : String =
+  match build_proof(tbl, "age", 30, croot, rcount) {
+    (ok, gates) =>
+      print("honest proof (correct rows, root, result):   constraints_hold=" ++ show_b(ok) ++
+            "  gates=" ++ int_to_string(gates))
+  }
+# Tamper 1: claim a wrong count -> the count assertion fails.
+let _ : String =
+  match build_proof(tbl, "age", 30, croot, rcount + 1) {
+    (ok, gates) => print("lying about the result (claim " ++ int_to_string(rcount+1) ++
+                         "):           constraints_hold=" ++ show_b(ok) ++ " (must be no)")
+  }
+# Tamper 2: claim a wrong commitment -> the Merkle-root assertion fails.
+let _ : String =
+  match build_proof(tbl, "age", 30, fadd(croot, 1), rcount) {
+    (ok, gates) => print("lying about the commitment (wrong C):         constraints_hold=" ++
+                         show_b(ok) ++ " (must be no)")
+  }
+
+"frost zk v0.1 — membership (Merkle, in-circuit) AND query (filter+count) in one constraint system"

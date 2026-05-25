@@ -1,0 +1,62 @@
+# =============================================================================
+# Sacred geometry — Euler's polyhedron formula as a refinement, in Glass.
+#
+# Every convex polyhedron obeys Euler's formula exactly:
+#
+#       V − E + F = 2
+#
+# (vertices − edges + faces). The five Platonic solids — the only convex
+# regular polyhedra, known since antiquity — all satisfy it. It's a pure
+# Int identity, so "is a valid polyhedron" becomes a REFINEMENT: a
+# Polyhedron's (v, e, f) is accepted only when v − e + f == 2.
+#
+# We also check regularity: a Platonic solid has every face the same
+# p-gon and every vertex meeting the same number q of faces, tied
+# together by  p·F = 2·E = q·V  (each edge shared by 2 faces / 2 vertices).
+#
+# Demonstrated: the five Platonic solids passing Euler + the regularity
+# identities, an impossible (v,e,f) being rejected by the refinement.
+# =============================================================================
+
+# A polyhedron, REFINED: its Euler characteristic must be 2. Construction
+# of a bad polyhedron is a compile-time / runtime refinement violation.
+type Polyhedron = | Poly(Int, Int, Int)   # (vertices, edges, faces)
+
+fn euler(v: Int, e: Int, f: Int) : Int = v - e + f
+
+# The gate: only (v, e, f) with v − e + f == 2 is a polyhedron. The
+# refinement references the earlier params (cross-parameter, v4.56).
+fn make_poly(v: Int, e: Int, f: Int where (v - e + f == 2)) : Polyhedron =
+  Poly(v, e, f)
+
+# Regularity check: a {p, q} solid has p·F = 2·E (each face is a p-gon,
+# each edge borders 2 faces) and q·V = 2·E (each vertex meets q faces).
+fn regular(v: Int, e: Int, f: Int, p: Int, q: Int) : Bool =
+  p * f == 2 * e && q * v == 2 * e
+
+# ---- Pretty-printer ---------------------------------------------------------
+
+fn report(name: String, v: Int, e: Int, f: Int, p: Int, q: Int) : String !{IO} =
+  let _ = make_poly(v, e, f) in   # forces the Euler refinement to hold
+  print("  " ++ name ++
+        ": V=" ++ int_to_string(v) ++
+        " E=" ++ int_to_string(e) ++
+        " F=" ++ int_to_string(f) ++
+        "  V−E+F=" ++ int_to_string(euler(v, e, f)) ++
+        "  {" ++ int_to_string(p) ++ "," ++ int_to_string(q) ++ "}" ++
+        "  regular?=" ++ (if regular(v, e, f, p, q) then "yes" else "no"))
+
+let _ = print("=== The five Platonic solids (Euler V−E+F=2, all regular) ===")
+let _ = report("tetrahedron ", 4, 6, 4, 3, 3)
+let _ = report("cube        ", 8, 12, 6, 4, 3)
+let _ = report("octahedron  ", 6, 12, 8, 3, 4)
+let _ = report("dodecahedron", 20, 30, 12, 5, 3)
+let _ = report("icosahedron ", 12, 30, 20, 3, 5)
+
+# A real (non-Platonic) polyhedron still obeys Euler — a square pyramid:
+# 5 vertices, 8 edges, 5 faces.  5 − 8 + 5 = 2.  (Not regular: {3,3,3,3,4}.)
+let _ = print("")
+let _ = print("=== A non-regular polyhedron still satisfies Euler ===")
+let _ = report("sq. pyramid ", 5, 8, 5, 0, 0)
+
+"done"

@@ -1,0 +1,151 @@
+# =============================================================================
+# frost_fiat.glass — FRI hardening: Fiat-Shamir query sampling + amplification (P3)
+#
+# frost_stark.glass proved a codeword low-degree but used HARDCODED query
+# positions [1,3,6]. That is not sound: a prover who knows the queries in
+# advance can fake exactly those positions. Real soundness needs two things,
+# both built here — and neither needs a bigger field:
+#
+#   1. FIAT-SHAMIR QUERY SAMPLING. Derive the query positions by HASHING the
+#      transcript (the layer commitments). The prover commits first, THEN the
+#      queries fall out of the commitment — so they cannot be predicted or gamed,
+#      and there is no interactive verifier.
+#
+#   2. AMPLIFICATION. One query catches a cheating prover (whose word is far
+#      from low-degree) with constant probability. K independent sampled queries
+#      drive the soundness error down to ~2^-K. So with the toy ~2^31 field, ~80
+#      Fiat-Shamir queries already give CRYPTOGRAPHIC ~2^-80 soundness. This is
+#      exactly how small-field STARKs (Baby Bear / Goldilocks) reach security:
+#      a small field for the algebra, many queries for the soundness.
+#
+# DEMONSTRATED: queries are derived from the commitment (printed); an honest
+# proof passes all of them; a cheating prover (faked final) is caught by a large
+# FRACTION of the sampled queries — the amplification made visible. Baby Bear
+# field; reuses frost_stark's committed FRI. Dogfoods.
+# =============================================================================
+
+# --- Baby Bear field ---------------------------------------------------------
+fn fadd(a: Int, b: Int) : Int = (a + b) % 2013265921
+fn fmul(a: Int, b: Int) : Int = (a * b) % 2013265921
+fn fsub(a: Int, b: Int) : Int = ((a - b) % 2013265921 + 2013265921) % 2013265921
+fn fpow(base: Int, e: Int) : Int =
+  if e == 0 then 1 else if e % 2 == 0 then let h : Int = fpow(base, e / 2) in fmul(h, h) else fmul(base, fpow(base, e - 1))
+fn finv(x: Int) : Int = fpow(x, 2013265919)
+fn root_of_unity(n: Int) : Int = fpow(31, 2013265920 / n)
+
+# --- hash (MiMC) + Merkle ----------------------------------------------------
+fn sbox(x: Int) : Int = let x2 : Int = fmul(x, x) in let x4 : Int = fmul(x2, x2) in fmul(x4, x)
+fn rconst(i: Int) : Int = ((i + 1) * (i + 1) * (i + 1) + i * 1009 + 1234567) % 2013265921
+fn mimc(x: Int, k: Int, i: Int) : Int = if i >= 16 then fadd(x, k) else mimc(sbox(fadd(fadd(x, k), rconst(i))), k, i + 1)
+fn hash2(a: Int, b: Int) : Int = fadd(fadd(mimc(a, b, 0), a), b)
+fn ilen(xs: List<Int>) : Int = match xs { [] => 0; [x, ...r] => 1 + ilen(r) }
+fn nth(xs: List<Int>, i: Int) : Int = match xs { [] => 0; [x, ...r] => if i == 0 then x else nth(r, i - 1) }
+fn append_zeros(xs: List<Int>, k: Int) : List<Int> = if k <= 0 then xs else append_zeros(xs ++ [0], k - 1)
+fn next_pow2(n: Int, p: Int) : Int = if p >= n then p else next_pow2(n, p * 2)
+fn pad_pow2(xs: List<Int>) : List<Int> = let n : Int = ilen(xs) in append_zeros(xs, next_pow2(n, 1) - n)
+fn level_up(xs: List<Int>) : List<Int> =
+  match xs { [] => []; [a, ...rest] => match rest { [] => [a]; [b, ...r2] => [hash2(a, b)] ++ level_up(r2) } }
+fn root_of(xs: List<Int>) : Int =
+  match xs { [] => 0; [a, ...rest] => match rest { [] => a; _ => root_of(level_up(xs)) } }
+fn merkle_root(leaves: List<Int>) : Int = root_of(pad_pow2(leaves))
+fn path_of(xs: List<Int>, index: Int) : List<Int> =
+  match xs { [] => []; [a, ...rest] => match rest { [] => [];
+    _ => let sib : Int = if index % 2 == 0 then nth(xs, index + 1) else nth(xs, index - 1) in
+         [sib] ++ path_of(level_up(xs), index / 2) } }
+fn merkle_path(leaves: List<Int>, index: Int) : List<Int> = path_of(pad_pow2(leaves), index)
+fn fold_path(h: Int, index: Int, path: List<Int>) : Int =
+  match path { [] => h; [s, ...rest] => let up : Int = if index % 2 == 0 then hash2(h, s) else hash2(s, h) in fold_path(up, index / 2, rest) }
+fn merkle_verify(leaf: Int, index: Int, path: List<Int>, root: Int) : Bool = fold_path(leaf, index, path) == root
+
+# --- FRI fold + committed verify (from frost_stark) --------------------------
+fn powers(w: Int, cur: Int, k: Int) : List<Int> = if k <= 0 then [] else [cur] ++ powers(w, fmul(cur, w), k - 1)
+fn build_domain(n: Int) : List<Int> = powers(root_of_unity(n), 1, n)
+fn poly_eval(coeffs: List<Int>, x: Int) : Int =
+  match coeffs { [] => 0; [c, ...rest] => fadd(c, fmul(x, poly_eval(rest, x))) }
+fn evaluate(coeffs: List<Int>, dom: List<Int>) : List<Int> =
+  match dom { [] => []; [x, ...rest] => [poly_eval(coeffs, x)] ++ evaluate(coeffs, rest) }
+fn fold_pair(fx: Int, fmx: Int, x: Int, beta: Int) : Int =
+  let feven : Int = fmul(fadd(fx, fmx), finv(2)) in let fodd : Int = fmul(fsub(fx, fmx), finv(fmul(2, x))) in
+  fadd(feven, fmul(beta, fodd))
+fn fold_at(cw: List<Int>, dom: List<Int>, beta: Int, i: Int, half: Int) : List<Int> =
+  if i >= half then [] else [fold_pair(nth(cw, i), nth(cw, i + half), nth(dom, i), beta)] ++ fold_at(cw, dom, beta, i + 1, half)
+fn square_dom(dom: List<Int>, i: Int, half: Int) : List<Int> =
+  if i >= half then [] else [fmul(nth(dom, i), nth(dom, i))] ++ square_dom(dom, i + 1, half)
+fn fiat_shamir(root: Int) : Int = hash2(root, 777)
+
+type Layer = | Layer(List<Int>, List<Int>, Int, Int)
+fn commit(cw: List<Int>, dom: List<Int>, acc: List<Layer>) : (List<Layer>, List<Int>) =
+  if ilen(cw) <= 2 then (acc, cw)
+  else let root : Int = merkle_root(cw) in let beta : Int = fiat_shamir(root) in let half : Int = ilen(cw) / 2 in
+    commit(fold_at(cw, dom, beta, 0, half), square_dom(dom, 0, half), acc ++ [Layer(cw, dom, root, beta)])
+fn next_val(rest: List<Layer>, final: List<Int>, j: Int) : Int =
+  match rest { [] => nth(final, j); [Layer(cw, dom, root, beta), ...more] => nth(cw, j) }
+fn verify_query(layers: List<Layer>, final: List<Int>, p: Int) : Bool =
+  match layers { [] => true;
+    [Layer(cw, dom, root, beta), ...rest] =>
+      let half : Int = ilen(cw) / 2 in let j : Int = p % half in
+      let fx : Int = nth(cw, j) in let fmx : Int = nth(cw, j + half) in
+      let ok1 : Bool = merkle_verify(fx, j, merkle_path(cw, j), root) in
+      let ok2 : Bool = merkle_verify(fmx, j + half, merkle_path(cw, j + half), root) in
+      let folded : Int = fold_pair(fx, fmx, nth(dom, j), beta) in
+      if ok1 then if ok2 then if folded == next_val(rest, final, j) then verify_query(rest, final, j) else false else false else false }
+fn is_constant(xs: List<Int>) : Bool =
+  match xs { [] => true; [x, ...r] => match r { [] => true; [y, ...r2] => if x == y then is_constant(r) else false } }
+
+# --- NEW: Fiat-Shamir query sampling -----------------------------------------
+# transcript seed = hash of all layer commitments (roots). The prover commits
+# before this is computed, so the queries are bound to the commitment.
+fn transcript_seed(layers: List<Layer>, acc: Int) : Int =
+  match layers { [] => acc; [Layer(cw, dom, root, beta), ...rest] => transcript_seed(rest, hash2(acc, root)) }
+# K query positions, each hash2(seed, i) mod dsize. Unpredictable, deterministic.
+fn sample_queries(seed: Int, count: Int, dsize: Int) : List<Int> =
+  if count <= 0 then [] else [hash2(seed, count) % dsize] ++ sample_queries(seed, count - 1, dsize)
+# how many of the sampled queries DETECT an inconsistency (catch a cheat).
+fn count_catches(layers: List<Layer>, final: List<Int>, qs: List<Int>) : Int =
+  match qs { [] => 0; [p, ...rest] =>
+    (if verify_query(layers, final, p) then 0 else 1) + count_catches(layers, final, rest) }
+fn qlen(qs: List<Int>) : Int = match qs { [] => 0; [q, ...r] => 1 + qlen(r) }
+# accept iff final is low-degree AND no sampled query detects an inconsistency.
+fn verify(layers: List<Layer>, final: List<Int>, qs: List<Int>) : Bool =
+  if is_constant(final) then count_catches(layers, final, qs) == 0 else false
+
+# --- demo --------------------------------------------------------------------
+fn show_a(b: Bool) : String = if b then "ACCEPT" else "REJECT"
+fn show_q(qs: List<Int>) : String =
+  match qs { [] => ""; [q, ...r] => match r { [] => int_to_string(q); _ => int_to_string(q) ++ "," ++ show_q(r) } }
+
+let dom16 : List<Int> = build_domain(16)
+let nq : Int = 64
+
+let _ : String = print("--- frost_fiat.glass: Fiat-Shamir query sampling + amplification ---")
+let _ : String = print("")
+
+# honest low-degree codeword
+let _ : String =
+  match commit(evaluate([1, 2, 3, 4, 5, 6], dom16), dom16, []) { (layers, final) =>
+    let seed : Int = transcript_seed(layers, 0) in
+    let qs : List<Int> = sample_queries(seed, nq, 16) in
+    print("honest proof: transcript seed=" ++ int_to_string(seed)) }
+let _ : String =
+  match commit(evaluate([1, 2, 3, 4, 5, 6], dom16), dom16, []) { (layers, final) =>
+    let seed : Int = transcript_seed(layers, 0) in
+    let qs : List<Int> = sample_queries(seed, 8, 16) in
+    print("  first 8 Fiat-Shamir queries (of " ++ int_to_string(nq) ++ "): [" ++ show_q(qs) ++ "]") }
+let _ : String =
+  match commit(evaluate([1, 2, 3, 4, 5, 6], dom16), dom16, []) { (layers, final) =>
+    let qs : List<Int> = sample_queries(transcript_seed(layers, 0), nq, 16) in
+    print("  -> " ++ show_a(verify(layers, final, qs)) ++ " (" ++
+          int_to_string(count_catches(layers, final, qs)) ++ "/" ++ int_to_string(nq) ++ " queries caught a fault)") }
+let _ : String = print("")
+
+# cheating prover: commits the real layers but swaps the final to a fake constant.
+let _ : String =
+  match commit([11, 7, 99, 3, 250, 41, 8, 1000, 17, 53, 2, 488, 91, 6, 314, 159], dom16, []) { (layers, final) =>
+    let qs : List<Int> = sample_queries(transcript_seed(layers, 0), nq, 16) in
+    print("cheating proof (faked final [42,42]): " ++ show_a(verify(layers, [42, 42], qs)) ++ " (" ++
+          int_to_string(count_catches(layers, [42, 42], qs)) ++ "/" ++ int_to_string(nq) ++ " queries caught it)") }
+let _ : String = print("")
+let _ : String = print("queries are derived from the COMMITMENT (Fiat-Shamir) -> unpredictable.")
+let _ : String = print("K queries => soundness error ~2^-K; ~80 queries give crypto security over a small field.")
+
+"frost fiat v0.1 — Fiat-Shamir query sampling + amplification: cryptographic soundness, small field"

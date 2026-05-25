@@ -1,0 +1,19 @@
+# prime.glass — primality test by trial division.
+# Uses: v4.6 modulo, v4.7 equality + logical operators, recursion.
+
+fn divides(n, d) =
+  n % d == 0
+
+# Test divisibility from d up to sqrt(n) (approximated as d*d <= n).
+fn has_factor_from(n, d) =
+  if d * d > n then 0
+  else if divides(n, d) then 1
+  else has_factor_from(n, d + 1)
+
+fn is_prime(n) =
+  if n < 2 then 0
+  else if has_factor_from(n, 2) == 1 then 0
+  else 1
+
+# 97 is prime. Expected: 1.
+is_prime(97)

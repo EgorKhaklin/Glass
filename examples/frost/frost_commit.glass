@@ -1,0 +1,172 @@
+# =============================================================================
+# frost_commit.glass — a Glass-native cryptographic commitment layer (v0.1)
+#
+# The cryptographic foundation for Frost (Pane's zero-knowledge extension),
+# built entirely in Glass: our own ZK-friendly HASH, MERKLE trees, and a
+# COMMITMENT scheme. Everything operates over the same finite field as the
+# arithmetization (frost.glass), so the hash IS a circuit — commitment
+# verification can be lowered into a Frost proof.
+#
+# WHY a hash, and why an ARITHMETIC one
+# -------------------------------------
+# A zero-knowledge proof about "data behind a commitment" needs (a) a binding
+# commitment to the data and (b) a way to verify membership/openings INSIDE a
+# circuit. A hash built from FIELD ARITHMETIC (add/mul) satisfies both: it is a
+# collision-resistant compression AND it arithmetizes into Frost gates (each
+# round is a handful of GMul/GAdd). We use a MiMC-style permutation — a real
+# ZK-friendly design — with our own round constants ("something new").
+#
+# THE LAYERS
+#   1. Field F_p (p = 2^31 - 1), shared with frost.glass.
+#   2. HASH: a MiMC permutation (x^5 S-box) + a 2-to-1 compression
+#      (Miyaguchi–Preneel) + a sponge over a list.
+#   3. MERKLE tree: commit a list -> root; prove a leaf's membership with a
+#      path of siblings; verify by recomputing the root.
+#   4. COMMITMENT: commit(msg, rand) = compress(msg, rand) — hiding (random
+#      blinding) and binding (collision-resistant).
+#
+# THE FROST BRIDGE: hash2 is just fadd/fmul, so a Merkle-path check is a
+# sequence of Frost gates. A proof "row R is in the table committed as root C
+# AND R satisfies predicate P" = (Merkle-verify circuit) ∧ (predicate circuit),
+# both in the same constraint system.
+#
+# SECURITY (honest): the structure is correct, but p = 2^31-1 is a TOY field —
+# this is not collision-resistant in practice. A real deployment swaps in a
+# ~256-bit field (bignum) and vetted MiMC/Poseidon round counts. The Glass code
+# is unchanged in shape; only the field widens.
+# =============================================================================
+
+# --- field F_p, p = 2^31 - 1 (inlined literal; glassc-compilable) ------------
+fn fadd(a: Int, b: Int) : Int = (a + b) % 2147483647
+fn fmul(a: Int, b: Int) : Int = (a * b) % 2147483647
+fn fnorm(a: Int) : Int = (a % 2147483647 + 2147483647) % 2147483647
+
+# --- our hash: a MiMC permutation over F_p -----------------------------------
+# S-box x^5 (a permutation: gcd(5, p-1)=1). Three muls.
+fn sbox(x: Int) : Int =
+  let x2 : Int = fmul(x, x) in
+  let x4 : Int = fmul(x2, x2) in
+  fmul(x4, x)
+
+# Our own round constants — a simple deterministic schedule (not borrowed).
+fn round_const(i: Int) : Int = fnorm((i + 1) * (i + 1) * (i + 1) + i * 1009 + 1234567)
+
+# MiMC keyed permutation: x_{i+1} = (x_i + k + c_i)^5, output x_R + k.
+fn mimc_rounds(x: Int, k: Int, i: Int, rounds: Int) : Int =
+  if i >= rounds then fadd(x, k)
+  else mimc_rounds(sbox(fadd(fadd(x, k), round_const(i))), k, i + 1, rounds)
+
+fn mimc(x: Int, k: Int) : Int = mimc_rounds(x, k, 0, 16)
+
+# 2-to-1 compression (Miyaguchi–Preneel shape): H(a,b) = MiMC_b(a) + a + b.
+fn hash2(a: Int, b: Int) : Int = fadd(fadd(mimc(a, b), a), b)
+
+# Sponge over a list: absorb each element by compression.
+fn hash_fold(xs: List<Int>, acc: Int) : Int =
+  match xs { [] => acc; [x, ...rest] => hash_fold(rest, hash2(acc, x)) }
+fn hash_list(xs: List<Int>) : Int = hash_fold(xs, 0)
+
+# --- list helpers ------------------------------------------------------------
+fn ilen(xs: List<Int>) : Int = match xs { [] => 0; [x, ...r] => 1 + ilen(r) }
+fn inth(xs: List<Int>, i: Int) : Int =
+  match xs { [] => 0; [x, ...r] => if i == 0 then x else inth(r, i - 1) }
+fn append_zeros(xs: List<Int>, k: Int) : List<Int> =
+  if k <= 0 then xs else append_zeros(xs ++ [0], k - 1)
+fn next_pow2(n: Int, p: Int) : Int = if p >= n then p else next_pow2(n, p * 2)
+fn pad_pow2(xs: List<Int>) : List<Int> =
+  let n : Int = ilen(xs) in append_zeros(xs, next_pow2(n, 1) - n)
+
+# --- Merkle tree -------------------------------------------------------------
+# One level up: hash adjacent pairs. (Input length is a power of two.)
+fn level_up(xs: List<Int>) : List<Int> =
+  match xs {
+    [] => [];
+    [a, ...rest] =>
+      match rest {
+        [] => [a];                                 # lone leftover carries up
+        [b, ...rest2] => [hash2(a, b)] ++ level_up(rest2)
+      }
+  }
+
+# Root of a power-of-two list.
+fn root_of(xs: List<Int>) : Int =
+  match xs {
+    [] => 0;
+    [a, ...rest] => match rest { [] => a; _ => root_of(level_up(xs)) }
+  }
+
+fn merkle_root(leaves: List<Int>) : Int = root_of(pad_pow2(leaves))
+
+# Membership path: the sibling at each level, from leaf up to the root.
+fn path_of(xs: List<Int>, index: Int) : List<Int> =
+  match xs {
+    [] => [];
+    [a, ...rest] =>
+      match rest {
+        [] => [];
+        _ =>
+          let sib : Int =
+            if index % 2 == 0 then inth(xs, index + 1) else inth(xs, index - 1) in
+          [sib] ++ path_of(level_up(xs), index / 2)
+      }
+  }
+fn merkle_path(leaves: List<Int>, index: Int) : List<Int> =
+  path_of(pad_pow2(leaves), index)
+
+# Verify: fold leaf with the sibling path, ordering by the index bits.
+fn fold_path(h: Int, index: Int, path: List<Int>) : Int =
+  match path {
+    [] => h;
+    [s, ...rest] =>
+      let up : Int = if index % 2 == 0 then hash2(h, s) else hash2(s, h) in
+      fold_path(up, index / 2, rest)
+  }
+fn merkle_verify(leaf: Int, index: Int, path: List<Int>, root: Int) : Bool =
+  fold_path(leaf, index, path) == root
+
+# --- commitment scheme -------------------------------------------------------
+# commit(msg, rand): hiding (rand blinds) + binding (collision-resistant).
+fn commit(msg: Int, rand: Int) : Int = hash2(msg, rand)
+fn open_ok(c: Int, msg: Int, rand: Int) : Bool = commit(msg, rand) == c
+
+# --- demo --------------------------------------------------------------------
+fn show_b(b: Bool) : String = if b then "ok" else "FAIL"
+
+# A "table": 5 rows, each row a few field cells; leaf = hash of the row.
+let rows : List<List<Int>> =
+  [[36, 100, 1], [41, 100, 1], [28, 200, 0], [25, 300, 0], [31, 200, 1]]
+
+fn leaves_of(rs: List<List<Int>>) : List<Int> =
+  match rs { [] => []; [r, ...rest] => [hash_list(r)] ++ leaves_of(rest) }
+
+let leaves : List<Int> = leaves_of(rows)
+let root : Int = merkle_root(leaves)
+
+let _ : String = print("--- frost_commit.glass: Glass-native hash + Merkle + commitment ---")
+let _ : String = print("table committed to Merkle root: " ++ int_to_string(root))
+let _ : String = print("")
+
+# Prove membership of row 2 (the third row) without revealing the others.
+let leaf2 : Int = inth(leaves, 2)
+let path2 : List<Int> = merkle_path(leaves, 2)
+let _ : String = print("row 2 leaf:  " ++ int_to_string(leaf2))
+let _ : String = print("merkle path length (= tree depth): " ++ int_to_string(ilen(path2)))
+let _ : String = print("membership proof verifies:        " ++ show_b(merkle_verify(leaf2, 2, path2, root)))
+let _ : String = print("tampered leaf is rejected:        " ++ show_b(!merkle_verify(fadd(leaf2, 1), 2, path2, root)))
+let _ : String = print("wrong position is rejected:       " ++ show_b(!merkle_verify(leaf2, 3, path2, root)))
+let _ : String = print("")
+
+# Commitment: hide a value, open it later.
+let c : Int = commit(42, 987654)
+let _ : String = print("commitment to 42 (blinded):       " ++ int_to_string(c))
+let _ : String = print("correct opening accepted:         " ++ show_b(open_ok(c, 42, 987654)))
+let _ : String = print("wrong value rejected:             " ++ show_b(!open_ok(c, 43, 987654)))
+let _ : String = print("wrong blinding rejected:          " ++ show_b(!open_ok(c, 42, 111111)))
+let _ : String = print("")
+
+# The Frost bridge: the hash is field arithmetic, so it is a circuit.
+let _ : String = print("the hash is arithmetic: one MiMC round = 3 muls + 2 adds,")
+let _ : String = print("so a depth-" ++ int_to_string(ilen(path2)) ++ " Merkle check is ~" ++
+                       int_to_string(ilen(path2) * 16 * 5) ++ " Frost gates — membership is provable in-circuit.")
+
+"frost commit v0.1 — Glass-native hash + Merkle commitments + commitment scheme"

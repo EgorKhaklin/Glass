@@ -1,0 +1,17 @@
+# =============================================================================
+# lambda_multi.glass — multi-param lambdas in prism (v4.48).
+#
+# Before v4.48 prism's parse_fn accepted exactly one parameter, so any
+# multi-arg lambda inside a Glass program compiled by prism would
+# parse-error at the first comma. v4.48 generalizes the parser to a
+# comma-separated param list (each optionally typed and refined),
+# desugared right-to-left into a chain of ELam / ELamR. The shape
+# matches the host's curried encoding for top-level fns, so the rest
+# of the pipeline (infer, eval, runtime checks) needs no changes.
+#
+# This file is the positive case: two unrefined typed params, applied
+# in one expression. Result: 3 + 4 = 7.
+# =============================================================================
+
+let r : Int = (fn(a: Int, b: Int) -> a + b)(3, 4)
+r

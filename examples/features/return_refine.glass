@@ -1,0 +1,38 @@
+# =============================================================================
+# return_refine.glass — return-type refinement runtime checks in prism
+# (v4.25, demo cleaned up in v4.27).
+#
+# A return-type refinement attaches a predicate to the value a function
+# produces. The conventional binder is `result` — predicates reference
+# the return value through that name. The host has enforced these at
+# runtime since v1.3; v4.25 brought prism to parity for top-level fns.
+#
+# Two demos in one file:
+#   1. abs(n) : Int where (result >= 0)
+#      — 1-param fn, return refinement only. Exercises the path in
+#        VMutRecClos that checks the return refinement immediately on
+#        the apply that consumed the only param.
+#   2. sum_positive(a, b) : Int where (result >= 0)
+#      — 2-param fn with refined params AND refined return. Exercises
+#        the VRefinedClos path: after the first arg is applied, the
+#        wrapper carries `ret_ty` forward; the second apply checks the
+#        return refinement against the final result.
+#
+# v4.27: the trailing `(abs(...), sum_positive(...))` tuple form
+# previously had to be wrapped in a let-binding because prism's parser
+# eagerly chained `(...)` on a new line as a call against the previous
+# expression. v4.27 ports the v4.21 host fix to prism, and the natural
+# bare-tuple form now parses correctly.
+# =============================================================================
+
+fn abs(n: Int) : Int where (result >= 0) =
+  if n >= 0 then n else 0 - n
+
+fn sum_positive(
+  a: Int where (a >= 0),
+  b: Int where (b >= 0)
+) : Int where (result >= 0) = a + b
+
+let x : Int = 3
+let y : Int = 4
+(abs(0 - 7), sum_positive(x, y))

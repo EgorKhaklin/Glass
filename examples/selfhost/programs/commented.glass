@@ -1,0 +1,18 @@
+# commented.glass — demonstrates v4.5 line comments.
+# Comments start with `#` and run to end-of-line.
+
+# An ADT for a small expression evaluator demo.
+type Expr =
+  | Num(Int)
+  | Add(Expr, Expr)
+  | Mul(Expr, Expr)
+
+# Recursive evaluator. Each arm of the match handles one variant.
+fn eval(e) = match e {
+  Num(n) => n;           # base case
+  Add(l, r) => eval(l) + eval(r);  # sum
+  Mul(l, r) => eval(l) * eval(r)   # product
+}
+
+# (1 + 2) * (3 + 4) = 3 * 7 = 21
+eval(Mul(Add(Num(1), Num(2)), Add(Num(3), Num(4))))

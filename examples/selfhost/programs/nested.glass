@@ -1,0 +1,9 @@
+type Maybe = | Some(Int) | None
+
+fn unwrap_or_neg(o) = match o {
+  Some(Some(n)) => n;
+  Some(None) => 999;
+  None => 0
+}
+
+unwrap_or_neg(Some(Some(123)))

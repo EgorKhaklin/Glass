@@ -1,0 +1,114 @@
+# =============================================================================
+# frost_prove.glass — a non-interactive, sound constraint proof (v0.1)
+#
+# The proof layer for Frost: instead of the verifier re-checking every gate
+# (the non-ZK checker in frost.glass), reduce "all N constraints hold" to ONE
+# randomized check, made non-interactive by Fiat-Shamir. This is the soundness
+# heart of a SNARK, built in Glass.
+#
+# THE PROTOCOL
+#   1. COMMIT: the prover commits to the witness (wire values) with our hash
+#      (frost_commit.glass). This binds the witness BEFORE any challenge.
+#   2. FIAT-SHAMIR: derive a random field challenge r = hash(commitment).
+#      Because r comes from the committed witness, the prover cannot choose the
+#      witness to fit r — and there is no interactive verifier.
+#   3. RANDOM LINEAR COMBINATION: each gate has a RESIDUAL that is 0 iff the
+#      gate holds. The batched value
+#          rlc = Σ_i  r^i · residual_i
+#      is 0 when every gate holds. If ANY gate is violated, rlc is a nonzero
+#      polynomial in r of degree < N, which is 0 for at most N-1 of the p field
+#      elements — so a cheating witness passes with probability ≤ (N-1)/p.
+#      Here p = 2^31-1, N ~ a handful → soundness error ~1e-9 (and ~1e-77 at a
+#      256-bit field). ONE check replaces N.
+#
+# SOUNDNESS, demonstrated: a valid witness gives rlc = 0 (accept); tampering
+# with any single wire makes rlc != 0 (reject), with overwhelming probability.
+#
+# THE HONEST BOUNDARY: this is SOUND and NON-INTERACTIVE. It is not yet fully
+# SUCCINCT/ZERO-KNOWLEDGE — the verifier still recomputes rlc over the witness.
+# Making the verifier check rlc == 0 WITHOUT seeing the witness needs a
+# polynomial commitment + low-degree test (FRI) — the next, hardest layer.
+# (Toy field; widen for real security.)
+# =============================================================================
+
+# --- field -------------------------------------------------------------------
+fn fadd(a: Int, b: Int) : Int = (a + b) % 2147483647
+fn fmul(a: Int, b: Int) : Int = (a * b) % 2147483647
+fn fsub(a: Int, b: Int) : Int = ((a - b) % 2147483647 + 2147483647) % 2147483647
+fn fnorm(a: Int) : Int = (a % 2147483647 + 2147483647) % 2147483647
+
+# --- our hash (MiMC), for the commitment + Fiat-Shamir -----------------------
+fn sbox(x: Int) : Int = let x2 : Int = fmul(x, x) in let x4 : Int = fmul(x2, x2) in fmul(x4, x)
+fn round_const(i: Int) : Int = fnorm((i + 1) * (i + 1) * (i + 1) + i * 1009 + 1234567)
+fn mimc_rounds(x: Int, k: Int, i: Int, rounds: Int) : Int =
+  if i >= rounds then fadd(x, k)
+  else mimc_rounds(sbox(fadd(fadd(x, k), round_const(i))), k, i + 1, rounds)
+fn hash2(a: Int, b: Int) : Int = fadd(fadd(mimc_rounds(a, b, 0, 16), a), b)
+fn hash_fold(xs: List<Int>, acc: Int) : Int =
+  match xs { [] => acc; [x, ...r] => hash_fold(r, hash2(acc, x)) }
+fn hash_list(xs: List<Int>) : Int = hash_fold(xs, 0)
+
+# --- constraint system (matching frost.glass) --------------------------------
+type Gate = | GConst(Int, Int) | GAdd(Int, Int, Int) | GMul(Int, Int, Int) | GAssertEq(Int, Int)
+
+# witness: wire index -> value (a list where position i is wire i's value).
+fn nth(w: List<Int>, i: Int) : Int =
+  match w { [] => 0; [x, ...r] => if i == 0 then x else nth(r, i - 1) }
+
+# residual of a gate: 0 iff the gate holds in the witness.
+fn residual(g: Gate, w: List<Int>) : Int =
+  match g {
+    GConst(o, c)     => fsub(nth(w, o), fnorm(c));
+    GAdd(o, a, b)    => fsub(nth(w, o), fadd(nth(w, a), nth(w, b)));
+    GMul(o, a, b)    => fsub(nth(w, o), fmul(nth(w, a), nth(w, b)));
+    GAssertEq(a, b)  => fsub(nth(w, a), nth(w, b))
+  }
+
+# --- the protocol ------------------------------------------------------------
+# Commit to the witness with the hash (binding).
+fn commit_witness(w: List<Int>) : Int = hash_list(w)
+
+# Fiat-Shamir: a field challenge derived from the commitment (non-interactive).
+fn fiat_shamir(commitment: Int) : Int = hash2(commitment, 777)
+
+# rlc = Σ_i r^i · residual_i  (rpow carries r^i).
+fn rlc(gates: List<Gate>, w: List<Int>, r: Int, rpow: Int) : Int =
+  match gates {
+    [] => 0;
+    [g, ...rest] =>
+      fadd(fmul(rpow, residual(g, w)), rlc(rest, w, r, fmul(rpow, r)))
+  }
+
+# A proof reduces to: rlc over the committed witness, with r from Fiat-Shamir.
+# Accept iff rlc == 0.
+fn prove_and_check(gates: List<Gate>, w: List<Int>) : Bool =
+  let c : Int = commit_witness(w) in
+  let r : Int = fiat_shamir(c) in
+  rlc(gates, w, r, 1) == 0
+
+# --- demo --------------------------------------------------------------------
+fn show_b(b: Bool) : String = if b then "ACCEPT" else "REJECT"
+
+# A small circuit: wires w0,w1 inputs; w2 = w0+w1; w3 = w0*w1.
+let gates : List<Gate> = [GAdd(2, 0, 1), GMul(3, 0, 1)]
+
+# Valid witness: w0=3, w1=4, w2=7, w3=12.
+let good : List<Int> = [3, 4, 7, 12]
+# Tampered witnesses (each violates exactly one gate).
+let bad_add : List<Int> = [3, 4, 8, 12]      # w2 wrong (3+4 != 8)
+let bad_mul : List<Int> = [3, 4, 7, 11]      # w3 wrong (3*4 != 11)
+
+let _ : String = print("--- frost_prove.glass: non-interactive sound constraint proof ---")
+let _ : String = print("commit witness -> Fiat-Shamir challenge r -> check Σ r^i·residual_i == 0")
+let _ : String = print("")
+let _ : String = print("witness commitment: " ++ int_to_string(commit_witness(good)))
+let _ : String = print("Fiat-Shamir r:      " ++ int_to_string(fiat_shamir(commit_witness(good))))
+let _ : String = print("")
+let _ : String = print("valid witness        [3,4,7,12]: " ++ show_b(prove_and_check(gates, good)))
+let _ : String = print("tampered (w2=8)      [3,4,8,12]: " ++ show_b(prove_and_check(gates, bad_add)))
+let _ : String = print("tampered (w3=11)     [3,4,7,11]: " ++ show_b(prove_and_check(gates, bad_mul)))
+let _ : String = print("")
+let _ : String = print("one randomized check replaced " ++ int_to_string(2) ++
+                       " gate checks; soundness error <= (N-1)/p ~ 1e-9 at this field.")
+
+"frost prove v0.1 — Fiat-Shamir + random-linear-combination: sound, non-interactive constraint proof"

@@ -1,0 +1,15 @@
+# =============================================================================
+# return_refine_bad.glass — negative demo for v4.25.
+#
+# `diff(a, b) : Int where (result >= 0) = a - b` has no param
+# refinements but declares that its return must be non-negative. Called
+# with `(3, 7)` (both let-bound), the body computes `-4`, which fails
+# the return refinement. Pre-v4.25 prism returned `-4 : Int` silently;
+# v4.25 catches the violation and surfaces it.
+# =============================================================================
+
+fn diff(a: Int, b: Int) : Int where (result >= 0) = a - b
+
+let smaller : Int = 3
+let bigger  : Int = 7
+diff(smaller, bigger)

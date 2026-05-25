@@ -1,0 +1,110 @@
+# =============================================================================
+# Branching / multi-world computation, in Glass.
+#
+# A `World` holds every value a computation could take across all
+# branches at once — the many-worlds view of nondeterminism. It's the
+# list monad wearing a physics hat:
+#
+#   pure(x)        a single deterministic world
+#   branch(xs)     split into one world per element
+#   wbind(w, f)    run f in EVERY world of w, then UNION the results
+#                  (each branch may itself branch — worlds multiply)
+#
+# This is the computational mirror of superposition: `branch` is putting
+# the system into many states, `wbind` is evolving all of them in
+# parallel, and `observe` (a weighted pick, like quantum.glass's
+# `measure`) is the collapse back to one world.
+# =============================================================================
+
+type World = | World(List<Int>)
+
+fn worlds_of(w: World) : List<Int> = match w { World(xs) => xs }
+
+fn pure(x: Int) : World = World([x])
+fn branch(xs: List<Int>) : World = World(xs)
+
+# Run f in every world, union the resulting worlds (concatMap / monadic
+# bind). Each f(x) is itself a World, so branches compound.
+fn wbind(w: World, f: (Int) -> World) : World =
+  World(fold(worlds_of(w), [],
+             fn(acc: List<Int>, x: Int) -> acc ++ worlds_of(f(x))))
+
+# Map a pure function across all worlds (no new branching).
+fn wmap(w: World, f: (Int) -> Int) : World =
+  World(map(worlds_of(w), f))
+
+# Keep only the worlds satisfying a predicate (a soft observation that
+# rules out the impossible branches without collapsing to one).
+fn wfilter(w: World, keep: (Int) -> Bool) : World =
+  World(filter(worlds_of(w), keep))
+
+fn count_worlds(w: World) : Int = len(worlds_of(w))
+
+fn nth(xs: List<Int>, i: Int) : Int =
+  match xs {
+    []           => 0 - 1;
+    [x, ...rest] => if i == 0 then x else nth(rest, i - 1)
+  }
+
+# Collapse: observe one world. Deterministic in the seed, like the
+# measurement in showcase/quantum.glass — branching is superposition,
+# this is the wave-function collapse back to a single branch.
+fn observe(w: World, seed: Int where (seed >= 0)) : Int =
+  nth(worlds_of(w), seed % count_worlds(w))
+
+# A coin: two worlds, 0 (tails) and 1 (heads).
+fn flip() : World = branch([0, 1])
+
+# ---- Pretty-printer ---------------------------------------------------------
+
+fn show_world(w: World) : String =
+  "{" ++ join_ints(worlds_of(w)) ++ "}  (" ++
+  int_to_string(count_worlds(w)) ++ " worlds)"
+
+fn join_ints(xs: List<Int>) : String =
+  match xs {
+    []           => "";
+    [x, ...rest] =>
+      match rest {
+        [] => int_to_string(x);
+        _  => int_to_string(x) ++ ", " ++ join_ints(rest)
+      }
+  }
+
+# ---- Demo -------------------------------------------------------------------
+
+# Two coin flips, summed: every (a, b) branch contributes a + b.
+let two_flips =
+  wbind(flip(), fn(a: Int) ->
+    wbind(flip(), fn(b: Int) -> pure(a + b)))
+
+let _ = print("=== Two coin flips, summed — all branches at once ===")
+let _ = print("  flip():            " ++ show_world(flip()))
+let _ = print("  sum of two flips:  " ++ show_world(two_flips))
+
+# Three flips, count how many heads (sum) — the branches multiply 2³ = 8.
+let three_flips =
+  wbind(flip(), fn(a: Int) ->
+    wbind(flip(), fn(b: Int) ->
+      wbind(flip(), fn(c: Int) -> pure(a + b + c))))
+
+let _ = print("")
+let _ = print("=== Three flips: count of heads across 8 worlds ===")
+let _ = print("  heads count:       " ++ show_world(three_flips))
+
+# Observation that rules out branches: keep only worlds with >= 2 heads.
+let majority = wfilter(three_flips, fn(h: Int) -> h >= 2)
+let _ = print("  worlds with ≥2 heads: " ++ show_world(majority))
+
+# Double every world (pure evolution, no new branching).
+let _ = print("  doubled:           " ++ show_world(wmap(three_flips, fn(h: Int) -> h * 2)))
+
+# Collapse the superposition to a single observed branch.
+let _ = print("")
+let _ = print("=== Collapse: observe one branch (seed picks the world) ===")
+let _ = print("  observe(seed=0): " ++ int_to_string(observe(three_flips, 0)) ++
+              "   observe(seed=5): " ++ int_to_string(observe(three_flips, 5)) ++
+              "   observe(seed=5) again: " ++ int_to_string(observe(three_flips, 5)) ++
+              "  (deterministic in the seed)")
+
+"done"

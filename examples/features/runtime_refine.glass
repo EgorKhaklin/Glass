@@ -1,0 +1,23 @@
+# =============================================================================
+# runtime_refine.glass — refinement runtime checks in prism (v4.23).
+#
+# Static discharge handles literals and a few folding patterns. When the
+# argument is a non-literal expression (a let-bound variable, the result
+# of another call, etc.), the static check defers and prism falls
+# through to the runtime check ported in v4.23.
+#
+# This file demonstrates the positive path: the predicate holds, so the
+# runtime check accepts and the fn executes normally. The runtime check
+# WOULD reject if the value violated the predicate — see the v4.23
+# changelog entry for a negative demo.
+# =============================================================================
+
+# A function with a refined first parameter.
+fn positive_double(n: Int where (n > 0)) : Int = n * 2
+
+# Pass a let-bound value — not a literal — so const-fold discharge
+# can't prove the predicate at compile time. The static check defers
+# silently; prism then evaluates the predicate on the actual value at
+# call time. 21 > 0 holds, so the call returns 42.
+let x : Int = 21
+positive_double(x)

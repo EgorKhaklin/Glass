@@ -1,0 +1,57 @@
+# =============================================================================
+# Observer-dependent computation — observation order matters, in Glass.
+#
+# Some pairs of observations don't COMMUTE: measuring A then B leaves the
+# system in a different state than B then A. Quantum spin is the model —
+# measure spin along X and you get a definite X but scramble Z; measure
+# Z and you fix Z but scramble X. You cannot hold both sharp at once, and
+# WHICH one is definite depends on the order you looked.
+#
+# We model a system as (x, z) with −1 meaning "indeterminate". A
+# measurement makes its own axis definite and randomizes the other. The
+# two observation orders then leave provably different states — the
+# computation's outcome is relative to the observer's sequence. There is
+# no frame-independent fact about both axes simultaneously.
+# =============================================================================
+
+type Sys = | Sys(Int, Int)   # (x, z);  −1 = indeterminate
+
+# Measuring X: X becomes definite (seed-derived), Z is scrambled away.
+fn measure_x(s: Sys, seed: Int where (seed >= 0)) : Sys = Sys(seed % 2, 0 - 1)
+# Measuring Z: Z becomes definite, X is scrambled.
+fn measure_z(s: Sys, seed: Int where (seed >= 0)) : Sys = Sys(0 - 1, seed % 2)
+
+fn known_x(s: Sys) : Bool = match s { Sys(x, _) => x != 0 - 1 }
+fn known_z(s: Sys) : Bool = match s { Sys(_, z) => z != 0 - 1 }
+
+fn show_sys(s: Sys) : String =
+  match s { Sys(x, z) =>
+    "x=" ++ (if x == 0 - 1 then "?" else int_to_string(x)) ++
+    " z=" ++ (if z == 0 - 1 then "?" else int_to_string(z)) }
+
+# ---- Demo -------------------------------------------------------------------
+
+let start = Sys(0 - 1, 0 - 1)   # nothing known yet
+
+# Order 1: measure X, then Z.  End state: Z definite, X scrambled.
+let xz = measure_z(measure_x(start, 1), 1)
+# Order 2: measure Z, then X.  End state: X definite, Z scrambled.
+let zx = measure_x(measure_z(start, 1), 1)
+
+let _ = print("=== Two observers, same system, different observation order ===")
+let _ = print("  start:              " ++ show_sys(start))
+let _ = print("  measure X then Z:   " ++ show_sys(xz) ++
+              "   (Z is sharp, X lost)")
+let _ = print("  measure Z then X:   " ++ show_sys(zx) ++
+              "   (X is sharp, Z lost)")
+
+let _ = print("")
+let _ = print("=== The observations do not commute ===")
+let _ = print("  X-then-Z knows X? " ++ (if known_x(xz) then "yes" else "no") ++
+              "   knows Z? " ++ (if known_z(xz) then "yes" else "no"))
+let _ = print("  Z-then-X knows X? " ++ (if known_x(zx) then "yes" else "no") ++
+              "   knows Z? " ++ (if known_z(zx) then "yes" else "no"))
+let _ = print("  ⇒ what is knowable is RELATIVE to the observer's order;")
+let _ = print("    no frame holds both X and Z sharp at once.")
+
+"done"

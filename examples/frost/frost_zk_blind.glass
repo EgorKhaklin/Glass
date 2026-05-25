@@ -1,0 +1,101 @@
+# =============================================================================
+# frost_zk_blind.glass — ZK blinding: the actual zero-knowledge property (P3)
+#
+# Across the stack the proofs have been SOUND and SUCCINCT, and I've called them
+# "ZK" — but the zero-knowledge property itself needs one more thing: BLINDING.
+# Without it, the FRI openings (the evaluations the verifier samples) could leak
+# information about the secret witness. This file adds, and demonstrates, the
+# blinding that makes "zero-knowledge" literally true.
+#
+# THE TRICK. The trace polynomial T interpolates the witness over the trace
+# domain D (the n-th roots of unity), and the constraints are checked on D.
+# Blind it with the vanishing polynomial Z(x) = x^n - 1 (which is 0 exactly on D):
+#
+#       T'(x) = T(x) + Z(x)·R(x),   R a random low-degree polynomial
+#
+#   * ON the trace domain:  Z = 0,  so T'(d) = T(d) — the witness and ALL the
+#     constraints are preserved. The proof still proves the same statement.
+#   * OFF the domain (where FRI samples its query points): Z(q) != 0, so
+#     T'(q) = T(q) + Z(q)·R(q) is RANDOMIZED by R — uniform and independent of
+#     the witness. The opening reveals nothing.
+#
+# Hence the verifier's view (queried openings) is SIMULATABLE without the
+# witness: a simulator just outputs random field elements, same distribution.
+# That is zero-knowledge. T' is still low-degree, so frost_crypto's FRI commits
+# and proves it unchanged — frost_crypto + this blinding = a full zk-STARK.
+#
+# Baby Bear field; reuses interpolation (frost_pcs). Dogfoods.
+# =============================================================================
+
+# --- Baby Bear field ---------------------------------------------------------
+fn fadd(a: Int, b: Int) : Int = (a + b) % 2013265921
+fn fmul(a: Int, b: Int) : Int = (a * b) % 2013265921
+fn fsub(a: Int, b: Int) : Int = ((a - b) % 2013265921 + 2013265921) % 2013265921
+fn fpow(base: Int, e: Int) : Int =
+  if e == 0 then 1 else if e % 2 == 0 then let h : Int = fpow(base, e / 2) in fmul(h, h) else fmul(base, fpow(base, e - 1))
+fn finv(x: Int) : Int = fpow(x, 2013265919)
+fn root_of_unity(n: Int) : Int = fpow(31, 2013265920 / n)
+fn sbox(x: Int) : Int = let x2 : Int = fmul(x, x) in let x4 : Int = fmul(x2, x2) in fmul(x4, x)
+fn rconst(i: Int) : Int = ((i + 1) * (i + 1) * (i + 1) + i * 1009 + 1234567) % 2013265921
+fn mimc(x: Int, k: Int, i: Int) : Int = if i >= 16 then fadd(x, k) else mimc(sbox(fadd(fadd(x, k), rconst(i))), k, i + 1)
+fn hash2(a: Int, b: Int) : Int = fadd(fadd(mimc(a, b, 0), a), b)
+
+fn ilen(xs: List<Int>) : Int = match xs { [] => 0; [x, ...r] => 1 + ilen(r) }
+fn nth(xs: List<Int>, i: Int) : Int = match xs { [] => 0; [x, ...r] => if i == 0 then x else nth(r, i - 1) }
+
+# --- polynomials: evaluate + interpolate (iNTT, from frost_pcs) --------------
+fn powers(w: Int, cur: Int, k: Int) : List<Int> = if k <= 0 then [] else [cur] ++ powers(w, fmul(cur, w), k - 1)
+fn build_domain(n: Int) : List<Int> = powers(root_of_unity(n), 1, n)
+fn poly_eval(coeffs: List<Int>, x: Int) : Int = match coeffs { [] => 0; [c, ...r] => fadd(c, fmul(x, poly_eval(r, x))) }
+fn intt_sum(evals: List<Int>, k: Int, j: Int, n: Int, winv: Int) : Int =
+  if j >= n then 0 else fadd(fmul(nth(evals, j), fpow(winv, (j * k) % n)), intt_sum(evals, k, j + 1, n, winv))
+fn interp_go(evals: List<Int>, k: Int, n: Int, winv: Int, ninv: Int) : List<Int> =
+  if k >= n then [] else [fmul(ninv, intt_sum(evals, k, 0, n, winv))] ++ interp_go(evals, k + 1, n, winv, ninv)
+fn interpolate(evals: List<Int>) : List<Int> =
+  let n : Int = ilen(evals) in let w : Int = root_of_unity(n) in interp_go(evals, 0, n, finv(w), finv(n))
+
+# --- blinding ----------------------------------------------------------------
+# vanishing polynomial of the size-n domain: Z(x) = x^n - 1  (zero on every d in D).
+fn vanish(x: Int, n: Int) : Int = fsub(fpow(x, n), 1)
+# a random low-degree mask R from a seed (3 hashed coefficients).
+fn rand_poly(seed: Int) : List<Int> = [hash2(seed, 0), hash2(seed, 1), hash2(seed, 2)]
+# the blinded evaluation:  T'(x) = T(x) + Z(x)·R(x)
+fn blind_eval(tc: List<Int>, rc: List<Int>, x: Int, n: Int) : Int =
+  fadd(poly_eval(tc, x), fmul(vanish(x, n), poly_eval(rc, x)))
+
+# check: on every domain point, the blinded poly equals the original (witness).
+fn agrees_on_domain(tc: List<Int>, rc: List<Int>, dom: List<Int>, n: Int) : Bool =
+  match dom { [] => true;
+    [d, ...rest] => if blind_eval(tc, rc, d, n) == poly_eval(tc, d) then agrees_on_domain(tc, rc, rest, n) else false }
+
+# --- demo --------------------------------------------------------------------
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+
+let n : Int = 4
+let dom : List<Int> = build_domain(n)
+let witness : List<Int> = [3, 1, 4, 1]          # the secret
+let tc : List<Int> = interpolate(witness)       # trace polynomial T
+let q : Int = 31                                 # a query point OFF the domain (Z(q) != 0)
+let ra : List<Int> = rand_poly(11111)            # blinding randomness, run A
+let rb : List<Int> = rand_poly(99999)            # blinding randomness, run B
+
+let _ : String = print("--- frost_zk_blind.glass: ZK blinding T'(x) = T(x) + (x^n - 1)·R(x) ---")
+let _ : String = print("")
+let _ : String = print("secret witness: [3,1,4,1]  (interpolated to trace polynomial T)")
+let _ : String = print("")
+let _ : String = print("ON the trace domain (constraints checked here):")
+let _ : String = print("  blinded T'(d) == T(d) for every d ?  " ++ show_b(agrees_on_domain(tc, ra, dom, n)) ++
+                       "   -> witness & constraints preserved")
+let _ : String = print("")
+let _ : String = print("OFF the domain at query point q=31 (where FRI samples):")
+let _ : String = print("  opening with randomness A: " ++ int_to_string(blind_eval(tc, ra, q, n)))
+let _ : String = print("  opening with randomness B: " ++ int_to_string(blind_eval(tc, rb, q, n)))
+let _ : String = print("  differ ?  " ++ show_b(blind_eval(tc, ra, q, n) != blind_eval(tc, rb, q, n)) ++
+                       "   -> the opening is RANDOMIZED, independent of the witness")
+let _ : String = print("  (unblinded T(q) would be the fixed " ++ int_to_string(poly_eval(tc, q)) ++ ", leaking info)")
+let _ : String = print("")
+let _ : String = print("=> queried openings are uniform & carry no witness info; a simulator without")
+let _ : String = print("   the witness produces the same distribution. THIS is the zero-knowledge.")
+let _ : String = print("   T' stays low-degree, so frost_crypto's FRI proves it unchanged => full zk-STARK.")
+
+"frost zk_blind v0.1 — trace-polynomial blinding: openings randomized, constraints preserved (the 'Z')"

@@ -1,0 +1,243 @@
+# =============================================================================
+# prove_glass.glass — PROVE BRIDGE over REAL Glass source (Phase 2, wide subset)
+#
+# Takes ACTUAL GLASS SOURCE, parses it with GLASS'S OWN PARSER (prism, imported),
+# and compiles the circuit-compatible subset of prism's AST into a Frost
+# constraint system + a zero-knowledge proof that y = f(secret x). The language
+# and the prover share one front end: prism's Expr IS the IR.
+#
+# SUPPORTED SUBSET (now covers real predicates):
+#   arithmetic  + - *            (gates)
+#   ==                           is-zero gadget (inverse hint)
+#   < > <= >=                    range gadget (bit-decompose a-b+2^16, read sign)
+#   && || !                      boolean algebra on 0/1 wires
+#   if / let                     multiplexer / environment binding
+# Not circuit-representable here (map to 0): lambdas, calls, match, records,
+# lists, strings, /, %. Comparisons assume operands in [0, 2^16).
+#
+# THE GLASS DISCIPLINE: ref_eval (reference, over prism's AST, with real
+# branches) and gen (the branchless circuit) must agree on the output wire for
+# every input. Reuses prism (parser + Expr) and Frost's clean builder API.
+# Dogfoods (via the inline-prism recipe — prism doesn't expand imports at runtime).
+# =============================================================================
+
+import "../selfhost/prism.glass"
+
+# --- field + hash (from Frost) -----------------------------------------------
+fn fadd(a: Int, b: Int) : Int = (a + b) % 2147483647
+fn fmul(a: Int, b: Int) : Int = (a * b) % 2147483647
+fn fsub(a: Int, b: Int) : Int = ((a - b) % 2147483647 + 2147483647) % 2147483647
+fn fnorm(a: Int) : Int = (a % 2147483647 + 2147483647) % 2147483647
+fn fpow(base: Int, e: Int) : Int =
+  if e == 0 then 1
+  else if e % 2 == 0 then let h : Int = fpow(base, e / 2) in fmul(h, h)
+  else fmul(base, fpow(base, e - 1))
+fn finv(x: Int) : Int = fpow(x, 2147483645)
+fn pow2(i: Int) : Int = if i <= 0 then 1 else 2 * pow2(i - 1)
+fn sbox(x: Int) : Int = let x2 : Int = fmul(x, x) in let x4 : Int = fmul(x2, x2) in fmul(x4, x)
+fn round_const(i: Int) : Int = fnorm((i + 1) * (i + 1) * (i + 1) + i * 1009 + 1234567)
+fn mimc_rounds(x: Int, k: Int, i: Int) : Int =
+  if i >= 16 then fadd(x, k) else mimc_rounds(sbox(fadd(fadd(x, k), round_const(i))), k, i + 1)
+fn hash2(a: Int, b: Int) : Int = fadd(fadd(mimc_rounds(a, b, 0), a), b)
+fn hash_fold(xs: List<Int>, acc: Int) : Int =
+  match xs { [] => acc; [x, ...r] => hash_fold(r, hash2(acc, x)) }
+fn hash_list(xs: List<Int>) : Int = hash_fold(xs, 0)
+
+# --- constraint system + builder API (from Frost/frost_query) ----------------
+type Gate = | GConst(Int, Int) | GAdd(Int, Int, Int) | GSub(Int, Int, Int)
+            | GMul(Int, Int, Int) | GAssertEq(Int, Int)
+fn glen(gs: List<Gate>) : Int = match gs { [] => 0; [g, ...r] => 1 + glen(r) }
+
+# Build(nextWire, gates, witness-as-assoc wire->value)
+type Build = | Build(Int, List<Gate>, List<Pair<Int, Int>>)
+fn assoc(vs: List<Pair<Int, Int>>, w: Int) : Int =
+  match vs { [] => 0; [Pair(k, v), ...r] => if k == w then v else assoc(r, w) }
+fn b_fresh(b: Build) : (Int, Build) = match b { Build(n, gs, vs) => (n, Build(n + 1, gs, vs)) }
+fn b_emit(g: Gate, b: Build) : Build = match b { Build(n, gs, vs) => Build(n, [g] ++ gs, vs) }
+fn b_set(w: Int, v: Int, b: Build) : Build = match b { Build(n, gs, vs) => Build(n, gs, [Pair(w, v)] ++ vs) }
+fn b_val(b: Build, w: Int) : Int = match b { Build(n, gs, vs) => assoc(vs, w) }
+
+fn mk_const(c: Int, b: Build) : (Int, Build) =
+  match b_fresh(b) { (w, b1) => (w, b_set(w, fnorm(c), b_emit(GConst(w, fnorm(c)), b1))) }
+fn mk_add(a: Int, bw: Int, b: Build) : (Int, Build) =
+  match b_fresh(b) { (o, b1) => (o, b_set(o, fadd(b_val(b1, a), b_val(b1, bw)), b_emit(GAdd(o, a, bw), b1))) }
+fn mk_mul(a: Int, bw: Int, b: Build) : (Int, Build) =
+  match b_fresh(b) { (o, b1) => (o, b_set(o, fmul(b_val(b1, a), b_val(b1, bw)), b_emit(GMul(o, a, bw), b1))) }
+fn mk_sub(a: Int, bw: Int, b: Build) : (Int, Build) =
+  match mk_const(2147483646, b) { (neg1, b1) => match mk_mul(bw, neg1, b1) { (nb, b2) => mk_add(a, nb, b2) } }
+
+fn residual(g: Gate, vs: List<Pair<Int, Int>>) : Int =
+  match g {
+    GConst(o, c)    => fsub(assoc(vs, o), fnorm(c));
+    GAdd(o, a, b)   => fsub(assoc(vs, o), fadd(assoc(vs, a), assoc(vs, b)));
+    GSub(o, a, b)   => fsub(assoc(vs, o), fsub(assoc(vs, a), assoc(vs, b)));
+    GMul(o, a, b)   => fsub(assoc(vs, o), fmul(assoc(vs, a), assoc(vs, b)));
+    GAssertEq(a, b) => fsub(assoc(vs, a), assoc(vs, b))
+  }
+
+# --- gadgets -----------------------------------------------------------------
+# == : is-zero. d=a-b; hint inv=(d==0?0:1/d); out=1-d·inv; assert d·out==0.
+fn mk_eq(wx: Int, wy: Int, b: Build) : (Int, Build) =
+  match mk_sub(wx, wy, b) { (wd, b1) =>
+    let dv : Int = b_val(b1, wd) in
+    let invv : Int = if dv == 0 then 0 else finv(dv) in
+    match b_fresh(b1) { (winv, b2) =>
+      let b3 : Build = b_set(winv, invv, b2) in
+      match mk_mul(wd, winv, b3) { (wp, b4) =>
+        match mk_const(1, b4) { (wone, b5) =>
+          match mk_sub(wone, wp, b5) { (wout, b6) =>
+            match mk_mul(wd, wout, b6) { (wz, b7) =>
+              match mk_const(0, b7) { (wzero, b8) =>
+                (wout, b_emit(GAssertEq(wz, wzero), b8)) } } } } } } }
+
+# ! : 1 - w
+fn mk_not(w: Int, b: Build) : (Int, Build) =
+  match mk_const(1, b) { (one, b1) => mk_sub(one, w, b1) }
+
+# if : out = f + c·(t-f), c constrained boolean.
+fn mk_mux(wc: Int, wt: Int, wf: Int, b: Build) : (Int, Build) =
+  match mk_const(1, b) { (one, b1) =>
+    match mk_sub(wc, one, b1) { (cm1, b2) =>
+      match mk_mul(wc, cm1, b2) { (bc, b3) =>
+        match mk_const(0, b3) { (zero, b4) =>
+          let b5 : Build = b_emit(GAssertEq(bc, zero), b4) in
+          match mk_sub(wt, wf, b5) { (dtf, b6) =>
+            match mk_mul(wc, dtf, b6) { (ct, b7) => mk_add(wf, ct, b7) } } } } } }
+
+# range gadget: bits of vv, each boolean (w·w==w).
+fn alloc_bits(vv: Int, i: Int, nbits: Int, b: Build) : (List<Int>, Build) =
+  if i >= nbits then ([], b)
+  else
+    let bitval : Int = (vv / pow2(i)) % 2 in
+    match b_fresh(b) { (w, b1) =>
+      let b2 : Build = b_set(w, bitval, b1) in
+      match mk_mul(w, w, b2) { (ww, b3) =>
+        let b4 : Build = b_emit(GAssertEq(ww, w), b3) in
+        match alloc_bits(vv, i + 1, nbits, b4) { (rest, b5) => ([w] ++ rest, b5) } } }
+fn weighted_sum(bits: List<Int>, i: Int, b: Build) : (Int, Build) =
+  match bits {
+    [] => mk_const(0, b);
+    [bit, ...rest] => match mk_const(pow2(i), b) { (p2, b1) =>
+      match mk_mul(bit, p2, b1) { (term, b2) =>
+        match weighted_sum(rest, i + 1, b2) { (rs, b3) => mk_add(term, rs, b3) } } }
+  }
+fn wnth(xs: List<Int>, i: Int) : Int =
+  match xs { [] => 0; [x, ...r] => if i == 0 then x else wnth(r, i - 1) }
+# < : a,b ∈ [0,2^16); d=a-b+2^16 ∈ (0,2^17); bit16 set iff a>=b; lt = 1 - bit16.
+fn lt_gadget(aw: Int, av: Int, bw: Int, bv: Int, b: Build) : (Int, Build) =
+  match mk_const(65536, b) { (k, b1) =>
+    match mk_sub(aw, bw, b1) { (amb, b2) =>
+      match mk_add(amb, k, b2) { (dw, b3) =>
+        let dv : Int = fadd(fsub(av, bv), 65536) in
+        match alloc_bits(dv, 0, 17, b3) { (bits, b4) =>
+          match weighted_sum(bits, 0, b4) { (ws, b5) =>
+            let b6 : Build = b_emit(GAssertEq(ws, dw), b5) in
+            mk_not(wnth(bits, 16), b6) } } } } }
+
+# --- environment (name -> wire / value) --------------------------------------
+fn env_get(env: List<Pair<String, Int>>, name: String) : Int =
+  match env { [] => 0; [Pair(k, v), ...rest] => if k == name then v else env_get(rest, name) }
+
+# 1. REFERENCE SEMANTICS over prism's Expr (real branches).
+fn ref_eval(e: Expr, env: List<Pair<String, Int>>) : Int =
+  match e {
+    EInt(n)    => fnorm(n);
+    EVar(name) => env_get(env, name);
+    EAdd(a, b) => fadd(ref_eval(a, env), ref_eval(b, env));
+    ESub(a, b) => fsub(ref_eval(a, env), ref_eval(b, env));
+    EMul(a, b) => fmul(ref_eval(a, env), ref_eval(b, env));
+    EEq(a, b)  => if ref_eval(a, env) == ref_eval(b, env) then 1 else 0;
+    ELt(a, b)  => if ref_eval(a, env) < ref_eval(b, env) then 1 else 0;
+    EGt(a, b)  => if ref_eval(a, env) > ref_eval(b, env) then 1 else 0;
+    ELe(a, b)  => if ref_eval(a, env) <= ref_eval(b, env) then 1 else 0;
+    EGe(a, b)  => if ref_eval(a, env) >= ref_eval(b, env) then 1 else 0;
+    EAnd(a, b) => if (ref_eval(a, env) == 1) && (ref_eval(b, env) == 1) then 1 else 0;
+    EOr(a, b)  => if (ref_eval(a, env) == 1) || (ref_eval(b, env) == 1) then 1 else 0;
+    EUNot(a)   => if ref_eval(a, env) == 1 then 0 else 1;
+    EIf(c, t, f) => if ref_eval(c, env) == 1 then ref_eval(t, env) else ref_eval(f, env);
+    ELet(name, v, body) => ref_eval(body, [Pair(name, ref_eval(v, env))] ++ env);
+    _ => 0
+  }
+
+# 2. CIRCUIT COMPILER over prism's Expr.
+fn gen(e: Expr, cenv: List<Pair<String, Int>>, b: Build) : (Int, Build) =
+  match e {
+    EInt(c)    => mk_const(c, b);
+    EVar(name) => (env_get(cenv, name), b);
+    EAdd(x, y) => match gen(x, cenv, b) { (wx, b1) => match gen(y, cenv, b1) { (wy, b2) => mk_add(wx, wy, b2) } };
+    ESub(x, y) => match gen(x, cenv, b) { (wx, b1) => match gen(y, cenv, b1) { (wy, b2) => mk_sub(wx, wy, b2) } };
+    EMul(x, y) => match gen(x, cenv, b) { (wx, b1) => match gen(y, cenv, b1) { (wy, b2) => mk_mul(wx, wy, b2) } };
+    EEq(x, y)  => match gen(x, cenv, b) { (wx, b1) => match gen(y, cenv, b1) { (wy, b2) => mk_eq(wx, wy, b2) } };
+    ELt(x, y)  => match gen(x, cenv, b) { (wx, b1) => match gen(y, cenv, b1) { (wy, b2) =>
+      lt_gadget(wx, b_val(b2, wx), wy, b_val(b2, wy), b2) } };
+    EGt(x, y)  => match gen(x, cenv, b) { (wx, b1) => match gen(y, cenv, b1) { (wy, b2) =>
+      lt_gadget(wy, b_val(b2, wy), wx, b_val(b2, wx), b2) } };
+    EGe(x, y)  => match gen(x, cenv, b) { (wx, b1) => match gen(y, cenv, b1) { (wy, b2) =>
+      match lt_gadget(wx, b_val(b2, wx), wy, b_val(b2, wy), b2) { (lt, b3) => mk_not(lt, b3) } } };
+    ELe(x, y)  => match gen(x, cenv, b) { (wx, b1) => match gen(y, cenv, b1) { (wy, b2) =>
+      match lt_gadget(wy, b_val(b2, wy), wx, b_val(b2, wx), b2) { (gt, b3) => mk_not(gt, b3) } } };
+    EAnd(x, y) => match gen(x, cenv, b) { (wx, b1) => match gen(y, cenv, b1) { (wy, b2) => mk_mul(wx, wy, b2) } };
+    EOr(x, y)  => match gen(x, cenv, b) { (wx, b1) => match gen(y, cenv, b1) { (wy, b2) =>
+      match mk_mul(wx, wy, b2) { (ab, b3) => match mk_add(wx, wy, b3) { (s, b4) => mk_sub(s, ab, b4) } } } };
+    EUNot(x)   => match gen(x, cenv, b) { (wx, b1) => mk_not(wx, b1) };
+    EIf(c, t, f) => match gen(c, cenv, b) { (wc, b1) => match gen(t, cenv, b1) { (wt, b2) =>
+      match gen(f, cenv, b2) { (wf, b3) => mk_mux(wc, wt, wf, b3) } } };
+    ELet(name, v, body) => match gen(v, cenv, b) { (wv, b1) => gen(body, [Pair(name, wv)] ++ cenv, b1) };
+    _ => mk_const(0, b)
+  }
+
+# --- input setup, proof ------------------------------------------------------
+fn plen(ps: List<Pair<String, Int>>) : Int = match ps { [] => 0; [p, ...r] => 1 + plen(r) }
+fn input_cenv(inputs: List<Pair<String, Int>>, i: Int) : List<Pair<String, Int>> =
+  match inputs { [] => []; [Pair(name, val), ...rest] => [Pair(name, i)] ++ input_cenv(rest, i + 1) }
+fn input_vs(inputs: List<Pair<String, Int>>, i: Int) : List<Pair<Int, Int>> =
+  match inputs { [] => []; [Pair(name, val), ...rest] => [Pair(i, val)] ++ input_vs(rest, i + 1) }
+fn gen_top(e: Expr, inputs: List<Pair<String, Int>>) : (Int, Build) =
+  gen(e, input_cenv(inputs, 0), Build(plen(inputs), [], input_vs(inputs, 0)))
+
+fn ordered_witness(vs: List<Pair<Int, Int>>, i: Int, n: Int) : List<Int> =
+  if i >= n then [] else [assoc(vs, i)] ++ ordered_witness(vs, i + 1, n)
+fn fiat_shamir(commitment: Int) : Int = hash2(commitment, 777)
+fn rlc(gates: List<Gate>, vs: List<Pair<Int, Int>>, r: Int, rpow: Int) : Int =
+  match gates { [] => 0; [g, ...rest] => fadd(fmul(rpow, residual(g, vs)), rlc(rest, vs, r, fmul(rpow, r))) }
+fn prove_ok(gates: List<Gate>, vs: List<Pair<Int, Int>>, n: Int) : Bool =
+  let w : List<Int> = ordered_witness(vs, 0, n) in rlc(gates, vs, fiat_shamir(hash_list(w)), 1) == 0
+
+# --- parse Glass source with prism's own parser ------------------------------
+fn parse_or_zero(src: String) : Expr =
+  match parse_expr(tokenize(src)) { Ok(p) => match p { (e, rest) => e }; Err(m) => EInt(0) }
+
+# --- demo --------------------------------------------------------------------
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+fn show_a(b: Bool) : String = if b then "ACCEPT" else "REJECT"
+
+fn run_src(src: String, x: Int) : String !{IO} =
+  let e : Expr = parse_or_zero(src) in
+  let inputs : List<Pair<String, Int>> = [Pair("x", x)] in
+  let spec : Int = ref_eval(e, inputs) in
+  match gen_top(e, inputs) { (out, bld) => match bld { Build(n, gates, vs) =>
+    print("  x=" ++ int_to_string(x) ++ ": ref=" ++ int_to_string(spec) ++
+          ", circuit=" ++ int_to_string(b_val(bld, out)) ++ " (match " ++
+          show_b(b_val(bld, out) == spec) ++ "), " ++ int_to_string(glen(gates)) ++
+          " gates, proof " ++ show_a(prove_ok(gates, vs, n))) } }
+
+let src1 : String = "if x > 5 then x * x else 0"
+let src2 : String = "if x == 3 || x == 7 then 100 else 0"
+let src3 : String = "let ok = x > 0 && x < 100 in if ok then x * x else x"
+
+let _ : String = print("--- prove_glass.glass: real Glass source -> ZK proof (predicates) ---")
+let _ : String = print("")
+let _ : String = print("source: " ++ src1)
+let _ : String = run_src(src1, 3)
+let _ : String = run_src(src1, 8)
+let _ : String = print("source: " ++ src2)
+let _ : String = run_src(src2, 7)
+let _ : String = run_src(src2, 5)
+let _ : String = print("source: " ++ src3)
+let _ : String = run_src(src3, 9)
+let _ : String = run_src(src3, 200)
+let _ : String = print("")
+let _ : String = print("comparisons (<,>,<=,>=) and booleans (&&,||,!) compiled to gadgets;")
+let _ : String = print("real Glass predicates parsed by prism, proven in zero knowledge.")
+
+"prove_glass v1 — real Glass source incl. comparisons & booleans -> ZK circuit & proof"

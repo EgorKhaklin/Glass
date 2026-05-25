@@ -9,13 +9,14 @@ A walkthrough of Glass's features. This document assumes you've read [`getting-s
 Glass has four primitive types:
 
 ```glass
-let n   : Int    = 42
-let b   : Bool   = true
-let s   : String = "hello"
-let f   : Float  = 3.14
+let n : Int    = 42
+let b : Bool   = true
+let s : String = "hello"
 ```
 
-Type annotations on `let` are optional — Hindley-Milner inference will figure them out — but they're encouraged for documentation.
+Numbers are integers (`Int`) — Glass has no floating-point type. Type
+annotations on `let` are optional — Hindley-Milner inference will figure them
+out — but they're encouraged for documentation.
 
 ---
 
@@ -27,16 +28,16 @@ Type declarations introduce new sum types with named constructors:
 type Direction = | North | South | East | West
 
 type Shape =
-  | Circle(Float)
-  | Rectangle(Float, Float)
-  | Triangle(Float, Float, Float)
+  | Circle(Int)
+  | Rectangle(Int, Int)
+  | Triangle(Int, Int)        # base, height
 ```
 
 Constructors with no arguments don't need parentheses when used:
 
 ```glass
 let d = North
-let s = Circle(3.0)
+let s = Circle(3)
 ```
 
 ---
@@ -46,13 +47,11 @@ let s = Circle(3.0)
 `match` destructures values by constructor. **It is exhaustive** — the compiler refuses to compile if you miss a case.
 
 ```glass
-fn area(s: Shape) : Float =
+fn area(s: Shape) : Int =
   match s {
-    Circle(r)         => 3.14159 * r * r;
-    Rectangle(w, h)   => w * h;
-    Triangle(a, b, c) =>
-      let s = (a + b + c) / 2.0 in
-      sqrt(s * (s - a) * (s - b) * (s - c))
+    Circle(r)        => 3 * r * r;      # πr², rounded — Glass is integer-only
+    Rectangle(w, h)  => w * h;
+    Triangle(b, h)   => b * h / 2
   }
 ```
 

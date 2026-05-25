@@ -1,0 +1,20 @@
+# =============================================================================
+# xparam_refine.glass — cross-parameter refinement (v4.56).
+#
+# Until v4.56 a refinement predicate could only mention its own bound
+# param. The host always supported predicates referencing EARLIER
+# params (apply_fn binds all params before checking), but prism's
+# curried check only saw the single bound value, and Quartz refused
+# non-binder identifiers outright (v4.55).
+#
+# v4.56 threads the already-applied args through prism's VRefinedClos
+# chain (carrying real param names from the FnDecl) and lets Quartz
+# reference in-scope params. `hi > lo` now resolves `lo` — the first
+# param — at the point `hi`'s refinement is checked.
+#
+# clamp(3, 10): 3 < 10 so hi > lo holds; returns 10 - 3 = 7.
+# =============================================================================
+
+fn clamp(lo: Int, hi: Int where (hi > lo)) : Int = hi - lo
+let r : Int = clamp(3, 10)
+r

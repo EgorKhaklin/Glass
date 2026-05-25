@@ -1,0 +1,67 @@
+# =============================================================================
+# Entanglement — correlated measurement, in Glass.
+#
+# A two-qubit state is a weight over the four joint outcomes
+# 00, 01, 10, 11 (weights stand in for |amplitude|², as in
+# showcase/quantum.glass). The interesting states are ENTANGLED: the
+# joint weight does NOT factor into independent per-qubit weights, so
+# measuring one qubit tells you something about the other.
+#
+# The Bell state |00> + |11>  (weights 1,0,0,1) is the extreme case:
+# measure qubit 1, and qubit 2 is INSTANTLY determined to match — even
+# though, before measurement, each qubit alone was a fair coin. Contrast
+# a product (separable) state where the two are independent and learning
+# one tells you nothing about the other.
+# =============================================================================
+
+type Joint = | Joint(Int, Int, Int, Int)   # weights for 00, 01, 10, 11
+
+# The conditional weights for qubit 2, GIVEN qubit 1's measured value.
+# q1 = 0 selects the 0_ row (w00, w01); q1 = 1 selects the 1_ row.
+fn cond_q2(j: Joint, q1: Int) : Pair<Int, Int> =
+  match j { Joint(w00, w01, w10, w11) =>
+    if q1 == 0 then Pair(w00, w01) else Pair(w10, w11) }
+
+# Qubit 2 is DETERMINED by a q1 outcome when exactly one conditional
+# weight is nonzero (the other outcome has collapsed away).
+fn determined(p: Pair<Int, Int>) : Bool =
+  match p { Pair(a, b) => (a == 0 && b != 0) || (a != 0 && b == 0) }
+
+# The value qubit 2 collapses to, when determined.
+fn forced_value(p: Pair<Int, Int>) : Int =
+  match p { Pair(a, b) => if a != 0 then 0 else 1 }
+
+# A state is entangled (here: perfectly correlated) when BOTH q1 outcomes
+# leave qubit 2 determined — knowing q1 always pins q2.
+fn perfectly_correlated(j: Joint) : Bool =
+  determined(cond_q2(j, 0)) && determined(cond_q2(j, 1))
+
+# ---- Pretty-printer ---------------------------------------------------------
+
+fn show_cond(j: Joint, q1: Int) : String =
+  let c = cond_q2(j, q1) in
+  if determined(c)
+    then "q2 = " ++ int_to_string(forced_value(c)) ++ " (determined)"
+    else "q2 ∈ {0, 1} (still open)"
+
+fn report(name: String, j: Joint) : String !{IO} =
+  let _ = print("") in
+  let _ = print("=== " ++ name ++ " ===") in
+  let _ = print("  measure q1 = 0  ⇒  " ++ show_cond(j, 0)) in
+  let _ = print("  measure q1 = 1  ⇒  " ++ show_cond(j, 1)) in
+  print("  entangled (knowing q1 pins q2)? " ++
+        (if perfectly_correlated(j) then "YES" else "no — separable"))
+
+# Bell state |00> + |11>: only the matching outcomes carry weight.
+let bell = Joint(1, 0, 0, 1)
+let _ = report("Bell state  |00> + |11>", bell)
+
+# Anti-correlated Bell state |01> + |10>: q2 is the OPPOSITE of q1.
+let bell_anti = Joint(0, 1, 1, 0)
+let _ = report("Anti-correlated  |01> + |10>", bell_anti)
+
+# Product state (both qubits fair and INDEPENDENT): all four equal.
+let product = Joint(1, 1, 1, 1)
+let _ = report("Product state  (independent qubits)", product)
+
+"done"

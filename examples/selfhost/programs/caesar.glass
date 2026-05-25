@@ -1,0 +1,22 @@
+/* caesar.glass — Caesar cipher shift on a string.
+   Shifts uppercase A-Z by `shift` positions, wrapping. Other chars
+   pass through unchanged. Exercises every v4.x string primitive:
+   char_at, int_to_char, ++, >=, <=, modulo, conditional. */
+
+fn shift_one(c, shift) =
+  if c >= 65 && c <= 90 then
+    # Uppercase. (c - 65 + shift) mod 26 + 65.
+    65 + ((c - 65 + shift) % 26)
+  else c
+
+# Outward concat: build the result by prepending each shifted char
+# to the recursive tail. This pattern lets the fixed-point inference
+# see EConcat in the then-branch directly.
+fn shift_str(s, len, i, shift) =
+  if i < len then
+    let c = char_at(s, i) in
+    int_to_char(shift_one(c, shift)) ++ shift_str(s, len, i + 1, shift)
+  else ""
+
+# "HELLO" shifted by 3 → "KHOOR".
+shift_str("HELLO", 5, 0, 3)

@@ -1,6 +1,6 @@
 # Self-hosting
 
-This document explains what Glass means by "self-hosting" and what Stage 3 — the v1.0 milestone — actually demonstrates.
+This document explains what Glass means by "self-hosting" — and Glass now fully self-hosts: the bootstrap fixpoint closed at **v4.76** (Stage 4 below).
 
 ---
 
@@ -11,8 +11,9 @@ This document explains what Glass means by "self-hosting" and what Stage 3 — t
 | **Stage 1** | Compiler/interpreter shape exists in the target language | ✓ v0.7 |
 | **Stage 2** | Real working pipeline (lex → parse → type-check → eval) in the target language | ✓ v0.9.5 |
 | **Stage 3** | The target-language implementation can read source files from disk and run them | ✓ **v1.0** |
+| **Stage 4** | The target-language implementation compiles *itself* and bootstraps (fixpoint) | ✓ **v4.76** |
 
-A traditional "Stage 4" — the target-language implementation can compile *itself* and bootstrap — is future work. See "What's next" below.
+**Stage 4 is done.** `examples/selfhost/glassc.glass` is a Glass→C compiler written in Glass. `quartz.py` compiles it to a native binary *once*; that binary (`native_glassc`) then compiles glassc.glass itself into `native_glassc_2`, with no Python in the loop. `native_glassc_2` compiles `prism.glass` byte-identically to `glass.py prism.glass` (all 191 demo lines), and `native_glassc` and `native_glassc_2` emit byte-identical C — exact self-reproduction. Reproduce the whole chain with `bash examples/selfhost/bootstrap_fixpoint.sh`.
 
 ---
 

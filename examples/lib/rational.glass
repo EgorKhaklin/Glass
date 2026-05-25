@@ -1,0 +1,33 @@
+# =============================================================================
+# rational.glass — a reusable exact-fraction library (v4.70).
+#
+# This file is a LIBRARY: only definitions, no top-level demos. Other
+# programs pull it in with `import "lib/rational.glass"` and get the
+# `Rat` type and its operations without copy-pasting them (the
+# duplication that showcase/probability.glass had to live with before
+# the module system).
+# =============================================================================
+
+type Rat = | Rat(Int, Int)
+
+fn rat_abs(n: Int) : Int = if n < 0 then 0 - n else n
+fn rat_gcd(a: Int, b: Int) : Int = if b == 0 then a else rat_gcd(b, a % b)
+
+# Normalize (num, den) into a reduced fraction with positive denominator.
+fn rat(num: Int, den: Int where (den != 0)) : Rat =
+  let sign = if den < 0 then 0 - 1 else 1 in
+  let n = num * sign in let d = den * sign in
+  let g = rat_gcd(rat_abs(n), d) in Rat(n / g, d / g)
+
+fn rnum(r: Rat) : Int = match r { Rat(n, _) => n }
+fn rden(r: Rat) : Int = match r { Rat(_, d) => d }
+
+fn radd(a: Rat, b: Rat) : Rat =
+  rat(rnum(a) * rden(b) + rnum(b) * rden(a), rden(a) * rden(b))
+fn rsub(a: Rat, b: Rat) : Rat =
+  rat(rnum(a) * rden(b) - rnum(b) * rden(a), rden(a) * rden(b))
+fn rmul(a: Rat, b: Rat) : Rat = rat(rnum(a) * rnum(b), rden(a) * rden(b))
+fn req(a: Rat, b: Rat) : Bool = rnum(a) == rnum(b) && rden(a) == rden(b)
+fn rle(a: Rat, b: Rat) : Bool = rnum(a) * rden(b) <= rnum(b) * rden(a)
+fn show_rat(r: Rat) : String =
+  int_to_string(rnum(r)) ++ "/" ++ int_to_string(rden(r))

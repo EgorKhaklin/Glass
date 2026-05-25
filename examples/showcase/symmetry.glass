@@ -1,0 +1,105 @@
+# =============================================================================
+# Symmetry group as data — the dihedral group D₄, in Glass.
+#
+# D₄ is the symmetry group of a square: 4 rotations (0°, 90°, 180°, 270°)
+# and 4 reflections — 8 elements, NON-abelian (order matters: rotating
+# then flipping ≠ flipping then rotating). We represent an element as
+#
+#       Sym(k, f)   —  k ∈ {0,1,2,3} quarter-turns, f = is-a-reflection
+#
+# and encode the group law from the dihedral relation r·s = s·r⁻¹:
+#
+#       (sᶠ¹ rᵏ¹)(sᶠ² rᵏ²) = s^(f1⊕f2) r^((−1)^f2·k1 + k2)
+#
+# The point: the GROUP AXIOMS become CHECKABLE PROPERTIES over Int data —
+# closure (automatic via mod 4), an identity, inverses, associativity.
+# No type-system magic; the group is just data with laws we can verify.
+# (The deeper "symmetry as a type the checker enforces" is a separate,
+# harder feature — this is the buildable Tier-1 "group as data" version.)
+# =============================================================================
+
+type Sym = | Sym(Int, Bool)
+
+# Positive modulo (the dihedral law produces negative rotations).
+fn mod4(n: Int) : Int = ((n % 4) + 4) % 4
+
+# A valid D₄ element: the rotation index lives in 0..3. The refinement
+# gates construction so a 5-quarter-turn "element" can't be built.
+fn sym(k: Int where (k >= 0 && k < 4), f: Bool) : Sym = Sym(k, f)
+
+fn identity_sym() : Sym = Sym(0, false)
+
+# The group law. f composes by XOR (two reflections make a rotation);
+# the rotation flips sign when the right factor is a reflection.
+fn compose(a: Sym, b: Sym) : Sym =
+  match a { Sym(k1, f1) =>
+    match b { Sym(k2, f2) =>
+      let k = mod4((if f2 then 0 - k1 else k1) + k2) in
+      Sym(k, f1 != f2)
+    }
+  }
+
+# Reflections are self-inverse; a rotation rᵏ inverts to r^(−k).
+fn inverse(a: Sym) : Sym =
+  match a { Sym(k, f) =>
+    if f then Sym(k, true) else Sym(mod4(0 - k), false)
+  }
+
+fn eq_sym(a: Sym, b: Sym) : Bool =
+  match a { Sym(k1, f1) => match b { Sym(k2, f2) => k1 == k2 && f1 == f2 } }
+
+# ---- The 8 elements ---------------------------------------------------------
+
+fn all_elems() : List<Sym> =
+  [Sym(0, false), Sym(1, false), Sym(2, false), Sym(3, false),
+   Sym(0, true),  Sym(1, true),  Sym(2, true),  Sym(3, true)]
+
+# ---- Group axioms, as checks over all elements ------------------------------
+
+fn axiom_identity() : Bool =
+  let e = identity_sym() in
+  fold(all_elems(), true, fn(acc: Bool, g: Sym) ->
+    acc && eq_sym(compose(e, g), g) && eq_sym(compose(g, e), g))
+
+fn axiom_inverse() : Bool =
+  let e = identity_sym() in
+  fold(all_elems(), true, fn(acc: Bool, g: Sym) ->
+    acc && eq_sym(compose(g, inverse(g)), e)
+        && eq_sym(compose(inverse(g), g), e))
+
+# Associativity over a representative triple set: (a·b)·c == a·(b·c)
+# for every (a, b, c). We fold the outer two and spot-check c = r¹.
+fn axiom_assoc_triple(a: Sym, b: Sym, c: Sym) : Bool =
+  eq_sym(compose(compose(a, b), c), compose(a, compose(b, c)))
+
+fn axiom_assoc() : Bool =
+  fold(all_elems(), true, fn(acc1: Bool, a: Sym) ->
+    fold(all_elems(), acc1, fn(acc2: Bool, b: Sym) ->
+      fold(all_elems(), acc2, fn(acc3: Bool, c: Sym) ->
+        acc3 && axiom_assoc_triple(a, b, c))))
+
+# ---- Pretty-printer + demo --------------------------------------------------
+
+fn show_sym(a: Sym) : String =
+  match a { Sym(k, f) =>
+    (if f then "s" else "r") ++ int_to_string(k) }
+
+let r1 = Sym(1, false)   # quarter turn
+let s0 = Sym(0, true)    # a reflection
+
+let _ = print("=== D₄ is non-abelian: r·s ≠ s·r ===")
+let _ = print("  r1 · s0 = " ++ show_sym(compose(r1, s0)))
+let _ = print("  s0 · r1 = " ++ show_sym(compose(s0, r1)))
+let _ = print("  equal? " ++ (if eq_sym(compose(r1, s0), compose(s0, r1))
+                              then "yes" else "no  (order matters)"))
+
+let _ = print("")
+let _ = print("=== Group axioms verified over all 8 elements ===")
+let _ = print("  identity     (e·g = g·e = g):        " ++
+              (if axiom_identity() then "holds" else "FAILS"))
+let _ = print("  inverses     (g·g⁻¹ = g⁻¹·g = e):    " ++
+              (if axiom_inverse() then "holds" else "FAILS"))
+let _ = print("  associativity ((a·b)·c = a·(b·c)):   " ++
+              (if axiom_assoc() then "holds" else "FAILS"))
+
+"done"

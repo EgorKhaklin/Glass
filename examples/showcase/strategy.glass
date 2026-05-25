@@ -1,0 +1,72 @@
+# =============================================================================
+# Game-theoretic types II — dominance and Pareto, in Glass.
+#
+# showcase/nash.glass enumerates equilibria. This one looks at the two
+# other load-bearing solution concepts and the famous tension between
+# them, on the Prisoner's Dilemma:
+#
+#   • STRICT DOMINANCE — a move that beats another no matter what the
+#     opponent does. If it exists, rational play is forced.
+#   • PARETO DOMINANCE — an outcome where everyone is at least as well
+#     off and someone strictly better.
+#
+# The tragedy of the commons in one table: Defect strictly dominates
+# Cooperate for BOTH players, so (Defect, Defect) is the forced
+# equilibrium — yet (Cooperate, Cooperate) Pareto-dominates it. The
+# rational outcome is collectively worse. Both relations are integer
+# comparisons over payoffs, so they're checkable predicates.
+# =============================================================================
+
+type Move   = | Coop | Defect
+type Payoff = | Payoff(Int, Int)
+
+# Prisoner's Dilemma payoff table.
+#         Cooperate   Defect
+#   C     (3, 3)      (0, 5)
+#   D     (5, 0)      (1, 1)
+fn pd(m1: Move, m2: Move) : Payoff =
+  match m1 {
+    Coop   => match m2 { Coop => Payoff(3, 3); Defect => Payoff(0, 5) };
+    Defect => match m2 { Coop => Payoff(5, 0); Defect => Payoff(1, 1) }
+  }
+
+fn p1(po: Payoff) : Int = match po { Payoff(a, _) => a }
+fn p2(po: Payoff) : Int = match po { Payoff(_, b) => b }
+
+# `ms` strictly dominates `mw` for player 1 iff it pays more against
+# EVERY opponent move (Coop and Defect).
+fn dominates1(ms: Move, mw: Move) : Bool =
+  p1(pd(ms, Coop))   > p1(pd(mw, Coop)) &&
+  p1(pd(ms, Defect)) > p1(pd(mw, Defect))
+
+fn dominates2(ms: Move, mw: Move) : Bool =
+  p2(pd(Coop, ms))   > p2(pd(Coop, mw)) &&
+  p2(pd(Defect, ms)) > p2(pd(Defect, mw))
+
+# Pareto: `a` is at least as good for both and strictly better for one.
+fn pareto_dominates(a: Payoff, b: Payoff) : Bool =
+  p1(a) >= p1(b) && p2(a) >= p2(b) && (p1(a) > p1(b) || p2(a) > p2(b))
+
+# ---- Pretty-printer + demo --------------------------------------------------
+
+fn show_payoff(po: Payoff) : String =
+  "(" ++ int_to_string(p1(po)) ++ ", " ++ int_to_string(p2(po)) ++ ")"
+
+let _ = print("=== Prisoner's Dilemma: dominance forces the worse outcome ===")
+let _ = print("  Defect dominates Cooperate for P1? " ++
+              (if dominates1(Defect, Coop) then "yes" else "no"))
+let _ = print("  Defect dominates Cooperate for P2? " ++
+              (if dominates2(Defect, Coop) then "yes" else "no"))
+let _ = print("  ⇒ forced equilibrium (Defect, Defect) = " ++
+              show_payoff(pd(Defect, Defect)))
+
+let _ = print("")
+let _ = print("=== ...but the equilibrium is Pareto-dominated ===")
+let _ = print("  (Cooperate, Cooperate) = " ++ show_payoff(pd(Coop, Coop)))
+let _ = print("  (Defect, Defect)       = " ++ show_payoff(pd(Defect, Defect)))
+let _ = print("  (C,C) Pareto-dominates (D,D)? " ++
+              (if pareto_dominates(pd(Coop, Coop), pd(Defect, Defect))
+               then "YES — everyone does better, yet nobody will choose it"
+               else "no"))
+
+"done"

@@ -1,0 +1,65 @@
+# =============================================================================
+# Linear / resource types — no cloning, no dropping, in Glass (v4.67).
+#
+# The one feature in the "exotic types" set that CANNOT be a library: it
+# needs the type checker itself. A `let lin x = ...` binding marks x as a
+# linear RESOURCE that must be consumed EXACTLY once in its body:
+#
+#   • used twice  → rejected ("no cloning"   — quantum no-cloning vibes)
+#   • never used  → rejected ("no dropping"  — the resource must be spent)
+#   • used once   → fine
+#
+# This is the substructural discipline behind file handles, capabilities,
+# session types, and quantum states: things you may neither duplicate nor
+# silently discard. The checker counts uses PATH-AWARELY — using the
+# value once in each branch of an `if` is one use (only one branch runs).
+#
+# This file shows only the LEGAL uses (it must run clean); the rejected
+# cases — `x + x` and an unused `x` — are pinned as negative tests in the
+# suite. `lin` is a contextual keyword, so a variable named `lin` is fine.
+# =============================================================================
+
+# A linear "token" (think: a one-shot capability or a file handle).
+# Used exactly once — consumed by `spend`.
+fn spend(token: Int) : Int = token * 10
+
+fn use_once(seed: Int) : Int =
+  let lin token = seed + 1 in
+  spend(token)                 # consumed exactly once — legal
+
+# Path-aware: the token is used once on EACH branch, which is once on the
+# single path that actually runs. Linearity is about consumption per
+# execution, not lexical occurrences.
+fn use_in_branch(flag: Bool, seed: Int) : Int =
+  let lin token = seed + 1 in
+  if flag then spend(token) else token - 1
+
+# A linear value threaded through a chain — still exactly one consumption
+# of the original binding (the inner let rebinds a fresh name).
+fn use_threaded(seed: Int) : Int =
+  let lin a = seed in
+  let b = a + 100 in           # `a` consumed once, here
+  b * 2
+
+# `lin` as an ordinary identifier — the contextual keyword doesn't steal
+# the name (it's only special as `let lin <ident>`).
+fn lin_is_a_normal_name() : Int =
+  let lin = 7 in
+  lin + 1
+
+# ---- Demo -------------------------------------------------------------------
+
+let _ = print("=== Linear resources: consumed exactly once ===")
+let _ = print("  use_once(4):            " ++ int_to_string(use_once(4)))
+let _ = print("  use_in_branch(true,4):  " ++ int_to_string(use_in_branch(true, 4)))
+let _ = print("  use_in_branch(false,4): " ++ int_to_string(use_in_branch(false, 4)))
+let _ = print("  use_threaded(5):        " ++ int_to_string(use_threaded(5)))
+let _ = print("  lin-as-a-name:          " ++ int_to_string(lin_is_a_normal_name()))
+
+let _ = print("")
+let _ = print("Rejected at type-check time (see the test suite):")
+let _ = print("  let lin x = .. in x + x   — no cloning")
+let _ = print("  let lin x = .. in 99      — no dropping")
+let _ = print("  capturing a lin value in a lambda — single use unprovable")
+
+"done"

@@ -1,0 +1,29 @@
+# =============================================================================
+# safe_div.glass — the textbook refinement demo (v4.26).
+#
+# `fn safe_div(a, b: Int where (b != 0)) = a / b` is the canonical
+# example of why refinement types matter: the divisor MUST NOT be zero,
+# and that constraint is part of the signature, not a runtime assert
+# buried in the body. The static checker discharges literal divisors;
+# anything dynamic falls through to the runtime check ported in v4.24.
+#
+# Before v4.26 prism could not even parse this program — `/` was missing
+# from prism's lexer/parser/eval. v4.26 ports the operator across all
+# four sites (TSlash token, EDiv expr, parse_mul_rest case, eval branch)
+# and the textbook example now runs end-to-end in prism, with the
+# refinement runtime check from v4.24 catching divide-by-zero.
+# =============================================================================
+
+fn safe_div(a: Int, b: Int where (b != 0)) : Int = a / b
+
+# Static discharge handles the literal case at compile time.
+let r1 : Int = safe_div(100, 4)
+
+# Non-literal — the v4.24 runtime check on the second param fires on
+# entry to the second apply. 5 != 0 passes; result is 20.
+let nonzero : Int = 5
+let r2 : Int = safe_div(100, nonzero)
+
+# Return both results so the demo prints a tuple.
+let pair = (r1, r2)
+pair

@@ -1,0 +1,256 @@
+# =============================================================================
+# frost.glass — a Glass-native arithmetization for Pane queries (v0.1)
+#
+# Frost is the zero-knowledge extension of Pane (see pane.glass). This file is
+# its foundation: OUR OWN ARITHMETIZATION, written in Glass — the machinery
+# that turns a Pane expression into a system of arithmetic constraints over a
+# finite field, the form every ZK proof system proves satisfiability of.
+#
+# THE LAYERS (this file builds the first three; crypto wraps them later)
+# ----------------------------------------------------------------------
+#   1. A finite field F_p (modular arithmetic).
+#   2. A constraint system: an arithmetic circuit of gates over F_p — the
+#      universal set Const/Add/Mul/AssertEq (R1CS-faithful).
+#   3. LOWERING: compile a Pane `PExpr` into gates + a WITNESS (wire values),
+#      and a CHECKER that verifies the witness satisfies every gate. This is
+#      the non-ZK core: a real prover proves *knowledge* of such a witness
+#      without revealing it.
+#   4. (future) the cryptographic ZK layer (commitments, Fiat-Shamir) wrapping
+#      the constraint system. The arithmetization below is unchanged by it.
+#
+# WHY THIS IS THE RIGHT CORE: the arithmetization is the intellectually central
+# and fully testable piece, and it makes Frost "out of Glass." It mirrors the
+# whole project: a REFERENCE (`eval_pexpr`, like prism/glass.py) and a COMPILER
+# (`compile_pexpr` → circuit, like quartz/glassc), differential-tested — the
+# circuit's output must equal the reference's.
+#
+# FIELD CHOICE: p = 2^31 - 1 (a Mersenne prime). Small on purpose — products
+# stay < 2^62 so the field arithmetic is exact in int64 and compiles via
+# glassc. A cryptographically-secure field (~256-bit) needs bignum but keeps
+# this exact structure; only the field implementation changes.
+#
+# v0.1 gadgets: Col, Int/Bool literals, +,-,*, == (is-zero gadget), &&,||,!.
+# NEXT: <,> need a range-check (bit-decomposition) gadget; then whole-query
+# lowering (per-row selectors + accumulation) + table commitments.
+# =============================================================================
+
+# --- finite field F_p, p = 2^31 - 1 ------------------------------------------
+# (prime inlined as a literal so glassc can compile these — no top-level `let`
+#  referenced from a function.)
+fn fadd(a: Int, b: Int) : Int = (a + b) % 2147483647
+fn fsub(a: Int, b: Int) : Int = ((a - b) % 2147483647 + 2147483647) % 2147483647
+fn fmul(a: Int, b: Int) : Int = (a * b) % 2147483647
+fn fnorm(a: Int) : Int = (a % 2147483647 + 2147483647) % 2147483647
+
+# modular exponentiation (square-and-multiply) — for the field inverse.
+fn fpow(base: Int, exp: Int) : Int =
+  if exp == 0 then 1
+  else if exp % 2 == 0 then let h : Int = fpow(base, exp / 2) in fmul(h, h)
+  else fmul(base, fpow(base, exp - 1))
+
+# multiplicative inverse via Fermat: x^(p-2) mod p  (p-2 = 2147483645).
+fn finv(x: Int) : Int = fpow(x, 2147483645)
+
+# --- Pane value + predicate (the reference, mirrored from pane.glass) --------
+type Val = | VInt(Int) | VBool(Bool)
+
+type PExpr =
+  | Col(String)
+  | LitI(Int)
+  | LitB(Bool)
+  | EqE(PExpr, PExpr)
+  | AndE(PExpr, PExpr)
+  | OrE(PExpr, PExpr)
+  | NotE(PExpr)
+  | AddE(PExpr, PExpr)
+  | SubE(PExpr, PExpr)
+  | MulE(PExpr, PExpr)
+
+# A row is name -> Val (the private data the circuit will operate over).
+type Row = | Row(List<Pair<String, Val>>)
+
+fn cell(cells: List<Pair<String, Val>>, name: String) : Val =
+  match cells { [] => VInt(0); [Pair(k, v), ...r] => if k == name then v else cell(r, name) }
+fn row_get(r: Row, name: String) : Val = match r { Row(cs) => cell(cs, name) }
+
+fn vint(v: Val) : Int = match v { VInt(n) => n; VBool(b) => if b then 1 else 0 }
+fn vb(v: Val) : Bool = match v { VBool(b) => b; VInt(n) => n != 0 }
+
+# REFERENCE semantics: evaluate the expression directly (result as a field elt).
+fn eval_pexpr(e: PExpr, r: Row) : Int =
+  match e {
+    Col(name) => fnorm(vint(row_get(r, name)));
+    LitI(n)   => fnorm(n);
+    LitB(b)   => if b then 1 else 0;
+    EqE(a, b) => if eval_pexpr(a, r) == eval_pexpr(b, r) then 1 else 0;
+    AndE(a, b) => if (eval_pexpr(a, r) != 0) && (eval_pexpr(b, r) != 0) then 1 else 0;
+    OrE(a, b)  => if (eval_pexpr(a, r) != 0) || (eval_pexpr(b, r) != 0) then 1 else 0;
+    NotE(a)    => if eval_pexpr(a, r) == 0 then 1 else 0;
+    AddE(a, b) => fadd(eval_pexpr(a, r), eval_pexpr(b, r));
+    SubE(a, b) => fsub(eval_pexpr(a, r), eval_pexpr(b, r));
+    MulE(a, b) => fmul(eval_pexpr(a, r), eval_pexpr(b, r))
+  }
+
+# --- constraint system: an arithmetic circuit over F_p -----------------------
+# Wires are field elements identified by an index. Gates are the universal set;
+# everything (subtraction, equality, booleans) reduces to Const/Add/Mul plus
+# equality assertions.
+type Gate =
+  | GConst(Int, Int)      # wire o holds constant c            : o == c
+  | GAdd(Int, Int, Int)   # o == a + b
+  | GMul(Int, Int, Int)   # o == a * b
+  | GAssertEq(Int, Int)   # assert wire a == wire b
+
+# The circuit builder threads: next free wire id, gates (reversed), and the
+# witness (wire -> value). Building a circuit also generates its witness.
+type Build = | Build(Int, List<Gate>, List<Pair<Int, Int>>)
+
+fn b_fresh(b: Build) : (Int, Build) =
+  match b { Build(n, gs, vs) => (n, Build(n + 1, gs, vs)) }
+fn b_emit(g: Gate, b: Build) : Build =
+  match b { Build(n, gs, vs) => Build(n, [g] ++ gs, vs) }
+fn b_set(w: Int, v: Int, b: Build) : Build =
+  match b { Build(n, gs, vs) => Build(n, gs, [Pair(w, v)] ++ vs) }
+fn b_val(b: Build, w: Int) : Int =
+  match b { Build(n, gs, vs) => assoc(vs, w) }
+fn assoc(vs: List<Pair<Int, Int>>, w: Int) : Int =
+  match vs { [] => 0; [Pair(k, v), ...r] => if k == w then v else assoc(r, w) }
+
+# allocate a constant wire (value c), emitting GConst.
+fn mk_const(c: Int, b: Build) : (Int, Build) =
+  match b_fresh(b) { (w, b1) => (w, b_set(w, fnorm(c), b_emit(GConst(w, fnorm(c)), b1))) }
+# o = a + b
+fn mk_add(a: Int, bw: Int, b: Build) : (Int, Build) =
+  match b_fresh(b) { (o, b1) =>
+    (o, b_set(o, fadd(b_val(b1, a), b_val(b1, bw)), b_emit(GAdd(o, a, bw), b1))) }
+# o = a * b
+fn mk_mul(a: Int, bw: Int, b: Build) : (Int, Build) =
+  match b_fresh(b) { (o, b1) =>
+    (o, b_set(o, fmul(b_val(b1, a), b_val(b1, bw)), b_emit(GMul(o, a, bw), b1))) }
+
+# --- LOWERING: compile a PExpr into wires (+ gates + witness) ----------------
+# Returns the output wire and the updated builder. colenv maps column names to
+# their input wires (allocated from the row's private cells).
+fn compile_pexpr(e: PExpr, colenv: List<Pair<String, Int>>, b: Build) : (Int, Build) =
+  match e {
+    Col(name) => (assoc_s(colenv, name), b);
+    LitI(n)   => mk_const(n, b);
+    LitB(bb)  => mk_const(if bb then 1 else 0, b);
+    AddE(x, y) =>
+      match compile_pexpr(x, colenv, b) { (wx, b1) =>
+        match compile_pexpr(y, colenv, b1) { (wy, b2) => mk_add(wx, wy, b2) } };
+    SubE(x, y) =>
+      # a - b = a + (p-1)*b   (negate b by multiplying by -1, then add)
+      match compile_pexpr(x, colenv, b) { (wx, b1) =>
+        match compile_pexpr(y, colenv, b1) { (wy, b2) =>
+          match mk_const(2147483646, b2) { (negone, b3) =>   # -1 mod p
+            match mk_mul(wy, negone, b3) { (nwy, b4) => mk_add(wx, nwy, b4) } } } };
+    MulE(x, y) =>
+      match compile_pexpr(x, colenv, b) { (wx, b1) =>
+        match compile_pexpr(y, colenv, b1) { (wy, b2) => mk_mul(wx, wy, b2) } };
+    AndE(x, y) =>
+      # both sub-results are boolean (0/1): and = x * y
+      match compile_pexpr(x, colenv, b) { (wx, b1) =>
+        match compile_pexpr(y, colenv, b1) { (wy, b2) => mk_mul(wx, wy, b2) } };
+    OrE(x, y) =>
+      # or = x + y - x*y
+      match compile_pexpr(x, colenv, b) { (wx, b1) =>
+        match compile_pexpr(y, colenv, b1) { (wy, b2) =>
+          match mk_mul(wx, wy, b2) { (xy, b3) =>
+            match mk_add(wx, wy, b3) { (s, b4) =>
+              match mk_const(2147483646, b4) { (negone, b5) =>
+                match mk_mul(xy, negone, b5) { (nxy, b6) => mk_add(s, nxy, b6) } } } } } };
+    NotE(x) =>
+      # not = 1 - x
+      match compile_pexpr(x, colenv, b) { (wx, b1) =>
+        match mk_const(1, b1) { (one, b2) =>
+          match mk_const(2147483646, b2) { (negone, b3) =>
+            match mk_mul(wx, negone, b3) { (nx, b4) => mk_add(one, nx, b4) } } } };
+    EqE(x, y) =>
+      # is_zero(x - y). Witness: inv = (x-y)^-1 or 0; out = 1 - (x-y)*inv.
+      # Constraints: out == 1 - diff*inv  AND  diff*out == 0  (forces out=1 iff diff=0).
+      match compile_pexpr(SubE(x, y), colenv, b) { (diff, b1) =>
+        let dv : Int = b_val(b1, diff) in
+        let invv : Int = if dv == 0 then 0 else finv(dv) in
+        match b_fresh(b1) { (invw, b2) =>
+          let b3 : Build = b_set(invw, invv, b2) in   # inv is a free witness wire
+          match mk_mul(diff, invw, b3) { (dprod, b4) =>          # dprod = diff*inv
+            match mk_const(1, b4) { (one, b5) =>
+              match mk_const(2147483646, b5) { (negone, b6) =>
+                match mk_mul(dprod, negone, b6) { (ndp, b7) =>
+                  match mk_add(one, ndp, b7) { (outw, b8) =>      # out = 1 - diff*inv
+                    match mk_mul(diff, outw, b8) { (z, b9) =>     # z = diff*out
+                      match mk_const(0, b9) { (zero, b10) =>
+                        (outw, b_emit(GAssertEq(z, zero), b10)) } } } } } } } } }
+  }
+
+fn assoc_s(xs: List<Pair<String, Int>>, name: String) : Int =
+  match xs { [] => 0; [Pair(k, v), ...r] => if k == name then v else assoc_s(r, name) }
+
+# --- allocate input wires for a row's columns (the private witness) ----------
+fn alloc_inputs(cells: List<Pair<String, Val>>, b: Build)
+  : (List<Pair<String, Int>>, Build) =
+  match cells {
+    [] => ([], b);
+    [Pair(name, v), ...rest] =>
+      match b_fresh(b) { (w, b1) =>
+        let b2 : Build = b_set(w, fnorm(vint(v)), b1) in
+        match alloc_inputs(rest, b2) { (env, b3) => ([Pair(name, w)] ++ env, b3) } }
+  }
+
+# --- the CHECKER: does the witness satisfy every gate? -----------------------
+fn gate_ok(g: Gate, b: Build) : Bool =
+  match g {
+    GConst(o, c)    => b_val(b, o) == fnorm(c);
+    GAdd(o, a, bw)  => b_val(b, o) == fadd(b_val(b, a), b_val(b, bw));
+    GMul(o, a, bw)  => b_val(b, o) == fmul(b_val(b, a), b_val(b, bw));
+    GAssertEq(a, bw) => b_val(b, a) == b_val(b, bw)
+  }
+
+fn all_gates_ok(gs: List<Gate>, b: Build) : Bool =
+  match gs { [] => true; [g, ...rest] => if gate_ok(g, b) then all_gates_ok(rest, b) else false }
+
+fn gate_count(b: Build) : Int =
+  match b { Build(n, gs, vs) => glen(gs) }
+fn glen(gs: List<Gate>) : Int = match gs { [] => 0; [g, ...r] => 1 + glen(r) }
+
+# --- arithmetize one predicate over one row, and verify it matches reference -
+# Returns (reference_value, circuit_output_value, all_constraints_hold, #gates).
+fn arithmetize(e: PExpr, r: Row) : (Int, Int, Bool, Int) =
+  match r {
+    Row(cells) =>
+      match alloc_inputs(cells, Build(0, [], [])) { (colenv, b0) =>
+        match compile_pexpr(e, colenv, b0) { (outw, b1) =>
+          match b1 { Build(n, gs, vs) =>
+            (eval_pexpr(e, r), b_val(b1, outw), all_gates_ok(gs, b1), glen(gs)) } } }
+  }
+
+# --- demo --------------------------------------------------------------------
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+
+fn report(label: String, e: PExpr, r: Row) : String =
+  match arithmetize(e, r) {
+    (ref, circ, ok, gates) =>
+      label ++ ":  reference=" ++ int_to_string(ref) ++
+      "  circuit=" ++ int_to_string(circ) ++
+      "  match=" ++ show_b(ref == circ) ++
+      "  constraints_hold=" ++ show_b(ok) ++
+      "  gates=" ++ int_to_string(gates)
+  }
+
+let alice : Row =
+  Row([Pair("age", VInt(20)), Pair("active", VBool(true)), Pair("score", VInt(7))])
+
+let _ : String = print("--- frost.glass: a Glass-native arithmetization for Pane ---")
+let _ : String = print("circuit output must equal the reference interpreter, and every")
+let _ : String = print("field constraint must hold (the witness is valid):")
+let _ : String = print("")
+let _ : String = print(report("age * 2 + 1            ", AddE(MulE(Col("age"), LitI(2)), LitI(1)), alice))
+let _ : String = print(report("score - 10             ", SubE(Col("score"), LitI(10)), alice))
+let _ : String = print(report("age == 20              ", EqE(Col("age"), LitI(20)), alice))
+let _ : String = print(report("age == 21              ", EqE(Col("age"), LitI(21)), alice))
+let _ : String = print(report("(age==20) && active    ", AndE(EqE(Col("age"), LitI(20)), Col("active")), alice))
+let _ : String = print(report("(age==21) || active    ", OrE(EqE(Col("age"), LitI(21)), Col("active")), alice))
+let _ : String = print(report("!(age == 21)           ", NotE(EqE(Col("age"), LitI(21))), alice))
+
+"frost v0.1 — finite field + arithmetic circuit + Pane-predicate lowering (differential-tested)"

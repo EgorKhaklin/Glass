@@ -1,0 +1,16 @@
+# =============================================================================
+# lambda_refine.glass — refined-param lambda runtime checks (v4.47).
+#
+# Until v4.47 only top-level fns and curried inner fns carried refinement
+# annotations; bare lambdas could not declare `where (...)`. v4.47 lifts
+# that restriction: `fn(x: T where (pred)) -> body` now produces an
+# ELamR which evaluates to a VRefinedClos. At each application the
+# refinement check fires before the body runs.
+#
+# This file is the positive case: the predicate holds for x = 5, so the
+# lambda executes and returns 10.
+# =============================================================================
+
+let pos_dbl : Int =
+  (fn(x: Int where (x > 0)) -> x * 2)(5)
+pos_dbl

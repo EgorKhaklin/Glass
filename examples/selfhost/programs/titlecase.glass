@@ -1,0 +1,22 @@
+# titlecase.glass — proper-case a single word.
+# v4.19 rewrite: with typed `s: String` parameter, the `if len < 1
+# then s else ...` pattern works without the `then ""` workaround.
+# More natural code; same result.
+
+fn lower_tail(s_lower: String, len: Int, i: Int) =
+  if i < len then
+    int_to_char(char_at(s_lower, i)) ++ lower_tail(s_lower, len, i + 1)
+  else ""
+
+fn titlecase(s: String) =
+  let len = string_length(s) in
+  if len < 1 then
+    # v4.19: `s` here works directly because `s` is declared String.
+    # Previously needed `then ""` because is_string_expr(EVar(s))
+    # returned false (no parameter-type tracking).
+    s
+  else
+    let lower = string_to_lower(s) in
+    string_to_upper(int_to_char(char_at(s, 0))) ++ lower_tail(lower, len, 1)
+
+titlecase("hELLO")

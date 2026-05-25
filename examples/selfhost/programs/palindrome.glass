@@ -1,0 +1,19 @@
+# palindrome.glass — check if a string reads the same forward and back.
+# Uses v4.14 substring + v4.13 string_to_lower + v4.9 string_eq +
+# v4.x char_at, ++, int_to_char, recursion.
+
+# Build the reverse of a string by prepending each char in order.
+fn reverse_from(s, len, i) =
+  if i < 0 then ""
+  else int_to_char(char_at(s, i)) ++ reverse_from(s, len, i - 1)
+
+fn reverse(s) =
+  let len = string_length(s) in
+  reverse_from(s, len, len - 1)
+
+fn is_palindrome(s) =
+  let lower = string_to_lower(s) in
+  string_eq(lower, reverse(lower))
+
+# "Racecar" lowercased is "racecar", reversed is "racecar" → palindrome.
+if is_palindrome("Racecar") then 1 else 0

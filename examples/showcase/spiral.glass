@@ -1,0 +1,63 @@
+# =============================================================================
+# The golden spiral, in Glass — self-similarity made of Fibonacci squares.
+#
+# A golden rectangle has sides in ratio φ. Lay a square on its short side
+# and what remains is ANOTHER golden rectangle, smaller by φ — repeat
+# forever, and the nested squares trace the golden (Fibonacci) spiral.
+# That "remove a square, get the same shape back" is self-similarity, and
+# it's exact in Int when the sides are consecutive Fibonacci numbers:
+#
+#     rectangle  F(n) × F(n+1)   −  square F(n)×F(n)   =   F(n-1) × F(n)
+#
+# because F(n+1) − F(n) = F(n-1). The aspect ratio F(n+1)/F(n) → φ, and
+# the golden fingerprint | F(n+1)² − F(n+1)·F(n) − F(n)² | = 1 holds at
+# every step (the same residue from showcase/golden.glass).
+#
+# Two more exact identities the spiral rests on:
+#   • sum of the first n Fibonacci squares' sides = F(1)+…+F(n) = F(n+2) − 1
+#   • consecutive Fibonacci numbers are coprime: gcd(F(n), F(n+1)) = 1
+# =============================================================================
+
+fn fib(n: Int) : Int =
+  if n < 2 then n else fib(n - 1) + fib(n - 2)
+
+fn golden_residue(a: Int, b: Int) : Int = a * a - a * b - b * b
+fn aspect_milli(a: Int, b: Int where (b > 0)) : Int = a * 1000 / b
+
+fn gcd(a: Int, b: Int) : Int = if b == 0 then a else gcd(b, a % b)
+
+# Sum of the first n Fibonacci numbers — closed form F(n+2) − 1.
+fn fib_sum(n: Int) : Int = fib(n + 2) - 1
+
+# ---- Demo -------------------------------------------------------------------
+
+# One ring of the spiral: the golden rectangle F(n) × F(n+1), the square
+# F(n) peeled off it, the remaining rectangle, and the invariants.
+fn ring(n: Int) : String !{IO} =
+  let a = fib(n) in
+  let b = fib(n + 1) in
+  let prev = fib(n - 1) in
+  print("  ring " ++ int_to_string(n) ++
+        ":  rect " ++ int_to_string(a) ++ "×" ++ int_to_string(b) ++
+        "  − square " ++ int_to_string(a) ++ "²" ++
+        "  ⇒ rect " ++ int_to_string(prev) ++ "×" ++ int_to_string(a) ++
+        "   aspect=" ++ int_to_string(aspect_milli(b, a)) ++ "/1000" ++
+        "   residue=" ++ int_to_string(golden_residue(b, a)) ++
+        "   gcd=" ++ int_to_string(gcd(a, b)))
+
+let _ = print("=== Golden spiral: each ring peels a square, leaving the same shape ===")
+let _ = ring(3)
+let _ = ring(4)
+let _ = ring(5)
+let _ = ring(6)
+let _ = ring(7)
+let _ = ring(8)
+
+let _ = print("")
+let _ = print("=== Spiral arc proxy: Σ Fibonacci sides = F(n+2) − 1 ===")
+let _ = print("  squares 1..6: sides 1,1,2,3,5,8  sum=" ++ int_to_string(fib_sum(6)) ++
+              "  (= F(8) − 1 = 21 − 1 = 20)")
+let _ = print("  squares 1..8: sum=" ++ int_to_string(fib_sum(8)) ++
+              "  (= F(10) − 1 = 55 − 1 = 54)")
+
+"done"

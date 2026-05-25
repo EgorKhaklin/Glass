@@ -1,0 +1,28 @@
+# =============================================================================
+# curried_refine.glass — refinement runtime checks on later parameters of
+# a curried top-level fn (v4.24).
+#
+# v4.23 checked the FIRST parameter of a top-level fn at runtime. After
+# the first arg was applied, the resulting partial application collapsed
+# to a plain VClos with no formal-type info, so refinements on the 2nd,
+# 3rd, ... params were silently ignored.
+#
+# v4.24 wraps the partial application in a VRefinedClos that carries the
+# remaining param types. Each subsequent apply checks the head type's
+# refinement before forwarding the arg, then rewraps with the tail. The
+# wrapper is only applied when at least one remaining param has a
+# TyRefine — non-refined curried fns pay no per-call cost.
+#
+# This file demonstrates the positive path: refinement on the SECOND
+# parameter, with a let-bound (non-literal) arg that satisfies the
+# predicate. The runtime check accepts; the fn returns its result.
+# =============================================================================
+
+# Refinement on the second parameter.
+fn safe_add(a: Int, b: Int where (b != 0)) : Int = a + b
+
+# Let-bound arg — static discharge can't fold this. The v4.24 VRefinedClos
+# wrapper kicks in when safe_add(10) returns its partial application, and
+# the second apply checks (5 != 0) before adding.
+let nonzero : Int = 5
+safe_add(10, nonzero)

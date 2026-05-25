@@ -1,0 +1,22 @@
+# djb2.glass — Daniel Bernstein's classic string hash function.
+# hash(i) = hash(i-1) * 33 + s[i], starting from h = 5381.
+# Implemented as ((h << 5) + h) for the multiply-by-33 — exercises
+# v4.16 bit_shl + v4.19 typed accumulator pattern.
+#
+# Reference values (verified against C reference implementation):
+#   djb2("")      = 5381
+#   djb2("a")     = 177670
+#   djb2("abc")   = 193485963
+#   djb2("hello") = 210714636441
+#
+# All values fit comfortably in 64-bit signed (long long).
+
+fn djb2_from(s: String, len: Int, i: Int, h: Int) =
+  if i < len then
+    djb2_from(s, len, i + 1, bit_shl(h, 5) + h + char_at(s, i))
+  else h
+
+fn djb2(s: String) =
+  djb2_from(s, string_length(s), 0, 5381)
+
+djb2("hello")

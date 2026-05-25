@@ -1,0 +1,63 @@
+# =============================================================================
+# Nested reality / simulation levels, in Glass.
+#
+# A simulation level is a reality that hosts another. Glass already does
+# this literally: glass.py runs prism.glass, which interprets a Glass
+# program — three levels of "reality", each computing the one inside it.
+#
+# Here we make the level structure explicit. A tiny expression language
+# has a `Sim` node meaning "evaluate this sub-program one level deeper".
+# `eval` computes the value (levels don't change arithmetic — a sum is a
+# sum at any level), while `depth` reports how many realities are nested.
+# The value bubbles up through every level unchanged; the DEPTH is what
+# the nesting buys you — the simulated worlds are real to their inhabitants.
+# =============================================================================
+
+type Expr =
+  | Lit(Int)
+  | Add(Expr, Expr)
+  | Sim(Expr)          # run the inner program in a sub-simulation
+
+# The value is level-independent: arithmetic is the same in every reality.
+fn eval(e: Expr) : Int =
+  match e {
+    Lit(n)    => n;
+    Add(a, b) => eval(a) + eval(b);
+    Sim(inner) => eval(inner)
+  }
+
+# Maximum simulation nesting — how many realities deep does this go?
+fn depth(e: Expr) : Int =
+  match e {
+    Lit(_)    => 0;
+    Add(a, b) => let da = depth(a) in let db = depth(b) in
+                 if da > db then da else db;
+    Sim(inner) => 1 + depth(inner)
+  }
+
+# ---- Demo -------------------------------------------------------------------
+
+# A program nested three realities deep:
+#   Sim( Sim( Add(Lit 3, Sim(Lit 4)) ) )
+# Outermost world simulates a world that simulates a world that adds
+# 3 to (a world computing) 4.
+let prog = Sim(Sim(Add(Lit(3), Sim(Lit(4)))))
+
+let _ = print("=== Nested simulation: Sim(Sim(Add(3, Sim(4)))) ===")
+let _ = print("  value (bubbles up through all levels): " ++ int_to_string(eval(prog)))
+let _ = print("  simulation depth (realities nested):   " ++ int_to_string(depth(prog)))
+
+let _ = print("")
+let _ = print("=== The same arithmetic at every level ===")
+let _ = print("  bare         Add(3, 4):        " ++ int_to_string(eval(Add(Lit(3), Lit(4)))) ++
+              "  depth " ++ int_to_string(depth(Add(Lit(3), Lit(4)))))
+let _ = print("  one level    Sim(Add(3, 4)):   " ++ int_to_string(eval(Sim(Add(Lit(3), Lit(4))))) ++
+              "  depth " ++ int_to_string(depth(Sim(Add(Lit(3), Lit(4))))))
+let _ = print("  two levels   Sim(Sim(...)):    " ++ int_to_string(eval(Sim(Sim(Add(Lit(3), Lit(4)))))) ++
+              "  depth " ++ int_to_string(depth(Sim(Sim(Add(Lit(3), Lit(4)))))))
+
+let _ = print("")
+let _ = print("This file is itself running two levels deep when prism.glass")
+let _ = print("interprets it: glass.py → prism → this program.")
+
+"done"

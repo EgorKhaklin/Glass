@@ -1,0 +1,14 @@
+# =============================================================================
+# lambda_refine_bad.glass — negative demo for v4.47.
+#
+# Same shape as lambda_refine.glass, but the argument -3 fails the
+# predicate (x > 0). The VRefinedClos wrapper produced by ELamR
+# evaluates the predicate against -3 BEFORE entering the body and
+# returns Err with the violation message — surfaced by prism's outer
+# loop as "compile error: refinement violated at runtime: ...".
+# =============================================================================
+
+let n : Int = 0 - 3
+let bad : Int =
+  (fn(x: Int where (x > 0)) -> x * 2)(n)
+bad

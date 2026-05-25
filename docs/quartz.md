@@ -1,6 +1,8 @@
-# Quartz: native compilation for Glass (v3.0 design)
+# Quartz: native compilation for Glass
 
-This document captures the blocking design decisions for Quartz — Glass's native compiler back-end and the headline of v3.0. As of v2.15, the migration phase is complete: every language feature prism needs to interpret itself is in place, and Stage 4.5 demonstrates prism evaluating a 320-line subset of its own source. The remaining work is engineering a runtime that doesn't depend on Python interpretation.
+> ✅ **Built.** Quartz now exists (`quartz.py`) and a Glass-written compiler (`glassc.glass`) compiles on top of it — Glass self-hosts as of v4.76. This document is the original design that got us there; read it as the rationale, not a to-do list. See [self-hosting](self-hosting.md).
+
+This document captures the blocking design decisions for Quartz — Glass's native compiler back-end. As of v2.15 (when this was written), the migration phase was complete: every language feature prism needs to interpret itself is in place, and Stage 4.5 demonstrates prism evaluating a 320-line subset of its own source. The remaining work is engineering a runtime that doesn't depend on Python interpretation.
 
 This is a design doc, not an implementation plan. The goal is to surface the decisions that have to be made before code starts.
 

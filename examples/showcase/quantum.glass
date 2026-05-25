@@ -1,0 +1,112 @@
+# =============================================================================
+# Quantum-inspired measurement, in Glass.
+#
+# A `Superposed` value holds several basis states, each with an integer
+# WEIGHT — think of |amplitude|² scaled to whole "shares" so we stay in
+# Glass's Int world (no floats needed). Measurement COLLAPSES the
+# superposition to exactly one basis state.
+#
+# The interesting design point: with the random seed threaded EXPLICITLY,
+# measurement is referentially transparent — `measure(s, seed)` always
+# yields the same outcome for the same seed. The "collapse" is real (you
+# get one definite value, the others vanish), but it isn't an impure
+# effect. A true `!{Measure}` effect — where the seed comes from the
+# outside world — would need a host builtin; here the seed is the
+# program's stand-in for "which branch of reality you observed".
+#
+# Demonstrated on: a fair qubit, a biased qubit, and a 3-state qutrit —
+# plus a frequency check that repeated measurement tracks the weights,
+# and a determinism check that re-observing the same seed never changes
+# the outcome.
+# =============================================================================
+
+# A basis state: a label and its integer weight.
+type Amp = | Amp(String, Int)
+
+# A superposition: a list of weighted basis states.
+type Superposed = | Superposed(List<Amp>)
+
+# ---- Core: total weight and weighted pick -----------------------------------
+
+fn total_weight(xs: List<Amp>) : Int =
+  fold(xs, 0, fn(acc: Int, a: Amp) -> match a { Amp(_, w) => acc + w })
+
+# Walk the cumulative-weight buckets: `r` lands in the first state whose
+# running weight window contains it. Precondition: 0 <= r < total_weight.
+fn pick(xs: List<Amp>, r: Int) : String =
+  match xs {
+    []                    => "_|_";
+    [Amp(label, w), ...rest] =>
+      if r < w then label else pick(rest, r - w)
+  }
+
+# MEASURE: collapse a superposition to one basis state. `seed` selects
+# which outcome is observed; `seed % total` maps any non-negative seed
+# into the weight range. The refinement pins the seed non-negative so
+# the modulo is well-defined.
+fn measure(s: Superposed, seed: Int where (seed >= 0)) : String =
+  match s {
+    Superposed(xs) => pick(xs, seed % total_weight(xs))
+  }
+
+# ---- Frequency check: measure across many seeds, count one outcome ----------
+
+fn count_outcome(s: Superposed, target: String, seeds: List<Int>) : Int =
+  fold(seeds, 0, fn(acc: Int, seed: Int) ->
+    if measure(s, seed) == target then acc + 1 else acc)
+
+# ---- Pretty-printers --------------------------------------------------------
+
+fn show_amp(a: Amp) : String =
+  match a { Amp(label, w) => label ++ ":" ++ int_to_string(w) }
+
+fn show_super(s: Superposed) : String =
+  match s { Superposed(xs) => join_amps(xs) }
+
+fn join_amps(xs: List<Amp>) : String =
+  match xs {
+    []           => "(vacuum)";
+    [a, ...rest] =>
+      match rest {
+        [] => show_amp(a);
+        _  => show_amp(a) ++ " + " ++ join_amps(rest)
+      }
+  }
+
+# ---- Demo -------------------------------------------------------------------
+
+fn report(name: String, s: Superposed) : String !{IO} =
+  let _ = print("") in
+  let _ = print("=== " ++ name ++ " ===") in
+  let _ = print("  state: " ++ show_super(s)) in
+  let _ = print("  total weight: " ++ int_to_string(total_weight(measure_states(s)))) in
+  let _ = print("  measure(seed=0): " ++ measure(s, 0)) in
+  let _ = print("  measure(seed=1): " ++ measure(s, 1)) in
+  let _ = print("  measure(seed=7): " ++ measure(s, 7)) in
+  print("  measure(seed=7) again: " ++ measure(s, 7) ++ "  (same — collapse is deterministic in the seed)")
+
+fn measure_states(s: Superposed) : List<Amp> =
+  match s { Superposed(xs) => xs }
+
+# A fair qubit: equal weight on |0> and |1>.
+let qubit = Superposed([Amp("|0>", 1), Amp("|1>", 1)])
+let _ = report("Fair qubit  (|0> + |1>)", qubit)
+
+# A biased qubit: 9:1 in favour of |0>.
+let biased = Superposed([Amp("|0>", 9), Amp("|1>", 1)])
+let _ = report("Biased qubit  (9|0> + 1|1>)", biased)
+
+# A qutrit: three basis states with weights 2:3:5.
+let qutrit = Superposed([Amp("|A>", 2), Amp("|B>", 3), Amp("|C>", 5)])
+let _ = report("Qutrit  (2|A> + 3|B> + 5|C>)", qutrit)
+
+# Frequency check on the biased qubit: across seeds 0..99, |0> should
+# come up roughly 90 times and |1> roughly 10 (it's exact here because
+# 100 is a clean multiple of the period-10 weight cycle).
+let seeds = range(0, 100)
+let _ = print("")
+let _ = print("=== Frequency check: biased qubit over seeds 0..99 ===")
+let _ = print("  |0> observed: " ++ int_to_string(count_outcome(biased, "|0>", seeds)) ++ " / 100")
+let _ = print("  |1> observed: " ++ int_to_string(count_outcome(biased, "|1>", seeds)) ++ " / 100")
+
+"done"

@@ -1,0 +1,83 @@
+# =============================================================================
+# Identity / continuity types — the Ship of Theseus, in Glass.
+#
+# Two notions of "same thing over time" come apart:
+#
+#   • STRICT identity     — same parts.
+#   • CONTINUITY identity — connected by a chain of small changes, each
+#                           preserving "enough" of the whole.
+#
+# Replace a ship's planks one at a time. Each step keeps the ship the
+# "same" by continuity (only one plank changed). But after every plank
+# is replaced, the final ship shares NO parts with the original — strict
+# identity says it's a different ship. Continuity says it's the same.
+# Both are computable predicates over the replacement history.
+# =============================================================================
+
+# A ship is its list of plank ids. Two ships differ by the number of
+# positions whose planks don't match (same length assumed).
+fn diff_count(a: List<Int>, b: List<Int>) : Int =
+  match a {
+    []           => 0;
+    [x, ...xs]   =>
+      match b {
+        []         => 0;
+        [y, ...ys] => (if x == y then 0 else 1) + diff_count(xs, ys)
+      }
+  }
+
+fn strict_same(a: List<Int>, b: List<Int>) : Bool = diff_count(a, b) == 0
+
+# Shares at least one original part?
+fn shares_part(a: List<Int>, b: List<Int>) : Bool =
+  diff_count(a, b) < len(a)
+
+# Continuity over a history: every consecutive step changed at most one
+# plank (a "small change" that preserves identity).
+fn continuous(history: List<List<Int>>) : Bool =
+  match history {
+    []            => true;
+    [first, ...rest] =>
+      match rest {
+        []          => true;
+        [second, ..._] =>
+          if diff_count(first, second) <= 1 then continuous(rest) else false
+      }
+  }
+
+fn first_of(h: List<List<Int>>) : List<Int> =
+  match h { [] => []; [x, ..._] => x }
+fn last_of(h: List<List<Int>>) : List<Int> =
+  match h { [] => []; [x, ...rest] => match rest { [] => x; _ => last_of(rest) } }
+
+# ---- The replacement history ------------------------------------------------
+
+# Original planks 1,2,3,4 — replaced one at a time by 5,6,7,8.
+fn history() : List<List<Int>> =
+  [[1, 2, 3, 4],
+   [5, 2, 3, 4],
+   [5, 6, 3, 4],
+   [5, 6, 7, 4],
+   [5, 6, 7, 8]]
+
+let _ = print("=== Ship of Theseus: plank-by-plank replacement ===")
+let _ = print("  steps: [1,2,3,4] → [5,2,3,4] → [5,6,3,4] → [5,6,7,4] → [5,6,7,8]")
+
+let orig = first_of(history())
+let final = last_of(history())
+
+let _ = print("")
+let _ = print("  each step changes ≤ 1 plank (continuous)?  " ++
+              (if continuous(history()) then "yes" else "no"))
+let _ = print("  original and final share any plank?         " ++
+              (if shares_part(orig, final) then "yes" else "no"))
+let _ = print("  original and final strictly identical?      " ++
+              (if strict_same(orig, final) then "yes" else "no"))
+
+let _ = print("")
+let _ = print("  ⇒ Continuity says SAME ship (unbroken chain of small changes);")
+let _ = print("    strict identity says DIFFERENT ship (no shared parts).")
+let _ = print("    The paradox is that both verdicts are correct — they")
+let _ = print("    measure different things.")
+
+"done"

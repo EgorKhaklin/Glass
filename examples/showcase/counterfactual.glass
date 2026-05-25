@@ -1,0 +1,62 @@
+# =============================================================================
+# Counterfactual types — the do-operator, in Glass.
+#
+# A counterfactual asks "what WOULD have happened, had things been
+# different?" — distinct from observation. The machinery is Pearl's
+# structural causal model: variables defined by equations over their
+# causes, and INTERVENTION (do(X := x)) which overrides a variable and
+# recomputes everything downstream, ignoring what actually set it.
+#
+#   rain, sprinkler  →  wet = rain ∨ sprinkler  →  slippery = wet
+#
+# Actually it rained: the grass is wet and slippery. Counterfactually,
+# had it NOT rained (intervene rain := false, sprinkler unchanged), the
+# structural equations recompute: the grass would be dry. That re-running
+# of downstream equations under an override is the whole idea.
+# =============================================================================
+
+# The structural equations (the causal model).
+fn wet(rain: Bool, sprinkler: Bool) : Bool = rain || sprinkler
+fn slippery(rain: Bool, sprinkler: Bool) : Bool = wet(rain, sprinkler)
+
+# A world is the exogenous inputs (rain, sprinkler); everything else is
+# derived. `do_rain` / `do_sprinkler` are interventions: override one
+# input, keep the other, recompute the consequences.
+type World = | World(Bool, Bool)   # (rain, sprinkler)
+
+fn describe(w: World) : String =
+  match w { World(r, s) =>
+    "rain=" ++ (if r then "T" else "F") ++
+    " sprinkler=" ++ (if s then "T" else "F") ++
+    "  ⇒ wet=" ++ (if wet(r, s) then "T" else "F") ++
+    " slippery=" ++ (if slippery(r, s) then "T" else "F") }
+
+fn do_rain(w: World, v: Bool) : World =
+  match w { World(_, s) => World(v, s) }
+fn do_sprinkler(w: World, v: Bool) : World =
+  match w { World(r, _) => World(r, v) }
+
+# ---- Demo -------------------------------------------------------------------
+
+let actual = World(true, false)   # it rained; sprinkler off
+
+let _ = print("=== Actual world ===")
+let _ = print("  " ++ describe(actual))
+
+let _ = print("")
+let _ = print("=== Counterfactual: do(rain := false) — had it not rained ===")
+let _ = print("  " ++ describe(do_rain(actual, false)))
+let _ = print("  ⇒ the grass would be DRY: the rain was the cause of wetness.")
+
+let _ = print("")
+let _ = print("=== Counterfactual: do(sprinkler := true) with no rain ===")
+let _ = print("  " ++ describe(do_sprinkler(do_rain(actual, false), true)))
+let _ = print("  ⇒ wet again — the sprinkler is a SUFFICIENT alternative cause.")
+
+# The point: intervention ≠ observation. do(rain:=false) recomputes wet
+# from the equation; it does not merely "filter to worlds where it
+# didn't rain". The structural model gives a definite counterfactual.
+let _ = print("")
+let _ = print("intervention recomputes consequences; it is not observation.")
+
+"done"

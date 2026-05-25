@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "glass-lang"
-version = "4.0.0"
+version = "4.81.0"
 description = "Glass: a pure functional language designed for transparent local reasoning"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0 OR MIT"
 license-files = ["LICENSE", "LICENSE-APACHE", "LICENSE-MIT"]
 authors = [
-    {name = "Egor Khaklin"}
+    {name = "VANTA (Egor Khaklin)"}
 ]
 keywords = ["language", "functional", "type-system", "effects", "refinements", "self-hosting"]
 classifiers = [

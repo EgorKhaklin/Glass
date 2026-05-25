@@ -1,0 +1,96 @@
+# =============================================================================
+# frost_ext.glass — extension fields F_{p^2}, F_{p^4} in int64 (P3, algebraic side)
+#
+# CORRECTING AN EARLIER CAVEAT. I claimed a real (cryptographic) field needs a
+# ~124-bit Fermat-inverse exponent that int64 can't hold, so extension fields
+# were "blocked." That was wrong. The inverse in an extension field does NOT use
+# a huge exponent — it uses the NORM:  a^-1 = conj(a) / N(a), where N(a) lives in
+# the BASE field and is inverted with the ordinary base exponent (p-2, fits int64).
+# And the Euler non-residue checks need exponent (p^2-1)/2 ≈ 2e18, which fits.
+# So the whole tower is reachable in int64. This file builds it.
+#
+# WHY IT MATTERS (the algebraic-soundness gap from frost_fiat): FRI/RLC
+# challenges drawn from the ~2^31 base field give only ~2^-31 algebraic
+# soundness per round. Drawing them from F_{p^4} (~2^124 elements) gives ~2^-124
+# — CRYPTOGRAPHIC. This is the standard small-field-STARK move (RISC Zero uses a
+# Baby Bear degree-4 extension for exactly this).
+#
+#   F_{p^2} = F_p[X]/(X^2 - W),  W a non-residue in F_p            (~2^62)
+#   F_{p^4} = F_{p^2}[Y]/(Y^2 - V), V a non-square in F_{p^2}       (~2^124)
+#
+# Verified by the ground truth: a · a^-1 == 1 in each field. Baby Bear base.
+# Dogfoods (self-contained, no import).
+# =============================================================================
+
+# --- Baby Bear base field ----------------------------------------------------
+fn fadd(a: Int, b: Int) : Int = (a + b) % 2013265921
+fn fmul(a: Int, b: Int) : Int = (a * b) % 2013265921
+fn fsub(a: Int, b: Int) : Int = ((a - b) % 2013265921 + 2013265921) % 2013265921
+fn fneg(a: Int) : Int = fsub(0, a)
+fn fpow(base: Int, e: Int) : Int =
+  if e == 0 then 1 else if e % 2 == 0 then let h : Int = fpow(base, e / 2) in fmul(h, h) else fmul(base, fpow(base, e - 1))
+fn finv_b(x: Int) : Int = fpow(x, 2013265919)              # x^(p-2)
+# Euler: w is a non-residue iff w^((p-1)/2) == -1 (= p-1).
+fn is_nonres_b(w: Int) : Bool = fpow(w, 1006632960) == 2013265920
+fn find_nonres_b(w: Int) : Int = if is_nonres_b(w) then w else find_nonres_b(w + 1)
+
+# --- F_{p^2} = F_p[X]/(X^2 - w) ----------------------------------------------
+type F2 = | F2(Int, Int)                                   # a0 + a1·X
+fn add2(a: F2, b: F2) : F2 = match a { F2(a0, a1) => match b { F2(b0, b1) => F2(fadd(a0, b0), fadd(a1, b1)) } }
+fn sub2(a: F2, b: F2) : F2 = match a { F2(a0, a1) => match b { F2(b0, b1) => F2(fsub(a0, b0), fsub(a1, b1)) } }
+fn neg2(a: F2) : F2 = match a { F2(a0, a1) => F2(fneg(a0), fneg(a1)) }
+fn mul2(a: F2, b: F2, w: Int) : F2 =
+  match a { F2(a0, a1) => match b { F2(b0, b1) =>
+    F2(fadd(fmul(a0, b0), fmul(w, fmul(a1, b1))), fadd(fmul(a0, b1), fmul(a1, b0))) } }
+fn norm2(a: F2, w: Int) : Int = match a { F2(a0, a1) => fsub(fmul(a0, a0), fmul(w, fmul(a1, a1))) }
+fn inv2(a: F2, w: Int) : F2 =
+  let ni : Int = finv_b(norm2(a, w)) in
+  match a { F2(a0, a1) => F2(fmul(a0, ni), fmul(fneg(a1), ni)) }
+fn eq2(a: F2, b: F2) : Bool = match a { F2(a0, a1) => match b { F2(b0, b1) => a0 == b0 && a1 == b1 } }
+fn pow2(a: F2, e: Int, w: Int) : F2 =
+  if e == 0 then F2(1, 0) else if e % 2 == 0 then let h : F2 = pow2(a, e / 2, w) in mul2(h, h, w)
+  else mul2(a, pow2(a, e - 1, w), w)
+# V is a non-square in F_{p^2} iff V^((p^2-1)/2) == -1.  (p^2-1)/2 fits int64.
+fn is_nonsq2(v: F2, w: Int) : Bool = eq2(pow2(v, (2013265921 * 2013265921 - 1) / 2, w), F2(2013265920, 0))
+fn find_v(i: Int, w: Int) : F2 = if is_nonsq2(F2(i, 1), w) then F2(i, 1) else find_v(i + 1, w)
+
+# --- F_{p^4} = F_{p^2}[Y]/(Y^2 - v) ------------------------------------------
+type F4 = | F4(F2, F2)                                     # c0 + c1·Y, ci ∈ F_{p^2}
+fn mul4(a: F4, b: F4, v: F2, w: Int) : F4 =
+  match a { F4(c0, c1) => match b { F4(d0, d1) =>
+    F4(add2(mul2(c0, d0, w), mul2(v, mul2(c1, d1, w), w)),
+       add2(mul2(c0, d1, w), mul2(c1, d0, w))) } }
+fn norm4(a: F4, v: F2, w: Int) : F2 =
+  match a { F4(c0, c1) => sub2(mul2(c0, c0, w), mul2(v, mul2(c1, c1, w), w)) }
+fn inv4(a: F4, v: F2, w: Int) : F4 =
+  let ni2 : F2 = inv2(norm4(a, v, w), w) in
+  match a { F4(c0, c1) => F4(mul2(c0, ni2, w), mul2(neg2(c1), ni2, w)) }
+fn eq4(a: F4, b: F4) : Bool = match a { F4(c0, c1) => match b { F4(d0, d1) => eq2(c0, d0) && eq2(c1, d1) } }
+
+# --- demo --------------------------------------------------------------------
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+fn s2(a: F2) : String = match a { F2(a0, a1) => "(" ++ int_to_string(a0) ++ "+" ++ int_to_string(a1) ++ "X)" }
+
+let w : Int = find_nonres_b(2)
+let v : F2 = find_v(0, w)
+
+let a2 : F2 = F2(123456, 789012)
+let one2 : F2 = F2(1, 0)
+let a4 : F4 = F4(F2(11, 22), F2(33, 44))
+let one4 : F4 = F4(F2(1, 0), F2(0, 0))
+
+let _ : String = print("--- frost_ext.glass: extension fields in int64 (the 'toy field' fix) ---")
+let _ : String = print("")
+let _ : String = print("base non-residue W = " ++ int_to_string(w) ++ " (X^2 = W);  is_nonresidue: " ++ show_b(is_nonres_b(w)))
+let _ : String = print("F_{p^2} = F_p[X]/(X^2-W),  ~2^62 elements")
+let _ : String = print("  a = " ++ s2(a2) ++ ",  a · a^-1 == 1 ?  " ++ show_b(eq2(mul2(a2, inv2(a2, w), w), one2)))
+let _ : String = print("")
+let _ : String = print("F_{p^2} non-square V = " ++ s2(v) ++ " (Y^2 = V);  is_nonsquare: " ++ show_b(is_nonsq2(v, w)))
+let _ : String = print("F_{p^4} = F_{p^2}[Y]/(Y^2-V),  ~2^124 elements  -> CRYPTOGRAPHIC challenge space")
+let _ : String = print("  A · A^-1 == 1 in F_{p^4} ?  " ++ show_b(eq4(mul4(a4, inv4(a4, v, w), v, w), one4)))
+let _ : String = print("")
+let _ : String = print("inverse uses the NORM (base inverse, exponent p-2) — no 124-bit exponent.")
+let _ : String = print("drawing FRI/RLC challenges from F_{p^4} gives ~2^-124 algebraic soundness:")
+let _ : String = print("a small base field for fast int64 arithmetic, a degree-4 extension for security.")
+
+"frost ext v0.1 — F_{p^2} and F_{p^4} (~2^124, cryptographic) built in int64 via norm-based inverse"

@@ -1,0 +1,64 @@
+# =============================================================================
+# Information flow — taint tracking on a security lattice, in Glass.
+#
+# (The "entropy" half of information lives in showcase/probability.glass
+# as the exact rational Gini uncertainty. This is the FLOW half.)
+#
+# Every value carries a security label from a lattice — here the
+# two-point lattice Public ⊑ Secret. The rule of non-interference:
+# combining values JOINS their labels (Secret wins), so a computation
+# that touches any secret produces a secret result. A public sink may
+# only emit Public values — so secret data cannot leak, by construction.
+#
+# Labels propagate through the data, exactly the way Glass effect rows
+# propagate `!{UntrustedModel}`: the type/label of an output records
+# everything that flowed into it.
+# =============================================================================
+
+type Label  = | Public | Secret
+type Tagged = | Tagged(Int, Label)
+
+# Lattice join: Secret dominates Public.
+fn join(a: Label, b: Label) : Label =
+  match a { Secret => Secret; Public => b }
+
+fn label_of(t: Tagged) : Label = match t { Tagged(_, l) => l }
+fn value_of(t: Tagged) : Int   = match t { Tagged(v, _) => v }
+fn is_public(t: Tagged) : Bool = match label_of(t) { Public => true; Secret => false }
+
+# Operations propagate the join of their inputs' labels — taint spreads.
+fn tadd(a: Tagged, b: Tagged) : Tagged =
+  Tagged(value_of(a) + value_of(b), join(label_of(a), label_of(b)))
+fn tmul(a: Tagged, b: Tagged) : Tagged =
+  Tagged(value_of(a) * value_of(b), join(label_of(a), label_of(b)))
+
+# A public sink: emitting is only allowed for Public values. We model
+# "allowed" as a Bool the caller must check before leaking.
+fn can_publish(t: Tagged) : Bool = is_public(t)
+
+# ---- Demo -------------------------------------------------------------------
+
+fn show_label(l: Label) : String = match l { Public => "public"; Secret => "secret" }
+fn show_tagged(t: Tagged) : String =
+  int_to_string(value_of(t)) ++ " (" ++ show_label(label_of(t)) ++ ")"
+
+let pub5  = Tagged(5, Public)
+let pub3  = Tagged(3, Public)
+let sec7  = Tagged(7, Secret)
+
+let _ = print("=== Taint propagation through a computation ===")
+let _ = print("  public 5 + public 3 = " ++ show_tagged(tadd(pub5, pub3)) ++
+              "   publishable? " ++ (if can_publish(tadd(pub5, pub3)) then "yes" else "no"))
+let _ = print("  public 5 + secret 7 = " ++ show_tagged(tadd(pub5, sec7)) ++
+              "   publishable? " ++ (if can_publish(tadd(pub5, sec7)) then "yes" else "no"))
+let _ = print("  (public 5 * secret 7) + public 3 = " ++
+              show_tagged(tadd(tmul(pub5, sec7), pub3)) ++
+              "   publishable? " ++
+              (if can_publish(tadd(tmul(pub5, sec7), pub3)) then "yes" else "no"))
+
+let _ = print("")
+let _ = print("=== Non-interference: any secret input taints the output ===")
+let _ = print("  a result is publishable ONLY if no secret ever flowed in.")
+let _ = print("  the lattice join makes the leak impossible to forget.")
+
+"done"

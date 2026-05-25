@@ -1,0 +1,72 @@
+# =============================================================================
+# Wave functions & interference — complex amplitudes, in Glass.
+#
+# The one thing that makes quantum NOT just classical probability:
+# alternatives combine by adding AMPLITUDES, then squaring — not by
+# adding probabilities. Amplitudes are complex, so they can CANCEL.
+#
+# We use Gaussian-integer amplitudes Cx(re, im) = re + im·i (Int only —
+# no floats). The probability of an outcome is |amplitude|² = re² + im².
+# When several paths lead to the same outcome:
+#
+#   quantum:    P = | Σ aₖ |²        (amplitudes add, then square)
+#   classical:  P = Σ |aₖ|²          (probabilities just add)
+#
+# They agree only when the paths are out of phase by 90° (orthogonal).
+# In phase → constructive (quantum > classical); opposite phase →
+# destructive, the amplitudes cancel and the outcome NEVER happens,
+# though each path alone was perfectly possible. That's the double slit.
+# =============================================================================
+
+type Cx = | Cx(Int, Int)   # re + im·i
+
+fn cadd(a: Cx, b: Cx) : Cx =
+  match a { Cx(ar, ai) => match b { Cx(br, bi) => Cx(ar + br, ai + bi) } }
+
+# |z|²  — the (unnormalized) probability weight of an amplitude.
+fn norm2(z: Cx) : Int =
+  match z { Cx(re, im) => re * re + im * im }
+
+# Quantum: sum the path amplitudes, THEN take |·|².
+fn quantum_prob(paths: List<Cx>) : Int =
+  norm2(fold(paths, Cx(0, 0), fn(acc: Cx, p: Cx) -> cadd(acc, p)))
+
+# Classical: sum the per-path probabilities |·|² (no cancellation).
+fn classical_prob(paths: List<Cx>) : Int =
+  fold(paths, 0, fn(acc: Int, p: Cx) -> acc + norm2(p))
+
+# Interference is present exactly when the two disagree.
+fn interferes(paths: List<Cx>) : Bool =
+  quantum_prob(paths) != classical_prob(paths)
+
+# ---- Demo -------------------------------------------------------------------
+
+fn report(name: String, paths: List<Cx>) : String !{IO} =
+  print("  " ++ name ++
+        ":  classical=" ++ int_to_string(classical_prob(paths)) ++
+        "   quantum=" ++ int_to_string(quantum_prob(paths)) ++
+        "   " ++ (if interferes(paths)
+                  then (if quantum_prob(paths) > classical_prob(paths)
+                        then "(constructive)" else "(destructive)")
+                  else "(no interference)"))
+
+let _ = print("=== Two paths to one detector point — amplitudes interfere ===")
+# In phase: 1 + 1 = amplitude 2 → P = 4, vs classical 1+1 = 2.
+let _ = report("in phase   [ 1,  1]", [Cx(1, 0), Cx(1, 0)])
+# Opposite phase: 1 + (−1) = 0 → P = 0. A DARK fringe: both paths open,
+# yet the outcome is impossible.
+let _ = report("opposite   [ 1, −1]", [Cx(1, 0), Cx(0 - 1, 0)])
+# 90° out of phase (one real, one imaginary): no interference, quantum
+# equals classical — this is the boundary where quantum looks classical.
+let _ = report("orthogonal [ 1,  i]", [Cx(1, 0), Cx(0, 1)])
+# Three paths summing to zero (1, i, −1−i): total cancellation.
+let _ = report("triple null", [Cx(1, 0), Cx(0, 1), Cx(0 - 1, 0 - 1)])
+
+let _ = print("")
+let _ = print("=== Double slit: amplitude at each detector point ===")
+# Slit A always contributes +1; slit B's phase rotates point to point.
+# Where B = +1 the fringe is bright (P=4); where B = −1 it is dark (P=0).
+let _ = report("bright fringe", [Cx(1, 0), Cx(1, 0)])
+let _ = report("dark fringe  ", [Cx(1, 0), Cx(0 - 1, 0)])
+
+"done"

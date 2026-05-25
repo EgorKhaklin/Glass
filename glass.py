@@ -1,5 +1,5 @@
 """
-Glass v4.0 — reference implementation.
+Glass v4.81 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -25,6 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable
 import sys
+import os
 import re
 import subprocess
 
@@ -48,7 +49,7 @@ class Token:
 
 KEYWORDS = {
     "let", "fn", "in", "if", "then", "else", "match", "true", "false",
-    "type", "where",
+    "type", "where", "import",
 }
 
 # Order matters: longest match first.
@@ -61,6 +62,7 @@ TOKEN_SPEC = [
     ("ARROW",    r"->"),
     ("FATARROW", r"=>"),
     ("PIPE",     r"\|>"),
+    ("OROR",     r"\|\|"),
     ("BAR",      r"\|"),
     ("CONCAT",   r"\+\+"),
     ("ELLIPSIS", r"\.\.\."),
@@ -69,6 +71,7 @@ TOKEN_SPEC = [
     ("GE",       r">="),
     ("EQ",       r"=="),
     ("NEQ",      r"!="),
+    ("ANDAND",   r"&&"),
     ("BANG",     r"!"),
     ("QMARK",    r"\?"),
     ("LT",       r"<"),
@@ -78,6 +81,7 @@ TOKEN_SPEC = [
     ("MINUS",    r"-"),
     ("STAR",     r"\*"),
     ("SLASH",    r"/"),
+    ("PERCENT",  r"%"),
     ("LPAREN",   r"\("),
     ("RPAREN",   r"\)"),
     ("LBRACK",   r"\["),
@@ -311,6 +315,14 @@ class BinOp(Node):
     lhs: Node
     rhs: Node
 
+# v4.54: logical NOT. The third boolean operator after && (v4.51) and
+# || (v4.52). Parses as a unary prefix in expression context; the !{...}
+# effect-row syntax only occurs in type context, so the BANG token is
+# now overloaded but unambiguous at parse time.
+@dataclass
+class UnaryNot(Node):
+    expr: Node
+
 @dataclass
 class If(Node):
     cond: Node
@@ -323,6 +335,10 @@ class LetIn(Node):
     ann: Ty | None
     value: Node
     body: Node
+    # v4.67: `let lin x = ...` marks x as a LINEAR resource — it must be
+    # consumed exactly once in the body (no cloning, no dropping). The
+    # checker enforces this with a path-aware use count; eval is unchanged.
+    linear: bool = False
 
 @dataclass
 class Lambda(Node):
@@ -364,6 +380,11 @@ class Variant:
     """One variant of a sum type, e.g. `Some(T)` or `None`."""
     name: str
     fields: list[Ty]   # field types, possibly referring to the type's params
+    # v4.69: optional per-field binder names, parallel to `fields`. A
+    # named field can carry a refinement (`Pos(n: Int where (n > 0))`)
+    # whose binder is that name; the refinement is checked when the
+    # constructor is applied. Unnamed fields get None.
+    field_names: list = field(default_factory=list)
 
 
 @dataclass
@@ -383,6 +404,107 @@ class RecordDecl(Node):
     fields: list[tuple[str, Ty]]
 
 
+@dataclass
+class Import(Node):
+    """v4.70: `import "path/to/lib.glass"` — pulls in the DEFINITIONS
+    (type / record / fn decls) of another file, skipping its top-level
+    `let`s and final expression (so a file's demos don't run on import).
+    Expanded before installation; the host has no module system beyond
+    this flat merge (no namespacing) — enough to share a stdlib core."""
+    path: str
+
+
+# =============================================================================
+# Linear / resource typing (v4.67)
+# =============================================================================
+# A `let lin x = ...` binding marks x as a linear resource: it must be
+# consumed EXACTLY once in the body — no cloning (used twice), no dropping
+# (never used). Enforcement is a static, path-aware use count below.
+
+def _pattern_binds(pat: "Pattern | None", name: str) -> bool:
+    """Does `pat` introduce a binding called `name`? (Used to detect a
+    match arm that shadows a linear variable.)"""
+    if pat is None:
+        return False
+    if pat.kind == "ident":
+        return pat.value == name
+    if pat.kind == "record":
+        # args is a list of bound field-name strings
+        return bool(pat.args) and name in pat.args
+    if pat.kind == "ctor":
+        return bool(pat.args) and any(_pattern_binds(a, name) for a in pat.args)
+    if pat.head is not None or pat.tail is not None:   # list/cons pattern
+        return _pattern_binds(pat.head, name) or _pattern_binds(pat.tail, name)
+    return False
+
+
+def linear_uses(e: "Node", name: str) -> int:
+    """Count uses of linear variable `name` along ONE execution path.
+
+    Branches must consume it identically: a value used in one `if` branch
+    but not the other (or unequally across `match` arms) is a linearity
+    violation, because exactly one branch runs. Capturing a linear value
+    in a lambda is refused outright — a closure may be called any number
+    of times, so single use can't be guaranteed statically. Raises
+    TypeError_ on either problem."""
+    t = type(e)
+    if t is Ident:
+        return 1 if e.name == name else 0
+    if t in (IntLit, StringLit, BoolLit):
+        return 0
+    if t is BinOp:
+        return linear_uses(e.lhs, name) + linear_uses(e.rhs, name)
+    if t is UnaryNot:
+        return linear_uses(e.expr, name)
+    if t is If:
+        tt = linear_uses(e.then_b, name)
+        ft = linear_uses(e.else_b, name)
+        if tt != ft:
+            raise TypeError_(
+                f"linear variable {name!r} used {tt}x in the `then` branch "
+                f"but {ft}x in `else` — a linear resource must be consumed "
+                f"identically on every path")
+        return linear_uses(e.cond, name) + tt
+    if t is LetIn:
+        vc = linear_uses(e.value, name)
+        if e.name == name:           # inner let shadows it in the body
+            return vc
+        return vc + linear_uses(e.body, name)
+    if t is Lambda:
+        if any(p == name for p, _ in e.params):
+            return 0                 # shadowed by a lambda parameter
+        if linear_uses(e.body, name) > 0:
+            raise TypeError_(
+                f"linear variable {name!r} captured in a lambda — single "
+                f"use cannot be guaranteed (a closure may run any number "
+                f"of times)")
+        return 0
+    if t is Call:
+        return linear_uses(e.fn, name) + sum(linear_uses(a, name) for a in e.args)
+    if t is Match:
+        arm_counts = []
+        for pat, body in e.arms:
+            arm_counts.append(0 if _pattern_binds(pat, name)
+                              else linear_uses(body, name))
+        if arm_counts:
+            first = arm_counts[0]
+            for c in arm_counts[1:]:
+                if c != first:
+                    raise TypeError_(
+                        f"linear variable {name!r} used unequally across "
+                        f"match arms — must be consumed identically on every "
+                        f"path")
+            return linear_uses(e.scrutinee, name) + first
+        return linear_uses(e.scrutinee, name)
+    if t is ListLit or t is TupleLit:
+        return sum(linear_uses(it, name) for it in e.items)
+    if t is RecordLit:
+        return sum(linear_uses(v, name) for _, v in e.fields)
+    if t is FieldAccess:
+        return linear_uses(e.record, name)
+    return 0   # literals / unknown leaves contribute nothing
+
+
 def pp_expr(e: "Node") -> str:
     """Compact pretty-printer for AST expressions. Used by TyRefine.__str__
     for diagnostics — keep it terse, not round-trippable."""
@@ -391,6 +513,11 @@ def pp_expr(e: "Node") -> str:
     if isinstance(e, BoolLit):   return "true" if e.value else "false"
     if isinstance(e, Ident):     return e.name
     if isinstance(e, BinOp):     return f"{pp_expr(e.lhs)} {e.op} {pp_expr(e.rhs)}"
+    if isinstance(e, UnaryNot):
+        # Always parenthesize so the printed shape reads back correctly.
+        # Otherwise `!(n == 0)` would print as `!n == 0`, which the
+        # parser would read as `(!n) == 0` — wrong scope.
+        return f"!({pp_expr(e.expr)})"
     if isinstance(e, Call):
         return f"{pp_expr(e.fn)}({', '.join(pp_expr(a) for a in e.args)})"
     if isinstance(e, If):
@@ -405,16 +532,25 @@ def pp_expr(e: "Node") -> str:
 # Binary operator precedence table (higher = binds tighter).
 BIN_PREC = {
     "PIPE":   1,
-    "EQ": 2, "NEQ": 2, "LT": 2, "GT": 2, "LE": 2, "GE": 2,
-    "CONCAT": 3,
-    "PLUS":   4, "MINUS": 4,
-    "STAR":   5, "SLASH": 5,
+    # v4.51: boolean combinators. Standard precedence — `||` binds
+    # tightest of the very low operators, `&&` above it, comparisons
+    # above that. Matches C / Glass intuition: `a > 0 && b < 100`
+    # parses as `(a > 0) && (b < 100)`, not `a > (0 && b) < 100`.
+    "OROR":   2,
+    "ANDAND": 3,
+    "EQ": 4, "NEQ": 4, "LT": 4, "GT": 4, "LE": 4, "GE": 4,
+    "CONCAT": 5,
+    "PLUS":   6, "MINUS": 6,
+    "STAR":   7, "SLASH": 7, "PERCENT": 7,
 }
 RIGHT_ASSOC = {"CONCAT"}
 OP_NAME = {
     "PLUS": "+", "MINUS": "-", "STAR": "*", "SLASH": "/",
     "EQ": "==", "NEQ": "!=", "LT": "<", "GT": ">", "LE": "<=", "GE": ">=",
     "CONCAT": "++", "PIPE": "|>",
+    "ANDAND": "&&", "OROR": "||",
+    # v4.53: modulo at the same precedence as `*` and `/`.
+    "PERCENT": "%",
 }
 
 
@@ -458,6 +594,10 @@ class Parser:
 
     def parse_decl(self) -> Node:
         t = self.peek()
+        if t.kind == "import":
+            self.eat("import")
+            path = self.eat("STRING").value
+            return Import(path=path)
         if t.kind == "let":
             return self.parse_let_decl()
         if t.kind == "fn":
@@ -591,13 +731,28 @@ class Parser:
     def parse_variant(self, type_params: list[str]) -> Variant:
         vname = self.eat("IDENT").value
         fields: list[Ty] = []
+        field_names: list = []
         if self.accept("LPAREN"):
             if self.peek().kind != "RPAREN":
-                fields.append(self.parse_type(type_params))
+                self._parse_variant_field(type_params, fields, field_names)
                 while self.accept("COMMA"):
-                    fields.append(self.parse_type(type_params))
+                    self._parse_variant_field(type_params, fields, field_names)
             self.eat("RPAREN")
-        return Variant(name=vname, fields=fields)
+        return Variant(name=vname, fields=fields, field_names=field_names)
+
+    def _parse_variant_field(self, type_params, fields, field_names) -> None:
+        # v4.69: a field may be `Type` (unnamed) or `name: Type [where (p)]`
+        # (named, refinement-capable). A named field is detected as an
+        # IDENT followed by COLON — distinct from a bare type name, which
+        # is an uppercase-leading IDENT NOT followed by colon, or `List<…>`.
+        name = None
+        if self.peek().kind == "IDENT" and self.peek(1).kind == "COLON":
+            name = self.eat("IDENT").value
+            self.eat("COLON")
+            fields.append(self.parse_type(type_params, accept_refinement=True))
+        else:
+            fields.append(self.parse_type(type_params))
+        field_names.append(name)
 
     def parse_params(self, accept_refinement: bool = False) -> list[tuple[str, Ty]]:
         params: list[tuple[str, Ty]] = []
@@ -698,12 +853,29 @@ class Parser:
 
     def parse_unary(self) -> Node:
         # Unary minus is folded into INT literal at the lexer level.
+        # v4.54: BANG (`!`) is unary logical NOT in expression context.
+        # The same token starts effect rows (`!{IO}`) in type context;
+        # parse_type handles that path separately, so seeing BANG here
+        # is unambiguously the boolean operator.
+        if self.peek().kind == "BANG":
+            self.pos += 1
+            inner = self.parse_unary()  # right-assoc so `!!x` works
+            return UnaryNot(expr=inner)
         return self.parse_postfix()
 
     def parse_postfix(self) -> Node:
         e = self.parse_atom()
         while True:
-            if self.peek().kind == "LPAREN":
+            nxt = self.peek()
+            if nxt.kind == "LPAREN":
+                # An LPAREN that starts a new line at column 1 is a new
+                # top-level expression, not a call continuation. Without
+                # this, `let s = id("hello")\n(n, s)` silently parses as
+                # `id("hello")(n, s)`. The column-1 restriction keeps
+                # indented continuations (`f\n  (x)`) working as calls.
+                prev = self.tokens[self.pos - 1] if self.pos > 0 else None
+                if prev is not None and nxt.col == 1 and nxt.line > prev.line:
+                    break
                 self.eat("LPAREN")
                 args: list[Node] = []
                 if self.peek().kind != "RPAREN":
@@ -794,6 +966,16 @@ class Parser:
 
     def parse_let_in(self) -> LetIn:
         self.eat("let")
+        # v4.67: `let lin x = EXPR in BODY` marks x linear. `lin` is a
+        # CONTEXTUAL keyword — only special when it's an IDENT "lin"
+        # immediately followed by another IDENT (the binding name). So
+        # `let lin = 5 in lin` (a variable literally named lin) still
+        # works: there `lin` is followed by `=`, not an identifier.
+        linear = False
+        if (self.peek().kind == "IDENT" and self.peek().value == "lin"
+                and self.peek(1).kind == "IDENT"):
+            self.pos += 1   # consume `lin`
+            linear = True
         # `let* PAT = EXPR in BODY` — Result-bind sugar (v2.4).
         if self.peek().kind == "STAR":
             self.eat("STAR")
@@ -821,7 +1003,7 @@ class Parser:
         value = self.parse_expr()
         self.eat("in")
         body = self.parse_expr()
-        return LetIn(name=name, ann=ann, value=value, body=body)
+        return LetIn(name=name, ann=ann, value=value, body=body, linear=linear)
 
     def _parse_let_pattern_in(self):
         """Parse `let PAT = EXPR in BODY` where PAT is not a bare identifier.
@@ -891,7 +1073,11 @@ class Parser:
     def parse_lambda(self) -> Lambda:
         self.eat("fn")
         self.eat("LPAREN")
-        params = self.parse_params()
+        # v4.47: accept_refinement=True so lambda params can carry
+        # `where (pred)` clauses (e.g. fn(x: Int where (x > 0)) -> ...).
+        # apply_fn already enforces TyRefine on params at call time, so
+        # no separate runtime path is needed in the host.
+        params = self.parse_params(accept_refinement=True)
         self.eat("RPAREN")
         self.eat("ARROW")
         body = self.parse_expr()
@@ -1023,6 +1209,36 @@ def builtin_types() -> dict[str, Ty]:
         "range":          TyFn((TyInt(), TyInt()), TyList(TyInt())),
         "string_length":  TyFn((TyString(),), TyInt()),
         "substring":      TyFn((TyString(), TyInt(), TyInt()), TyString()),
+        # v4.40: ASCII case conversion. Strings outside A-Za-z pass
+        # through unchanged. Non-ASCII bytes are left alone (no
+        # Unicode normalisation) so host and Quartz agree.
+        "string_to_upper": TyFn((TyString(),), TyString()),
+        "string_to_lower": TyFn((TyString(),), TyString()),
+        # v4.41: char_at returns the byte's value as Int (codepoint
+        # for ASCII; raw byte for UTF-8). Matches Quartz semantics and
+        # quartz_parser.glass / djb2 hash usage. Prism's user-defined
+        # `fn char_at(s, i) : String = substring(s, i, i+1)` still
+        # shadows this builtin inside prism's own source — prism's
+        # internal lexer keeps using its String-returning char_at.
+        "char_at": TyFn((TyString(), TyInt()), TyInt()),
+        # v4.42: bitwise ops on Int. Semantics match C's int64_t:
+        # results are masked to 64 bits and sign-extended. So
+        # bit_shl(1, 63) is -9223372036854775808 (the smallest int64),
+        # and djb2 overflow matches the compiled-Glass output. Without
+        # the mask Python's unbounded ints would give different
+        # numbers from Quartz.
+        "bit_and": TyFn((TyInt(), TyInt()), TyInt()),
+        "bit_or":  TyFn((TyInt(), TyInt()), TyInt()),
+        "bit_xor": TyFn((TyInt(), TyInt()), TyInt()),
+        "bit_not": TyFn((TyInt(),),          TyInt()),
+        "bit_shl": TyFn((TyInt(), TyInt()), TyInt()),
+        "bit_shr": TyFn((TyInt(), TyInt()), TyInt()),
+        # v4.43: explicit int64 wrap. On host this applies the same
+        # _to_int64 mask the bitwise ops use; on Quartz it's a no-op
+        # (values are already int64_t natively). Gives users a knob
+        # for algorithms that overflow `+`/`-`/`*` and need Quartz-
+        # parity output through the host interpreter.
+        "wrap_int64": TyFn((TyInt(),), TyInt()),
         "string_index_of": TyFn(
             (TyString(), TyString()),
             TyADT("Option", (TyInt(),)),
@@ -1666,6 +1882,12 @@ class TypeChecker:
             )
         if isinstance(e, BinOp):
             return self.check_binop(e, env)
+        if isinstance(e, UnaryNot):
+            # v4.54: !expr requires Bool, produces Bool.
+            inner_t = self.infer(e.expr, env)
+            if not equal_ty(inner_t, TyBool()):
+                raise TypeError_(f"!: expected Bool, got {inner_t}")
+            return TyBool()
         if isinstance(e, Call):
             return self.check_call(e, env)
         if isinstance(e, If):
@@ -1688,6 +1910,18 @@ class TypeChecker:
             new_env = {**env, e.name: ann or vt}
             if ann is not None:
                 self.check_refinement_pred(e.name, ann, new_env)
+            # v4.67: enforce linearity — a `let lin` binding must be used
+            # exactly once along every path in the body.
+            if getattr(e, "linear", False):
+                n = linear_uses(e.body, e.name)
+                if n == 0:
+                    raise TypeError_(
+                        f"linear variable {e.name!r} is never used — a linear "
+                        f"resource must be consumed exactly once (no dropping)")
+                if n > 1:
+                    raise TypeError_(
+                        f"linear variable {e.name!r} used {n} times — a linear "
+                        f"resource must be consumed exactly once (no cloning)")
             return self.infer(e.body, new_env)
         if isinstance(e, Lambda):
             new_env = {**env}
@@ -1717,7 +1951,7 @@ class TypeChecker:
     def check_binop(self, e: BinOp, env: dict[str, Ty]) -> Ty:
         lt = self.infer(e.lhs, env)
         rt = self.infer(e.rhs, env)
-        if e.op in ("+", "-", "*", "/"):
+        if e.op in ("+", "-", "*", "/", "%"):
             if not (equal_ty(lt, TyInt()) and equal_ty(rt, TyInt())):
                 raise TypeError_(f"{e.op}: expected Int, Int — got {lt}, {rt}")
             return TyInt()
@@ -1734,6 +1968,15 @@ class TypeChecker:
         if e.op in ("==", "!="):
             if not equal_ty(lt, rt):
                 raise TypeError_(f"{e.op}: operands differ {lt} vs {rt}")
+            return TyBool()
+        if e.op in ("&&", "||"):
+            # v4.51: both sides must be Bool; result is Bool. The
+            # evaluator short-circuits, but the type system doesn't
+            # care about evaluation order — it just enforces shape.
+            if not (equal_ty(lt, TyBool()) and equal_ty(rt, TyBool())):
+                raise TypeError_(
+                    f"{e.op}: expected Bool, Bool — got {lt}, {rt}"
+                )
             return TyBool()
         raise TypeError_(f"unknown op {e.op}")
 
@@ -2022,6 +2265,10 @@ class CtorV(Value):
     bound directly as ADTValue, not as CtorV."""
     name: str
     arity: int
+    # v4.69: field types + binder names, so a refined field is checked
+    # when the constructor is applied (see apply_fn's CtorV branch).
+    fields: list = field(default_factory=list)
+    field_names: list = field(default_factory=list)
     def __str__(self): return f"<ctor {self.name}/{self.arity}>"
 
 
@@ -2055,6 +2302,50 @@ def builtin_values() -> dict[str, Value]:
     def b_range(a, b):
         return ListV([IntV(i) for i in range(a.v, b.v)])
     def b_string_length(s): return IntV(len(s.v))
+    def b_string_to_upper(s):
+        # v4.40: ASCII-only upper-case; bytes outside A-Za-z pass
+        # through unchanged. Matches Quartz's pure-ASCII helper so
+        # host and Quartz produce identical results for any input.
+        return StringV("".join(
+            chr(c - 32) if 0x61 <= (c := ord(ch)) <= 0x7a else ch
+            for ch in s.v
+        ))
+    def b_string_to_lower(s):
+        return StringV("".join(
+            chr(c + 32) if 0x41 <= (c := ord(ch)) <= 0x5a else ch
+            for ch in s.v
+        ))
+    def b_char_at(s, i):
+        n = len(s.v)
+        if i.v < 0:
+            raise RuntimeError(f"char_at: negative index ({i.v})")
+        if i.v >= n:
+            raise RuntimeError(
+                f"char_at: index {i.v} out of range for string of "
+                f"length {n}"
+            )
+        return IntV(ord(s.v[i.v]))
+    # v4.42: int64 wrap so Python's unbounded ints match C's int64_t.
+    # Mask to 64 bits, then if the high bit is set interpret as
+    # negative (two's complement). All bitwise builtins funnel through
+    # this so djb2 overflow produces the same value the compiled
+    # binary does.
+    _MASK64 = (1 << 64) - 1
+    def _to_int64(n: int) -> int:
+        n &= _MASK64
+        if n & (1 << 63):
+            n -= 1 << 64
+        return n
+    def b_bit_and(a, b): return IntV(_to_int64(a.v & b.v))
+    def b_bit_or(a, b):  return IntV(_to_int64(a.v | b.v))
+    def b_bit_xor(a, b): return IntV(_to_int64(a.v ^ b.v))
+    def b_bit_not(a):    return IntV(_to_int64(~a.v))
+    def b_bit_shl(a, b): return IntV(_to_int64(a.v << b.v))
+    # bit_shr is arithmetic right shift on signed int64. Python's >>
+    # is already arithmetic on negative ints, so the result for any
+    # in-range input matches C without an extra mask.
+    def b_bit_shr(a, b): return IntV(a.v >> b.v)
+    def b_wrap_int64(n): return IntV(_to_int64(n.v))
     def b_substring(s, start, end):
         # Clamp to string bounds; raise on inverted indices to keep semantics
         # honest. Negative indices are not Python-style — that's a footgun.
@@ -2151,6 +2442,16 @@ def builtin_values() -> dict[str, Value]:
         "fold":             BuiltinV("fold", b_fold),
         "range":            BuiltinV("range", b_range),
         "string_length":    BuiltinV("string_length", b_string_length),
+        "string_to_upper":  BuiltinV("string_to_upper", b_string_to_upper),
+        "string_to_lower":  BuiltinV("string_to_lower", b_string_to_lower),
+        "char_at":          BuiltinV("char_at", b_char_at),
+        "bit_and":          BuiltinV("bit_and", b_bit_and),
+        "bit_or":           BuiltinV("bit_or",  b_bit_or),
+        "bit_xor":          BuiltinV("bit_xor", b_bit_xor),
+        "bit_not":          BuiltinV("bit_not", b_bit_not),
+        "bit_shl":          BuiltinV("bit_shl", b_bit_shl),
+        "bit_shr":          BuiltinV("bit_shr", b_bit_shr),
+        "wrap_int64":       BuiltinV("wrap_int64", b_wrap_int64),
         "substring":        BuiltinV("substring", b_substring),
         "string_index_of":  BuiltinV("string_index_of", b_string_index_of),
         "read_file":        BuiltinV("read_file", b_read_file),
@@ -2165,40 +2466,130 @@ def apply_fn(
     args: list[Value],
     skip_refinement_indices: set[int] | None = None,
 ) -> Value:
+    """v4.28: trampoline-based tail-call elimination.
+
+    The OUTER `while True` loop reapplies functions. After setting up the
+    env for the current `f`, the INNER loop peels through tail-position
+    `If` / `LetIn` / `Match` arms looking for a tail `Call`. If the tail
+    is a Call to another FnV (and the current fn has no return-type
+    refinement, since dropping its check would be unsound), we trampoline:
+    replace `f`/`args`/`skip` and continue the outer loop with no Python
+    stack growth. Result: arbitrarily-deep tail-recursive programs run in
+    O(1) Python frames.
+
+    Non-tail forms (BinOp, Ident, list, etc.) and Calls under a
+    return-type refinement still go through `eval_expr` as before, so the
+    refactor is semantically conservative — every existing test continues
+    to pass.
+    """
     # v1.7 perf: dispatch by type identity, not isinstance. FnV is by far
     # the hottest case so it goes first; BuiltinV and CtorV follow.
-    t = type(f)
-    if t is FnV:
+    while True:
+        t = type(f)
+        if t is BuiltinV:
+            return f.fn(*args)
+        if t is CtorV:
+            if len(args) != f.arity:
+                raise RuntimeError(
+                    f"ctor {f.name} expects {f.arity} args, got {len(args)}"
+                )
+            # v4.69: enforce refinements on refined fields at construction.
+            # Each field is bound by name as we go, so a later field's
+            # refinement may reference EARLIER fields (cross-field, like
+            # the cross-parameter refinements of v4.56) — e.g.
+            # `Range(lo: Int, hi: Int where (hi > lo))`.
+            field_env: dict = {}
+            for i, fld_ty in enumerate(f.fields):
+                binder = (f.field_names[i]
+                          if i < len(f.field_names) and f.field_names[i]
+                          else f"_field{i}")
+                if type(fld_ty) is TyRefine:
+                    check_refinement_runtime(
+                        binder, fld_ty, args[i], {**field_env, binder: args[i]})
+                field_env[binder] = args[i]
+            return ADTValue(ctor=f.name, args=list(args))
+        if t is not FnV:
+            raise RuntimeError(f"not callable: {f}")
         if len(args) != len(f.params):
             raise RuntimeError(f"arity mismatch calling {f}")
-        # dict.copy() avoids the kwargs-unpacking overhead of {**f.env}.
         new_env = f.env.copy()
-        skip = skip_refinement_indices
-        if skip is None:
+        # v4.29: inline `type(t_p) is TyRefine` at the call site so we
+        # skip the function-call overhead when the param isn't refined.
+        # Most params aren't refined; for prism running prism (millions
+        # of fn applications), saving one Python call per param is real.
+        if skip_refinement_indices is None:
             for (p, t_p), a in zip(f.params, args):
                 new_env[p] = a
-                check_refinement_runtime(p, t_p, a, new_env)
+                if type(t_p) is TyRefine:
+                    check_refinement_runtime(p, t_p, a, new_env)
         else:
             for idx, ((p, t_p), a) in enumerate(zip(f.params, args)):
                 new_env[p] = a
-                if idx not in skip:
+                if type(t_p) is TyRefine and idx not in skip_refinement_indices:
                     check_refinement_runtime(p, t_p, a, new_env)
-        result = eval_expr(f.body, new_env)
-        # Return-refinement check (v1.3). If the declared return type carries
-        # a refinement, the predicate references `result` and is evaluated in
-        # an env where `result` maps to the just-computed return value, with
-        # all params still in scope.
-        if f.ret is not None and type(f.ret) is TyRefine:
-            new_env["result"] = result
-            check_refinement_runtime("result", f.ret, result, new_env)
-        return result
-    if t is BuiltinV:
-        return f.fn(*args)
-    if t is CtorV:
-        if len(args) != f.arity:
-            raise RuntimeError(f"ctor {f.name} expects {f.arity} args, got {len(args)}")
-        return ADTValue(ctor=f.name, args=list(args))
-    raise RuntimeError(f"not callable: {f}")
+        f_ret = f.ret
+        has_ret_ref = f_ret is not None and type(f_ret) is TyRefine
+        body = f.body
+        env = new_env
+        # Inner loop: peel tail-position constructs. Stops at either a
+        # trampolinable Call (sets new f/args and breaks to outer) or any
+        # non-tail-recursive form (eval normally and return).
+        tail_recursed = False
+        while True:
+            bt = type(body)
+            if bt is If:
+                c = eval_expr(body.cond, env)
+                body = body.then_b if c.v else body.else_b
+                continue
+            if bt is LetIn:
+                v = eval_expr(body.value, env)
+                env = {**env, body.name: v}
+                # v4.29: inline TyRefine check — skip the call when the
+                # annotation has no refinement to enforce.
+                ann = body.ann
+                if ann is not None and type(ann) is TyRefine:
+                    check_refinement_runtime(body.name, ann, v, env)
+                body = body.body
+                continue
+            if bt is Match:
+                scrut = eval_expr(body.scrutinee, env)
+                matched = False
+                for pat, arm_body in body.arms:
+                    ok, bindings = pat_match(pat, scrut)
+                    if ok:
+                        env = {**env, **bindings}
+                        body = arm_body
+                        matched = True
+                        break
+                if not matched:
+                    raise RuntimeError("non-exhaustive match")
+                continue
+            if bt is Call and not has_ret_ref:
+                callee = eval_expr(body.fn, env)
+                call_args = [eval_expr(a, env) for a in body.args]
+                skip = getattr(body, "discharged_args", None)
+                if type(callee) is FnV:
+                    # Trampoline: outer loop will set up the new fn's env.
+                    f = callee
+                    args = call_args
+                    skip_refinement_indices = skip
+                    tail_recursed = True
+                    break
+                # Non-FnV (builtin/ctor) tail call — apply directly. No
+                # need to re-enter the outer loop because builtins and
+                # ctors don't have a body to peel.
+                return apply_fn(callee, call_args, skip)
+            # Non-tail-recursive form (BinOp, Ident, Lambda, list, ...)
+            # or a Call under a return-type refinement we can't safely
+            # drop. Evaluate normally, then check the return refinement.
+            result = eval_expr(body, env)
+            if has_ret_ref:
+                env["result"] = result
+                check_refinement_runtime("result", f_ret, result, env)
+            return result
+        # Inner loop broke with tail_recursed = True → restart outer.
+        if tail_recursed:
+            continue
 
 
 def _ast_equal(a: Node, b: Node) -> bool:
@@ -2214,6 +2605,8 @@ def _ast_equal(a: Node, b: Node) -> bool:
     if isinstance(a, Ident):     return a.name == b.name
     if isinstance(a, BinOp):
         return a.op == b.op and _ast_equal(a.lhs, b.lhs) and _ast_equal(a.rhs, b.rhs)
+    if isinstance(a, UnaryNot):
+        return _ast_equal(a.expr, b.expr)
     if isinstance(a, If):
         return (_ast_equal(a.cond, b.cond) and
                 _ast_equal(a.then_b, b.then_b) and
@@ -2229,6 +2622,8 @@ def _alpha_rename(e: Node, old: str, new: str) -> Node:
         return BinOp(op=e.op,
                      lhs=_alpha_rename(e.lhs, old, new),
                      rhs=_alpha_rename(e.rhs, old, new))
+    if isinstance(e, UnaryNot):
+        return UnaryNot(expr=_alpha_rename(e.expr, old, new))
     if isinstance(e, If):
         return If(cond=_alpha_rename(e.cond, old, new),
                   then_b=_alpha_rename(e.then_b, old, new),
@@ -2376,6 +2771,7 @@ def try_const_eval(e: Node, env: dict[str, Value] | None = None) -> Value | None
             if op == "-":  return IntV(l.v - r.v)
             if op == "*":  return IntV(l.v * r.v)
             if op == "/" and r.v != 0:  return IntV(l.v // r.v)
+            if op == "%" and r.v != 0:  return IntV(l.v % r.v)
             if op == "<":  return BoolV(l.v <  r.v)
             if op == ">":  return BoolV(l.v >  r.v)
             if op == "<=": return BoolV(l.v <= r.v)
@@ -2389,6 +2785,12 @@ def try_const_eval(e: Node, env: dict[str, Value] | None = None) -> Value | None
             if op == "==": return BoolV(l.v == r.v)
             if op == "!=": return BoolV(l.v != r.v)
             if op == "++": return StringV(l.v + r.v)
+        return None
+    if isinstance(e, UnaryNot):
+        # v4.54: const-fold logical NOT for static discharge.
+        v = try_const_eval(e.expr, env)
+        if isinstance(v, BoolV):
+            return BoolV(not v.v)
         return None
     if isinstance(e, If):
         c = try_const_eval(e.cond, env)
@@ -2532,6 +2934,11 @@ def eval_expr(e: Node, env: dict[str, Value]) -> Value:
         return apply_fn(f, args, skip_refinement_indices=skip)
     if t is BinOp:
         return eval_binop(e, env)
+    if t is UnaryNot:
+        # v4.54: evaluate inner, flip the Bool. Typechecker has
+        # already ensured inner is Bool so we trust it.
+        v = eval_expr(e.expr, env)
+        return BoolV(not v.v)
     if t is If:
         c = eval_expr(e.cond, env)
         return eval_expr(e.then_b if c.v else e.else_b, env)
@@ -2541,8 +2948,10 @@ def eval_expr(e: Node, env: dict[str, Value]) -> Value:
     if t is LetIn:
         v = eval_expr(e.value, env)
         new_env = {**env, e.name: v}
-        if e.ann is not None:
-            check_refinement_runtime(e.name, e.ann, v, new_env)
+        # v4.29: same inline TyRefine guard as in apply_fn's trampoline.
+        ann = e.ann
+        if ann is not None and type(ann) is TyRefine:
+            check_refinement_runtime(e.name, ann, v, new_env)
         return eval_expr(e.body, new_env)
     if t is Match:
         scrut = eval_expr(e.scrutinee, env)
@@ -2573,13 +2982,36 @@ def eval_expr(e: Node, env: dict[str, Value]) -> Value:
 
 
 def eval_binop(e: BinOp, env: dict[str, Value]) -> Value:
+    op = e.op
+    # v4.51: short-circuit boolean combinators. Evaluate lhs first;
+    # if its value already determines the outcome, skip rhs entirely.
+    # Glass is pure, so the OBSERVABLE result is the same either way,
+    # but short-circuit is the user-expected semantics and avoids
+    # wasted work (e.g. `n != 0 && big_value / n > 0`).
+    if op == "&&":
+        lv = eval_expr(e.lhs, env)
+        if not lv.v:
+            return BoolV(False)
+        return eval_expr(e.rhs, env)
+    if op == "||":
+        lv = eval_expr(e.lhs, env)
+        if lv.v:
+            return BoolV(True)
+        return eval_expr(e.rhs, env)
     lv = eval_expr(e.lhs, env)
     rv = eval_expr(e.rhs, env)
-    op = e.op
     if op == "+":  return IntV(lv.v + rv.v)
     if op == "-":  return IntV(lv.v - rv.v)
     if op == "*":  return IntV(lv.v * rv.v)
     if op == "/":  return IntV(lv.v // rv.v)
+    # v4.53: modulo. Uses Python's `%` which is floor-modulo (result
+    # has sign of divisor); Quartz emits C's `%` which is truncated
+    # (result has sign of dividend). The two agree for non-negative
+    # operands — the common case — and diverge only when the dividend
+    # is negative. Same divergence story as `/` (host uses `//` floor,
+    # Quartz uses C `/` truncate). Documented under the v4.43 overflow
+    # parity discussion; calling out here for completeness.
+    if op == "%":  return IntV(lv.v % rv.v)
     if op == "++":
         if type(lv) is StringV: return StringV(lv.v + rv.v)
         if type(lv) is ListV:   return ListV(lv.items + rv.items)
@@ -2750,7 +3182,7 @@ def install_decl(
             if not v.fields:
                 env[v.name] = ADTValue(ctor=v.name, args=[])
             else:
-                env[v.name] = CtorV(name=v.name, arity=len(v.fields))
+                env[v.name] = CtorV(name=v.name, arity=len(v.fields), fields=v.fields, field_names=v.field_names)
         if verbose:
             print(f"  type {d.name}: " +
                   " | ".join(v.name + (f"({len(v.fields)})" if v.fields else "")
@@ -2800,7 +3232,7 @@ def install_program(
                 if not v.fields:
                     env[v.name] = ADTValue(ctor=v.name, args=[])
                 else:
-                    env[v.name] = CtorV(name=v.name, arity=len(v.fields))
+                    env[v.name] = CtorV(name=v.name, arity=len(v.fields), fields=v.fields, field_names=v.field_names)
         elif isinstance(d, RecordDecl):
             checker.register_record(d)
             # No runtime binding — record values are built via RecordLit.
@@ -2845,9 +3277,45 @@ def make_runtime() -> tuple[TypeChecker, dict[str, Value]]:
     return checker, env
 
 
-def run_source(src: str, verbose: bool = False) -> None:
+def expand_imports(
+    decls: list[Node], base_dir: str, seen: set[str] | None = None
+) -> list[Node]:
+    """v4.70: replace each `import "file"` with the imported file's
+    DEFINITIONS (TypeDecl / RecordDecl / FnDecl), recursively. A file's
+    top-level `let`s and final expression are skipped, so importing a
+    file never runs its demos. Paths resolve relative to the importing
+    file's directory (then CWD). A `seen` set dedupes and breaks cycles
+    — a diamond import installs each library exactly once."""
+    seen = seen if seen is not None else set()
+    out: list[Node] = []
+    for d in decls:
+        if not isinstance(d, Import):
+            out.append(d)
+            continue
+        cand = os.path.join(base_dir, d.path)
+        path = cand if os.path.exists(cand) else d.path
+        real = os.path.realpath(path)
+        if real in seen:
+            continue   # already imported (diamond / cycle) — install once
+        seen.add(real)
+        try:
+            src = open(path).read()
+        except OSError as ex:
+            raise RuntimeError(f"import: cannot read {d.path!r}: {ex}")
+        imported = Parser(tokenize(src)).parse_program()
+        # Recurse first (the imported file may import others), then keep
+        # only its definitions — not its `let`s or trailing expression.
+        expanded = expand_imports(imported, os.path.dirname(real), seen)
+        for sub in expanded:
+            if isinstance(sub, (TypeDecl, RecordDecl, FnDecl)):
+                out.append(sub)
+    return out
+
+
+def run_source(src: str, verbose: bool = False, base_dir: str = ".") -> None:
     checker, env = make_runtime()
     decls = Parser(tokenize(src)).parse_program()
+    decls = expand_imports(decls, base_dir)
     install_program(decls, checker, env, verbose=verbose)
 
 
@@ -2910,7 +3378,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v4.0 — interactive REPL")
+    print("Glass v4.81 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3024,7 +3492,9 @@ def main() -> None:
     else:
         with open(sys.argv[1]) as f:
             src = f.read()
-        run_source(src, verbose=True)
+        # v4.70: resolve `import` paths relative to the source file's dir.
+        run_source(src, verbose=True,
+                   base_dir=os.path.dirname(os.path.abspath(sys.argv[1])))
 
 
 if __name__ == "__main__":

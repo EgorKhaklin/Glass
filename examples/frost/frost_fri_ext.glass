@@ -1,0 +1,125 @@
+# =============================================================================
+# frost_fri_ext.glass — FRI folding over the extension field (P3 integration)
+#
+# The honest payoff: the FRI low-degree test with CRYPTOGRAPHIC algebraic
+# soundness. frost_fri folded with base-field (~2^31) challenges -> ~2^-31
+# soundness per round. Here the fold challenge beta is drawn from F_{p^4}
+# (frost_ext, ~2^124) -> ~2^-124 per round. Combined with Fiat-Shamir query
+# amplification (frost_fiat, ~2^-K), this is the full small-field-STARK
+# soundness design, all in Glass.
+#
+# MECHANISM: the codeword starts as base-field polynomial evaluations, embedded
+# into F_{p^4}. The fold  f'(x^2) = (f(x)+f(-x))/2 + beta·(f(x)-f(-x))/(2x)
+# uses base-field domain points x (so the /2 and /(2x) are base-field scalings)
+# but beta in F_{p^4} — so after the first fold the codeword is F_{p^4}-valued,
+# and all subsequent arithmetic is in F_{p^4}. A genuine low-degree polynomial
+# still folds to a constant; a random codeword does not — the soundness gap,
+# now over a 2^124 challenge space. beta per round is Fiat-Shamir (hashed).
+#
+# Reuses frost_ext (F_{p^2}/F_{p^4}) + frost_fri (folding). Dogfoods.
+# =============================================================================
+
+# --- Baby Bear base field ----------------------------------------------------
+fn fadd(a: Int, b: Int) : Int = (a + b) % 2013265921
+fn fmul(a: Int, b: Int) : Int = (a * b) % 2013265921
+fn fsub(a: Int, b: Int) : Int = ((a - b) % 2013265921 + 2013265921) % 2013265921
+fn fneg(a: Int) : Int = fsub(0, a)
+fn fpow(base: Int, e: Int) : Int =
+  if e == 0 then 1 else if e % 2 == 0 then let h : Int = fpow(base, e / 2) in fmul(h, h) else fmul(base, fpow(base, e - 1))
+fn finv_b(x: Int) : Int = fpow(x, 2013265919)
+fn root_of_unity(n: Int) : Int = fpow(31, 2013265920 / n)
+fn is_nonres_b(w: Int) : Bool = fpow(w, 1006632960) == 2013265920
+fn find_nonres_b(w: Int) : Int = if is_nonres_b(w) then w else find_nonres_b(w + 1)
+# hash for Fiat-Shamir betas
+fn sbox(x: Int) : Int = let x2 : Int = fmul(x, x) in let x4 : Int = fmul(x2, x2) in fmul(x4, x)
+fn rconst(i: Int) : Int = ((i + 1) * (i + 1) * (i + 1) + i * 1009 + 1234567) % 2013265921
+fn mimc(x: Int, k: Int, i: Int) : Int = if i >= 16 then fadd(x, k) else mimc(sbox(fadd(fadd(x, k), rconst(i))), k, i + 1)
+fn hash2(a: Int, b: Int) : Int = fadd(fadd(mimc(a, b, 0), a), b)
+
+# --- F_{p^2} -----------------------------------------------------------------
+type F2 = | F2(Int, Int)
+fn add2(a: F2, b: F2) : F2 = match a { F2(a0, a1) => match b { F2(b0, b1) => F2(fadd(a0, b0), fadd(a1, b1)) } }
+fn sub2(a: F2, b: F2) : F2 = match a { F2(a0, a1) => match b { F2(b0, b1) => F2(fsub(a0, b0), fsub(a1, b1)) } }
+fn scale2(a: F2, s: Int) : F2 = match a { F2(a0, a1) => F2(fmul(a0, s), fmul(a1, s)) }
+fn mul2(a: F2, b: F2, w: Int) : F2 =
+  match a { F2(a0, a1) => match b { F2(b0, b1) =>
+    F2(fadd(fmul(a0, b0), fmul(w, fmul(a1, b1))), fadd(fmul(a0, b1), fmul(a1, b0))) } }
+fn eq2(a: F2, b: F2) : Bool = match a { F2(a0, a1) => match b { F2(b0, b1) => a0 == b0 && a1 == b1 } }
+fn pow2(a: F2, e: Int, w: Int) : F2 =
+  if e == 0 then F2(1, 0) else if e % 2 == 0 then let h : F2 = pow2(a, e / 2, w) in mul2(h, h, w) else mul2(a, pow2(a, e - 1, w), w)
+fn is_nonsq2(v: F2, w: Int) : Bool = eq2(pow2(v, (2013265921 * 2013265921 - 1) / 2, w), F2(2013265920, 0))
+fn find_v(i: Int, w: Int) : F2 = if is_nonsq2(F2(i, 1), w) then F2(i, 1) else find_v(i + 1, w)
+
+# --- F_{p^4} -----------------------------------------------------------------
+type F4 = | F4(F2, F2)
+fn add4(a: F4, b: F4) : F4 = match a { F4(c0, c1) => match b { F4(d0, d1) => F4(add2(c0, d0), add2(c1, d1)) } }
+fn sub4(a: F4, b: F4) : F4 = match a { F4(c0, c1) => match b { F4(d0, d1) => F4(sub2(c0, d0), sub2(c1, d1)) } }
+fn scale4(a: F4, s: Int) : F4 = match a { F4(c0, c1) => F4(scale2(c0, s), scale2(c1, s)) }   # F4 · base scalar
+fn mul4(a: F4, b: F4, v: F2, w: Int) : F4 =
+  match a { F4(c0, c1) => match b { F4(d0, d1) =>
+    F4(add2(mul2(c0, d0, w), mul2(v, mul2(c1, d1, w), w)), add2(mul2(c0, d1, w), mul2(c1, d0, w))) } }
+fn eq4(a: F4, b: F4) : Bool = match a { F4(c0, c1) => match b { F4(d0, d1) => eq2(c0, d0) && eq2(c1, d1) } }
+fn embed4(x: Int) : F4 = F4(F2(x, 0), F2(0, 0))                       # base -> F4
+
+# --- base codeword (polynomial evaluations), embedded into F4 ----------------
+fn powers(w: Int, cur: Int, k: Int) : List<Int> = if k <= 0 then [] else [cur] ++ powers(w, fmul(cur, w), k - 1)
+fn build_domain(n: Int) : List<Int> = powers(root_of_unity(n), 1, n)
+fn poly_eval(coeffs: List<Int>, x: Int) : Int = match coeffs { [] => 0; [c, ...r] => fadd(c, fmul(x, poly_eval(r, x))) }
+fn embed_eval(coeffs: List<Int>, dom: List<Int>) : List<F4> =
+  match dom { [] => []; [x, ...rest] => [embed4(poly_eval(coeffs, x))] ++ embed_eval(coeffs, rest) }
+fn embed_list(xs: List<Int>) : List<F4> = match xs { [] => []; [x, ...r] => [embed4(x)] ++ embed_list(r) }
+
+fn ilen4(cw: List<F4>) : Int = match cw { [] => 0; [x, ...r] => 1 + ilen4(r) }
+fn nth4(cw: List<F4>, i: Int) : F4 = match cw { [] => F4(F2(0, 0), F2(0, 0)); [x, ...r] => if i == 0 then x else nth4(r, i - 1) }
+fn nthb(xs: List<Int>, i: Int) : Int = match xs { [] => 0; [x, ...r] => if i == 0 then x else nthb(r, i - 1) }
+
+# --- FRI fold over F_{p^4} ---------------------------------------------------
+# f'(x^2) = (fx+fmx)/2 + beta·(fx-fmx)/(2x);  fx,fmx,beta ∈ F4, x ∈ base.
+fn fold_pair4(fx: F4, fmx: F4, x: Int, beta: F4, v: F2, w: Int) : F4 =
+  let feven : F4 = scale4(add4(fx, fmx), finv_b(2)) in
+  let fodd : F4 = scale4(sub4(fx, fmx), finv_b(fmul(2, x))) in
+  add4(feven, mul4(beta, fodd, v, w))
+fn fold_at4(cw: List<F4>, dom: List<Int>, beta: F4, i: Int, half: Int, v: F2, w: Int) : List<F4> =
+  if i >= half then []
+  else [fold_pair4(nth4(cw, i), nth4(cw, i + half), nthb(dom, i), beta, v, w)] ++ fold_at4(cw, dom, beta, i + 1, half, v, w)
+fn square_dom(dom: List<Int>, i: Int, half: Int) : List<Int> =
+  if i >= half then [] else [fmul(nthb(dom, i), nthb(dom, i))] ++ square_dom(dom, i + 1, half)
+
+# Fiat-Shamir beta in F_{p^4} (4 hashed base coords).
+fn beta_of(seed: Int, r: Int) : F4 =
+  F4(F2(hash2(seed, 4 * r), hash2(seed, 4 * r + 1)), F2(hash2(seed, 4 * r + 2), hash2(seed, 4 * r + 3)))
+
+fn fold_all4(cw: List<F4>, dom: List<Int>, seed: Int, r: Int, v: F2, w: Int) : List<F4> =
+  if ilen4(cw) <= 2 then cw
+  else
+    let half : Int = ilen4(cw) / 2 in
+    fold_all4(fold_at4(cw, dom, beta_of(seed, r), 0, half, v, w), square_dom(dom, 0, half), seed, r + 1, v, w)
+
+fn all_eq4(cw: List<F4>, x: F4) : Bool = match cw { [] => true; [y, ...r] => if eq4(y, x) then all_eq4(r, x) else false }
+fn is_constant4(cw: List<F4>) : Bool = match cw { [] => true; [x, ...r] => all_eq4(r, x) }
+
+# --- demo --------------------------------------------------------------------
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+
+let w : Int = find_nonres_b(2)
+let v : F2 = find_v(0, w)
+let dom16 : List<Int> = build_domain(16)
+let seed : Int = 1234567
+
+let _ : String = print("--- frost_fri_ext.glass: FRI folding over F_{p^4} (cryptographic challenges) ---")
+let _ : String = print("base field ~2^31 (fast int64 math); fold challenge beta in F_{p^4} ~2^124")
+let _ : String = print("")
+
+# low-degree base poly (deg 5), embedded into F4, folds to a constant.
+let _ : String = print("degree-5 poly, folded with F_{p^4} betas -> constant: " ++
+  show_b(is_constant4(fold_all4(embed_eval([1, 2, 3, 4, 5, 6], dom16), dom16, seed, 0, v, w))))
+
+# random codeword does not.
+let _ : String = print("random codeword,  folded with F_{p^4} betas -> constant: " ++
+  show_b(is_constant4(fold_all4(embed_list([11, 7, 99, 3, 250, 41, 8, 1000, 17, 53, 2, 488, 91, 6, 314, 159]), dom16, seed, 0, v, w))) ++
+  "  (correctly NOT low-degree)")
+let _ : String = print("")
+let _ : String = print("the low-degree test now runs in F_{p^4}: ~2^-124 algebraic soundness PER fold round.")
+let _ : String = print("with Fiat-Shamir query amplification (frost_fiat), this is full STARK soundness in Glass.")
+
+"frost fri_ext v0.1 — FRI folding with F_{p^4} challenges: cryptographic algebraic soundness"

@@ -1,0 +1,134 @@
+# =============================================================================
+# frost_fri.glass — the FRI low-degree test, foundations (v0.1)
+#
+# This is the start of Frost's final layer: FRI (Fast Reed–Solomon IOP of
+# Proximity), the low-degree test that makes a STARK proof SUCCINCT and
+# ZERO-KNOWLEDGE — letting a verifier be convinced a committed function is a
+# low-degree polynomial (hence the constraint check holds) WITHOUT seeing it.
+#
+# THE IDEA: encode the computation as a polynomial; a valid execution => the
+# polynomial is LOW DEGREE. FRI proves low-degree by repeatedly FOLDING the
+# polynomial in half with random challenges until it collapses to a constant.
+# A genuinely low-degree polynomial folds cleanly to a constant; a function
+# that isn't low-degree does not — that gap is the soundness.
+#
+# This file builds the foundations + the folding operation, and demonstrates
+# the core property. FFT needs a SMOOTH field (a 2^k-th root of unity), which
+# 2^31-1 lacks (p-1 has no large power-of-two factor). So we switch to the
+# STARK-friendly BABY BEAR prime  p = 15·2^27 + 1 = 2013265921: it has a
+# 2^27-th root of unity, and p < 2^31 keeps products exact in int64 (glassc-
+# compilable). The earlier layers' structure is unchanged; only the field
+# constant differs.
+#
+# NEXT: Merkle-commit each fold round, derive the fold challenges by
+# Fiat-Shamir (frost_commit/frost_prove), add the query phase (check
+# consistency between rounds at random points) — that completes a STARK.
+# =============================================================================
+
+# --- Baby Bear field, p = 2013265921 = 15·2^27 + 1 ---------------------------
+fn fadd(a: Int, b: Int) : Int = (a + b) % 2013265921
+fn fmul(a: Int, b: Int) : Int = (a * b) % 2013265921
+fn fsub(a: Int, b: Int) : Int = ((a - b) % 2013265921 + 2013265921) % 2013265921
+fn fpow(base: Int, exp: Int) : Int =
+  if exp == 0 then 1
+  else if exp % 2 == 0 then let h : Int = fpow(base, exp / 2) in fmul(h, h)
+  else fmul(base, fpow(base, exp - 1))
+fn finv(x: Int) : Int = fpow(x, 2013265919)   # x^(p-2)
+
+# --- roots of unity ----------------------------------------------------------
+# 31 is a generator of F_p^*; the n-th root of unity is 31^((p-1)/n).
+# p-1 = 2013265920 = 15·2^27, so n must be a power of two dividing 2^27.
+fn root_of_unity(n: Int) : Int = fpow(31, 2013265920 / n)
+
+# domain = [w^0, w^1, ..., w^(n-1)]
+fn powers(w: Int, cur: Int, k: Int) : List<Int> =
+  if k <= 0 then [] else [cur] ++ powers(w, fmul(cur, w), k - 1)
+fn build_domain(n: Int) : List<Int> = powers(root_of_unity(n), 1, n)
+
+# --- polynomials -------------------------------------------------------------
+# Horner evaluation of coeffs (low->high) at x.
+fn poly_eval(coeffs: List<Int>, x: Int) : Int =
+  match coeffs { [] => 0; [c, ...rest] => fadd(c, fmul(x, poly_eval(rest, x))) }
+# the codeword: evaluate poly at every domain point.
+fn evaluate(coeffs: List<Int>, dom: List<Int>) : List<Int> =
+  match dom { [] => []; [x, ...rest] => [poly_eval(coeffs, x)] ++ evaluate(coeffs, rest) }
+
+fn nth(xs: List<Int>, i: Int) : Int =
+  match xs { [] => 0; [x, ...r] => if i == 0 then x else nth(r, i - 1) }
+fn ilen(xs: List<Int>) : Int = match xs { [] => 0; [x, ...r] => 1 + ilen(r) }
+
+# --- FRI folding -------------------------------------------------------------
+# Given a codeword (evals of f over domain D, |D| = n) and a challenge beta,
+# produce the codeword of the folded polynomial f' over D^2 (size n/2):
+#   f(x) = f_even(x^2) + x·f_odd(x^2);  with -x = D[i + n/2] (since w^(n/2) = -1)
+#   f_even = (f(x)+f(-x))/2,  f_odd = (f(x)-f(-x))/(2x)
+#   f'(x^2) = f_even + beta·f_odd      (degree halves)
+fn fold_at(cw: List<Int>, dom: List<Int>, beta: Int, i: Int, half: Int) : List<Int> =
+  if i >= half then []
+  else
+    let fx : Int = nth(cw, i) in
+    let fmx : Int = nth(cw, i + half) in
+    let x : Int = nth(dom, i) in
+    let feven : Int = fmul(fadd(fx, fmx), finv(2)) in
+    let fodd : Int = fmul(fsub(fx, fmx), finv(fmul(2, x))) in
+    [fadd(feven, fmul(beta, fodd))] ++ fold_at(cw, dom, beta, i + 1, half)
+
+fn square_domain(dom: List<Int>, i: Int, half: Int) : List<Int> =
+  if i >= half then [] else [fmul(nth(dom, i), nth(dom, i))] ++ square_domain(dom, i + 1, half)
+
+# fold the codeword (with domain) once -> (new codeword, new domain) of half size.
+fn fri_fold(cw: List<Int>, dom: List<Int>, beta: Int) : (List<Int>, List<Int>) =
+  let half : Int = ilen(cw) / 2 in
+  (fold_at(cw, dom, beta, 0, half), square_domain(dom, 0, half))
+
+# Fold repeatedly until size 2 (NOT size 1 — a size-1 codeword is trivially
+# "constant"). A genuine low-degree polynomial, folded enough that its degree
+# reaches 0, yields an all-equal (constant) codeword while size > 1; a random
+# codeword does not. (challenge per round stands in for a Fiat-Shamir value.)
+fn fold_all(cw: List<Int>, dom: List<Int>, round: Int) : List<Int> =
+  if ilen(cw) <= 2 then cw
+  else
+    let beta : Int = fadd(fmul(round, 7919), 12345) in
+    match fri_fold(cw, dom, beta) { (cw2, dom2) => fold_all(cw2, dom2, round + 1) }
+
+# is every element equal? (a fully-folded low-degree poly is a constant codeword)
+fn all_eq(xs: List<Int>, v: Int) : Bool =
+  match xs { [] => true; [x, ...r] => if x == v then all_eq(r, v) else false }
+fn is_constant(xs: List<Int>) : Bool =
+  match xs { [] => true; [x, ...r] => all_eq(r, x) }
+
+# Fold until the degree should be ~0, then check the codeword is constant.
+fn low_degree_ok(coeffs: List<Int>, domsize: Int) : Bool =
+  is_constant(fold_all(evaluate(coeffs, build_domain(domsize)), build_domain(domsize), 0))
+fn codeword_low_degree(cw: List<Int>, domsize: Int) : Bool =
+  is_constant(fold_all(cw, build_domain(domsize), 0))
+
+# --- demo --------------------------------------------------------------------
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+
+let _ : String = print("--- frost_fri.glass: the FRI low-degree test (Baby Bear field) ---")
+# sanity: roots of unity. w8^8 must be 1; w8^4 must be -1 = p-1.
+let w8 : Int = root_of_unity(8)
+let _ : String = print("8th root of unity w: " ++ int_to_string(w8))
+let _ : String = print("  w^8 == 1 ?  " ++ show_b(fpow(w8, 8) == 1) ++
+                       "    w^4 == -1 ? " ++ show_b(fpow(w8, 4) == 2013265920))
+let _ : String = print("")
+
+# Domain size 16 (rate 1/2): degree-<8 polynomials are "low degree". Folding
+# down to size 2 collapses any degree-<8 poly to a constant.
+let p2 : List<Int> = [5, 3, 2]                       # degree 2
+let _ : String = print("degree-2 poly over domain 16 -> folds to a constant: " ++
+                       show_b(low_degree_ok(p2, 16)))
+
+let p5 : List<Int> = [1, 2, 3, 4, 5, 6]              # degree 5 (< 8)
+let _ : String = print("degree-5 poly over domain 16 -> folds to a constant: " ++
+                       show_b(low_degree_ok(p5, 16)))
+
+# A RANDOM size-16 codeword is not the evaluation of any low-degree poly —
+# folding does NOT collapse it to a constant. The low-degree test rejects it.
+let junk : List<Int> =
+  [11, 7, 99, 3, 250, 41, 8, 1000, 17, 53, 2, 488, 91, 6, 314, 159]
+let _ : String = print("random size-16 codeword      -> folds to a constant: " ++
+                       show_b(codeword_low_degree(junk, 16)) ++ "  (correctly NOT low-degree)")
+
+"frost fri v0.1 — smooth field + roots of unity + polynomial folding (low-degree test core)"

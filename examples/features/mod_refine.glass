@@ -1,0 +1,15 @@
+# =============================================================================
+# mod_refine.glass — parity refinement using `%` (v4.53).
+#
+# Before v4.53 Glass couldn't lex `%`, so divisibility / parity
+# refinements (`n % 2 == 0`) couldn't be expressed. v4.53 adds `%`
+# end-to-end (host + Quartz + prism) and extends Quartz's refinement
+# predicate compiler to recognize the canonical `binder % K OP M`
+# shape so parity guards compile to native C.
+#
+# 10 is even, so the predicate holds and the call returns 11.
+# =============================================================================
+
+fn even_only(n: Int where (n % 2 == 0)) : Int = n + 1
+let r : Int = even_only(10)
+r

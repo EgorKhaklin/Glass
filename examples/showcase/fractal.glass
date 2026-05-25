@@ -1,0 +1,59 @@
+# =============================================================================
+# Self-similar / fractal structure, in Glass.
+#
+# A fractal is built by a rule that reproduces itself at smaller scale.
+# The defining law is a SELF-SIMILARITY relation between successive
+# depths: each level has `branch` times as many pieces as the last, each
+# scaled down by `divisor`. That relation is an Int identity, so we can
+# REFINE on it — `next == prev * branch` is the self-similarity gate
+# (cross-parameter, v4.56).
+#
+#   Sierpinski triangle:  branch 3, scale 1/2  → 3^d triangles
+#   Cantor set:           branch 2, scale 1/3  → 2^d intervals
+#   Koch curve:           branch 4, scale 1/3  → 4^d segments
+#
+# We also track the Sierpinski AREA fraction exactly as the integer
+# ratio 3^d : 4^d (filled : whole) — it shrinks to zero, the hallmark of
+# a fractal of dimension log3/log2 < 2.
+# =============================================================================
+
+fn power(base: Int, exp: Int) : Int =
+  if exp == 0 then 1 else base * power(base, exp - 1)
+
+# Piece counts at depth d for the three classic fractals.
+fn sierpinski(d: Int) : Int = power(3, d)
+fn cantor(d: Int)     : Int = power(2, d)
+fn koch(d: Int)       : Int = power(4, d)
+
+# The SELF-SIMILARITY gate: `next` is a valid successor of `prev` under
+# `branch`-fold replication exactly when next == prev * branch. The
+# refinement references the earlier params (cross-parameter).
+fn next_level(prev: Int, branch: Int,
+              next: Int where (next == prev * branch)) : Int = next
+
+# ---- Demo -------------------------------------------------------------------
+
+fn report(d: Int) : String !{IO} =
+  print("  depth " ++ int_to_string(d) ++
+        ":  Sierpinski=" ++ int_to_string(sierpinski(d)) ++
+        "  Cantor=" ++ int_to_string(cantor(d)) ++
+        "  Koch=" ++ int_to_string(koch(d)) ++
+        "  Sierpinski area = " ++ int_to_string(power(3, d)) ++
+        "/" ++ int_to_string(power(4, d)))
+
+let _ = print("=== Piece counts and Sierpinski area fraction by depth ===")
+let _ = report(0)
+let _ = report(1)
+let _ = report(2)
+let _ = report(3)
+let _ = report(4)
+let _ = report(5)
+
+let _ = print("")
+let _ = print("=== The self-similarity gate (next == prev * branch) ===")
+# Sierpinski steps 1 → 3 → 9 → 27, each ×3.
+let _ = print("  3 follows 1 (×3):  " ++ int_to_string(next_level(1, 3, 3)))
+let _ = print("  9 follows 3 (×3):  " ++ int_to_string(next_level(3, 3, 9)))
+let _ = print("  27 follows 9 (×3): " ++ int_to_string(next_level(9, 3, 27)))
+
+"done"

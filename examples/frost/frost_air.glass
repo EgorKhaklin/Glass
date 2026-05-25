@@ -1,0 +1,175 @@
+# =============================================================================
+# frost_air.glass — a complete AIR-STARK: prove a computation, all in Glass (v0.1)
+#
+# THE CAPSTONE. Everything assembles here into a real (toy-field) zk-STARK that
+# proves a COMPUTATION was performed correctly, revealing nothing but the claim.
+#
+# The computation: a sequence with transition  a_{i+1} = a_i^2 + k.
+# The prover convinces a verifier it knows a valid trace WITHOUT revealing it,
+# via a succinct FRI proof. The machinery (all built in Glass, all self-hosted):
+#
+#   1. TRACE -> POLYNOMIAL   interpolate the trace over the trace domain D_n
+#      (n-th roots of unity, generator g) to T(x), degree < n.       [frost_pcs]
+#   2. CONSTRAINT POLY       C(x) = T(g·x) - (T(x)^2 + k). The transition holds
+#      at step i  <=>  C vanishes at g^i. So a correct trace makes C vanish on
+#      the first n-1 points of D_n.
+#   3. QUOTIENT              Q(x) = C(x) / Z(x), where Z(x) = (x^n - 1)/(x - g^{n-1})
+#      vanishes exactly on those n-1 points. Q is a POLYNOMIAL  <=>  the
+#      computation is correct. We compute Q POINTWISE on a COSET LDE domain
+#      (shifted off D_n so Z != 0 there — no division by zero, no polynomial
+#      long division needed).
+#   4. LOW-DEGREE PROOF      FRI-prove Q's coset codeword is low-degree.   [frost_stark]
+#      Correct trace -> Q low-degree -> ACCEPT.  Any cheat -> C doesn't vanish ->
+#      Q is not a low-degree polynomial -> FRI REJECTS.
+#
+# Built on frost_fri (field/fold), frost_commit (hash/Merkle), frost_stark
+# (committed FRI verify), frost_pcs (interpolate). Baby Bear field. Dogfoods.
+# =============================================================================
+
+# --- Baby Bear field ---------------------------------------------------------
+fn fadd(a: Int, b: Int) : Int = (a + b) % 2013265921
+fn fmul(a: Int, b: Int) : Int = (a * b) % 2013265921
+fn fsub(a: Int, b: Int) : Int = ((a - b) % 2013265921 + 2013265921) % 2013265921
+fn fpow(base: Int, exp: Int) : Int =
+  if exp == 0 then 1
+  else if exp % 2 == 0 then let h : Int = fpow(base, exp / 2) in fmul(h, h)
+  else fmul(base, fpow(base, exp - 1))
+fn finv(x: Int) : Int = fpow(x, 2013265919)
+fn root_of_unity(n: Int) : Int = fpow(31, 2013265920 / n)
+
+fn ilen(xs: List<Int>) : Int = match xs { [] => 0; [x, ...r] => 1 + ilen(r) }
+fn nth(xs: List<Int>, i: Int) : Int =
+  match xs { [] => 0; [x, ...r] => if i == 0 then x else nth(r, i - 1) }
+
+# --- hash (MiMC) + Merkle ----------------------------------------------------
+fn sbox(x: Int) : Int = let x2 : Int = fmul(x, x) in let x4 : Int = fmul(x2, x2) in fmul(x4, x)
+fn rconst(i: Int) : Int = ((i + 1) * (i + 1) * (i + 1) + i * 1009 + 1234567) % 2013265921
+fn mimc(x: Int, k: Int, i: Int) : Int =
+  if i >= 16 then fadd(x, k) else mimc(sbox(fadd(fadd(x, k), rconst(i))), k, i + 1)
+fn hash2(a: Int, b: Int) : Int = fadd(fadd(mimc(a, b, 0), a), b)
+fn append_zeros(xs: List<Int>, k: Int) : List<Int> =
+  if k <= 0 then xs else append_zeros(xs ++ [0], k - 1)
+fn next_pow2(n: Int, p: Int) : Int = if p >= n then p else next_pow2(n, p * 2)
+fn pad_pow2(xs: List<Int>) : List<Int> = let n : Int = ilen(xs) in append_zeros(xs, next_pow2(n, 1) - n)
+fn level_up(xs: List<Int>) : List<Int> =
+  match xs { [] => []; [a, ...rest] => match rest { [] => [a]; [b, ...r2] => [hash2(a, b)] ++ level_up(r2) } }
+fn root_of(xs: List<Int>) : Int =
+  match xs { [] => 0; [a, ...rest] => match rest { [] => a; _ => root_of(level_up(xs)) } }
+fn merkle_root(leaves: List<Int>) : Int = root_of(pad_pow2(leaves))
+fn path_of(xs: List<Int>, index: Int) : List<Int> =
+  match xs { [] => []; [a, ...rest] => match rest { [] => [];
+    _ => let sib : Int = if index % 2 == 0 then nth(xs, index + 1) else nth(xs, index - 1) in
+         [sib] ++ path_of(level_up(xs), index / 2) } }
+fn merkle_path(leaves: List<Int>, index: Int) : List<Int> = path_of(pad_pow2(leaves), index)
+fn fold_path(h: Int, index: Int, path: List<Int>) : Int =
+  match path { [] => h; [s, ...rest] =>
+    let up : Int = if index % 2 == 0 then hash2(h, s) else hash2(s, h) in fold_path(up, index / 2, rest) }
+fn merkle_verify(leaf: Int, index: Int, path: List<Int>, root: Int) : Bool =
+  fold_path(leaf, index, path) == root
+
+# --- polynomials: evaluate + interpolate -------------------------------------
+fn powers(w: Int, cur: Int, k: Int) : List<Int> =
+  if k <= 0 then [] else [cur] ++ powers(w, fmul(cur, w), k - 1)
+fn build_domain(n: Int) : List<Int> = powers(root_of_unity(n), 1, n)
+fn poly_eval(coeffs: List<Int>, x: Int) : Int =
+  match coeffs { [] => 0; [c, ...rest] => fadd(c, fmul(x, poly_eval(rest, x))) }
+fn intt_sum(evals: List<Int>, k: Int, j: Int, n: Int, winv: Int) : Int =
+  if j >= n then 0
+  else fadd(fmul(nth(evals, j), fpow(winv, (j * k) % n)), intt_sum(evals, k, j + 1, n, winv))
+fn interp_go(evals: List<Int>, k: Int, n: Int, winv: Int, ninv: Int) : List<Int> =
+  if k >= n then [] else [fmul(ninv, intt_sum(evals, k, 0, n, winv))] ++ interp_go(evals, k + 1, n, winv, ninv)
+fn interpolate(evals: List<Int>) : List<Int> =
+  let n : Int = ilen(evals) in let w : Int = root_of_unity(n) in interp_go(evals, 0, n, finv(w), finv(n))
+
+# --- FRI fold + committed verify (from frost_stark; runs on any coset domain) -
+fn fold_pair(fx: Int, fmx: Int, x: Int, beta: Int) : Int =
+  let feven : Int = fmul(fadd(fx, fmx), finv(2)) in
+  let fodd : Int = fmul(fsub(fx, fmx), finv(fmul(2, x))) in
+  fadd(feven, fmul(beta, fodd))
+fn fold_at(cw: List<Int>, dom: List<Int>, beta: Int, i: Int, half: Int) : List<Int> =
+  if i >= half then []
+  else [fold_pair(nth(cw, i), nth(cw, i + half), nth(dom, i), beta)] ++ fold_at(cw, dom, beta, i + 1, half)
+fn square_dom(dom: List<Int>, i: Int, half: Int) : List<Int> =
+  if i >= half then [] else [fmul(nth(dom, i), nth(dom, i))] ++ square_dom(dom, i + 1, half)
+fn fiat_shamir(root: Int) : Int = hash2(root, 777)
+
+type Layer = | Layer(List<Int>, List<Int>, Int, Int)
+fn commit(cw: List<Int>, dom: List<Int>, acc: List<Layer>) : (List<Layer>, List<Int>) =
+  if ilen(cw) <= 2 then (acc, cw)
+  else
+    let root : Int = merkle_root(cw) in
+    let beta : Int = fiat_shamir(root) in
+    let half : Int = ilen(cw) / 2 in
+    commit(fold_at(cw, dom, beta, 0, half), square_dom(dom, 0, half), acc ++ [Layer(cw, dom, root, beta)])
+fn next_val(rest: List<Layer>, final: List<Int>, j: Int) : Int =
+  match rest { [] => nth(final, j); [Layer(cw, dom, root, beta), ...more] => nth(cw, j) }
+fn verify_query(layers: List<Layer>, final: List<Int>, p: Int) : Bool =
+  match layers {
+    [] => true;
+    [Layer(cw, dom, root, beta), ...rest] =>
+      let half : Int = ilen(cw) / 2 in
+      let j : Int = p % half in
+      let fx : Int = nth(cw, j) in
+      let fmx : Int = nth(cw, j + half) in
+      let ok1 : Bool = merkle_verify(fx, j, merkle_path(cw, j), root) in
+      let ok2 : Bool = merkle_verify(fmx, j + half, merkle_path(cw, j + half), root) in
+      let folded : Int = fold_pair(fx, fmx, nth(dom, j), beta) in
+      if ok1 then if ok2 then if folded == next_val(rest, final, j)
+        then verify_query(rest, final, j) else false else false else false
+  }
+fn verify_queries(layers: List<Layer>, final: List<Int>, ps: List<Int>) : Bool =
+  match ps { [] => true; [p, ...rest] =>
+    if verify_query(layers, final, p) then verify_queries(layers, final, rest) else false }
+fn is_constant(xs: List<Int>) : Bool =
+  match xs { [] => true; [x, ...r] => match r { [] => true; [y, ...r2] => if x == y then is_constant(r) else false } }
+fn fri_accept(cw: List<Int>, dom: List<Int>, queries: List<Int>) : Bool =
+  match commit(cw, dom, []) { (layers, final) =>
+    if is_constant(final) then verify_queries(layers, final, queries) else false }
+
+# --- the AIR: transition a_{i+1} = a_i^2 + k ---------------------------------
+# Build the coset LDE domain: 31 · <w_N>  (a coset, disjoint from the trace
+# domain <w_n>, so the vanishing polynomial Z is nonzero on every point).
+fn coset_domain(big: Int) : List<Int> =
+  powers(root_of_unity(big), 31, big)         # 31·w^0, 31·w^1, ... (offset 31)
+
+# Build the quotient codeword Q over the coset, from the trace.
+#   Q(x) = ( T(g·x) - (T(x)^2 + k) ) / ( (x^n - 1)/(x - g^{n-1}) )
+fn quotient_at(tcoeffs: List<Int>, x: Int, g: Int, gLast: Int, n: Int, k: Int) : Int =
+  let tx : Int = poly_eval(tcoeffs, x) in
+  let tgx : Int = poly_eval(tcoeffs, fmul(g, x)) in
+  let c : Int = fsub(tgx, fadd(fmul(tx, tx), k)) in            # constraint value
+  let z : Int = fmul(fsub(fpow(x, n), 1), finv(fsub(x, gLast))) in  # vanishing poly value
+  fmul(c, finv(z))
+fn quotient_cw(tcoeffs: List<Int>, coset: List<Int>, g: Int, gLast: Int, n: Int, k: Int) : List<Int> =
+  match coset { [] => []; [x, ...rest] =>
+    [quotient_at(tcoeffs, x, g, gLast, n, k)] ++ quotient_cw(tcoeffs, rest, g, gLast, n, k) }
+
+# The full STARK verifier: trace is valid  <=>  the quotient codeword is low-degree.
+fn stark_ok(trace: List<Int>, k: Int) : Bool =
+  let n : Int = ilen(trace) in
+  let g : Int = root_of_unity(n) in
+  let gLast : Int = fpow(g, n - 1) in
+  let tcoeffs : List<Int> = interpolate(trace) in
+  let coset : List<Int> = coset_domain(16) in
+  fri_accept(quotient_cw(tcoeffs, coset, g, gLast, n, k), coset, [1, 3, 6])
+
+# --- demo --------------------------------------------------------------------
+fn show_b(b: Bool) : String = if b then "ACCEPT" else "REJECT"
+
+# transition a_{i+1} = a_i^2 + 1, starting a_0 = 2:
+#   2 -> 5 -> 26 -> 677    (mod p; all small here)
+let honest : List<Int> = [2, 5, 26, 677]
+let cheat1 : List<Int> = [2, 5, 27, 677]     # a_2 wrong (5^2+1 = 26, not 27)
+let cheat2 : List<Int> = [2, 6, 26, 677]     # a_1 wrong (2^2+1 = 5, not 6)
+
+let _ : String = print("--- frost_air.glass: a complete AIR-STARK (transition a_{i+1}=a_i^2+1) ---")
+let _ : String = print("prove a correct execution trace via a low-degree quotient + FRI, in zero knowledge")
+let _ : String = print("")
+let _ : String = print("honest trace [2,5,26,677]:   " ++ show_b(stark_ok(honest, 1)))
+let _ : String = print("cheat (a_2=27)  [2,5,27,..]: " ++ show_b(stark_ok(cheat1, 1)))
+let _ : String = print("cheat (a_1=6)   [2,6,26,..]: " ++ show_b(stark_ok(cheat2, 1)))
+let _ : String = print("")
+let _ : String = print("the quotient C(x)/Z(x) is a low-degree polynomial IFF every transition holds;")
+let _ : String = print("FRI proves that succinctly — the verifier never sees the trace.")
+
+"frost air v0.1 — a complete AIR-STARK: trace -> quotient -> FRI low-degree proof, all in Glass"

@@ -1,0 +1,102 @@
+# =============================================================================
+# Epistemic logic as a reasoning game — the Muddy Children, in Glass.
+#
+# Knowledge is modelled the standard (Kripke) way: a set of possible
+# WORLDS, and for each agent an indistinguishability relation — the
+# worlds they can't tell apart. An agent KNOWS a fact at world w iff the
+# fact holds in every world they can't distinguish from w.
+#
+# Two children, each muddy (M) or clean (c); each SEES the other but not
+# themselves. So child 1 can't distinguish worlds that agree on child 2,
+# and vice-versa. The puzzle is pure epistemic dynamics: public
+# announcements PRUNE the world set, and knowledge grows as a result.
+#
+#   worlds:           (c,c) (c,M) (M,c) (M,M)
+#   father:           "at least one of you is muddy"   ⇒ removes (c,c)
+#   round 1:          "does anyone know?"  — nobody does (when both muddy)
+#   that announcement removes the worlds where someone WOULD know,
+#   round 2:          now both children know they are muddy.
+#
+# This is a "game" in the epistemic sense: the agents reason about each
+# other's knowledge, and common knowledge (created by the father's public
+# statement) is what makes the solution reachable.
+# =============================================================================
+
+type World = | W(Int, Int)   # (mud of child 1, mud of child 2); 1 = muddy
+
+# Child c's own mud in world w  (c ∈ {1, 2}).
+fn mud(c: Int, w: World) : Int =
+  match w { W(a, b) => if c == 1 then a else b }
+
+# Child c sees the OTHER child, so two worlds look identical to c when
+# they agree on the other child's mud.
+fn same_view(c: Int, w1: World, w2: World) : Bool =
+  if c == 1 then mud(2, w1) == mud(2, w2)
+  else mud(1, w1) == mud(1, w2)
+
+# Child c KNOWS their own state at w iff every live world they can't
+# distinguish from w agrees on c's mud.
+fn knows_own(c: Int, w: World, live: List<World>) : Bool =
+  let view = filter(live, fn(x: World) -> same_view(c, w, x)) in
+  fold(view, true, fn(acc: Bool, x: World) -> acc && mud(c, x) == mud(c, w))
+
+# ---- Public announcements prune the world set -------------------------------
+
+# Father: "at least one of you is muddy."
+fn at_least_one_muddy(live: List<World>) : List<World> =
+  filter(live, fn(w: World) -> mud(1, w) + mud(2, w) >= 1)
+
+# "Nobody knows their own state" — keep only worlds where that is true.
+fn announce_nobody_knows(live: List<World>) : List<World> =
+  filter(live, fn(w: World) ->
+    !(knows_own(1, w, live) || knows_own(2, w, live)))
+
+# ---- Pretty-printers --------------------------------------------------------
+
+fn show_world(w: World) : String =
+  match w { W(a, b) =>
+    "(" ++ (if a == 1 then "M" else "c") ++ ","
+        ++ (if b == 1 then "M" else "c") ++ ")" }
+
+fn show_worlds(ws: List<World>) : String =
+  match ws {
+    []           => "{}";
+    [w, ...rest] =>
+      match rest {
+        [] => show_world(w);
+        _  => show_world(w) ++ " " ++ show_worlds(rest)
+      }
+  }
+
+fn yn(b: Bool) : String = if b then "knows" else "doesn't know"
+
+# ---- The puzzle: actual world is (M, M) — both muddy ------------------------
+
+let actual = W(1, 1)
+let all4   = [W(0, 0), W(0, 1), W(1, 0), W(1, 1)]
+
+let live1 = at_least_one_muddy(all4)
+let live2 = announce_nobody_knows(live1)
+# A third "nobody knows" announcement is now FALSE — both children
+# already know in the sole remaining world — so it prunes everything,
+# the logical signal that the announcement has run out of content.
+let live3 = announce_nobody_knows(live2)
+
+let _ = print("=== Muddy Children (actual world: both muddy) ===")
+let _ = print("  all worlds:          " ++ show_worlds(all4))
+let _ = print("")
+let _ = print("father: 'at least one is muddy'")
+let _ = print("  live worlds:         " ++ show_worlds(live1))
+let _ = print("  child 1 " ++ yn(knows_own(1, actual, live1)) ++
+              ",  child 2 " ++ yn(knows_own(2, actual, live1)))
+let _ = print("")
+let _ = print("round 1: 'nobody knows yet' announced")
+let _ = print("  live worlds:         " ++ show_worlds(live2))
+let _ = print("  child 1 " ++ yn(knows_own(1, actual, live2)) ++
+              ",  child 2 " ++ yn(knows_own(2, actual, live2)))
+let _ = print("")
+let _ = print("a third 'nobody knows' is now a FALSE announcement (both know):")
+let _ = print("  live worlds:         " ++ show_worlds(live3) ++
+              "   (empty — knowledge has settled)")
+
+"done"

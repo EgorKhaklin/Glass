@@ -14,11 +14,11 @@ pip install -e .
 
 `pip install -e .` installs Glass in editable mode and creates a `glass` command in your PATH.
 
-Verify the install:
+Verify the install by running an example:
 
 ```bash
-glass --version
-# glass-lang 1.0.0
+glass examples/basic/hello.glass
+# Hello from Glass.
 ```
 
 ## Your first program

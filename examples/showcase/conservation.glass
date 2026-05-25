@@ -1,0 +1,80 @@
+# =============================================================================
+# Conservation-law refinements, in Glass.
+#
+# A conservation law says some total is INVARIANT across a transition:
+# money across a transfer, momentum across a collision, charge across a
+# reaction. We make that a refinement — a transition is only valid when
+# the conserved quantity after equals the conserved quantity before:
+#
+#       checked_transition(before, after where (after == before))
+#
+# The refinement references `before` (cross-parameter, v4.56) and is an
+# exact Int equality, so it even compiles through Quartz. A legitimate
+# transfer (moves value, conserves the total) passes; an operation that
+# creates or destroys value is rejected at the boundary.
+# =============================================================================
+
+# A ledger is a list of account balances; the conserved quantity is the
+# total balance.
+fn total(accounts: List<Int>) : Int =
+  fold(accounts, 0, fn(acc: Int, b: Int) -> acc + b)
+
+# A transition is conservative iff it leaves the total invariant. The
+# refinement on `after` enforces it.
+fn checked_transition(before: Int, after: Int where (after == before)) : Int = after
+
+# A transfer moves `amt` from account i to account j (by rebuilding the
+# list). Total is preserved by construction — we then PROVE it through
+# the refinement gate.
+fn transfer(accounts: List<Int>, i: Int, j: Int, amt: Int) : List<Int> =
+  map_indexed(accounts, 0, i, j, amt)
+
+# Helper: rebuild the list applying −amt at i and +amt at j.
+fn map_indexed(xs: List<Int>, k: Int, i: Int, j: Int, amt: Int) : List<Int> =
+  match xs {
+    []           => [];
+    [x, ...rest] =>
+      let x2 = if k == i then x - amt else if k == j then x + amt else x in
+      [x2] ++ map_indexed(rest, k + 1, i, j, amt)
+  }
+
+# ---- Pretty-printer ---------------------------------------------------------
+
+fn show_ledger(xs: List<Int>) : String =
+  match xs {
+    []           => "";
+    [x, ...rest] =>
+      match rest {
+        [] => int_to_string(x);
+        _  => int_to_string(x) ++ ", " ++ show_ledger(rest)
+      }
+  }
+
+# ---- Demo: a money transfer conserves the total --------------------------
+
+let before = [100, 50, 25]
+let after  = transfer(before, 0, 2, 30)   # move 30 from account 0 to 2
+
+let _ = print("=== Money transfer: total balance is conserved ===")
+let _ = print("  before: [" ++ show_ledger(before) ++ "]  total=" ++
+              int_to_string(total(before)))
+let _ = print("  after:  [" ++ show_ledger(after) ++ "]  total=" ++
+              int_to_string(total(after)))
+let _ = print("  conservation gate (after == before) accepts: " ++
+              int_to_string(checked_transition(total(before), total(after))))
+
+# ---- Momentum conservation: an inelastic collision -------------------------
+# Two bodies (mass, velocity) collide and stick. p = m·v is conserved:
+#   m1·v1 + m2·v2 = (m1 + m2)·v_final
+let p_before = 2 * 3 + 4 * 0   # body1: m=2 v=3, body2: m=4 v=0  ⇒ p=6
+let v_final = 1                         # (m1+m2)=6, v_final=1 ⇒ p_after=6
+let p_after = (2 + 4) * v_final
+
+let _ = print("")
+let _ = print("=== Inelastic collision: momentum is conserved ===")
+let _ = print("  p before (2·3 + 4·0) = " ++ int_to_string(p_before))
+let _ = print("  p after  (6·1)       = " ++ int_to_string(p_after))
+let _ = print("  conservation gate accepts: " ++
+              int_to_string(checked_transition(p_before, p_after)))
+
+"done"

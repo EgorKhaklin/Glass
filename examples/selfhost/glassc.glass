@@ -1,0 +1,871 @@
+# =============================================================================
+# glassc.glass — Glass-in-Glass compiler (Phase B/C of the off-Python plan)
+#
+# Reuses prism's PROVEN frontend (lexer + parser) via `import`, and adds a
+# Glass→C backend that mirrors quartz.py's codegen, operating directly over
+# prism's core AST (Program / Expr / Pattern). This is the artifact that, once
+# compiled to native by quartz.py (Phase C2), lets Glass compile Glass with no
+# Python in the loop.
+#
+# Driver: reads /tmp/in.glass, parses with prism's parse_program, emits C,
+# invokes cc, runs the binary, prints its stdout prefixed with "OUT: ".
+#
+# SLICE 1 (this version): integer programs — scalars, arithmetic, comparisons,
+# booleans, if/let, top-level multi-arg fns (peeled from prism's curried
+# ELam chains) and their direct calls. Strings/ADTs/match/records/tuples/
+# lists land in later slices. Verified differentially against quartz.py.
+# =============================================================================
+
+import "prism.glass"
+
+# NOTE on C-source newline escapes: a C `\n` is written here as `("\\" ++ "n")`
+# (backslash concatenated with "n"), NOT as "\\n". glass.py's string tokenizer
+# applies `\n`→newline BEFORE `\\`→`\`, so "\\n" yields backslash+REAL-newline
+# (a C line-continuation), not the two chars `\` `n`. The concatenation dodges
+# that ordering bug. It's inlined (not a top-level `let`) so quartz.py can
+# compile glassc.glass — C functions can't read main()'s locals.
+
+# --- C runtime prelude -------------------------------------------------------
+# Type-erased value model identical to quartz.py: every value lives in a
+# `long long` slot; pointers ride through intptr_t. q_str_concat supports the
+# string slice that lands next.
+
+# A function (not a top-level `let`) so quartz.py can call it from gen_program's
+# compiled C body; the param is unused (nullary fns are avoided for parser
+# portability).
+fn c_prelude_of(unused: Int) : String =
+  "#include <stdio.h>\n" ++
+  "#include <stdint.h>\n" ++
+  "#include <string.h>\n" ++
+  "#include <stdlib.h>\n" ++
+  "static char* q_str_concat(char* a, char* b) {\n" ++
+  "  long long la = (long long)strlen(a); long long lb = (long long)strlen(b);\n" ++
+  "  char* r = (char*)malloc(la + lb + 1);\n" ++
+  "  memcpy(r, a, la); memcpy(r + la, b, lb); r[la + lb] = 0; return r;\n" ++
+  "}\n" ++
+  "typedef struct q_value { long long magic; char* ctor; long long nf; long long* fields; char** fnames; } q_value_t;\n" ++
+  "static q_value_t* q_alloc(char* ctor, long long nf) {\n" ++
+  "  q_value_t* v = (q_value_t*)malloc(sizeof(q_value_t));\n" ++
+  "  v->magic = 0x5147CAFE5147CAFELL;\n" ++
+  "  v->ctor = ctor; v->nf = nf; v->fnames = (char**)0;\n" ++
+  "  v->fields = nf ? (long long*)malloc(nf * sizeof(long long)) : (long long*)0;\n" ++
+  "  return v;\n" ++
+  "}\n" ++
+  "static long long q_field(long long rec, char* name) {\n" ++
+  "  q_value_t* v = (q_value_t*)(intptr_t)rec;\n" ++
+  "  for (long long i = 0; i < v->nf; i++)\n" ++
+  "    if (v->fnames && !strcmp(v->fnames[i], name)) return v->fields[i];\n" ++
+  "  return 0;\n" ++
+  "}\n" ++
+  "static long long q_env_cons(char* name, long long val, long long rest) {\n" ++
+  "  q_value_t* v = q_alloc(name, 2);\n" ++
+  "  v->fields[0] = val; v->fields[1] = rest; return (long long)(intptr_t)v;\n" ++
+  "}\n" ++
+  "static long long q_env_lookup(long long env, char* name) {\n" ++
+  "  while (env) {\n" ++
+  "    q_value_t* v = (q_value_t*)(intptr_t)env;\n" ++
+  "    if (!strcmp(v->ctor, name)) return v->fields[0];\n" ++
+  "    env = v->fields[1];\n" ++
+  "  }\n" ++
+  "  return 0;\n" ++
+  "}\n" ++
+  "static char* q_itos(long long n) {\n" ++
+  "  char* r = (char*)malloc(24); snprintf(r, 24, \"%lld\", n); return r;\n" ++
+  "}\n" ++
+  "static char* q_substring(char* s, long long a, long long b) {\n" ++
+  "  if (a < 0 || b < 0) { fprintf(stderr, \"glassc: substring: negative index" ++ ("\\" ++ "n") ++ "\"); exit(1); }\n" ++
+  "  if (a > b) { fprintf(stderr, \"glassc: substring: start > end" ++ ("\\" ++ "n") ++ "\"); exit(1); }\n" ++
+  "  long long n = (long long)strlen(s);\n" ++
+  "  if (a > n) a = n; if (b > n) b = n;\n" ++
+  "  long long len = b - a; char* r = (char*)malloc(len + 1);\n" ++
+  "  memcpy(r, s + a, len); r[len] = 0; return r;\n" ++
+  "}\n" ++
+  "static long long q_print(char* s) { printf(\"%s" ++ ("\\" ++ "n") ++ "\", s); return (long long)(intptr_t)s; }\n" ++
+  "static long long q_cons(long long h, long long t) {\n" ++
+  "  q_value_t* v = q_alloc(\"Cons\", 2); v->fields[0]=h; v->fields[1]=t; return (long long)(intptr_t)v;\n" ++
+  "}\n" ++
+  "static long long q_len(long long xs) {\n" ++
+  "  long long n = 0;\n" ++
+  "  while (xs) { q_value_t* v=(q_value_t*)(intptr_t)xs; if (strcmp(v->ctor,\"Cons\")) break; n++; xs=v->fields[1]; }\n" ++
+  "  return n;\n" ++
+  "}\n" ++
+  "static long long q_range(long long lo, long long hi) {\n" ++
+  "  long long r = (long long)(intptr_t)q_alloc(\"Nil\", 0);\n" ++
+  "  for (long long i = hi - 1; i >= lo; i--) r = q_cons(i, r);\n" ++
+  "  return r;\n" ++
+  "}\n" ++
+  "static long long q_str_index_of(char* s, char* sub) {\n" ++
+  "  char* p = strstr(s, sub);\n" ++
+  "  if (!p) return (long long)(intptr_t)q_alloc(\"None\", 0);\n" ++
+  "  q_value_t* v = q_alloc(\"Some\", 1); v->fields[0] = (long long)(p - s); return (long long)(intptr_t)v;\n" ++
+  "}\n" ++
+  "static long long q_read_file(char* path) {\n" ++
+  "  FILE* f = fopen(path, \"rb\");\n" ++
+  "  if (!f) { q_value_t* e = q_alloc(\"Err\", 1); e->fields[0] = (long long)(intptr_t)\"read error: cannot open file\"; return (long long)(intptr_t)e; }\n" ++
+  "  fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET); if (sz < 0) sz = 0;\n" ++
+  "  char* buf = (char*)malloc((size_t)sz + 1); size_t got = fread(buf, 1, (size_t)sz, f); buf[got] = 0; fclose(f);\n" ++
+  "  q_value_t* ok = q_alloc(\"Ok\", 1); ok->fields[0] = (long long)(intptr_t)buf; return (long long)(intptr_t)ok;\n" ++
+  "}\n" ++
+  "static long long q_apply1(long long clo, long long arg) {\n" ++
+  "  q_value_t* c = (q_value_t*)(intptr_t)clo;\n" ++
+  "  return ((long long(*)(long long,long long))c->fields[0])(c->fields[1], arg);\n" ++
+  "}\n" ++
+  "static long long q_map(long long xs, long long f) {\n" ++
+  "  if (!xs) return xs;\n" ++
+  "  q_value_t* v = (q_value_t*)(intptr_t)xs;\n" ++
+  "  if (strcmp(v->ctor, \"Cons\")) return (long long)(intptr_t)q_alloc(\"Nil\", 0);\n" ++
+  "  long long h = q_apply1(f, v->fields[0]);\n" ++
+  "  return q_cons(h, q_map(v->fields[1], f));\n" ++
+  "}\n" ++
+  "static long long q_fold(long long xs, long long init, long long f) {\n" ++
+  "  long long acc = init;\n" ++
+  "  while (xs) {\n" ++
+  "    q_value_t* v = (q_value_t*)(intptr_t)xs;\n" ++
+  "    if (strcmp(v->ctor, \"Cons\")) break;\n" ++
+  "    acc = q_apply1(q_apply1(f, acc), v->fields[0]);\n" ++
+  "    xs = v->fields[1];\n" ++
+  "  }\n" ++
+  "  return acc;\n" ++
+  "}\n" ++
+  "static long long q_bind_result(long long r, long long k) {\n" ++
+  "  q_value_t* v = (q_value_t*)(intptr_t)r;\n" ++
+  "  if (!strcmp(v->ctor, \"Ok\")) return q_apply1(k, v->fields[0]);\n" ++
+  "  return r;\n" ++
+  "}\n" ++
+  "static long long q_list_concat(long long a, long long b) {\n" ++
+  "  q_value_t* v = (q_value_t*)(intptr_t)a;\n" ++
+  "  if (strcmp(v->ctor, \"Cons\")) return b;\n" ++
+  "  return q_cons(v->fields[0], q_list_concat(v->fields[1], b));\n" ++
+  "}\n" ++
+  "/* polymorphic ++: a list is a q_value (magic tag in first word); a string\n" ++
+  "   is a char* whose first bytes are ASCII != magic. ++ operands are always\n" ++
+  "   pointers (never raw ints), so reading the first word is safe. */\n" ++
+  "static long long q_concat(long long a, long long b) {\n" ++
+  "  if (a && *((long long*)(intptr_t)a) == 0x5147CAFE5147CAFELL) return q_list_concat(a, b);\n" ++
+  "  return (long long)(intptr_t)q_str_concat((char*)(intptr_t)a, (char*)(intptr_t)b);\n" ++
+  "}\n" ++
+  "/* polymorphic == : Int/Bool compare by value; String by content. A raw\n" ++
+  "   pointer (string) is always >= 4GB on arm64 macOS, while Glass ints are\n" ++
+  "   far smaller — so only strcmp when BOTH operands are pointer-sized. */\n" ++
+  "static long long q_eq(long long a, long long b) {\n" ++
+  "  if (a == b) return 1;\n" ++
+  "  if ((unsigned long long)a >= 0x100000000ULL && (unsigned long long)b >= 0x100000000ULL)\n" ++
+  "    return strcmp((char*)(intptr_t)a, (char*)(intptr_t)b) == 0;\n" ++
+  "  return 0;\n" ++
+  "}\n" ++
+  "static char* q_slurp(char* path) {\n" ++
+  "  FILE* f = fopen(path, \"rb\"); if (!f) { char* e=(char*)malloc(1); e[0]=0; return e; }\n" ++
+  "  fseek(f,0,SEEK_END); long sz=ftell(f); fseek(f,0,SEEK_SET); if (sz<0) sz=0;\n" ++
+  "  char* b=(char*)malloc((size_t)sz+1); size_t g=fread(b,1,(size_t)sz,f); b[g]=0; fclose(f); return b;\n" ++
+  "}\n" ++
+  "static long long q_write_file(char* path, char* content) {\n" ++
+  "  FILE* f = fopen(path, \"wb\");\n" ++
+  "  if (!f) { q_value_t* e = q_alloc(\"Err\", 1); e->fields[0] = (long long)(intptr_t)\"write error: cannot open file\"; return (long long)(intptr_t)e; }\n" ++
+  "  size_t len = strlen(content); size_t wrote = fwrite(content, 1, len, f); fclose(f);\n" ++
+  "  q_value_t* ok = q_alloc(\"Ok\", 1); ok->fields[0] = (long long)wrote; return (long long)(intptr_t)ok;\n" ++
+  "}\n" ++
+  "static long long q_run_command(char* cmd, long long args) {\n" ++
+  "  char line[16384]; size_t pos = 0;\n" ++
+  "  pos += (size_t)snprintf(line+pos, sizeof(line)-pos, \"%s\", cmd);\n" ++
+  "  long long a = args;\n" ++
+  "  while (a) { q_value_t* v=(q_value_t*)(intptr_t)a; if (strcmp(v->ctor,\"Cons\")) break;\n" ++
+  "    pos += (size_t)snprintf(line+pos, sizeof(line)-pos, \" %s\", (char*)(intptr_t)v->fields[0]); a=v->fields[1]; }\n" ++
+  "  snprintf(line+pos, sizeof(line)-pos, \" > /tmp/qrc_o 2> /tmp/qrc_e\");\n" ++
+  "  int rc = system(line); int code = (rc == -1) ? -1 : ((rc >> 8) & 0xFF);\n" ++
+  "  long long o = (long long)(intptr_t)q_slurp(\"/tmp/qrc_o\"); long long er = (long long)(intptr_t)q_slurp(\"/tmp/qrc_e\");\n" ++
+  "  q_value_t* tup = q_alloc(\"\", 3); tup->fields[0]=(long long)code; tup->fields[1]=o; tup->fields[2]=er;\n" ++
+  "  q_value_t* ok = q_alloc(\"Ok\", 1); ok->fields[0]=(long long)(intptr_t)tup; return (long long)(intptr_t)ok;\n" ++
+  "}\n"
+
+# --- identifier mangling -----------------------------------------------------
+# Uniform "g_" prefix: sidesteps every C keyword collision and keeps proto,
+# definition, and call sites consistent without a reserved-word table.
+
+fn cmangle(name: String) : String = "g_" ++ name
+
+# --- curried-form peeling ----------------------------------------------------
+# prism desugars `fn f(a, b) = body` to ELam(a, ELam(b, body)) and calls to
+# EApp(EApp(EVar f, a), b). Peel both back into flat parameter/argument lists.
+
+fn lam_params(e: Expr) : List<String> =
+  match e {
+    ELam(p, body) => [p] ++ lam_params(body);
+    _ => []
+  }
+
+fn lam_body(e: Expr) : Expr =
+  match e {
+    ELam(p, body) => lam_body(body);
+    _ => e
+  }
+
+fn app_head(e: Expr) : Expr =
+  match e {
+    EApp(f, a) => app_head(f);
+    _ => e
+  }
+
+fn app_args(e: Expr) : List<Expr> =
+  match e {
+    EApp(f, a) => app_args(f) ++ [a];
+    _ => []
+  }
+
+# --- C string literals -------------------------------------------------------
+# Escape a Glass string into a C double-quoted literal. Classify each char by
+# its code (host char_at returns the code); emit the raw char via substring.
+
+# Uses prism's char_at (returns the 1-char String) and string `==`.
+fn escape_char(ch: String) : String =
+  if ch == "\\" then "\\\\"
+  else if ch == "\"" then "\\\""
+  else if ch == "\n" then ("\\" ++ "n")
+  else if ch == "\t" then "\\" ++ "t"
+  else if ch == "\r" then "\\" ++ "r"
+  else ch
+
+fn escape_c_str_at(s: String, i: Int, acc: String) : String =
+  if i >= string_length(s) then acc
+  else escape_c_str_at(s, i + 1, acc ++ escape_char(char_at(s, i)))
+
+# Raw C literal `"..."` (escaped, quoted) — for strcmp in pattern tests.
+fn c_str_raw(s: String) : String =
+  "\"" ++ escape_c_str_at(s, 0, "") ++ "\""
+
+# String value: the literal cast into the type-erased long long slot.
+fn c_string_literal(s: String) : String =
+  "(long long)(intptr_t)" ++ c_str_raw(s)
+
+# --- compile environment (venv) ----------------------------------------------
+# venv maps a variable name to the C expression that reads it in the CURRENT
+# scope. Top-level fn params / lets / pattern vars map to their mangled C
+# locals; inside a lifted lambda, captured vars map to runtime env lookups.
+# A var not in venv is assumed to be a top-level fn (used in call position).
+
+fn venv_lookup(venv: List<Pair<String, String>>, name: String) : Option<String> =
+  match venv {
+    [] => None;
+    [pr, ...rest] =>
+      match pr { Pair(n, acc) => if n == name then Some(acc) else venv_lookup(rest, name) }
+  }
+
+# Build a runtime env (assoc-list) capturing every currently-visible var, so a
+# closure created here can read them later via q_env_lookup.
+fn build_env(venv: List<Pair<String, String>>) : String =
+  match venv {
+    [] => "0";
+    [pr, ...rest] =>
+      match pr {
+        Pair(name, acc) =>
+          "q_env_cons(" ++ c_str_raw(name) ++ ", (long long)(" ++ acc ++ "), " ++
+          build_env(rest) ++ ")"
+      }
+  }
+
+# Remap an enclosing venv so that, inside a lifted lambda body, each captured
+# var reads from the lambda's `_env` parameter instead of a (now-gone) C local.
+fn remap_to_env(venv: List<Pair<String, String>>) : List<Pair<String, String>> =
+  match venv {
+    [] => [];
+    [pr, ...rest] =>
+      match pr {
+        Pair(name, acc) =>
+          [Pair(name, "q_env_lookup(_env, " ++ c_str_raw(name) ++ ")")] ++
+          remap_to_env(rest)
+      }
+  }
+
+# Variables bound by a pattern (added to venv as C locals for the arm body).
+fn pat_vars(p: Pattern) : List<String> =
+  match p {
+    PVar(x) => [x];
+    PCtor(n, subs) => pat_vars_list(subs);
+    PTuple(subs) => pat_vars_list(subs);
+    _ => []
+  }
+
+fn pat_vars_list(ps: List<Pattern>) : List<String> =
+  match ps { [] => []; [p, ...rest] => pat_vars(p) ++ pat_vars_list(rest) }
+
+fn extend_venv(names: List<String>, venv: List<Pair<String, String>>)
+  : List<Pair<String, String>> =
+  match names {
+    [] => venv;
+    [n, ...rest] => [Pair(n, cmangle(n))] ++ extend_venv(rest, venv)
+  }
+
+# --- expression codegen (FLAT STATEMENTS) ------------------------------------
+# Returns a 3-tuple (stmts, result, lifted): the C STATEMENTS that compute `e`,
+# the atom (literal/temp-var) holding its value, and any lifted fn defs. This
+# replaces the old nested statement-expression style — compound exprs
+# materialize into named temps so per-call C stack frames stay small (prism's
+# deeply recursive eval/infer overflowed the stack as one giant `({...})`).
+
+fn gen_expr(e: Expr, venv: List<Pair<String, String>>, path: String)
+  : (String, String, String) =
+  match e {
+    EInt(n) => ("", int_to_string(n) ++ "LL", "");   # LL: keep literals 64-bit (avoid 32-bit int overflow)
+    EBool(b) => ("", if b then "1" else "0", "");
+    EStr(s) => ("", c_string_literal(s), "");
+    EVar(x) =>
+      ("", match venv_lookup(venv, x) { Some(acc) => acc; None => cmangle(x) }, "");
+    EAdd(a, b) => gen_bin("+", a, b, venv, path);
+    ESub(a, b) => gen_bin("-", a, b, venv, path);
+    EMul(a, b) => gen_bin("*", a, b, venv, path);
+    EDiv(a, b) => gen_bin("/", a, b, venv, path);
+    EMod(a, b) => gen_bin("%", a, b, venv, path);
+    ELt(a, b) => gen_bin("<", a, b, venv, path);
+    EGt(a, b) => gen_bin(">", a, b, venv, path);
+    ELe(a, b) => gen_bin("<=", a, b, venv, path);
+    EGe(a, b) => gen_bin(">=", a, b, venv, path);
+    EEq(a, b) => gen_eq(a, b, venv, path, true);
+    ENeq(a, b) => gen_eq(a, b, venv, path, false);
+    EAnd(a, b) => gen_bin("&&", a, b, venv, path);
+    EOr(a, b) => gen_bin("||", a, b, venv, path);
+    EConcat(a, b) =>
+      # `++` is polymorphic (string OR list). q_concat dispatches at runtime
+      # via the q_value magic tag (safe: ++ operands are always pointers).
+      match gen_expr(a, venv, path ++ "0") {
+        (sa, ra, la) => match gen_expr(b, venv, path ++ "1") {
+          (sb, rb, lb) =>
+            (sa ++ sb,
+             "q_concat((long long)(" ++ ra ++ "), (long long)(" ++ rb ++ "))", la ++ lb)
+        }
+      };
+    EUNot(a) =>
+      match gen_expr(a, venv, path ++ "0") { (sa, ra, la) => (sa, "(!" ++ ra ++ ")", la) };
+    EIf(c, t, f) =>
+      match gen_expr(c, venv, path ++ "c") {
+        (sc, rc, lc) => match gen_expr(t, venv, path ++ "t") {
+          (st, rt, lt) => match gen_expr(f, venv, path ++ "e") {
+            (sf, rf, lf) =>
+              let tv : String = "t" ++ path in
+              (sc ++ "long long " ++ tv ++ "; if (" ++ rc ++ ") { " ++ st ++ tv ++
+               " = (long long)(" ++ rt ++ "); } else { " ++ sf ++ tv ++
+               " = (long long)(" ++ rf ++ "); } ", tv, lc ++ lt ++ lf)
+          }
+        }
+      };
+    ELet(x, v, body) =>
+      # Bind to a PATH-UNIQUE C name (not cmangle(x)): flat statements share one
+      # C scope, so repeated `let _`/shadowed names would collide otherwise.
+      let cn : String = "u" ++ path in
+      match gen_expr(v, venv, path ++ "v") {
+        (sv, rv, lv) =>
+          match gen_expr(body, [Pair(x, cn)] ++ venv, path ++ "d") {
+            (sb, rb, lb) =>
+              (sv ++ "long long " ++ cn ++ " = (long long)(" ++ rv ++ "); (void)" ++ cn ++
+               "; " ++ sb, rb, lv ++ lb)
+          }
+      };
+    ELetRec(x, v, body) =>
+      # NOTE: self-capture not yet modeled; compiles like ELet.
+      let cn : String = "u" ++ path in
+      match gen_expr(v, [Pair(x, cn)] ++ venv, path ++ "v") {
+        (sv, rv, lv) =>
+          match gen_expr(body, [Pair(x, cn)] ++ venv, path ++ "d") {
+            (sb, rb, lb) =>
+              (sv ++ "long long " ++ cn ++ " = (long long)(" ++ rv ++ "); (void)" ++ cn ++
+               "; " ++ sb, rb, lv ++ lb)
+          }
+      };
+    ELam(p, body) => gen_lambda(p, body, venv, path);
+    ELamR(p, t, body) => gen_lambda(p, body, venv, path);
+    EApp(f, a) =>
+      match app_head(e) {
+        EVar(name) =>
+          match gen_builtin(name, app_args(e), venv, path) {
+            Some(r) => r;
+            None =>
+              match venv_lookup(venv, name) {
+                Some(acc) => gen_indirect(f, a, venv, path);
+                None => gen_direct(name, app_args(e), venv, path)
+              }
+          };
+        _ => gen_indirect(f, a, venv, path)
+      };
+    ECtor(name, args) =>
+      let vv : String = "v" ++ path in
+      match set_fields(args, venv, path, vv, 0) {
+        Pair(sf, lf) =>
+          ("q_value_t* " ++ vv ++ " = q_alloc(" ++ c_str_raw(name) ++ ", " ++
+           int_to_string(list_len_e(args)) ++ "); " ++ sf,
+           "(long long)(intptr_t)" ++ vv, lf)
+      };
+    ETuple(es) =>
+      let vv : String = "v" ++ path in
+      match set_fields(es, venv, path, vv, 0) {
+        Pair(sf, lf) =>
+          ("q_value_t* " ++ vv ++ " = q_alloc(\"\", " ++ int_to_string(list_len_e(es)) ++
+           "); " ++ sf, "(long long)(intptr_t)" ++ vv, lf)
+      };
+    EMatch(scrut, arms) =>
+      match gen_expr(scrut, venv, path ++ "s") {
+        (ss, rs, ls) =>
+          let sv : String = "s" ++ path in
+          let mv : String = "m" ++ path in
+          match gen_arms(arms, true, venv, path, 0, sv, mv) {
+            Pair(sa, la) =>
+              (ss ++ "long long " ++ sv ++ " = (long long)(" ++ rs ++ "); long long " ++
+               mv ++ "; " ++ sa, mv, ls ++ la)
+          }
+      };
+    ERec(fields) => gen_record(fields, venv, path);
+    ENamedRec(name, fields) => gen_record(fields, venv, path);
+    EField(recd, name) =>
+      match gen_expr(recd, venv, path ++ "0") {
+        (sr, rr, lr) =>
+          (sr, "q_field((long long)(" ++ rr ++ "), " ++ c_str_raw(name) ++ ")", lr)
+      };
+    _ => ("", "0 /* glassc: unsupported expr */", "")
+  }
+
+# Equality: Glass `==`/`!=` on STRINGS must be value (strcmp) equality, not C
+# pointer `==`. With erased types glassc can't always tell, but prism compares
+# strings against literals (`c == " "`), so a string-LITERAL operand selects
+# strcmp; otherwise (Int/Bool) plain C ==/!=.
+fn is_str_lit(e: Expr) : Bool = match e { EStr(s) => true; _ => false }
+
+# True if `e` is syntactically a list (a Cons/Nil constructor) — used to pick
+# list vs string `++`.
+fn is_list_op(e: Expr) : Bool =
+  match e { ECtor(name, args) => name == "Cons" || name == "Nil"; _ => false }
+
+fn gen_eq(a: Expr, b: Expr, venv: List<Pair<String, String>>, path: String, positive: Bool)
+  : (String, String, String) =
+  match gen_expr(a, venv, path ++ "0") {
+    (sa, ra, la) => match gen_expr(b, venv, path ++ "1") {
+      (sb, rb, lb) =>
+        (sa ++ sb,
+         (if positive then "" else "!") ++
+         "q_eq((long long)(" ++ ra ++ "), (long long)(" ++ rb ++ "))", la ++ lb)
+    }
+  }
+
+# Binary operator: compile both sides (atoms), combine as a shallow expr.
+fn gen_bin(op: String, a: Expr, b: Expr, venv: List<Pair<String, String>>, path: String)
+  : (String, String, String) =
+  match gen_expr(a, venv, path ++ "0") {
+    (sa, ra, la) => match gen_expr(b, venv, path ++ "1") {
+      (sb, rb, lb) => (sa ++ sb, "(" ++ ra ++ " " ++ op ++ " " ++ rb ++ ")", la ++ lb)
+    }
+  }
+
+# Lambda → lifted top-level C fn `q_lam_<path>(_env, arg)` (FLAT body ending in
+# `return`) + closure-creation statements capturing the current env.
+fn gen_lambda(p: String, body: Expr, venv: List<Pair<String, String>>, path: String)
+  : (String, String, String) =
+  match gen_expr(body, [Pair(p, "arg")] ++ remap_to_env(venv), path ++ "b") {
+    (sb, rb, lb) =>
+      let kv : String = "k" ++ path in
+      let deff : String =
+        "long long q_lam_" ++ path ++ "(long long _env, long long arg) { " ++
+        sb ++ "return (long long)(" ++ rb ++ "); }\n" in
+      ("q_value_t* " ++ kv ++ " = q_alloc(\"<clo>\", 2); " ++
+       kv ++ "->fields[0] = (long long)(intptr_t)&q_lam_" ++ path ++ "; " ++
+       kv ++ "->fields[1] = (long long)(" ++ build_env(venv) ++ "); ",
+       "(long long)(intptr_t)" ++ kv, lb ++ deff)
+  }
+
+# Direct call to a top-level C fn: peel all curried args, materialize result.
+fn gen_direct(nm: String, args: List<Expr>, venv: List<Pair<String, String>>, path: String)
+  : (String, String, String) =
+  match emit_args(args, venv, path, 0) {
+    (sargs, csv, largs) =>
+      let tv : String = "t" ++ path in
+      (sargs ++ "long long " ++ tv ++ " = " ++ cmangle(nm) ++ "(" ++ csv ++ "); ", tv, largs)
+  }
+
+# Indirect single-arg call through a closure value's fn-pointer + env.
+fn gen_indirect(f: Expr, a: Expr, venv: List<Pair<String, String>>, path: String)
+  : (String, String, String) =
+  match gen_expr(f, venv, path ++ "f") {
+    (sf, rf, lf) => match gen_expr(a, venv, path ++ "g") {
+      (sa, ra, la) =>
+        let cv : String = "c" ++ path in
+        let tv : String = "t" ++ path in
+        (sf ++ sa ++ "q_value_t* " ++ cv ++ " = (q_value_t*)(intptr_t)(" ++ rf ++
+         "); long long " ++ tv ++ " = ((long long(*)(long long,long long))" ++ cv ++
+         "->fields[0])((long long)" ++ cv ++ "->fields[1], (long long)(" ++ ra ++ ")); ",
+         tv, lf ++ la)
+    }
+  }
+
+# Argument list for a direct call: statements + comma-separated result atoms.
+fn emit_args(es: List<Expr>, venv: List<Pair<String, String>>, path: String, i: Int)
+  : (String, String, String) =
+  match es {
+    [] => ("", "", "");
+    [a, ...rest] =>
+      match gen_expr(a, venv, path ++ "a" ++ int_to_string(i)) {
+        (sa, ra, la) => match emit_args(rest, venv, path, i + 1) {
+          (sr, cr, lr) =>
+            (sa ++ sr, ra ++ (match rest { [] => ""; _ => ", " ++ cr }), la ++ lr)
+        }
+      }
+  }
+
+# --- builtins ----------------------------------------------------------------
+# Primitives prism relies on (it doesn't define them): emit a C runtime call.
+# Each arg is compiled (collecting lifted defs); the C template casts in/out of
+# the type-erased long long slot. Returns None for non-builtin names.
+
+fn gen_expr_list(es: List<Expr>, venv: List<Pair<String, String>>, path: String, i: Int)
+  : (String, List<String>, String) =
+  match es {
+    [] => ("", [], "");
+    [a, ...rest] =>
+      match gen_expr(a, venv, path ++ "b" ++ int_to_string(i)) {
+        (sa, ra, la) => match gen_expr_list(rest, venv, path, i + 1) {
+          (sr, rs, lr) => (sa ++ sr, [ra] ++ rs, la ++ lr)
+        }
+      }
+  }
+
+fn list_at(xs: List<String>, i: Int) : String =
+  match xs { [] => ""; [x, ...rest] => if i == 0 then x else list_at(rest, i - 1) }
+
+# Returns Some((stmts, result, lifted)) for a builtin name, else None. The
+# builtin call is materialized into a temp so it's an atom like everything else.
+fn gen_builtin(name: String, args: List<Expr>, venv: List<Pair<String, String>>, path: String)
+  : Option<(String, String, String)> =
+  match gen_expr_list(args, venv, path, 0) {
+    (sargs, cs, lifted) =>
+      let a0 : String = list_at(cs, 0) in
+      let a1 : String = list_at(cs, 1) in
+      let a2 : String = list_at(cs, 2) in
+      let tv : String = "t" ++ path in
+      if name == "int_to_string" then
+        Some(mk_builtin(sargs, tv, lifted, "(long long)(intptr_t)q_itos((long long)(" ++ a0 ++ "))"))
+      else if name == "string_length" then
+        Some(mk_builtin(sargs, tv, lifted, "(long long)strlen((char*)(intptr_t)(" ++ a0 ++ "))"))
+      else if name == "print" then
+        Some(mk_builtin(sargs, tv, lifted, "q_print((char*)(intptr_t)(" ++ a0 ++ "))"))
+      else if name == "substring" then
+        Some(mk_builtin(sargs, tv, lifted, "(long long)(intptr_t)q_substring((char*)(intptr_t)(" ++ a0 ++
+                "), (long long)(" ++ a1 ++ "), (long long)(" ++ a2 ++ "))"))
+      else if name == "len" then
+        Some(mk_builtin(sargs, tv, lifted, "q_len((long long)(" ++ a0 ++ "))"))
+      else if name == "range" then
+        Some(mk_builtin(sargs, tv, lifted, "q_range((long long)(" ++ a0 ++ "), (long long)(" ++ a1 ++ "))"))
+      else if name == "string_index_of" then
+        Some(mk_builtin(sargs, tv, lifted, "q_str_index_of((char*)(intptr_t)(" ++ a0 ++
+                "), (char*)(intptr_t)(" ++ a1 ++ "))"))
+      else if name == "read_file" then
+        Some(mk_builtin(sargs, tv, lifted, "q_read_file((char*)(intptr_t)(" ++ a0 ++ "))"))
+      else if name == "string_contains" then
+        Some(mk_builtin(sargs, tv, lifted, "(strstr((char*)(intptr_t)(" ++ a0 ++ "), (char*)(intptr_t)(" ++
+                a1 ++ ")) != 0)"))
+      else if name == "bind_result" then
+        Some(mk_builtin(sargs, tv, lifted, "q_bind_result((long long)(" ++ a0 ++ "), (long long)(" ++ a1 ++ "))"))
+      else if name == "map" then
+        Some(mk_builtin(sargs, tv, lifted, "q_map((long long)(" ++ a0 ++ "), (long long)(" ++ a1 ++ "))"))
+      else if name == "fold" then
+        Some(mk_builtin(sargs, tv, lifted, "q_fold((long long)(" ++ a0 ++ "), (long long)(" ++ a1 ++
+                "), (long long)(" ++ a2 ++ "))"))
+      else if name == "write_file" then
+        Some(mk_builtin(sargs, tv, lifted, "q_write_file((char*)(intptr_t)(" ++ a0 ++
+                "), (char*)(intptr_t)(" ++ a1 ++ "))"))
+      else if name == "run_command" then
+        Some(mk_builtin(sargs, tv, lifted, "q_run_command((char*)(intptr_t)(" ++ a0 ++
+                "), (long long)(" ++ a1 ++ "))"))
+      else None
+  }
+
+# Wrap a builtin's RHS into (stmts, temp-var, lifted): materialize into a temp.
+fn mk_builtin(sargs: String, tv: String, lifted: String, rhs: String)
+  : (String, String, String) =
+  (sargs ++ "long long " ++ tv ++ " = (long long)(" ++ rhs ++ "); ", tv, lifted)
+
+# --- records -----------------------------------------------------------------
+# Field names ride in a per-record static char*[] (static storage so the
+# pointer survives the value escaping its block); EField looks up by name.
+
+fn list_len_p(xs: List<Pair<String, Expr>>) : Int =
+  match xs { [] => 0; [x, ...rest] => 1 + list_len_p(rest) }
+
+fn rec_names_csv(fields: List<Pair<String, Expr>>) : String =
+  match fields {
+    [] => "";
+    [f, ...rest] =>
+      match f {
+        Pair(name, e) =>
+          c_str_raw(name) ++
+          (match rest { [] => ""; _ => ", " ++ rec_names_csv(rest) })
+      }
+  }
+
+fn rec_setvals(fields: List<Pair<String, Expr>>, venv: List<Pair<String, String>>,
+               path: String, varname: String, i: Int) : Pair<String, String> =
+  match fields {
+    [] => Pair("", "");
+    [f, ...rest] =>
+      match f {
+        Pair(name, e) =>
+          match gen_expr(e, venv, path ++ "f" ++ int_to_string(i)) {
+            (se, re, le) => match rec_setvals(rest, venv, path, varname, i + 1) {
+              Pair(cr, lr) =>
+                Pair(se ++ varname ++ "->fields[" ++ int_to_string(i) ++ "] = (long long)(" ++
+                     re ++ "); " ++ cr, le ++ lr)
+            }
+          }
+      }
+  }
+
+fn gen_record(fields: List<Pair<String, Expr>>, venv: List<Pair<String, String>>,
+              path: String) : (String, String, String) =
+  let vv : String = "v" ++ path in
+  let fnsv : String = "fns" ++ path in
+  match rec_setvals(fields, venv, path, vv, 0) {
+    Pair(sv, lv) =>
+      ("static char* " ++ fnsv ++ "[] = {" ++ rec_names_csv(fields) ++ "}; " ++
+       "q_value_t* " ++ vv ++ " = q_alloc(\"\", " ++ int_to_string(list_len_p(fields)) ++ "); " ++
+       vv ++ "->fnames = " ++ fnsv ++ "; " ++ sv,
+       "(long long)(intptr_t)" ++ vv, lv)
+  }
+
+# Number of expressions in a list (for ctor/tuple arity).
+fn list_len_e(xs: List<Expr>) : Int =
+  match xs { [] => 0; [x, ...rest] => 1 + list_len_e(rest) }
+
+# Assign each constructor/tuple argument into varname->fields[i].
+fn set_fields(args: List<Expr>, venv: List<Pair<String, String>>, path: String,
+              varname: String, i: Int) : Pair<String, String> =
+  match args {
+    [] => Pair("", "");
+    [a, ...rest] =>
+      match gen_expr(a, venv, path ++ "s" ++ int_to_string(i)) {
+        (sa, ra, la) => match set_fields(rest, venv, path, varname, i + 1) {
+          Pair(cr, lr) =>
+            Pair(sa ++ varname ++ "->fields[" ++ int_to_string(i) ++ "] = (long long)(" ++
+                 ra ++ "); " ++ cr, la ++ lr)
+        }
+      }
+  }
+
+# --- pattern matching --------------------------------------------------------
+# Mirrors quartz.py's recursive _pattern_test / _bind_pattern (incl. the v4.73
+# discriminating-sub-pattern fix). The scrutinee lives in a long long slot;
+# tests cast it to q_value_t* / char* as the pattern shape demands.
+
+fn field_acc(sv: String, i: Int) : String =
+  "((q_value_t*)(intptr_t)(" ++ sv ++ "))->fields[" ++ int_to_string(i) ++ "]"
+
+fn ptest(p: Pattern, sv: String) : String =
+  match p {
+    PWild => "1";
+    PVar(x) => "1";
+    PInt(n) => "(" ++ sv ++ " == " ++ int_to_string(n) ++ ")";
+    PBool(b) => "(" ++ sv ++ " == " ++ (if b then "1" else "0") ++ ")";
+    PStr(s) => "(!strcmp((char*)(intptr_t)(" ++ sv ++ "), " ++ c_str_raw(s) ++ "))";
+    PCtor(name, subs) =>
+      "(!strcmp(((q_value_t*)(intptr_t)(" ++ sv ++ "))->ctor, " ++
+      c_str_raw(name) ++ ")" ++ ptest_subs(subs, sv, 0) ++ ")";
+    PTuple(subs) => "(1" ++ ptest_subs(subs, sv, 0) ++ ")"
+  }
+
+fn ptest_subs(subs: List<Pattern>, sv: String, i: Int) : String =
+  match subs {
+    [] => "";
+    [s, ...rest] =>
+      " && " ++ ptest(s, field_acc(sv, i)) ++ ptest_subs(rest, sv, i + 1)
+  }
+
+fn pbind(p: Pattern, sv: String) : String =
+  match p {
+    PWild => "";
+    PInt(n) => "";
+    PBool(b) => "";
+    PStr(s) => "";
+    PVar(x) => "long long " ++ cmangle(x) ++ " = (long long)(" ++ sv ++ "); ";
+    PCtor(name, subs) => pbind_subs(subs, sv, 0);
+    PTuple(subs) => pbind_subs(subs, sv, 0)
+  }
+
+fn pbind_subs(subs: List<Pattern>, sv: String, i: Int) : String =
+  match subs {
+    [] => "";
+    [s, ...rest] => pbind(s, field_acc(sv, i)) ++ pbind_subs(rest, sv, i + 1)
+  }
+
+# Emit the arm chain as real if/else-if statements assigning to mv; the
+# scrutinee atom is sv. Each arm's bindings + body statements live INSIDE the
+# arm's `{ }` block (so pattern vars are scoped per-arm).
+fn gen_arms(arms: List<Pair<Pattern, Expr>>, first: Bool,
+            venv: List<Pair<String, String>>, path: String, i: Int,
+            sv: String, mv: String)
+  : Pair<String, String> =
+  match arms {
+    [] => Pair("else { fprintf(stderr, \"glassc: non-exhaustive match" ++ ("\\" ++ "n") ++ "\"); exit(1); } ", "");
+    [a, ...rest] =>
+      match a {
+        Pair(p, body) =>
+          match gen_expr(body, extend_venv(pat_vars(p), venv), path ++ "m" ++ int_to_string(i)) {
+            (sb, rb, lb) => match gen_arms(rest, false, venv, path, i + 1, sv, mv) {
+              Pair(cr, lr) =>
+                Pair((if first then "if (" else "else if (") ++ ptest(p, sv) ++ ") { " ++
+                     pbind(p, sv) ++ sb ++ mv ++ " = (long long)(" ++ rb ++ "); } " ++ cr,
+                     lb ++ lr)
+            }
+          }
+      }
+  }
+
+# --- function codegen --------------------------------------------------------
+
+fn params_c(ps: List<String>) : String =
+  match ps {
+    [] => "void";
+    [p, ...rest] =>
+      match rest {
+        [] => "long long " ++ cmangle(p);
+        _ => "long long " ++ cmangle(p) ++ ", " ++ params_c(rest)
+      }
+  }
+
+fn gen_proto(fd: FnDecl) : String =
+  match fd {
+    FnDecl(name, tyvars, ty, body) =>
+      "long long " ++ cmangle(name) ++ "(" ++ params_c(lam_params(body)) ++ ");\n"
+  }
+
+# Map each top-level fn param to its mangled C local.
+fn params_venv(ps: List<String>) : List<Pair<String, String>> =
+  match ps {
+    [] => [];
+    [p, ...rest] => [Pair(p, cmangle(p))] ++ params_venv(rest)
+  }
+
+fn gen_def(fd: FnDecl) : Pair<String, String> =
+  match fd {
+    FnDecl(name, tyvars, ty, body) =>
+      match gen_expr(lam_body(body), params_venv(lam_params(body)), name) {
+        (sb, rb, lb) =>
+          Pair("long long " ++ cmangle(name) ++ "(" ++ params_c(lam_params(body)) ++
+               ") { " ++ sb ++ "return (long long)(" ++ rb ++ "); }\n", lb)
+      }
+  }
+
+fn gen_protos(fns: List<FnDecl>) : String =
+  match fns {
+    [] => "";
+    [f, ...rest] => gen_proto(f) ++ gen_protos(rest)
+  }
+
+# Drop earlier definitions of a fn name when a later one exists (last wins),
+# mirroring quartz.py — prism.glass defines e.g. empty_sub twice.
+fn fn_name(fd: FnDecl) : String = match fd { FnDecl(n, tv, ty, body) => n }
+
+fn name_in_fns(name: String, fns: List<FnDecl>) : Bool =
+  match fns {
+    [] => false;
+    [f, ...rest] => if fn_name(f) == name then true else name_in_fns(name, rest)
+  }
+
+fn dedup_fns(fns: List<FnDecl>) : List<FnDecl> =
+  match fns {
+    [] => [];
+    [f, ...rest] =>
+      if name_in_fns(fn_name(f), rest) then dedup_fns(rest)
+      else [f] ++ dedup_fns(rest)
+  }
+
+# Returns Pair(all_defs, all_lifted) across the program's top-level fns.
+fn gen_defs(fns: List<FnDecl>) : Pair<String, String> =
+  match fns {
+    [] => Pair("", "");
+    [f, ...rest] =>
+      match gen_def(f) {
+        Pair(d, l) => match gen_defs(rest) {
+          Pair(dr, lr) => Pair(d ++ dr, l ++ lr)
+        }
+      }
+  }
+
+# --- result-type inference ---------------------------------------------------
+# Reuse prism's frontend (all imported) to infer the main expression's type,
+# minus the eval step. Mirrors prism's `compile` typing path. The type picks
+# the result printer (quartz.py does the same via c_print_for_ty).
+
+fn infer_main_type(p: Program) : Result<Type, String> =
+  match p {
+    Program(type_decls, fn_decls_raw, e) =>
+      let fn_decls : List<FnDecl> = expand_fn_decls(fn_decls_raw, type_decls) in
+      match initial_envs(type_decls) {
+        (ty_env, val_env, start_id) =>
+          match build_fn_ty_env(fn_decls, start_id) {
+            (fn_ty_env, after_fn_env_id) =>
+              let full_ty_env : List<Pair<String, Scheme>> = fn_ty_env ++ ty_env in
+              bind_result(check_fn_decls(fn_decls, full_ty_env, after_fn_env_id),
+                          fn(checked_id: Int) ->
+                bind_result(run_infer(e, full_ty_env, checked_id),
+                            fn(pr: (Type, EffRow)) ->
+                  match pr { (t, eff) => Ok(t) }))
+          }
+      }
+  }
+
+# C statement that prints _r according to the result type, matching
+# quartz.py: Bool → true/false, String → %s, everything else → %lld.
+fn print_stmt_for(rty: Type) : String =
+  match rty {
+    TyBool => "  printf(\"%s" ++ ("\\" ++ "n") ++ "\", _r ? \"true\" : \"false\");\n";
+    TyStr  => "  printf(\"%s" ++ ("\\" ++ "n") ++ "\", (char*)(intptr_t)_r);\n";
+    _      => "  printf(\"%lld" ++ ("\\" ++ "n") ++ "\", _r);\n"
+  }
+
+# --- program codegen ---------------------------------------------------------
+
+fn gen_program(p: Program) : String =
+  match p {
+    Program(types, fns_raw, main) =>
+      let fns : List<FnDecl> = dedup_fns(fns_raw) in
+      let rty : Type =
+        match infer_main_type(p) { Ok(t) => t; Err(_) => TyInt } in
+      match gen_expr(main, [], "main") {
+        (sm, rm, lm) =>
+          match gen_defs(fns) {
+            Pair(defs, deflifted) =>
+              c_prelude_of(0) ++
+              gen_protos(fns) ++
+              lm ++ deflifted ++
+              defs ++
+              "int main(void) {\n  " ++
+              sm ++
+              "\n  long long _r = (long long)(" ++ rm ++ ");\n" ++
+              print_stmt_for(rty) ++
+              "  return 0;\n}\n"
+          }
+      }
+  }
+
+# --- driver ------------------------------------------------------------------
+# Reads /tmp/in.glass, emits C to /tmp/glassc_out.c, invokes cc to produce
+# /tmp/glassc_bin, and STOPS — a proper compiler. It does NOT run the result
+# (running it would recurse when the input is itself a compiler). Run
+# /tmp/glassc_bin separately to execute the compiled program.
+
+let result : String =
+  match read_file("/tmp/in.glass") {
+    Ok(src) =>
+      match parse_program(src) {
+        Ok(prog) =>
+          let c : String = gen_program(prog) in
+          let _w : Result<Int, String> = write_file("/tmp/glassc_out.c", c) in
+          match run_command("cc",
+                 ["/tmp/glassc_out.c", "-o", "/tmp/glassc_bin",
+                  "-O2", "-Wno-int-conversion", "-fbracket-depth=100000"]) {
+            Ok(ccres) =>
+              match ccres {
+                (code, so, se) =>
+                  if code == 0 then print("glassc: compiled /tmp/glassc_bin")
+                  else print("glassc: cc failed: " ++ se)
+              };
+            Err(m) => print("glassc: cc invoke failed: " ++ m)
+          };
+        Err(m) => print("glassc: parse error: " ++ m)
+      };
+    Err(m) => print("glassc: no /tmp/in.glass: " ++ m)
+  }
+
+result

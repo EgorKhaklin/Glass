@@ -1,0 +1,15 @@
+# email.glass — extract the domain part of an email address.
+# Uses v4.15 string_index_of + v4.14 substring + v4.13 string_length.
+# A real-world tokenization pattern: find a delimiter, slice around it.
+
+fn email_domain(addr) =
+  let at_idx = string_index_of(addr, "@") in
+  let len = string_length(addr) in
+  if at_idx < 0 then
+    # No `@` — return empty as a sentinel.
+    ""
+  else
+    # Everything after the `@`.
+    substring(addr, at_idx + 1, len)
+
+email_domain("vanta@seton-hill.edu")

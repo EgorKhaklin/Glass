@@ -1,0 +1,254 @@
+# =============================================================================
+# frost_query.glass — arithmetizing a WHOLE Pane query into a ZK circuit (v0.1)
+#
+# frost.glass arithmetized a single predicate; this lifts that to an entire
+# query: FILTER + AGGREGATE over a (bounded) table, compiled into one arithmetic
+# circuit over F_p whose output equals Pane's `run_query`. This is the form a
+# zero-knowledge proof proves: "COUNT/SUM over my private rows = R", revealing
+# only the query and the result.
+#
+# THE TWO NEW PIECES
+#   1. A RANGE-COMPARISON gadget for `<` / `>`. Field elements have no native
+#      ordering, so comparison is the classic ZK construction: decompose a
+#      value into bits (witness), constrain each bit boolean (b*b == b) and the
+#      weighted sum to equal the value, then read the sign bit. `a < b` becomes
+#      a 0/1 SELECTOR wire.
+#   2. WHOLE-QUERY LOWERING. For each row: allocate its cells as witness wires,
+#      compile the WHERE predicate to a selector s_i ∈ {0,1}. Then
+#         COUNT      = Σ s_i
+#         SUM(col)   = Σ s_i · row_i[col]
+#      These accumulations are exactly what a circuit computes over a fixed-size
+#      (padded) table — the shape ZK needs.
+#
+# Differential-tested against a reference evaluator, like everywhere else.
+# Field p = 2^31-1 (toy, int64-exact, glassc-compilable; real ZK widens it).
+# =============================================================================
+
+# --- field -------------------------------------------------------------------
+fn fadd(a: Int, b: Int) : Int = (a + b) % 2147483647
+fn fmul(a: Int, b: Int) : Int = (a * b) % 2147483647
+fn fsub(a: Int, b: Int) : Int = ((a - b) % 2147483647 + 2147483647) % 2147483647
+fn fnorm(a: Int) : Int = (a % 2147483647 + 2147483647) % 2147483647
+fn pow2(i: Int) : Int = if i <= 0 then 1 else 2 * pow2(i - 1)
+
+# --- predicate language (over Int cells; field elements directly) ------------
+type PExpr =
+  | Col(String)
+  | LitI(Int)
+  | LtE(PExpr, PExpr)
+  | GtE(PExpr, PExpr)
+  | AndE(PExpr, PExpr)
+  | OrE(PExpr, PExpr)
+  | NotE(PExpr)
+  | AddE(PExpr, PExpr)
+  | MulE(PExpr, PExpr)
+
+# A row is column -> Int (a field cell).
+fn cell(cs: List<Pair<String, Int>>, name: String) : Int =
+  match cs { [] => 0; [Pair(k, v), ...r] => if k == name then v else cell(r, name) }
+
+# --- REFERENCE evaluator (the semantics the circuit must reproduce) ----------
+fn eval_ref(e: PExpr, row: List<Pair<String, Int>>) : Int =
+  match e {
+    Col(n)    => cell(row, n);
+    LitI(n)   => n;
+    LtE(a, b) => if eval_ref(a, row) < eval_ref(b, row) then 1 else 0;
+    GtE(a, b) => if eval_ref(a, row) > eval_ref(b, row) then 1 else 0;
+    AndE(a, b) => if (eval_ref(a, row) != 0) && (eval_ref(b, row) != 0) then 1 else 0;
+    OrE(a, b)  => if (eval_ref(a, row) != 0) || (eval_ref(b, row) != 0) then 1 else 0;
+    NotE(a)    => if eval_ref(a, row) == 0 then 1 else 0;
+    AddE(a, b) => eval_ref(a, row) + eval_ref(b, row);
+    MulE(a, b) => eval_ref(a, row) * eval_ref(b, row)
+  }
+
+fn ref_count(rows: List<List<Pair<String, Int>>>, p: PExpr) : Int =
+  match rows {
+    [] => 0;
+    [r, ...rest] =>
+      (if eval_ref(p, r) != 0 then 1 else 0) + ref_count(rest, p)
+  }
+fn ref_sum(rows: List<List<Pair<String, Int>>>, p: PExpr, col: String) : Int =
+  match rows {
+    [] => 0;
+    [r, ...rest] =>
+      (if eval_ref(p, r) != 0 then cell(r, col) else 0) + ref_sum(rest, p, col)
+  }
+
+# --- circuit / constraint system ---------------------------------------------
+type Gate =
+  | GConst(Int, Int) | GAdd(Int, Int, Int) | GMul(Int, Int, Int) | GAssertEq(Int, Int)
+type Build = | Build(Int, List<Gate>, List<Pair<Int, Int>>)
+
+fn b_fresh(b: Build) : (Int, Build) = match b { Build(n, gs, vs) => (n, Build(n + 1, gs, vs)) }
+fn b_emit(g: Gate, b: Build) : Build = match b { Build(n, gs, vs) => Build(n, [g] ++ gs, vs) }
+fn b_set(w: Int, v: Int, b: Build) : Build = match b { Build(n, gs, vs) => Build(n, gs, [Pair(w, v)] ++ vs) }
+fn assoc(vs: List<Pair<Int, Int>>, w: Int) : Int =
+  match vs { [] => 0; [Pair(k, v), ...r] => if k == w then v else assoc(r, w) }
+fn b_val(b: Build, w: Int) : Int = match b { Build(n, gs, vs) => assoc(vs, w) }
+fn assoc_s(xs: List<Pair<String, Int>>, name: String) : Int =
+  match xs { [] => 0; [Pair(k, v), ...r] => if k == name then v else assoc_s(r, name) }
+fn wnth(xs: List<Int>, i: Int) : Int =
+  match xs { [] => 0; [x, ...r] => if i == 0 then x else wnth(r, i - 1) }
+
+fn mk_const(c: Int, b: Build) : (Int, Build) =
+  match b_fresh(b) { (w, b1) => (w, b_set(w, fnorm(c), b_emit(GConst(w, fnorm(c)), b1))) }
+fn mk_add(a: Int, bw: Int, b: Build) : (Int, Build) =
+  match b_fresh(b) { (o, b1) => (o, b_set(o, fadd(b_val(b1, a), b_val(b1, bw)), b_emit(GAdd(o, a, bw), b1))) }
+fn mk_mul(a: Int, bw: Int, b: Build) : (Int, Build) =
+  match b_fresh(b) { (o, b1) => (o, b_set(o, fmul(b_val(b1, a), b_val(b1, bw)), b_emit(GMul(o, a, bw), b1))) }
+fn mk_sub(a: Int, bw: Int, b: Build) : (Int, Build) =
+  match mk_const(2147483646, b) { (neg1, b1) =>      # -1 mod p
+    match mk_mul(bw, neg1, b1) { (nb, b2) => mk_add(a, nb, b2) } }
+
+# --- RANGE-COMPARISON gadget -------------------------------------------------
+# Allocate `nbits` witness bits of value `vv`, each constrained boolean (w*w==w).
+fn alloc_bits(vv: Int, i: Int, nbits: Int, b: Build) : (List<Int>, Build) =
+  if i >= nbits then ([], b)
+  else
+    let bitval : Int = (vv / pow2(i)) % 2 in
+    match b_fresh(b) { (w, b1) =>
+      let b2 : Build = b_set(w, bitval, b1) in
+      match mk_mul(w, w, b2) { (ww, b3) =>          # w*w
+        let b4 : Build = b_emit(GAssertEq(ww, w), b3) in   # w*w == w  ->  w in {0,1}
+        match alloc_bits(vv, i + 1, nbits, b4) { (rest, b5) => ([w] ++ rest, b5) } } }
+
+# Σ bit_i · 2^i.
+fn weighted_sum(bits: List<Int>, i: Int, b: Build) : (Int, Build) =
+  match bits {
+    [] => mk_const(0, b);
+    [bit, ...rest] =>
+      match mk_const(pow2(i), b) { (p2, b1) =>
+        match mk_mul(bit, p2, b1) { (term, b2) =>
+          match weighted_sum(rest, i + 1, b2) { (rs, b3) => mk_add(term, rs, b3) } } }
+  }
+
+# lt(a, b) -> selector wire ∈ {0,1}. For a,b ∈ [0, 2^16): let d = a - b + 2^16
+# ∈ (0, 2^17); decompose into 17 bits; the bit at position 16 is set iff a >= b;
+# so lt = 1 - bit16.  (av/bv are the witness values of wires aw/bw.)
+fn lt_gadget(aw: Int, av: Int, bw: Int, bv: Int, b: Build) : (Int, Build) =
+  match mk_const(65536, b) { (k, b1) =>                  # 2^16
+    match mk_sub(aw, bw, b1) { (amb, b2) =>               # a - b
+      match mk_add(amb, k, b2) { (dw, b3) =>              # d = a - b + 2^16
+        let dv : Int = fadd(fsub(av, bv), 65536) in
+        match alloc_bits(dv, 0, 17, b3) { (bits, b4) =>
+          match weighted_sum(bits, 0, b4) { (ws, b5) =>
+            let b6 : Build = b_emit(GAssertEq(ws, dw), b5) in   # bits reconstruct d
+            let bit16 : Int = wnth(bits, 16) in
+            match mk_const(1, b6) { (one, b7) =>
+              match mk_const(2147483646, b7) { (neg1, b8) =>
+                match mk_mul(bit16, neg1, b8) { (nb16, b9) =>
+                  mk_add(one, nb16, b9) } } } } } } } }    # 1 - bit16
+
+# --- compile a predicate over a row's columns -> a wire ----------------------
+fn compile(e: PExpr, env: List<Pair<String, Int>>, b: Build) : (Int, Build) =
+  match e {
+    Col(n)  => (assoc_s(env, n), b);
+    LitI(n) => mk_const(n, b);
+    AddE(x, y) =>
+      match compile(x, env, b) { (wx, b1) => match compile(y, env, b1) { (wy, b2) => mk_add(wx, wy, b2) } };
+    MulE(x, y) =>
+      match compile(x, env, b) { (wx, b1) => match compile(y, env, b1) { (wy, b2) => mk_mul(wx, wy, b2) } };
+    AndE(x, y) =>
+      match compile(x, env, b) { (wx, b1) => match compile(y, env, b1) { (wy, b2) => mk_mul(wx, wy, b2) } };
+    OrE(x, y) =>
+      match compile(x, env, b) { (wx, b1) => match compile(y, env, b1) { (wy, b2) =>
+        match mk_mul(wx, wy, b2) { (xy, b3) => match mk_add(wx, wy, b3) { (s, b4) =>
+          match mk_sub(s, xy, b4) { (r, b5) => (r, b5) } } } } };
+    NotE(x) =>
+      match compile(x, env, b) { (wx, b1) =>
+        match mk_const(1, b1) { (one, b2) => mk_sub(one, wx, b2) } };
+    LtE(x, y) =>
+      match compile(x, env, b) { (wx, b1) => match compile(y, env, b1) { (wy, b2) =>
+        lt_gadget(wx, b_val(b2, wx), wy, b_val(b2, wy), b2) } };
+    GtE(x, y) =>      # a > b  ==  b < a
+      match compile(x, env, b) { (wx, b1) => match compile(y, env, b1) { (wy, b2) =>
+        lt_gadget(wy, b_val(b2, wy), wx, b_val(b2, wx), b2) } }
+  }
+
+# --- allocate a row's cells as witness input wires ---------------------------
+fn alloc_row(cells: List<Pair<String, Int>>, b: Build) : (List<Pair<String, Int>>, Build) =
+  match cells {
+    [] => ([], b);
+    [Pair(name, v), ...rest] =>
+      match b_fresh(b) { (w, b1) =>
+        let b2 : Build = b_set(w, fnorm(v), b1) in
+        match alloc_row(rest, b2) { (env, b3) => ([Pair(name, w)] ++ env, b3) } }
+  }
+
+# --- WHOLE-QUERY lowering ----------------------------------------------------
+# COUNT WHERE p  =  Σ selector_i
+fn lower_count(rows: List<List<Pair<String, Int>>>, p: PExpr, b: Build) : (Int, Build) =
+  match rows {
+    [] => mk_const(0, b);
+    [row, ...rest] =>
+      match alloc_row(row, b) { (env, b1) =>
+        match compile(p, env, b1) { (sel, b2) =>
+          match lower_count(rest, p, b2) { (rc, b3) => mk_add(sel, rc, b3) } } }
+  }
+# SUM(col) WHERE p  =  Σ selector_i · row_i[col]
+fn lower_sum(rows: List<List<Pair<String, Int>>>, p: PExpr, col: String, b: Build) : (Int, Build) =
+  match rows {
+    [] => mk_const(0, b);
+    [row, ...rest] =>
+      match alloc_row(row, b) { (env, b1) =>
+        match compile(p, env, b1) { (sel, b2) =>
+          let cw : Int = assoc_s(env, col) in
+          match mk_mul(sel, cw, b2) { (term, b3) =>
+            match lower_sum(rest, p, col, b3) { (rs, b4) => mk_add(term, rs, b4) } } } }
+  }
+
+# --- checker -----------------------------------------------------------------
+fn gate_ok(g: Gate, b: Build) : Bool =
+  match g {
+    GConst(o, c)     => b_val(b, o) == fnorm(c);
+    GAdd(o, a, bw)   => b_val(b, o) == fadd(b_val(b, a), b_val(b, bw));
+    GMul(o, a, bw)   => b_val(b, o) == fmul(b_val(b, a), b_val(b, bw));
+    GAssertEq(a, bw) => b_val(b, a) == b_val(b, bw)
+  }
+fn all_ok(gs: List<Gate>, b: Build) : Bool =
+  match gs { [] => true; [g, ...r] => if gate_ok(g, b) then all_ok(r, b) else false }
+fn glen(gs: List<Gate>) : Int = match gs { [] => 0; [g, ...r] => 1 + glen(r) }
+
+# --- demo --------------------------------------------------------------------
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+
+fn row3(age: Int, score: Int) : List<Pair<String, Int>> =
+  [Pair("age", age), Pair("score", score)]
+
+let tbl : List<List<Pair<String, Int>>> =
+  [row3(36, 100), row3(41, 100), row3(28, 200), row3(25, 300), row3(31, 200)]
+
+# COUNT WHERE age < 30
+let pred : PExpr = LtE(Col("age"), LitI(30))
+
+fn run_count(rows: List<List<Pair<String, Int>>>, p: PExpr) : (Int, Int, Bool, Int) =
+  match lower_count(rows, p, Build(0, [], [])) { (outw, b) =>
+    match b { Build(n, gs, vs) => (ref_count(rows, p), b_val(b, outw), all_ok(gs, b), glen(gs)) } }
+fn run_sum(rows: List<List<Pair<String, Int>>>, p: PExpr, col: String) : (Int, Int, Bool, Int) =
+  match lower_sum(rows, p, col, Build(0, [], [])) { (outw, b) =>
+    match b { Build(n, gs, vs) => (ref_sum(rows, p, col), b_val(b, outw), all_ok(gs, b), glen(gs)) } }
+
+let _ : String = print("--- frost_query.glass: a whole Pane query as a ZK circuit ---")
+let _ : String = print("query: COUNT/SUM(score) WHERE age < 30, over 5 private rows")
+let _ : String = print("")
+
+let _ : String =
+  match run_count(tbl, pred) {
+    (ref, circ, ok, gates) =>
+      print("COUNT WHERE age<30:  reference=" ++ int_to_string(ref) ++
+            "  circuit=" ++ int_to_string(circ) ++
+            "  match=" ++ show_b(ref == circ) ++
+            "  constraints_hold=" ++ show_b(ok) ++
+            "  gates=" ++ int_to_string(gates))
+  }
+let _ : String =
+  match run_sum(tbl, pred, "score") {
+    (ref, circ, ok, gates) =>
+      print("SUM(score) WHERE age<30:  reference=" ++ int_to_string(ref) ++
+            "  circuit=" ++ int_to_string(circ) ++
+            "  match=" ++ show_b(ref == circ) ++
+            "  constraints_hold=" ++ show_b(ok) ++
+            "  gates=" ++ int_to_string(gates))
+  }
+
+"frost query v0.1 — range gadget + whole-query (filter+aggregate) arithmetization"

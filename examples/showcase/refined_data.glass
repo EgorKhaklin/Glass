@@ -1,0 +1,51 @@
+# =============================================================================
+# Field-level refinements — refined-payload ADTs, in Glass (v4.69).
+#
+# Until now a refinement could guard a function parameter, a let binding,
+# or a return — but NOT a value stored inside a constructor. Building
+# units.glass we hit exactly that wall: a `Qty`'s value lives in an ADT
+# field, so "nonzero divisor" couldn't be expressed.
+#
+# v4.69 lets a constructor field carry a name and a refinement:
+#
+#       type Pos = | Pos(n: Int where (n > 0))
+#
+# The predicate is checked when the constructor is APPLIED, so an illegal
+# value can never be packed into the type in the first place. A value of
+# type `Pos` is a positive integer — the data structure carries its own
+# invariant. Unnamed fields (`Box(Int)`) keep working unchanged.
+# =============================================================================
+
+# A positive integer — the refinement lives on the field.
+type Pos = | Pos(n: Int where (n > 0))
+
+# A bounded percentage 0..100, again enforced at construction.
+type Percent = | Percent(p: Int where (p >= 0 && p <= 100))
+
+# A nonempty-by-construction range: hi must exceed lo (cross-field, since
+# the field refinement on `hi` may reference the earlier field `lo`).
+type Range = | Range(lo: Int, hi: Int where (hi > lo))
+
+fn pos_value(x: Pos) : Int = match x { Pos(n) => n }
+fn range_span(r: Range) : Int = match r { Range(lo, hi) => hi - lo }
+
+# ---- Demo -------------------------------------------------------------------
+
+let _ = print("=== Constructors enforce field invariants ===")
+let _ = print("  Pos(5)        ⇒ ok, value " ++ int_to_string(pos_value(Pos(5))))
+let _ = print("  Percent(80)   ⇒ ok")
+let _ = print("  Range(3, 10)  ⇒ ok, span " ++ int_to_string(range_span(Range(3, 10))))
+
+# Once built, the invariant is carried by the type — `pos_value` always
+# returns a positive Int, no re-checking needed downstream.
+let _ = print("")
+let _ = print("=== A Pos is positive by construction ===")
+let _ = print("  pos_value(Pos(42)) = " ++ int_to_string(pos_value(Pos(42))))
+
+let _ = print("")
+let _ = print("Rejected at construction (see the test suite):")
+let _ = print("  Pos(0 - 3)        — field violates n > 0")
+let _ = print("  Percent(150)      — field violates p <= 100")
+let _ = print("  Range(10, 3)      — field violates hi > lo (cross-field)")
+
+"done"

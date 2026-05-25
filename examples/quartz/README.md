@@ -1,6 +1,8 @@
-# Quartz examples (v3.5)
+# Quartz examples
 
-These programs demonstrate the v3.5 Quartz subset: primitives,
+> These are *early* Quartz programs (the v3.5 subset). Quartz has since grown to compile the whole frontend — Glass self-hosts (see [docs/self-hosting.md](../../docs/self-hosting.md)). Kept as small, readable demos of the back end.
+
+These programs demonstrate the original v3.5 Quartz subset: primitives,
 arithmetic and comparisons, if/else, let bindings, top-level functions,
 string concatenation, ADTs and pattern matching, records and field
 access, generic ADTs and records, **generic functions (v3.5)**.
@@ -46,9 +48,9 @@ update syntax, field renaming in patterns, effects beyond pure,
 explicit print(). The Glass concrete + generic language subset is
 otherwise fully covered. See `docs/quartz.md` for the v3.x roadmap.
 
-## What's next
+## What happened next
 
-Stage 5: port Quartz itself to Glass (`quartz.py` → `prism.glass`), so
-prism can self-compile via Quartz to native binaries. After that,
-performance and platforms (WASM target, runtime refinement checks,
-modules, FFI).
+Stage 5 was reached: a Glass-written compiler (`glassc.glass`) now compiles
+Glass to native C, and the self-hosting **bootstrap fixpoint closed at v4.76** —
+see [self-hosting](../../docs/self-hosting.md). Quartz (`quartz.py`) is now the
+one-time bootstrap that builds it.

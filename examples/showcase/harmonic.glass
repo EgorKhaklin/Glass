@@ -1,0 +1,79 @@
+# =============================================================================
+# Harmonic proportion — musical consonance as integer ratios, in Glass.
+#
+# The intervals that sound consonant are exactly those whose frequency
+# ratio reduces to SMALL whole numbers (Pythagoras' discovery):
+#
+#     unison 1:1   octave 2:1   fifth 3:2   fourth 4:3   major third 5:4
+#
+# "Small whole numbers" is an Int property — so consonance is a
+# refinement. We reduce a ratio by its gcd (Euclid) and refine on the
+# reduced denominator being below a consonance bound. No floats: the
+# whole theory of just intonation lives in Int.
+#
+# Demonstrated: the harmonic series, gcd-reduction of intervals, a
+# consonance classifier, and a refinement gate that accepts a consonant
+# ratio and would reject a dissonant one.
+# =============================================================================
+
+# Euclid's gcd — the reducer.
+fn gcd(a: Int, b: Int) : Int =
+  if b == 0 then a else gcd(b, a % b)
+
+# A ratio is "consonant" when, fully reduced, its denominator is small
+# (<= 4 covers unison/octave/fifth/fourth/major-third/major-sixth — the
+# classical consonances of just intonation).
+fn reduced_den(num: Int, den: Int where (den > 0)) : Int = den / gcd(num, den)
+fn reduced_num(num: Int, den: Int where (den > 0)) : Int = num / gcd(num, den)
+
+fn is_consonant(num: Int, den: Int where (den > 0)) : Bool =
+  reduced_den(num, den) <= 4
+
+# A GATE: only accepts a ratio whose reduced denominator is <= 4. The
+# refinement references the OTHER param (den is the binder, num the
+# earlier one — cross-parameter, v4.56), via gcd in the predicate.
+# NOTE: this gate runs on the host (predicate uses a function call,
+# which the host evaluates fine; Quartz's predicate envelope would
+# reject the call — host-only, by design, see the comment below).
+fn consonant_ratio(num: Int,
+                   den: Int where (den / gcd(num, den) <= 4)) : String =
+  int_to_string(reduced_num(num, den)) ++ ":" ++
+  int_to_string(reduced_den(num, den)) ++ " is consonant"
+
+# ---- Pretty-printer ---------------------------------------------------------
+
+fn name_of(num: Int, den: Int) : String =
+  let rn = reduced_num(num, den) in
+  let rd = reduced_den(num, den) in
+  if rn == 1 then (if rd == 1 then "unison" else "?")
+  else if rn == 2 then (if rd == 1 then "octave" else "?")
+  else if rn == 3 then (if rd == 2 then "perfect fifth" else "?")
+  else if rn == 4 then (if rd == 3 then "perfect fourth" else "?")
+  else if rn == 5 then (if rd == 4 then "major third" else "?")
+  else "?"
+
+fn report(label: String, num: Int, den: Int) : String !{IO} =
+  let rn = reduced_num(num, den) in
+  let rd = reduced_den(num, den) in
+  print("  " ++ label ++ ": " ++
+        int_to_string(num) ++ ":" ++ int_to_string(den) ++
+        "  reduces to " ++ int_to_string(rn) ++ ":" ++ int_to_string(rd) ++
+        "  (" ++ name_of(num, den) ++ ")" ++
+        "  consonant?=" ++ (if is_consonant(num, den) then "yes" else "no"))
+
+let _ = print("=== Just-intonation intervals (reduced ratios) ===")
+let _ = report("octave    ", 8, 4)
+let _ = report("fifth     ", 6, 4)
+let _ = report("fourth    ", 8, 6)
+let _ = report("maj third ", 10, 8)
+let _ = print("")
+let _ = print("=== Dissonant intervals (large reduced denominator) ===")
+let _ = report("tritone   ", 45, 32)
+let _ = report("min second", 16, 15)
+
+let _ = print("")
+let _ = print("=== The consonance gate ===")
+let _ = print("  " ++ consonant_ratio(6, 4))
+let _ = print("  " ++ consonant_ratio(10, 8))
+
+"done"

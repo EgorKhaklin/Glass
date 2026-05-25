@@ -1,0 +1,17 @@
+# =============================================================================
+# parens_after_let.glass — regression for the parens-after-let parser
+# fix in prism (v4.27).
+#
+# Pre-v4.27 prism's parser would eat `let r2 = add(3, 4)\n(r1, r2)` as
+# `let r2 = add(3, 4)(r1, r2)` — chaining the next-line parenthesized
+# tuple as a call against the prior let's value. Same bug the host
+# fixed in v4.21; v4.27 ports the fix to prism by injecting a TNlBdy
+# boundary token before any `(` at column 1 after a newline and using
+# it in parse_app_loop to break the postfix-call chain.
+# =============================================================================
+
+fn add(a: Int, b: Int) : Int = a + b
+
+let r1 = add(1, 2)
+let r2 = add(3, 4)
+(r1, r2)

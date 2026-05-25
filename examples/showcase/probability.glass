@@ -1,0 +1,79 @@
+# =============================================================================
+# Probabilistic types with refinement bounds, in Glass.
+#
+# A distribution is a list of EXACT rational probabilities (see
+# showcase/rational.glass — Glass has no imports, so the Rat core is
+# repeated here). The defining refinement of a probability distribution
+# is exact and checkable: the weights must sum to exactly 1.
+#
+# For "how uncertain is this distribution?" we deliberately use the
+# GINI / collision uncertainty
+#
+#       U = 1 − Σ pᵢ²
+#
+# rather than Shannon entropy −Σ pᵢ·log pᵢ. Shannon needs logarithms,
+# which are irrational — so an "entropy" over exact rationals would have
+# to lie (round). Gini uncertainty is genuinely rational: it stays exact,
+# it's 0 for a certainty and maximal for the uniform distribution, and it
+# answers the same question (how spread out is the mass). Honest beats
+# familiar.
+# =============================================================================
+
+# ---- Rat core: IMPORTED, not copy-pasted (v4.70 module system) --------------
+# Before v4.70 this file repeated the entire Rat algebra from
+# showcase/rational.glass. Now it imports the shared library — the
+# definitions live in exactly one place.
+import "../lib/rational.glass"
+
+# ---- Distributions ----------------------------------------------------------
+
+fn psum(ps: List<Rat>) : Rat =
+  fold(ps, rat(0, 1), fn(acc: Rat, p: Rat) -> radd(acc, p))
+
+# THE defining property: the probabilities sum to exactly 1.
+fn is_distribution(ps: List<Rat>) : Bool = req(psum(ps), rat(1, 1))
+
+# Gini / collision uncertainty: 1 − Σ pᵢ². Exact rational.
+fn uncertainty(ps: List<Rat>) : Rat =
+  rsub(rat(1, 1), fold(ps, rat(0, 1),
+                       fn(acc: Rat, p: Rat) -> radd(acc, rmul(p, p))))
+
+# A refinement BOUND as a predicate: some outcome is near-certain
+# (probability >= 9/10).
+fn has_confident_outcome(ps: List<Rat>) : Bool =
+  fold(ps, false, fn(acc: Bool, p: Rat) -> acc || rle(rat(9, 10), p))
+
+# ---- Demo -------------------------------------------------------------------
+
+fn report(name: String, ps: List<Rat>) : String !{IO} =
+  print("  " ++ name ++
+        ":  Σp=" ++ show_rat(psum(ps)) ++
+        "  valid?=" ++ (if is_distribution(ps) then "yes" else "no ") ++
+        "  uncertainty=" ++ show_rat(uncertainty(ps)) ++
+        "  confident?=" ++ (if has_confident_outcome(ps) then "yes" else "no"))
+
+let fair    = [rat(1, 2), rat(1, 2)]
+let biased  = [rat(9, 10), rat(1, 10)]
+let uniform = [rat(1, 4), rat(1, 4), rat(1, 4), rat(1, 4)]
+let certain = [rat(1, 1)]
+let broken  = [rat(1, 2), rat(1, 3)]   # sums to 5/6 — not a distribution
+
+let _ = print("=== Distributions: validity, uncertainty (Gini), confidence ===")
+let _ = report("fair coin   ", fair)
+let _ = report("biased 9:1  ", biased)
+let _ = report("uniform 4   ", uniform)
+let _ = report("certain     ", certain)
+let _ = report("broken (5/6)", broken)
+
+let _ = print("")
+let _ = print("=== Uncertainty ordering: certain < biased < fair < uniform ===")
+let _ = print("  certain U=" ++ show_rat(uncertainty(certain)) ++
+              " ≤ biased U=" ++ show_rat(uncertainty(biased)) ++
+              " ≤ fair U=" ++ show_rat(uncertainty(fair)) ++
+              " ≤ uniform U=" ++ show_rat(uncertainty(uniform)) ++ " ?  " ++
+              (if rle(uncertainty(certain), uncertainty(biased))
+                  && rle(uncertainty(biased), uncertainty(fair))
+                  && rle(uncertainty(fair), uncertainty(uniform))
+               then "yes" else "no"))
+
+"done"

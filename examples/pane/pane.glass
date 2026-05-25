@@ -1,0 +1,261 @@
+# =============================================================================
+# pane.glass — a query layer for Glass (v0.1)
+#
+# Pane is a small, TOTAL, DETERMINISTIC query algebra over typed Glass data,
+# with a reference interpreter (`run_query`). It is designed from day one to
+# connect to FROST — a future zero-knowledge extension that proves facts about
+# query results without revealing the data.
+#
+# THE FROST CONNECTION (why the design is shaped this way)
+# --------------------------------------------------------
+# Frost will be a SECOND backend over the very same `Query` / `PExpr` ASTs:
+# instead of executing a query, it lowers the query into a zero-knowledge
+# circuit, so a prover can demonstrate "the result of query Q over my private
+# table T (committed to as root C) is R" — revealing only Q, C, and R.
+#
+# That goal forces five properties, all honoured below:
+#   1. Queries and predicates are DATA (ADTs), not opaque Glass closures — a
+#      circuit compiler can introspect an AST but not a closure.
+#   2. Predicates are a FINITE, non-recursive expression language — each node
+#      maps to a fixed circuit gadget (eq, range, mul, mux).
+#   3. `run_query` is a fold over rows — mirrors a circuit that processes a
+#      bounded (padded) table row-by-row.
+#   4. Scalars are field-element-friendly (Int, Bool now; String later as a
+#      hash/commitment).
+#   5. Tables are committable — Frost proves results against a commitment.
+#
+# This mirrors the rest of Glass: a REFERENCE semantics (this interpreter,
+# like prism/glass.py) plus a COMPILER that must agree with it bit-for-bit
+# (Frost, like quartz/glassc), validated by differential testing.
+#
+# v0.1 scope: in-memory tables of Glass data ("view data in Glass itself").
+# External sources (files/SQL/HTTP) come later as effectful loaders that
+# produce a Table; the query algebra over that Table is unchanged.
+# =============================================================================
+
+# --- Data model --------------------------------------------------------------
+# A cell holds a scalar. These are the ZK-friendly base types: Int and Bool map
+# to field elements directly; String is kept for now and will be committed via
+# a hash when Frost lands.
+type Val =
+  | VInt(Int)
+  | VStr(String)
+  | VBool(Bool)
+
+# A row is an ordered set of named cells; a table is a list of rows. (Wrapped
+# in ADTs so they pattern-match cleanly and stay distinct from bare lists.)
+type Row   = | Row(List<Pair<String, Val>>)
+type Table = | Table(List<Row>)
+
+# --- Predicate / scalar expression over a row --------------------------------
+# A finite, non-recursive expression language. Every constructor has a direct
+# zero-knowledge gadget, which is what keeps Frost tractable.
+type PExpr =
+  | Col(String)            # read a column of the current row
+  | LitI(Int)
+  | LitS(String)
+  | LitB(Bool)
+  | EqE(PExpr, PExpr)      # structural equality
+  | LtE(PExpr, PExpr)      # Int <
+  | GtE(PExpr, PExpr)      # Int >
+  | AndE(PExpr, PExpr)
+  | OrE(PExpr, PExpr)
+  | NotE(PExpr)
+  | AddE(PExpr, PExpr)
+  | SubE(PExpr, PExpr)
+  | MulE(PExpr, PExpr)
+
+# --- Query (relational algebra) ----------------------------------------------
+# Each operator is a per-row transform or a bounded accumulation — the shape a
+# ZK circuit can process over a fixed-size table.
+type Query =
+  | From(Table)                  # base table (the committed data, for Frost)
+  | Where(PExpr, Query)          # keep rows where the predicate is true
+  | Select(List<String>, Query)  # project to the named columns
+  | Limit(Int, Query)            # first n rows
+  | CountQ(Query)                # -> 1-row table with column "count"
+  | SumQ(String, Query)          # -> 1-row table with column "sum"
+
+# --- small list helpers (self-contained, no prelude needed) ------------------
+fn plen(xs: List<Row>) : Int =
+  match xs { [] => 0; [x, ...rest] => 1 + plen(rest) }
+
+# --- cell access -------------------------------------------------------------
+fn lookup_cell(cells: List<Pair<String, Val>>, name: String) : Val =
+  match cells {
+    [] => VBool(false);                       # missing column -> false/absent
+    [Pair(k, v), ...rest] =>
+      if k == name then v else lookup_cell(rest, name)
+  }
+
+fn row_get(r: Row, name: String) : Val =
+  match r { Row(cells) => lookup_cell(cells, name) }
+
+# --- scalar coercions (queries are assumed well-typed; ZK fixes types too) ---
+fn vint(v: Val) : Int = match v { VInt(n) => n; _ => 0 }
+fn vbool(v: Val) : Bool = match v { VBool(b) => b; _ => false }
+
+fn val_eq(a: Val, b: Val) : Bool =
+  match a {
+    VInt(x)  => match b { VInt(y)  => x == y; _ => false };
+    VStr(x)  => match b { VStr(y)  => x == y; _ => false };
+    VBool(x) => match b { VBool(y) => x == y; _ => false }
+  }
+
+# --- predicate / expression evaluator (the per-row "gadget") -----------------
+fn eval_pexpr(e: PExpr, r: Row) : Val =
+  match e {
+    Col(name) => row_get(r, name);
+    LitI(n)   => VInt(n);
+    LitS(s)   => VStr(s);
+    LitB(b)   => VBool(b);
+    EqE(a, b) => VBool(val_eq(eval_pexpr(a, r), eval_pexpr(b, r)));
+    LtE(a, b) => VBool(vint(eval_pexpr(a, r)) < vint(eval_pexpr(b, r)));
+    GtE(a, b) => VBool(vint(eval_pexpr(a, r)) > vint(eval_pexpr(b, r)));
+    AndE(a, b) => VBool(vbool(eval_pexpr(a, r)) && vbool(eval_pexpr(b, r)));
+    OrE(a, b)  => VBool(vbool(eval_pexpr(a, r)) || vbool(eval_pexpr(b, r)));
+    NotE(a)    => VBool(!vbool(eval_pexpr(a, r)));
+    AddE(a, b) => VInt(vint(eval_pexpr(a, r)) + vint(eval_pexpr(b, r)));
+    SubE(a, b) => VInt(vint(eval_pexpr(a, r)) - vint(eval_pexpr(b, r)));
+    MulE(a, b) => VInt(vint(eval_pexpr(a, r)) * vint(eval_pexpr(b, r)))
+  }
+
+# --- relational operators (the reference semantics Frost must match) ---------
+fn filter_rows(rows: List<Row>, p: PExpr) : List<Row> =
+  match rows {
+    [] => [];
+    [r, ...rest] =>
+      if vbool(eval_pexpr(p, r)) then [r] ++ filter_rows(rest, p)
+      else filter_rows(rest, p)
+  }
+
+# Keep only the named cells of a row, in the requested order.
+fn project_row(r: Row, cols: List<String>) : Row =
+  match cols {
+    [] => Row([]);
+    [c, ...rest] =>
+      match project_row(r, rest) {
+        Row(tail) => Row([Pair(c, row_get(r, c))] ++ tail)
+      }
+  }
+
+fn project_rows(rows: List<Row>, cols: List<String>) : List<Row> =
+  match rows {
+    [] => [];
+    [r, ...rest] => [project_row(r, cols)] ++ project_rows(rest, cols)
+  }
+
+fn take_rows(rows: List<Row>, n: Int) : List<Row> =
+  if n <= 0 then []
+  else match rows { [] => []; [r, ...rest] => [r] ++ take_rows(rest, n - 1) }
+
+fn sum_col(rows: List<Row>, col: String) : Int =
+  match rows {
+    [] => 0;
+    [r, ...rest] => vint(row_get(r, col)) + sum_col(rest, col)
+  }
+
+# --- the interpreter ---------------------------------------------------------
+# run_query : Query -> Table. Aggregates return a single-row table so the
+# result type is uniform (a Table), which Frost likes: the public output is
+# always "a table of rows".
+fn run_query(q: Query) : Table =
+  match q {
+    From(t) => t;
+    Where(p, sub) =>
+      match run_query(sub) { Table(rows) => Table(filter_rows(rows, p)) };
+    Select(cols, sub) =>
+      match run_query(sub) { Table(rows) => Table(project_rows(rows, cols)) };
+    Limit(n, sub) =>
+      match run_query(sub) { Table(rows) => Table(take_rows(rows, n)) };
+    CountQ(sub) =>
+      match run_query(sub) {
+        Table(rows) => Table([Row([Pair("count", VInt(plen(rows)))])])
+      };
+    SumQ(col, sub) =>
+      match run_query(sub) {
+        Table(rows) => Table([Row([Pair("sum", VInt(sum_col(rows, col)))])])
+      }
+  }
+
+# --- rendering (for demos) ---------------------------------------------------
+fn show_val(v: Val) : String =
+  match v {
+    VInt(n)  => int_to_string(n);
+    VStr(s)  => "\"" ++ s ++ "\"";
+    VBool(b) => if b then "true" else "false"
+  }
+
+fn show_cells(cells: List<Pair<String, Val>>) : String =
+  match cells {
+    [] => "";
+    [Pair(k, v), ...rest] =>
+      k ++ ": " ++ show_val(v) ++
+      (match rest { [] => ""; _ => ", " ++ show_cells(rest) })
+  }
+
+fn show_row(r: Row) : String =
+  match r { Row(cells) => "{ " ++ show_cells(cells) ++ " }" }
+
+fn show_rows(rows: List<Row>) : String =
+  match rows {
+    [] => "";
+    [r, ...rest] =>
+      show_row(r) ++ (match rest { [] => ""; _ => "\n" ++ show_rows(rest) })
+  }
+
+fn show_table(t: Table) : String =
+  match t { Table(rows) => show_rows(rows) }
+
+fn run_show(q: Query) : String = show_table(run_query(q))
+
+# --- demo data ---------------------------------------------------------------
+fn person(name: String, age: Int, city: String) : Row =
+  Row([Pair("name", VStr(name)), Pair("age", VInt(age)), Pair("city", VStr(city))])
+
+let people : Table =
+  Table([
+    person("ada", 36, "london"),
+    person("alan", 41, "london"),
+    person("grace", 28, "nyc"),
+    person("edsger", 25, "austin"),
+    person("barbara", 31, "nyc")
+  ])
+
+# --- demo queries ------------------------------------------------------------
+let _ : String = print("--- pane.glass: a query layer for Glass ---")
+
+# everyone
+let _ : String = print("all people:")
+let _ : String = print(run_show(From(people)))
+
+# people under 30, names only:  SELECT name WHERE age < 30
+let _ : String = print("names of people under 30:")
+let _ : String =
+  print(run_show(Select(["name"], Where(LtE(Col("age"), LitI(30)), From(people)))))
+
+# people in nyc:  WHERE city == "nyc"
+let _ : String = print("people in nyc:")
+let _ : String =
+  print(run_show(Where(EqE(Col("city"), LitS("nyc")), From(people))))
+
+# count of people 30 or older:  COUNT WHERE NOT(age < 30)
+let _ : String = print("count of people 30+:")
+let _ : String =
+  print(run_show(CountQ(Where(NotE(LtE(Col("age"), LitI(30))), From(people)))))
+
+# total age of londoners:  SUM(age) WHERE city == "london"
+let _ : String = print("total age of londoners:")
+let _ : String =
+  print(run_show(SumQ("age", Where(EqE(Col("city"), LitS("london")), From(people)))))
+
+# composed: names of nyc people over 30, first 1
+let _ : String = print("name of (up to 1) nyc person over 30:")
+let _ : String =
+  print(run_show(
+    Select(["name"],
+      Limit(1,
+        Where(AndE(EqE(Col("city"), LitS("nyc")), GtE(Col("age"), LitI(30))),
+              From(people))))))
+
+"pane v0.1 — query algebra + reference interpreter (Frost-ready)"

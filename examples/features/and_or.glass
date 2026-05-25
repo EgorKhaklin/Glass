@@ -1,0 +1,19 @@
+# =============================================================================
+# and_or.glass — `&&` and `||` end-to-end (v4.52).
+#
+# Before v4.52 prism's lexer didn't recognize `&` or `||`. v4.51
+# landed the operators in host + Quartz but explicitly deferred
+# prism, calling out the parser + Expr + infer + eval cluster as
+# mechanical-large. v4.52 closes that gap: prism's tokenizer adds
+# TAndAnd / TOrOr, the parser layers parse_or → parse_and → parse_compare
+# with C-style precedence, and the rest of the pipeline mirrors the
+# host (Bool/Bool → Bool, short-circuit eval).
+#
+# This file exercises the canonical interval refinement (which only
+# makes sense with `&&` available) through prism end-to-end. 50 is
+# in (0, 100), so the predicate holds and the call returns 51.
+# =============================================================================
+
+fn middling(n: Int where (n > 0 && n < 100)) : Int = n + 1
+let r : Int = middling(50)
+r

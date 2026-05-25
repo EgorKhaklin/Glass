@@ -1,0 +1,97 @@
+# calc.glass — tiny calculator with proper precedence, left-
+# associativity, AND parenthesized sub-expressions (v4.20).
+# Integer literals + four binary ops (+, -, *, /). Spaces tolerated.
+#
+# Now a real expression evaluator. (2+3)*4 = 20 (parens override
+# precedence). Mutual recursion: parse_atom calls parse_expr.
+
+type Parsed = | P(Int, Int)
+
+# Skip ASCII space (32) characters.
+fn skip_ws(s: String, len: Int, pos: Int) =
+  if pos < len then
+    let c = char_at(s, pos) in
+    if c == 32 then skip_ws(s, len, pos + 1)
+    else pos
+  else pos
+
+# Read a decimal integer. ASCII '0'..'9' is 48..57.
+fn read_num(s: String, len: Int, pos: Int, acc: Int) =
+  if pos < len then
+    let c = char_at(s, pos) in
+    if c >= 48 then
+      if c <= 57 then read_num(s, len, pos + 1, acc * 10 + c - 48)
+      else P(acc, pos)
+    else P(acc, pos)
+  else P(acc, pos)
+
+# Atom: a paren-sub-expression OR an integer literal.
+# v4.20 addition: when we see '(' (ASCII 40), recurse into parse_expr
+# and require a matching ')' (ASCII 41).
+fn parse_atom(s: String, len: Int, pos: Int) =
+  let p1 = skip_ws(s, len, pos) in
+  if p1 < len then
+    let c = char_at(s, p1) in
+    if c == 40 then
+      # '(' — recurse into expr, then consume matching ')'.
+      match parse_expr(s, len, p1 + 1) {
+        P(val, p2) =>
+          let p3 = skip_ws(s, len, p2) in
+          if p3 < len then
+            if char_at(s, p3) == 41 then P(val, p3 + 1)
+            else P(val, p3)
+          else P(val, p3)
+      }
+    else read_num(s, len, p1, 0)
+  else read_num(s, len, p1, 0)
+
+# Term: atom { ('*' | '/') atom }* — left-assoc * and /.
+fn parse_term_rest(s: String, len: Int, pos: Int, lhs: Int) =
+  let p1 = skip_ws(s, len, pos) in
+  if p1 < len then
+    let c = char_at(s, p1) in
+    if c == 42 then
+      match parse_atom(s, len, p1 + 1) {
+        P(rhs, p2) => parse_term_rest(s, len, p2, lhs * rhs)
+      }
+    else if c == 47 then
+      match parse_atom(s, len, p1 + 1) {
+        P(rhs, p2) => parse_term_rest(s, len, p2, lhs / rhs)
+      }
+    else P(lhs, p1)
+  else P(lhs, p1)
+
+fn parse_term(s: String, len: Int, pos: Int) =
+  match parse_atom(s, len, pos) {
+    P(lhs, p1) => parse_term_rest(s, len, p1, lhs)
+  }
+
+# Expr: term { ('+' | '-') term }* — left-assoc + and -.
+fn parse_expr_rest(s: String, len: Int, pos: Int, lhs: Int) =
+  let p1 = skip_ws(s, len, pos) in
+  if p1 < len then
+    let c = char_at(s, p1) in
+    if c == 43 then
+      match parse_term(s, len, p1 + 1) {
+        P(rhs, p2) => parse_expr_rest(s, len, p2, lhs + rhs)
+      }
+    else if c == 45 then
+      match parse_term(s, len, p1 + 1) {
+        P(rhs, p2) => parse_expr_rest(s, len, p2, lhs - rhs)
+      }
+    else P(lhs, p1)
+  else P(lhs, p1)
+
+fn parse_expr(s: String, len: Int, pos: Int) =
+  match parse_term(s, len, pos) {
+    P(lhs, p1) => parse_expr_rest(s, len, p1, lhs)
+  }
+
+fn eval(s: String) =
+  let len = string_length(s) in
+  match parse_expr(s, len, 0) {
+    P(result, _) => result
+  }
+
+# (2 + 3) * 4 = 20 — parens override precedence.
+eval("(2 + 3) * 4")

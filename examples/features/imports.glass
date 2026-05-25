@@ -1,0 +1,22 @@
+# =============================================================================
+# imports.glass — the module system in action (v4.70).
+#
+# `import` pulls in another file's DEFINITIONS (types + functions) so they
+# can be reused without copy-paste. Here we import the exact-fraction
+# library and use its `Rat` type and operations directly — the library's
+# code lives in exactly one place. (The library has no demos of its own,
+# so importing it runs nothing; only its definitions arrive.)
+# =============================================================================
+
+import "../lib/rational.glass"
+
+# Use the imported Rat type + ops: 1/3 + 1/6 = 1/2, exactly.
+let half = radd(rat(1, 3), rat(1, 6))
+let _ = print("1/3 + 1/6 = " ++ show_rat(half))
+
+# 1/2 + 1/3 + 1/6 = 1 — exact, via the imported operations.
+let whole = radd(radd(rat(1, 2), rat(1, 3)), rat(1, 6))
+let _ = print("1/2 + 1/3 + 1/6 = " ++ show_rat(whole))
+let _ = print("is it exactly 1? " ++ (if req(whole, rat(1, 1)) then "yes" else "no"))
+
+show_rat(half)

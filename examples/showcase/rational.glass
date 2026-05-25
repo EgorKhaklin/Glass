@@ -1,0 +1,68 @@
+# =============================================================================
+# Exact rational arithmetic, in Glass — the answer to "Glass has no floats".
+#
+# Several features (probability bounds, uncertainty measures) want
+# fractional values. Rather than fixed-point basis-points (lossy) or
+# floats (Glass has none), we add EXACT fractions as data:
+#
+#       Rat(num, den)   — always reduced, always den > 0
+#
+# A constructor `rat` normalizes any (num, den): pushes the sign onto
+# the numerator, then divides through by gcd. Addition, multiplication,
+# and comparison are exact — `1/3 + 1/6` is `1/2`, not `0.4999…`.
+#
+# This is the rationals decision made concrete: a Rational TYPE (pure
+# data + laws), reused by showcase/probability.glass.
+# =============================================================================
+
+type Rat = | Rat(Int, Int)
+
+fn abs(n: Int) : Int = if n < 0 then 0 - n else n
+fn gcd(a: Int, b: Int) : Int = if b == 0 then a else gcd(b, a % b)
+
+# Normalize (num, den) into a reduced fraction with positive denominator.
+# The refinement forbids a zero denominator at construction.
+fn rat(num: Int, den: Int where (den != 0)) : Rat =
+  let sign = if den < 0 then 0 - 1 else 1 in
+  let n = num * sign in
+  let d = den * sign in
+  let g = gcd(abs(n), d) in
+  Rat(n / g, d / g)
+
+fn num(r: Rat) : Int = match r { Rat(n, _) => n }
+fn den(r: Rat) : Int = match r { Rat(_, d) => d }
+
+# Exact arithmetic — every result is renormalized via `rat`.
+fn radd(a: Rat, b: Rat) : Rat =
+  rat(num(a) * den(b) + num(b) * den(a), den(a) * den(b))
+fn rsub(a: Rat, b: Rat) : Rat =
+  rat(num(a) * den(b) - num(b) * den(a), den(a) * den(b))
+fn rmul(a: Rat, b: Rat) : Rat =
+  rat(num(a) * num(b), den(a) * den(b))
+
+# Both operands are reduced with den > 0, so equality is structural and
+# `a <= b` is the cross-multiplication an·bd <= bn·ad.
+fn req(a: Rat, b: Rat) : Bool = num(a) == num(b) && den(a) == den(b)
+fn rle(a: Rat, b: Rat) : Bool = num(a) * den(b) <= num(b) * den(a)
+
+# ---- Pretty-printer + demo --------------------------------------------------
+
+fn show_rat(r: Rat) : String =
+  int_to_string(num(r)) ++ "/" ++ int_to_string(den(r))
+
+let _ = print("=== Exact fractions — no rounding ===")
+let _ = print("  2/4 reduces to       " ++ show_rat(rat(2, 4)))
+let _ = print("  6/(-8) normalizes to " ++ show_rat(rat(6, 0 - 8)))
+let _ = print("  1/3 + 1/6 =          " ++ show_rat(radd(rat(1, 3), rat(1, 6))))
+let _ = print("  1/2 + 1/3 + 1/6 =    " ++
+              show_rat(radd(radd(rat(1, 2), rat(1, 3)), rat(1, 6))))
+let _ = print("  2/3 * 3/4 =          " ++ show_rat(rmul(rat(2, 3), rat(3, 4))))
+
+let _ = print("")
+let _ = print("=== Exact comparison ===")
+let _ = print("  1/3 <= 2/5 ?  " ++ (if rle(rat(1, 3), rat(2, 5)) then "yes" else "no"))
+let _ = print("  2/5 <= 1/3 ?  " ++ (if rle(rat(2, 5), rat(1, 3)) then "yes" else "no"))
+let _ = print("  1/2 + 1/2 == 1 ? " ++
+              (if req(radd(rat(1, 2), rat(1, 2)), rat(1, 1)) then "yes" else "no"))
+
+"done"

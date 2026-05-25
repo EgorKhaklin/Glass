@@ -1,0 +1,91 @@
+# =============================================================================
+# Dimensional / unit types — units of measure, in Glass.
+#
+# The most practical idea in the "exotic types" pile: attach physical
+# DIMENSION to a number and let the rules of dimensional analysis reject
+# nonsense. A quantity carries a dimension vector — exponents of
+# (Length, Time, Mass):
+#
+#       metre = (1,0,0)   second = (0,1,0)   kilogram = (0,0,1)
+#
+# Addition demands EQUAL dimensions (you can't add metres to seconds);
+# multiplication ADDS the exponent vectors, division SUBTRACTS them. So
+# distance / time is automatically a (1,−1,0) — a velocity — and
+# mass × acceleration is a (1,−2,1) — a force (newton). The dimension is
+# computed, not asserted.
+# =============================================================================
+
+type Dim = | Dim(Int, Int, Int)   # exponents of (Length, Time, Mass)
+type Qty = | Qty(Int, Dim)
+
+fn dim_eq(a: Dim, b: Dim) : Bool =
+  match a { Dim(l1, t1, m1) =>
+    match b { Dim(l2, t2, m2) => l1 == l2 && t1 == t2 && m1 == m2 } }
+
+fn dim_add(a: Dim, b: Dim) : Dim =
+  match a { Dim(l1, t1, m1) =>
+    match b { Dim(l2, t2, m2) => Dim(l1 + l2, t1 + t2, m1 + m2) } }
+
+fn dim_sub(a: Dim, b: Dim) : Dim =
+  match a { Dim(l1, t1, m1) =>
+    match b { Dim(l2, t2, m2) => Dim(l1 - l2, t1 - t2, m1 - m2) } }
+
+# Addition is dimensionally checked — a mismatch is a typed error, not a
+# silent wrong answer.
+fn qadd(a: Qty, b: Qty) : Result<Qty, String> =
+  match a { Qty(va, da) =>
+    match b { Qty(vb, db) =>
+      if dim_eq(da, db) then Ok(Qty(va + vb, da))
+      else Err("dimension mismatch: cannot add unlike units") } }
+
+# Multiplication/division compute the resulting dimension.
+fn qmul(a: Qty, b: Qty) : Qty =
+  match a { Qty(va, da) => match b { Qty(vb, db) =>
+    Qty(va * vb, dim_add(da, db)) } }
+# (divisor assumed nonzero — the value lives inside the Qty, so a
+# refinement on it would need field-level refinement, which Glass
+# doesn't have yet; the demo only divides by nonzero quantities.)
+fn qdiv(a: Qty, b: Qty) : Qty =
+  match a { Qty(va, da) => match b { Qty(vb, db) =>
+    Qty(va / vb, dim_sub(da, db)) } }
+
+# ---- Pretty-printer ---------------------------------------------------------
+
+fn show_dim(d: Dim) : String =
+  match d { Dim(l, t, m) =>
+    "[L" ++ int_to_string(l) ++ " T" ++ int_to_string(t) ++
+    " M" ++ int_to_string(m) ++ "]" }
+fn show_qty(q: Qty) : String =
+  match q { Qty(v, d) => int_to_string(v) ++ " " ++ show_dim(d) }
+
+# ---- Demo -------------------------------------------------------------------
+
+let metre  = Dim(1, 0, 0)
+let second = Dim(0, 1, 0)
+let kg     = Dim(0, 0, 1)
+let accel  = Dim(1, 0 - 2, 0)   # m/s²
+
+let dist = Qty(100, metre)
+let time = Qty(5, second)
+
+let _ = print("=== Dimensions are computed by the algebra ===")
+let _ = print("  distance:           " ++ show_qty(dist))
+let _ = print("  time:               " ++ show_qty(time))
+let _ = print("  distance / time:    " ++ show_qty(qdiv(dist, time)) ++ "  (a velocity)")
+let _ = print("  mass × acceleration:" ++ show_qty(qmul(Qty(10, kg), Qty(2, accel))) ++
+              "  (a force, newtons)")
+
+let _ = print("")
+let _ = print("=== Addition is dimensionally checked ===")
+let _ = print("  100 m + 50 m  ⇒  " ++
+              match qadd(Qty(100, metre), Qty(50, metre)) {
+                Ok(q)  => show_qty(q);
+                Err(e) => "ERROR: " ++ e
+              })
+let _ = print("  100 m + 5 s   ⇒  " ++
+              match qadd(Qty(100, metre), Qty(5, second)) {
+                Ok(q)  => show_qty(q);
+                Err(e) => "ERROR: " ++ e
+              })
+
+"done"

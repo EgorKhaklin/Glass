@@ -1,0 +1,110 @@
+# =============================================================================
+# frost_pcs.glass — polynomial interpolation (iNTT) + the FRI bridge (v0.1)
+#
+# The bridge from the constraint/data world to the FRI world. FRI proves a
+# committed codeword is a LOW-DEGREE polynomial. To USE that we must move
+# between two representations of a polynomial:
+#     coefficients  --evaluate (NTT)-->   evaluations over a domain
+#     evaluations   --interpolate(iNTT)-> coefficients
+# frost_fri/frost_stark built `evaluate`; this builds its inverse, INTERPOLATE,
+# via the inverse number-theoretic transform:
+#     c[k] = (1/n) · Σ_j  f[j] · w^(-j·k)        (w = n-th root of unity)
+#
+# WHY IT MATTERS:
+#   - "low degree" becomes CONCRETE: interpolating a low-degree codeword yields
+#     zero high-order coefficients; a random codeword interpolates to full
+#     degree. This is exactly what FRI checks succinctly (without interpolating).
+#   - LOW-DEGREE EXTENSION (LDE): interpolate data to coefficients, then
+#     re-evaluate over a LARGER domain. The result is, by construction, a
+#     low-degree codeword — a FRI-committable encoding of the data. This is the
+#     core of a STARK: commit a trace as a low-degree polynomial.
+#
+# Baby Bear field; round-trip-tested against `evaluate`. Dogfoods on glassc.
+# =============================================================================
+
+# --- Baby Bear field ---------------------------------------------------------
+fn fadd(a: Int, b: Int) : Int = (a + b) % 2013265921
+fn fmul(a: Int, b: Int) : Int = (a * b) % 2013265921
+fn fpow(base: Int, exp: Int) : Int =
+  if exp == 0 then 1
+  else if exp % 2 == 0 then let h : Int = fpow(base, exp / 2) in fmul(h, h)
+  else fmul(base, fpow(base, exp - 1))
+fn finv(x: Int) : Int = fpow(x, 2013265919)
+fn root_of_unity(n: Int) : Int = fpow(31, 2013265920 / n)
+
+fn ilen(xs: List<Int>) : Int = match xs { [] => 0; [x, ...r] => 1 + ilen(r) }
+fn nth(xs: List<Int>, i: Int) : Int =
+  match xs { [] => 0; [x, ...r] => if i == 0 then x else nth(r, i - 1) }
+
+# --- evaluate (NTT direction) ------------------------------------------------
+fn powers(w: Int, cur: Int, k: Int) : List<Int> =
+  if k <= 0 then [] else [cur] ++ powers(w, fmul(cur, w), k - 1)
+fn build_domain(n: Int) : List<Int> = powers(root_of_unity(n), 1, n)
+fn poly_eval(coeffs: List<Int>, x: Int) : Int =
+  match coeffs { [] => 0; [c, ...rest] => fadd(c, fmul(x, poly_eval(rest, x))) }
+fn evaluate(coeffs: List<Int>, dom: List<Int>) : List<Int> =
+  match dom { [] => []; [x, ...rest] => [poly_eval(coeffs, x)] ++ evaluate(coeffs, rest) }
+
+# --- interpolate (inverse NTT) -----------------------------------------------
+# c[k] = (1/n) · Σ_j f[j] · winv^((j·k) mod n)     (winv = w^-1; exponent mod n
+# since w^n = 1, keeping fpow's exponent small).
+fn intt_sum(evals: List<Int>, k: Int, j: Int, n: Int, winv: Int) : Int =
+  if j >= n then 0
+  else fadd(fmul(nth(evals, j), fpow(winv, (j * k) % n)), intt_sum(evals, k, j + 1, n, winv))
+fn interp_go(evals: List<Int>, k: Int, n: Int, winv: Int, ninv: Int) : List<Int> =
+  if k >= n then []
+  else [fmul(ninv, intt_sum(evals, k, 0, n, winv))] ++ interp_go(evals, k + 1, n, winv, ninv)
+fn interpolate(evals: List<Int>) : List<Int> =
+  let n : Int = ilen(evals) in
+  let w : Int = root_of_unity(n) in
+  interp_go(evals, 0, n, finv(w), finv(n))
+
+# --- degree (highest index with a nonzero coefficient) -----------------------
+fn last_nonzero(coeffs: List<Int>, i: Int, best: Int) : Int =
+  match coeffs { [] => best; [c, ...r] => last_nonzero(r, i + 1, if c == 0 then best else i) }
+fn degree(coeffs: List<Int>) : Int = last_nonzero(coeffs, 0, 0 - 1)
+
+# --- low-degree extension: data -> coeffs -> evals over a bigger domain -------
+fn lde(data: List<Int>, big: Int) : List<Int> = evaluate(interpolate(data), build_domain(big))
+
+# --- demo --------------------------------------------------------------------
+fn eq_lists(a: List<Int>, b: List<Int>) : Bool =
+  match a { [] => match b { [] => true; _ => false };
+            [x, ...ra] => match b { [] => false; [y, ...rb] => if x == y then eq_lists(ra, rb) else false } }
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+fn show_list(xs: List<Int>) : String =
+  match xs { [] => ""; [x, ...r] => match r { [] => int_to_string(x);
+    _ => int_to_string(x) ++ "," ++ show_list(r) } }
+
+let _ : String = print("--- frost_pcs.glass: interpolation (iNTT) + the FRI bridge ---")
+
+# 1. round-trip: interpolate is the inverse of evaluate.
+let data : List<Int> = [3, 1, 4, 1, 5, 9, 2, 6]
+let coeffs : List<Int> = interpolate(data)
+let back : List<Int> = evaluate(coeffs, build_domain(8))
+let _ : String = print("round-trip evaluate(interpolate(data)) == data: " ++ show_b(eq_lists(back, data)))
+let _ : String = print("")
+
+# 2. low-degree codeword -> interpolates to ZERO high coefficients.
+let cw_low : List<Int> = evaluate([1, 2, 3, 4, 5, 6], build_domain(8))   # degree 5
+let c_low : List<Int> = interpolate(cw_low)
+let _ : String = print("low-degree codeword interpolates to: [" ++ show_list(c_low) ++ "]")
+let _ : String = print("  -> degree " ++ int_to_string(degree(c_low)) ++ " (high coeffs vanish — genuinely low-degree)")
+let _ : String = print("")
+
+# 3. random codeword -> interpolates to FULL degree (no vanishing).
+let c_rand : List<Int> = interpolate(data)
+let _ : String = print("random  codeword interpolates to degree " ++ int_to_string(degree(c_rand)) ++
+                       " (full — NOT low-degree)")
+let _ : String = print("")
+
+# 4. low-degree extension: a size-8 trace -> degree-<8 poly -> evals over a
+#    size-16 domain (blowup 2). The result is degree <8 over 16 points: a
+#    low-degree codeword (rate 1/2) that FRI commits to.
+let encoded : List<Int> = lde(data, 16)
+let _ : String = print("LDE of an 8-value trace to domain 16: size " ++ int_to_string(ilen(encoded)) ++
+                       ", degree " ++ int_to_string(degree(interpolate(encoded))))
+let _ : String = print("  -> degree < 8 over a size-16 domain: a low-degree codeword (rate 1/2),")
+let _ : String = print("     FRI-committable — this is how a STARK commits a trace (frost_stark accepts it).")
+
+"frost pcs v0.1 — iNTT interpolation + low-degree extension: the bridge from data to FRI"

@@ -1,0 +1,67 @@
+# =============================================================================
+# The golden ratio φ, as an exact integer refinement, in Glass.
+#
+# φ = (1 + √5) / 2 ≈ 1.618 is irrational — Glass has no floats. But φ has a
+# beautiful EXACT integer fingerprint: a pair (a, b) of consecutive
+# Fibonacci numbers satisfies
+#
+#       | a² − a·b − b² | = 1
+#
+# and these are precisely the best rational approximations a/b → φ. So we
+# can REFINE a type to "is a golden pair" using only Int arithmetic — no
+# tolerance, no floats. The refinement on `b` references the earlier
+# param `a` (cross-parameter refinement, v4.56).
+#
+# Demonstrated: the Fibonacci sequence, the golden fingerprint holding
+# (±1) on consecutive pairs, the ratio a·1000/b converging on 1618, and
+# the refinement gate accepting golden pairs / rejecting non-golden ones.
+# =============================================================================
+
+# The golden fingerprint: a² − a·b − b². Zero distance from ±1 means
+# (a, b) sits on the φ convergent lattice.
+fn golden_residue(a: Int, b: Int) : Int = a * a - a * b - b * b
+
+# Is (a, b) a golden (Fibonacci) pair? The residue is exactly +1 or −1.
+fn is_golden(a: Int, b: Int) : Bool =
+  golden_residue(a, b) == 1 || golden_residue(a, b) == 0 - 1
+
+# A GATE: only accepts a `b` that forms a golden pair with the given `a`.
+# The cross-parameter refinement does the checking; the body just reports.
+fn golden_pair(a: Int, b: Int where (a * a - a * b - b * b == 1
+                                  || a * a - a * b - b * b == 0 - 1)) : String =
+  "(" ++ int_to_string(a) ++ ", " ++ int_to_string(b) ++ ") is golden"
+
+# φ approximated as a fixed-point integer: a/b scaled by 1000. Consecutive
+# Fibonacci ratios oscillate toward 1618 (= 1.618…).
+fn phi_milli(a: Int, b: Int where (b > 0)) : Int = a * 1000 / b
+
+# ---- Demo -------------------------------------------------------------------
+
+fn show_pair(a: Int, b: Int) : String =
+  "F=" ++ int_to_string(a) ++ "/" ++ int_to_string(b) ++
+  "  residue=" ++ int_to_string(golden_residue(a, b)) ++
+  "  golden?=" ++ (if is_golden(a, b) then "yes" else "no ") ++
+  "  φ≈" ++ int_to_string(phi_milli(a, b)) ++ "/1000"
+
+fn report(a: Int, b: Int) : String !{IO} =
+  print("  " ++ show_pair(a, b))
+
+let _ = print("=== Consecutive Fibonacci pairs: the φ convergents ===")
+let _ = report(2, 1)
+let _ = report(3, 2)
+let _ = report(5, 3)
+let _ = report(8, 5)
+let _ = report(13, 8)
+let _ = report(21, 13)
+let _ = report(34, 21)
+
+let _ = print("")
+let _ = print("=== A NON-golden pair (residue off ±1) ===")
+let _ = report(7, 4)
+
+let _ = print("")
+let _ = print("=== The refinement gate ===")
+let _ = print("  " ++ golden_pair(13, 8))
+let _ = print("  " ++ golden_pair(34, 21))
+
+"done"

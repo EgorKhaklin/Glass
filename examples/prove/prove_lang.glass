@@ -1,0 +1,184 @@
+# =============================================================================
+# prove_lang.glass — PROVE BRIDGE, control flow (Phase 2 core)
+#
+# prove.glass proved straight-line arithmetic. A real Glass function body also
+# has BINDINGS and BRANCHES. But an arithmetic circuit is branchless — every
+# gate always fires. So control flow must become GADGETS:
+#
+#   let x = e1 in e2   — just bind e1's wire to x in the environment. (easy)
+#   a == b             — IS-ZERO GADGET. Let d = a-b. The prover supplies a hint
+#                        inv = (d==0 ? 0 : 1/d). Then out = 1 - d·inv and the
+#                        constraint d·out == 0 force out = (a==b ? 1 : 0), and
+#                        out is provably boolean. (no branching — pure algebra)
+#   if c then t else f — MULTIPLEXER. out = f + c·(t - f), with c constrained
+#                        boolean (c·(c-1)==0). BOTH branches are evaluated
+#                        (circuits can't short-circuit) — an honest limitation.
+#
+# The Glass discipline holds: eval (reference, with branches) and compile (the
+# circuit, branchless) must agree on the output wire for every input.
+#
+# HONEST SCOPE: this is the control-flow CORE (let/if/==) as a hand-built Expr,
+# the conceptually hard part. Consuming prism's full AST (match/calls/records)
+# is the remaining Phase-2 wiring. Reuses Frost. Dogfoods.
+# =============================================================================
+
+# --- field + hash (from Frost) -----------------------------------------------
+fn fadd(a: Int, b: Int) : Int = (a + b) % 2147483647
+fn fmul(a: Int, b: Int) : Int = (a * b) % 2147483647
+fn fsub(a: Int, b: Int) : Int = ((a - b) % 2147483647 + 2147483647) % 2147483647
+fn fnorm(a: Int) : Int = (a % 2147483647 + 2147483647) % 2147483647
+fn fpow(base: Int, e: Int) : Int =
+  if e == 0 then 1
+  else if e % 2 == 0 then let h : Int = fpow(base, e / 2) in fmul(h, h)
+  else fmul(base, fpow(base, e - 1))
+fn finv(x: Int) : Int = fpow(x, 2147483645)            # x^(p-2)
+fn sbox(x: Int) : Int = let x2 : Int = fmul(x, x) in let x4 : Int = fmul(x2, x2) in fmul(x4, x)
+fn round_const(i: Int) : Int = fnorm((i + 1) * (i + 1) * (i + 1) + i * 1009 + 1234567)
+fn mimc_rounds(x: Int, k: Int, i: Int) : Int =
+  if i >= 16 then fadd(x, k) else mimc_rounds(sbox(fadd(fadd(x, k), round_const(i))), k, i + 1)
+fn hash2(a: Int, b: Int) : Int = fadd(fadd(mimc_rounds(a, b, 0), a), b)
+fn hash_fold(xs: List<Int>, acc: Int) : Int =
+  match xs { [] => acc; [x, ...r] => hash_fold(r, hash2(acc, x)) }
+fn hash_list(xs: List<Int>) : Int = hash_fold(xs, 0)
+
+fn nth(xs: List<Int>, i: Int) : Int =
+  match xs { [] => 0; [x, ...r] => if i == 0 then x else nth(r, i - 1) }
+fn ilen(xs: List<Int>) : Int = match xs { [] => 0; [x, ...r] => 1 + ilen(r) }
+fn set_nth(xs: List<Int>, i: Int, v: Int) : List<Int> =
+  match xs { [] => []; [x, ...r] => if i == 0 then [v] ++ r else [x] ++ set_nth(r, i - 1, v) }
+
+# environment: name -> Int (a wire in the compiler, a value in the evaluator).
+fn lookup(env: List<Pair<String, Int>>, name: String) : Int =
+  match env { [] => 0; [Pair(k, v), ...rest] => if k == name then v else lookup(rest, name) }
+
+# --- constraint system -------------------------------------------------------
+type Gate = | GConst(Int, Int) | GAdd(Int, Int, Int) | GSub(Int, Int, Int)
+            | GMul(Int, Int, Int) | GAssertEq(Int, Int)
+fn glen(gs: List<Gate>) : Int = match gs { [] => 0; [g, ...r] => 1 + glen(r) }
+fn residual(g: Gate, w: List<Int>) : Int =
+  match g {
+    GConst(o, c)    => fsub(nth(w, o), fnorm(c));
+    GAdd(o, a, b)   => fsub(nth(w, o), fadd(nth(w, a), nth(w, b)));
+    GSub(o, a, b)   => fsub(nth(w, o), fsub(nth(w, a), nth(w, b)));
+    GMul(o, a, b)   => fsub(nth(w, o), fmul(nth(w, a), nth(w, b)));
+    GAssertEq(a, b) => fsub(nth(w, a), nth(w, b))
+  }
+
+# --- the expression language: a Glass function body --------------------------
+type Expr = | Var(String) | Const(Int)
+            | Add(Expr, Expr) | Sub(Expr, Expr) | Mul(Expr, Expr)
+            | Eq(Expr, Expr) | If(Expr, Expr, Expr) | Let(String, Expr, Expr)
+
+# 1. REFERENCE SEMANTICS — what it MEANS (with real branches).
+fn eval(e: Expr, env: List<Pair<String, Int>>) : Int =
+  match e {
+    Var(name)  => lookup(env, name);
+    Const(c)   => fnorm(c);
+    Add(a, b)  => fadd(eval(a, env), eval(b, env));
+    Sub(a, b)  => fsub(eval(a, env), eval(b, env));
+    Mul(a, b)  => fmul(eval(a, env), eval(b, env));
+    Eq(a, b)   => if eval(a, env) == eval(b, env) then 1 else 0;
+    If(c, t, f) => if eval(c, env) == 1 then eval(t, env) else eval(f, env);
+    Let(name, v, body) => eval(body, [Pair(name, eval(v, env))] ++ env)
+  }
+
+# 2. COMPILER — Expr -> gates + witness, branchless. Build(nextWire, gates, witness).
+type Build = | Build(Int, List<Gate>, List<Int>)
+
+fn compile(e: Expr, cenv: List<Pair<String, Int>>, b: Build) : (Int, Build) =
+  match e {
+    Var(name) => (lookup(cenv, name), b);
+    Const(c)  => match b { Build(n, gs, w) =>
+      (n, Build(n + 1, gs ++ [GConst(n, c)], w ++ [fnorm(c)])) };
+    Add(x, y) => match compile(x, cenv, b) { (wx, b1) => match compile(y, cenv, b1) { (wy, b2) =>
+      match b2 { Build(n, gs, w) =>
+        (n, Build(n + 1, gs ++ [GAdd(n, wx, wy)], w ++ [fadd(nth(w, wx), nth(w, wy))])) } } };
+    Sub(x, y) => match compile(x, cenv, b) { (wx, b1) => match compile(y, cenv, b1) { (wy, b2) =>
+      match b2 { Build(n, gs, w) =>
+        (n, Build(n + 1, gs ++ [GSub(n, wx, wy)], w ++ [fsub(nth(w, wx), nth(w, wy))])) } } };
+    Mul(x, y) => match compile(x, cenv, b) { (wx, b1) => match compile(y, cenv, b1) { (wy, b2) =>
+      match b2 { Build(n, gs, w) =>
+        (n, Build(n + 1, gs ++ [GMul(n, wx, wy)], w ++ [fmul(nth(w, wx), nth(w, wy))])) } } };
+    # is-zero gadget: wires d, one, inv(hint), prod, out, zero, zchk
+    Eq(x, y) => match compile(x, cenv, b) { (wx, b1) => match compile(y, cenv, b1) { (wy, b2) =>
+      match b2 { Build(n, gs, w) =>
+        let d : Int = fsub(nth(w, wx), nth(w, wy)) in
+        let inv : Int = if d == 0 then 0 else finv(d) in
+        let prod : Int = fmul(d, inv) in
+        let out : Int = fsub(1, prod) in
+        let gs2 : List<Gate> = gs ++ [GSub(n, wx, wy), GConst(n + 1, 1),
+          GMul(n + 3, n, n + 2), GSub(n + 4, n + 1, n + 3),
+          GConst(n + 5, 0), GMul(n + 6, n, n + 4), GAssertEq(n + 6, n + 5)] in
+        let w2 : List<Int> = w ++ [d, 1, inv, prod, out, 0, fmul(d, out)] in
+        (n + 4, Build(n + 7, gs2, w2)) } } };
+    # multiplexer: out = f + c·(t-f), with c constrained boolean
+    If(c, t, f) => match compile(c, cenv, b) { (wc, b1) => match compile(t, cenv, b1) { (wt, b2) =>
+      match compile(f, cenv, b2) { (wf, b3) =>
+      match b3 { Build(n, gs, w) =>
+        let vc : Int = nth(w, wc) in let vt : Int = nth(w, wt) in let vf : Int = nth(w, wf) in
+        let dtf : Int = fsub(vt, vf) in
+        let gs2 : List<Gate> = gs ++ [GConst(n, 1), GSub(n + 1, wc, n),
+          GMul(n + 2, wc, n + 1), GConst(n + 3, 0), GAssertEq(n + 2, n + 3),
+          GSub(n + 4, wt, wf), GMul(n + 5, wc, n + 4), GAdd(n + 6, wf, n + 5)] in
+        let w2 : List<Int> = w ++ [1, fsub(vc, 1), fmul(vc, fsub(vc, 1)), 0, dtf,
+          fmul(vc, dtf), fadd(vf, fmul(vc, dtf))] in
+        (n + 6, Build(n + 7, gs2, w2)) } } } };
+    Let(name, v, body) => match compile(v, cenv, b) { (wv, b1) =>
+      compile(body, [Pair(name, wv)] ++ cenv, b1) }
+  }
+
+fn input_wires(inputs: List<Pair<String, Int>>, i: Int) : List<Pair<String, Int>> =
+  match inputs { [] => []; [Pair(name, val), ...rest] => [Pair(name, i)] ++ input_wires(rest, i + 1) }
+fn input_vals(inputs: List<Pair<String, Int>>) : List<Int> =
+  match inputs { [] => []; [Pair(name, val), ...rest] => [val] ++ input_vals(rest) }
+fn compile_top(e: Expr, inputs: List<Pair<String, Int>>) : (Int, Build) =
+  compile(e, input_wires(inputs, 0), Build(ilen(input_vals(inputs)), [], input_vals(inputs)))
+
+# 3. PROOF — Frost's sound, non-interactive protocol.
+fn fiat_shamir(commitment: Int) : Int = hash2(commitment, 777)
+fn rlc(gates: List<Gate>, w: List<Int>, r: Int, rpow: Int) : Int =
+  match gates { [] => 0;
+    [g, ...rest] => fadd(fmul(rpow, residual(g, w)), rlc(rest, w, r, fmul(rpow, r))) }
+fn prove_ok(gates: List<Gate>, w: List<Int>) : Bool =
+  let c : Int = hash_list(w) in rlc(gates, w, fiat_shamir(c), 1) == 0
+
+# --- demo --------------------------------------------------------------------
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+fn show_a(b: Bool) : String = if b then "ACCEPT" else "REJECT"
+
+# f(x) = let y = x*x in (if y == 9 then 100 else y + 1)
+# (a fn with a dummy param: glassc doesn't expose top-level `let`s to functions)
+fn prog_expr(d: Int) : Expr =
+  Let("y", Mul(Var("x"), Var("x")),
+    If(Eq(Var("y"), Const(9)), Const(100), Add(Var("y"), Const(1))))
+
+fn run(label: String, x: Int) : String !{IO} =
+  let prog : Expr = prog_expr(0) in
+  let inputs : List<Pair<String, Int>> = [Pair("x", x)] in
+  let spec : Int = eval(prog, inputs) in
+  match compile_top(prog, inputs) { (out, bld) =>
+    match bld { Build(n, gates, witness) =>
+      print(label ++ " x=" ++ int_to_string(x) ++ ": reference=" ++ int_to_string(spec) ++
+            ", circuit out=" ++ int_to_string(nth(witness, out)) ++
+            " (match: " ++ show_b(nth(witness, out) == spec) ++ "), " ++
+            int_to_string(glen(gates)) ++ " gates, proof " ++ show_a(prove_ok(gates, witness))) } }
+
+let _ : String = print("--- prove_lang.glass: control flow (let / if / ==) -> ZK proof ---")
+let _ : String = print("f(x) = let y = x*x in (if y == 9 then 100 else y + 1)")
+let _ : String = print("")
+let _ : String = run("branch taken    ", 3)     # y=9  -> 100
+let _ : String = run("branch not taken", 4)     # y=16 -> 17
+let _ : String = run("branch not taken", 5)     # y=25 -> 26
+
+let _ : String = print("")
+# a cheating prover fakes the output wire:
+let _ : String =
+  match compile_top(prog_expr(0), [Pair("x", 3)]) { (out, bld) =>
+    match bld { Build(n, gates, witness) =>
+      print("cheating (x=3, faked output 50): " ++ show_a(prove_ok(gates, set_nth(witness, out, 50)))) } }
+
+let _ : String = print("")
+let _ : String = print("conditionals compiled to arithmetic: == is an is-zero gadget, if is a")
+let _ : String = print("multiplexer. reference (branching) and circuit (branchless) agree by construction.")
+
+"prove_lang v0 — control flow (let/if/==) compiled to a ZK circuit via is-zero + mux gadgets"

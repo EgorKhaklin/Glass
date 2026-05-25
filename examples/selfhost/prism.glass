@@ -36,6 +36,11 @@ type Token =
   | TPlusPlus
   | TMinus
   | TStar
+  | TSlash
+  # v4.53: modulo. Same precedence layer as TStar / TSlash in
+  # parse_mul. Refinement predicates can use `binder % K == M` via
+  # the new EMod variant.
+  | TPercent
   | TLt
   | TGt
   | TLe
@@ -43,6 +48,13 @@ type Token =
   | TEq
   | TEqEq
   | TNeq
+  # v4.52: boolean combinators. Mirrors host's ANDAND / OROR; the
+  # parser layers them between parse_or → parse_and → parse_compare,
+  # so `&&` binds tighter than `||` and both bind looser than
+  # comparisons (C-style precedence). The lexer disambiguates from
+  # TBang and TPipe by checking for the doubled character.
+  | TAndAnd
+  | TOrOr
   | TArrow
   | TLBracket
   | TRBracket
@@ -69,6 +81,12 @@ type Token =
   | TMatch
   | TType
   | TWhere
+  # v4.27: a "newline boundary" marker injected by the tokenizer before
+  # an `(` that starts a new line at column 1. Treated as transparent
+  # whitespace by every parse rule via peek_tok/rest_tok (which skip it),
+  # except by parse_app_loop, which uses peek_tok_raw to detect it and
+  # break the postfix-call chain. This mirrors the v4.21 host fix.
+  | TNlBdy
   | TEnd
 
 type Type =
@@ -112,6 +130,14 @@ type Expr =
   | EAdd(Expr, Expr)
   | ESub(Expr, Expr)
   | EMul(Expr, Expr)
+  | EDiv(Expr, Expr)
+  # v4.53: modulo. Same arithmetic shape as EMul / EDiv (Int,
+  # Int → Int). Eval delegates to eval_int_bin and lets host's
+  # Python `%` semantics surface (floor-mod — sign of divisor).
+  # Quartz emits truncated C `%` so the two interpreters agree on
+  # non-negative operands and diverge only on negative dividend,
+  # matching the existing `/` divergence story.
+  | EMod(Expr, Expr)
   | EConcat(Expr, Expr)
   | ELt(Expr, Expr)
   | EGt(Expr, Expr)
@@ -119,8 +145,28 @@ type Expr =
   | EGe(Expr, Expr)
   | EEq(Expr, Expr)
   | ENeq(Expr, Expr)
+  # v4.52: boolean combinators with short-circuit semantics. The
+  # parser produces EAnd / EOr with `&&` binding tighter than `||`.
+  # Both eval and eval_pred short-circuit on the lhs result; infer
+  # requires Bool, Bool → Bool. Used in refinement predicates as
+  # the canonical interval shape: `n > 0 && n < 100`.
+  | EAnd(Expr, Expr)
+  | EOr(Expr, Expr)
+  # v4.54: unary logical NOT. Parser layer parse_unary sits above
+  # parse_compare and produces EUNot when the next token is TBang.
+  # The TBang token is also used for effect-row syntax (`!{IO}`) but
+  # only in type position, not expression position — so no parser
+  # ambiguity at the expression level.
+  | EUNot(Expr)
   | EIf(Expr, Expr, Expr)
   | ELam(String, Expr)
+  # v4.47: refined-param lambda. The Type is always a TyRefine; the
+  # parser only produces ELamR when the user wrote
+  # `fn(x: T where (pred)) -> body`. Plain `fn(x) -> body` stays as
+  # ELam unchanged. At eval time, ELamR builds the same VClos as ELam
+  # but wraps it in VRefinedClos so apply_value runs the refinement
+  # check on entry (reusing the v4.24 path).
+  | ELamR(String, Type, Expr)
   | EApp(Expr, Expr)
   | ELet(String, Expr, Expr)
   | ELetRec(String, Expr, Expr)
@@ -165,6 +211,30 @@ type Value =
   | VCtor(String, List<Value>)
   | VTuple(List<Value>)
   | VBuiltin(String, Int, List<Value>)
+  # v4.24/4.25: wrapper that carries the remaining formal-parameter
+  # types AND the return type of a curried top-level fn. Each apply
+  # consumes the head formal (checking its refinement if any), forwards
+  # the arg to `inner`, then either:
+  #   - rewraps with the tail if more params remain, or
+  #   - checks the return-type refinement against the final result
+  #     when the tail empties (v4.25).
+  # The wrapper materializes only when SOME runtime check would fire:
+  # any remaining param is refined, or the return type is refined.
+  # Non-refined curried fns skip the wrapper entirely.
+  #
+  # v4.56: two new fields support cross-parameter refinements — a
+  # later param's predicate referencing an EARLIER param (e.g.
+  # `clamp(lo, hi where (hi > lo))`).
+  #   field 2 (List<String>): the names of the remaining params,
+  #     parallel to the type list in field 1. Sourced from the
+  #     FnDecl so even non-refined middle params keep their real name.
+  #   field 5 (List<Pair<String, Value>>): the accumulated arg env —
+  #     (name, value) for every param already applied in this chain.
+  # check_refine_runtime evaluates each predicate against
+  # [Pair(binder, val)] ++ arg_env, so earlier params resolve. Mirrors
+  # host parity — host's apply_fn binds all params before checking.
+  | VRefinedClos(List<Type>, List<String>, Type, Value,
+                 List<Pair<String, Value>>)
 
 
 # --- Lexer --------------------------------------------------------------
@@ -202,6 +272,20 @@ fn skip_to_eol(s: String, i: Int) : Int =
   if i >= string_length(s) then i
   else if char_at(s, i) == "\n" then i + 1
   else skip_to_eol(s, i + 1)
+
+# v4.27: true if any character between indices i (inclusive) and j
+# (exclusive) is a newline. Used by tokenize_at to detect a top-level
+# boundary: a `\n` somewhere in the whitespace that skip_ws consumed.
+fn contains_nl_between(s: String, i: Int, j: Int) : Bool =
+  if i >= j then false
+  else if char_at(s, i) == "\n" then true
+  else contains_nl_between(s, i + 1, j)
+
+# v4.27: true if position j in s is at column 1. The first column of
+# the source is column 1; immediately after a newline is column 1.
+fn col_is_1(s: String, j: Int) : Bool =
+  if j == 0 then true
+  else char_at(s, j - 1) == "\n"
 
 fn read_int(s: String, i: Int, acc: Int) : (Int, Int) =
   if i >= string_length(s) then (acc, i)
@@ -273,6 +357,8 @@ fn next_token(s: String, i: Int) : (Token, Int) =
       if char_at(s, j + 1) == "+" then (TPlusPlus, j + 2)
       else (TPlus, j + 1)
     else if c == "*" then (TStar,   j + 1)
+    else if c == "/" then (TSlash,  j + 1)
+    else if c == "%" then (TPercent, j + 1)
     else if c == "\"" then read_string(s, j + 1, "")
     else if c == "<" then
       if char_at(s, j + 1) == "=" then (TLe, j + 2)
@@ -297,7 +383,18 @@ fn next_token(s: String, i: Int) : (Token, Int) =
         if char_at(s, j + 2) == "." then (TEllipsis, j + 3)
         else (TDot, j + 1)
       else (TDot, j + 1)
-    else if c == "|" then (TPipe,   j + 1)
+    else if c == "|" then
+      # v4.52: `||` ahead of `|`. The single-pipe still emits TPipe
+      # (used by the type-decl `|` separator). `|>` doesn't exist
+      # in prism's parser today, so we don't disambiguate it.
+      if char_at(s, j + 1) == "|" then (TOrOr, j + 2)
+      else (TPipe, j + 1)
+    else if c == "&" then
+      # v4.52: `&&` only — single `&` is not a Glass token, so it
+      # falls through to TEnd which aborts tokenization upstream
+      # with a clear "unexpected" error.
+      if char_at(s, j + 1) == "&" then (TAndAnd, j + 2)
+      else (TEnd, j)
     else if c == ";" then (TSemi,   j + 1)
     else if c == "!" then
       if char_at(s, j + 1) == "=" then (TNeq, j + 2)
@@ -309,8 +406,21 @@ fn next_token(s: String, i: Int) : (Token, Int) =
     else (TEnd, j)
 
 fn tokenize_at(s: String, i: Int) : List<Token> =
+  # v4.27: when next_token emits TLParen, peek the character immediately
+  # before the `(` (at k-2, since k is position after the one-char
+  # token). If that char is `\n`, this `(` started a new line at
+  # column 1 — emit a TNlBdy boundary marker before it so parse_app_loop
+  # can stop the postfix-call chain. Every other token path is the
+  # original one-line recursion to avoid adding eval depth that
+  # compounds through prism-in-prism.
   match next_token(s, i) {
     (TEnd, _) => [];
+    (TLParen, k) =>
+      if k >= 2 then
+        if char_at(s, k - 2) == "\n"
+          then [TNlBdy, TLParen] ++ tokenize_at(s, k)
+          else [TLParen] ++ tokenize_at(s, k)
+      else [TLParen] ++ tokenize_at(s, k);
     (t, k)    => [t] ++ tokenize_at(s, k)
   }
 
@@ -319,11 +429,28 @@ fn tokenize(s: String) : List<Token> = tokenize_at(s, 0)
 
 # --- Parser -------------------------------------------------------------
 
+# v4.27: peek_tok / rest_tok skip TNlBdy markers transparently. The
+# tokenizer only emits TNlBdy before `(` at column 1 after a newline,
+# so in practice these markers are rare — almost every call returns
+# at the first match arm with no recursion. peek_tok_raw is reserved
+# for parse_app_loop, which uses the boundary marker as a signal to
+# break the postfix-call chain.
 fn peek_tok(ts: List<Token>) : Token =
-  match ts { [] => TEnd; [t, ...rest] => t }
+  match ts {
+    []                => TEnd;
+    [TNlBdy, ...rest] => peek_tok(rest);
+    [t, ..._]         => t
+  }
 
 fn rest_tok(ts: List<Token>) : List<Token> =
-  match ts { [] => []; [_, ...r] => r }
+  match ts {
+    []                => [];
+    [TNlBdy, ...rest] => rest_tok(rest);
+    [_, ...r]         => r
+  }
+
+fn peek_tok_raw(ts: List<Token>) : Token =
+  match ts { [] => TEnd; [t, ..._] => t }
 
 fn parse_atom(ts: List<Token>) : Result<(Expr, List<Token>), String> =
   match peek_tok(ts) {
@@ -343,9 +470,11 @@ fn parse_atom(ts: List<Token>) : Result<(Expr, List<Token>), String> =
     TFn          => parse_fn(rest_tok(ts));
     TMatch       => parse_match(rest_tok(ts));
     TEnd         => Err("parse: unexpected end of input");
+    TNlBdy       => Err("parse: unexpected newline boundary in atom");
     TPlus        => Err("parse: unexpected + in atom");
     TMinus       => Err("parse: unexpected - in atom");
     TStar        => Err("parse: unexpected * in atom");
+    TSlash       => Err("parse: unexpected / in atom");
     TPlusPlus    => Err("parse: unexpected ++ in atom");
     TLt          => Err("parse: unexpected < in atom");
     TGt          => Err("parse: unexpected > in atom");
@@ -691,6 +820,154 @@ fn parse_if(ts: List<Token>) : Result<(Expr, List<Token>), String> =
         }
     })
 
+# v4.68: linear-type support (port of the host's v4.67 `let lin`).
+# Does a pattern introduce a binding called `name`? (To detect a match
+# arm that shadows a linear variable.)
+fn pat_binds(p: Pattern, name: String) : Bool =
+  match p {
+    PWild         => false;
+    PVar(n)       => n == name;
+    PCtor(_, args) => any_pat_binds(args, name);
+    PTuple(items) => any_pat_binds(items, name);
+    PInt(_)       => false;
+    PBool(_)      => false;
+    PStr(_)       => false
+  }
+
+fn any_pat_binds(ps: List<Pattern>, name: String) : Bool =
+  fold(ps, false, fn(acc: Bool, p: Pattern) -> acc || pat_binds(p, name))
+
+# Add two use-count results (Int + Int, threading Err through).
+fn luses_add(
+  a: Result<Int, String>, b: Result<Int, String>
+) : Result<Int, String> =
+  bind_result(a, fn(x: Int) -> bind_result(b, fn(y: Int) -> Ok(x + y)))
+
+# Sum uses across a list of sub-expressions.
+fn luses_list(es: List<Expr>, name: String) : Result<Int, String> =
+  fold(es, Ok(0), fn(acc: Result<Int, String>, e: Expr) ->
+    luses_add(acc, linear_uses(e, name)))
+
+# Sum uses across record fields (name/value pairs).
+fn luses_fields(
+  fs: List<Pair<String, Expr>>, name: String
+) : Result<Int, String> =
+  fold(fs, Ok(0), fn(acc: Result<Int, String>, pr: Pair<String, Expr>) ->
+    match pr { Pair(_, e) => luses_add(acc, linear_uses(e, name)) })
+
+# Common use-count across match arms — every arm must consume the
+# linear variable the same number of times (else it's dropped on some
+# path). An arm whose pattern shadows `name` contributes 0.
+fn arm_uses(
+  arms: List<Pair<Pattern, Expr>>, name: String
+) : Result<Int, String> =
+  match arms {
+    [] => Ok(0);
+    [Pair(pat, body), ...rest] =>
+      let this : Result<Int, String> =
+        if pat_binds(pat, name) then Ok(0) else linear_uses(body, name) in
+      match rest {
+        [] => this;
+        _  =>
+          bind_result(this, fn(c0: Int) ->
+            bind_result(arm_uses(rest, name), fn(cr: Int) ->
+              if c0 == cr then Ok(c0)
+              else Err("linear variable " ++ name ++
+                       " used unequally across match arms")))
+      }
+  }
+
+# Count uses of linear variable `name` along ONE execution path. Mirrors
+# the host's `linear_uses` (glass.py): branches must consume identically;
+# capturing in a lambda is refused (a closure may run any number of times).
+fn linear_uses(e: Expr, name: String) : Result<Int, String> =
+  match e {
+    EInt(_)  => Ok(0);
+    EBool(_) => Ok(0);
+    EStr(_)  => Ok(0);
+    EVar(n)  => Ok(if n == name then 1 else 0);
+    EAdd(a, b)    => luses_add(linear_uses(a, name), linear_uses(b, name));
+    ESub(a, b)    => luses_add(linear_uses(a, name), linear_uses(b, name));
+    EMul(a, b)    => luses_add(linear_uses(a, name), linear_uses(b, name));
+    EDiv(a, b)    => luses_add(linear_uses(a, name), linear_uses(b, name));
+    EMod(a, b)    => luses_add(linear_uses(a, name), linear_uses(b, name));
+    EConcat(a, b) => luses_add(linear_uses(a, name), linear_uses(b, name));
+    ELt(a, b)     => luses_add(linear_uses(a, name), linear_uses(b, name));
+    EGt(a, b)     => luses_add(linear_uses(a, name), linear_uses(b, name));
+    ELe(a, b)     => luses_add(linear_uses(a, name), linear_uses(b, name));
+    EGe(a, b)     => luses_add(linear_uses(a, name), linear_uses(b, name));
+    EEq(a, b)     => luses_add(linear_uses(a, name), linear_uses(b, name));
+    ENeq(a, b)    => luses_add(linear_uses(a, name), linear_uses(b, name));
+    EAnd(a, b)    => luses_add(linear_uses(a, name), linear_uses(b, name));
+    EOr(a, b)     => luses_add(linear_uses(a, name), linear_uses(b, name));
+    EUNot(x)      => linear_uses(x, name);
+    EIf(c, t, f)  =>
+      bind_result(linear_uses(c, name), fn(uc: Int) ->
+        bind_result(linear_uses(t, name), fn(ut: Int) ->
+          bind_result(linear_uses(f, name), fn(uf: Int) ->
+            if ut == uf then Ok(uc + ut)
+            else Err("linear variable " ++ name ++
+                     " used unequally across if-branches"))));
+    ELam(p, body) =>
+      if p == name then Ok(0)
+      else bind_result(linear_uses(body, name), fn(ub: Int) ->
+        if ub > 0
+          then Err("linear variable " ++ name ++ " captured in a lambda")
+          else Ok(0));
+    ELamR(p, _, body) =>
+      if p == name then Ok(0)
+      else bind_result(linear_uses(body, name), fn(ub: Int) ->
+        if ub > 0
+          then Err("linear variable " ++ name ++ " captured in a lambda")
+          else Ok(0));
+    EApp(f, a)    => luses_add(linear_uses(f, name), linear_uses(a, name));
+    ELet(n, v, body) =>
+      luses_add(linear_uses(v, name),
+                if n == name then Ok(0) else linear_uses(body, name));
+    ELetRec(n, v, body) =>
+      luses_add(linear_uses(v, name),
+                if n == name then Ok(0) else linear_uses(body, name));
+    ERec(fields)        => luses_fields(fields, name);
+    ENamedRec(_, fields) => luses_fields(fields, name);
+    EField(recd, _)     => linear_uses(recd, name);
+    ECtor(_, args)      => luses_list(args, name);
+    EMatch(scrut, arms) =>
+      luses_add(linear_uses(scrut, name), arm_uses(arms, name));
+    ETuple(items)       => luses_list(items, name)
+  }
+
+# Parse `let lin <name> = EXPR in BODY` (the `lin` has been consumed).
+# Builds a plain ELet, but only after the linearity check passes.
+fn parse_let_linear(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  match peek_tok(ts) {
+    TIdent(name) =>
+      let after_name : List<Token> = rest_tok(ts) in
+      bind_result(skip_optional_let_type(after_name), fn(after_ann: List<Token>) ->
+        match peek_tok(after_ann) {
+          TEq =>
+            bind_result(parse_expr(rest_tok(after_ann)), fn(p1: (Expr, List<Token>)) ->
+              match p1 { (val, after_val) =>
+                match peek_tok(after_val) {
+                  TIn =>
+                    bind_result(parse_expr(rest_tok(after_val)),
+                                fn(p2: (Expr, List<Token>)) ->
+                      match p2 { (body, after_body) =>
+                        bind_result(linear_uses(body, name), fn(uses: Int) ->
+                          if uses == 1 then Ok((ELet(name, val, body), after_body))
+                          else if uses == 0
+                            then Err("linear variable " ++ name ++
+                                     " is never used (no dropping)")
+                            else Err("linear variable " ++ name ++ " used " ++
+                                     int_to_string(uses) ++ " times (no cloning)"))
+                      });
+                  _ => Err("parse: expected 'in'")
+                }
+              });
+          _ => Err("parse: expected '=' after let lin name")
+        });
+    _ => Err("parse: expected identifier after 'let lin'")
+  }
+
 fn parse_let(ts: List<Token>) : Result<(Expr, List<Token>), String> =
   match peek_tok(ts) {
     TRec      => parse_let_inner(rest_tok(ts), true);
@@ -699,7 +976,15 @@ fn parse_let(ts: List<Token>) : Result<(Expr, List<Token>), String> =
     TLParen   => parse_let_pattern(ts);
     TLBracket => parse_let_pattern(ts);
     TIdent(name) =>
-      if is_uppercase_first(name) then parse_let_pattern(ts)
+      # v4.68: `let lin <ident> = ...` — contextual keyword. Only special
+      # when `lin` is followed by another identifier (the binding name);
+      # `let lin = ...` (a variable named lin) takes the normal path.
+      if name == "lin"
+        then match peek_tok(rest_tok(ts)) {
+               TIdent(_) => parse_let_linear(rest_tok(ts));
+               _ => parse_let_inner(ts, false)
+             }
+      else if is_uppercase_first(name) then parse_let_pattern(ts)
       else parse_let_inner(ts, false);
     _         => parse_let_inner(ts, false)
   }
@@ -846,55 +1131,146 @@ fn skip_optional_let_type(ts: List<Token>) : Result<List<Token>, String> =
     _ => Ok(ts)
   }
 
+# v4.48: parse an optional `: Type [where (pred)]` annotation for a
+# single lambda parameter. Returns `None` when no annotation is
+# present, `Some(ty)` otherwise; if `where (pred)` follows, the ty is
+# a TyRefine. The binder name is threaded in so refinement predicates
+# can mention the param by its actual name (matches the host shape).
+fn parse_optional_param_ty(
+  ts: List<Token>, binder: String
+) : Result<(Option<Type>, List<Token>), String> =
+  match peek_tok(ts) {
+    TColon =>
+      bind_result(parse_type(rest_tok(ts)), fn(p: (Type, List<Token>)) ->
+        match p { (base_ty, after_ty) =>
+          bind_result(parse_optional_refinement(after_ty, binder, base_ty),
+                      fn(r: (Type, List<Token>)) ->
+            match r { (ty, after_ref) => Ok((Some(ty), after_ref)) })
+        });
+    _ => Ok((None, ts))
+  }
+
+# v4.48: parse the comma-separated parameter list of a lambda. Returns
+# `(params, after_tokens)` where `params` is a list of (name, optional
+# type) pairs in source order — the first list element is the
+# outermost parameter. Position the caller at the `)` of the param
+# list; this helper does NOT consume the closing paren.
+fn parse_lambda_params(
+  ts: List<Token>
+) : Result<(List<Pair<String, Option<Type>>>, List<Token>), String> =
+  match peek_tok(ts) {
+    TRParen => Ok(([], ts));
+    TIdent(name) =>
+      let after_name : List<Token> = rest_tok(ts) in
+      bind_result(parse_optional_param_ty(after_name, name),
+                  fn(p: (Option<Type>, List<Token>)) ->
+        match p { (mty, after_ty) =>
+          match peek_tok(after_ty) {
+            TComma =>
+              bind_result(parse_lambda_params(rest_tok(after_ty)),
+                          fn(q: (List<Pair<String, Option<Type>>>, List<Token>)) ->
+                match q { (rest, after_rest) =>
+                  Ok(([Pair(name, mty)] ++ rest, after_rest))
+                });
+            TRParen =>
+              Ok(([Pair(name, mty)], after_ty));
+            _ => Err("parse: expected ',' or ')' after fn parameter")
+          }
+        });
+    _ => Err("parse: expected identifier as fn parameter")
+  }
+
+# v4.48: right-fold a parsed param list around the body into a
+# nested chain of ELam / ELamR. The HEAD of `params` becomes the
+# OUTERMOST lambda — `[a, b, c]` and body `B` produces
+# `ELam(a, ELam(b, ELam(c, B)))`, which mirrors the host's
+# `build_fn_body` convention for top-level fns. A refined param
+# produces ELamR at its level; everything else stays ELam.
+fn build_lambda_chain(
+  params: List<Pair<String, Option<Type>>>, body: Expr
+) : Expr =
+  match params {
+    [] => body;
+    [Pair(name, mty), ...rest] =>
+      let inner : Expr = build_lambda_chain(rest, body) in
+      match mty {
+        Some(ty) =>
+          match ty {
+            TyRefine(_, _, _) => ELamR(name, ty, inner);
+            _                 => ELam(name, inner)
+          };
+        None => ELam(name, inner)
+      }
+  }
+
+# v4.48: multi-param lambdas. Prism's parser previously only accepted
+# `fn(x) -> body` and `fn(x: T [where (pred)]) -> body` (single
+# param). v4.48 extends this to comma-separated params, each of which
+# may carry its own optional `: Type [where (pred)]` annotation. The
+# result is the standard curried desugaring: `fn(a, b) -> e` becomes
+# `ELam(a, ELam(b, e))`, identical in shape to how top-level multi-arg
+# fns desugar via `build_fn_body`. Single-param paths produce the
+# same AST nodes as v4.47, so every pre-v4.48 program parses to the
+# same tree.
 fn parse_fn(ts: List<Token>) : Result<(Expr, List<Token>), String> =
   match peek_tok(ts) {
     TLParen =>
       let after_lp : List<Token> = rest_tok(ts) in
-      match peek_tok(after_lp) {
-        TIdent(name) =>
-          let after_name : List<Token> = rest_tok(after_lp) in
-          match peek_tok(after_name) {
+      bind_result(parse_lambda_params(after_lp),
+                  fn(p: (List<Pair<String, Option<Type>>>, List<Token>)) ->
+        match p { (params, after_params) =>
+          match peek_tok(after_params) {
             TRParen =>
-              let after_rp : List<Token> = rest_tok(after_name) in
+              let after_rp : List<Token> = rest_tok(after_params) in
               match peek_tok(after_rp) {
                 TArrow =>
                   bind_result(parse_expr(rest_tok(after_rp)),
-                              fn(p: (Expr, List<Token>)) ->
-                    match p {
-                      (body, after_body) =>
-                        Ok((ELam(name, body), after_body))
+                              fn(b: (Expr, List<Token>)) ->
+                    match b { (body, after_body) =>
+                      match params {
+                        []    => Err("parse: fn must have at least one parameter");
+                        _     => Ok((build_lambda_chain(params, body), after_body))
+                      }
                     });
-                _ => Err("parse: expected '->' after fn parameter")
+                _ => Err("parse: expected '->' after fn parameters")
               };
-            _ => Err("parse: expected ')' after fn parameter")
-          };
-        _ => Err("parse: expected identifier as fn parameter")
-      };
+            _ => Err("parse: expected ')' after fn parameters")
+          }
+        });
     _ => Err("parse: expected '(' after fn")
   }
 
 fn parse_app_loop(e: Expr, ts: List<Token>) : Result<(Expr, List<Token>), String> =
-  match peek_tok(ts) {
-    TLParen =>
-      bind_result(parse_expr(rest_tok(ts)), fn(p: (Expr, List<Token>)) ->
-        match p {
-          (arg, after_arg) =>
-            match peek_tok(after_arg) {
-              TRParen => parse_app_loop(EApp(e, arg), rest_tok(after_arg));
-              TComma =>
-                # Multi-arg call: f(a, b, c) is sugar for f(a)(b)(c).
-                # We've already applied the first arg; loop on the rest.
-                parse_app_loop_args(EApp(e, arg), rest_tok(after_arg));
-              _       => Err("parse: expected ')' in function call")
-            }
-        });
-    TDot =>
-      match peek_tok(rest_tok(ts)) {
-        TIdent(field) =>
-          parse_app_loop(EField(e, field), rest_tok(rest_tok(ts)));
-        _ => Err("parse: expected field name after '.'")
-      };
-    _ => Ok((e, ts))
+  # v4.27: if the next raw token is a TNlBdy boundary, the upcoming `(`
+  # starts a new top-level expression at column 1 — NOT a call
+  # continuation. Stop the postfix chain here; the caller will reach
+  # the next non-boundary token via peek_tok and start a fresh decl.
+  # Mirrors the v4.21 host parse_postfix fix.
+  match peek_tok_raw(ts) {
+    TNlBdy => Ok((e, ts));
+    _ =>
+      match peek_tok(ts) {
+        TLParen =>
+          bind_result(parse_expr(rest_tok(ts)), fn(p: (Expr, List<Token>)) ->
+            match p {
+              (arg, after_arg) =>
+                match peek_tok(after_arg) {
+                  TRParen => parse_app_loop(EApp(e, arg), rest_tok(after_arg));
+                  TComma =>
+                    # Multi-arg call: f(a, b, c) is sugar for f(a)(b)(c).
+                    # We've already applied the first arg; loop on the rest.
+                    parse_app_loop_args(EApp(e, arg), rest_tok(after_arg));
+                  _       => Err("parse: expected ')' in function call")
+                }
+            });
+        TDot =>
+          match peek_tok(rest_tok(ts)) {
+            TIdent(field) =>
+              parse_app_loop(EField(e, field), rest_tok(rest_tok(ts)));
+            _ => Err("parse: expected field name after '.'")
+          };
+        _ => Ok((e, ts))
+      }
   }
 
 # Continue collecting more args in a multi-arg call. Each arg becomes a
@@ -947,16 +1323,38 @@ fn parse_postfix(ts: List<Token>) : Result<(Expr, List<Token>), String> =
   bind_result(parse_atom(ts), fn(p: (Expr, List<Token>)) ->
     match p { (e, after) => parse_app_loop(e, after) })
 
+# v4.54: unary logical NOT. Sits between parse_postfix and parse_mul
+# in the precedence stack — `!` binds tighter than `*` / `/` / `%`,
+# which themselves bind tighter than +/-, comparisons, &&, ||. Right-
+# associative so `!!x` works. The TBang token is also used in type
+# position for effect rows (`!{IO}`); that path is in parse_type, so
+# this expression-position parser is unambiguous.
+fn parse_unary(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  match peek_tok(ts) {
+    TBang =>
+      bind_result(parse_unary(rest_tok(ts)),
+                  fn(p: (Expr, List<Token>)) ->
+        match p { (inner, after) => Ok((EUNot(inner), after)) });
+    _ => parse_postfix(ts)
+  }
+
 fn parse_mul_rest(left: Expr, ts: List<Token>) : Result<(Expr, List<Token>), String> =
   match peek_tok(ts) {
     TStar =>
-      bind_result(parse_postfix(rest_tok(ts)), fn(p: (Expr, List<Token>)) ->
+      bind_result(parse_unary(rest_tok(ts)), fn(p: (Expr, List<Token>)) ->
         match p { (right, after) => parse_mul_rest(EMul(left, right), after) });
+    TSlash =>
+      bind_result(parse_unary(rest_tok(ts)), fn(p: (Expr, List<Token>)) ->
+        match p { (right, after) => parse_mul_rest(EDiv(left, right), after) });
+    # v4.53: modulo at the same precedence level as * and /.
+    TPercent =>
+      bind_result(parse_unary(rest_tok(ts)), fn(p: (Expr, List<Token>)) ->
+        match p { (right, after) => parse_mul_rest(EMod(left, right), after) });
     _ => Ok((left, ts))
   }
 
 fn parse_mul(ts: List<Token>) : Result<(Expr, List<Token>), String> =
-  bind_result(parse_postfix(ts), fn(p: (Expr, List<Token>)) ->
+  bind_result(parse_unary(ts), fn(p: (Expr, List<Token>)) ->
     match p { (left, after) => parse_mul_rest(left, after) })
 
 fn parse_add_rest(left: Expr, ts: List<Token>) : Result<(Expr, List<Token>), String> =
@@ -1022,8 +1420,39 @@ fn parse_compare(ts: List<Token>) : Result<(Expr, List<Token>), String> =
         }
     })
 
+# v4.52: boolean-and parsing. `&&` binds tighter than `||` but
+# looser than comparisons, so parse_and's atoms come from
+# parse_compare and parse_and feeds into parse_or. Left-associative
+# chain via parse_and_rest matches host eval_binop order.
+fn parse_and_rest(left: Expr, ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  match peek_tok(ts) {
+    TAndAnd =>
+      bind_result(parse_compare(rest_tok(ts)),
+                  fn(p: (Expr, List<Token>)) ->
+        match p { (right, after) => parse_and_rest(EAnd(left, right), after) });
+    _ => Ok((left, ts))
+  }
+
+fn parse_and(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  bind_result(parse_compare(ts), fn(p: (Expr, List<Token>)) ->
+    match p { (left, after) => parse_and_rest(left, after) })
+
+# v4.52: boolean-or parsing. Outermost binop layer below parse_expr.
+fn parse_or_rest(left: Expr, ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  match peek_tok(ts) {
+    TOrOr =>
+      bind_result(parse_and(rest_tok(ts)),
+                  fn(p: (Expr, List<Token>)) ->
+        match p { (right, after) => parse_or_rest(EOr(left, right), after) });
+    _ => Ok((left, ts))
+  }
+
+fn parse_or(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  bind_result(parse_and(ts), fn(p: (Expr, List<Token>)) ->
+    match p { (left, after) => parse_or_rest(left, after) })
+
 fn parse_expr(ts: List<Token>) : Result<(Expr, List<Token>), String> =
-  parse_compare(ts)
+  parse_or(ts)
 
 # Parse a full program: zero or more declarations (type or fn), then one
 # expression. fn declarations and type declarations can be interleaved.
@@ -1082,9 +1511,19 @@ fn parse_main_expr(
                     _    => Err("parse: extra tokens after let-in expression")
                   }
                 });
+            TEnd =>
+              # Program ends after this top-level let (no trailing expr) —
+              # the let's value is the result. Mirrors glass.py, which lets
+              # a program end in a `let` statement. Without this, prism's
+              # parser can't parse prism.glass (it ends in `let _ = match…`).
+              Ok(Program(type_acc, fn_acc, value));
             _ =>
               # Top-level let statement: the body is the rest of the program.
-              bind_result(parse_main_expr(after_val, type_acc, fn_acc),
+              # Recurse through parse_decls_then_expr (not parse_main_expr) so
+              # top-level `type`/`fn` decls appearing AFTER a `let` are still
+              # collected — prism.glass interleaves fns among its demo `let`s
+              # (e.g. bind_result is defined after the first demo).
+              bind_result(parse_decls_then_expr(after_val, type_acc, fn_acc),
                           fn(prog: Program) ->
                 match prog { Program(td, fd, body) =>
                   Ok(Program(td, fd, ELet(name, value, body)))
@@ -1142,8 +1581,17 @@ fn parse_fn_decl(ts: List<Token>) : Result<(FnDecl, List<Token>), String> =
                     TColon =>
                       bind_result(parse_type(rest_tok(after_params)),
                                   fn(p2: (Type, List<Token>)) ->
-                        match p2 { (ret_ty, after_ret) =>
-                          bind_result(parse_optional_effect(after_ret),
+                        match p2 { (ret_ty_raw, after_ret) =>
+                          # v4.25: accept optional `where (pred)` on the
+                          # return type, matching host syntax. The binder
+                          # name is the conventional `result` — predicates
+                          # may reference it to constrain the return value.
+                          bind_result(
+                            parse_optional_refinement(after_ret,
+                                                     "result", ret_ty_raw),
+                            fn(pr: (Type, List<Token>)) ->
+                          match pr { (ret_ty, after_ret_ref) =>
+                          bind_result(parse_optional_effect(after_ret_ref),
                                       fn(pe: (EffRow, List<Token>)) ->
                             match pe { (fn_eff, after_eff) =>
                               match peek_tok(after_eff) {
@@ -1158,6 +1606,7 @@ fn parse_fn_decl(ts: List<Token>) : Result<(FnDecl, List<Token>), String> =
                                 _ => Err("parse: fn decl: expected = after return type")
                               }
                             })
+                          })
                         });
                     _ => Err("parse: fn decl: expected : after params")
                   }
@@ -1169,7 +1618,7 @@ fn parse_fn_decl(ts: List<Token>) : Result<(FnDecl, List<Token>), String> =
   }
 
 # Parse optional `!{Label1, Label2, ...}` after a return type. Returns
-# the parsed effect row (or pure_eff() if no `!` is present).
+# the parsed effect row (or pure_eff(0) if no `!` is present).
 fn parse_optional_effect(ts: List<Token>) : Result<(EffRow, List<Token>), String> =
   match peek_tok(ts) {
     TBang =>
@@ -1177,7 +1626,7 @@ fn parse_optional_effect(ts: List<Token>) : Result<(EffRow, List<Token>), String
         TLBrace => parse_effect_labels(rest_tok(rest_tok(ts)), []);
         _ => Err("parse: expected { after !")
       };
-    _ => Ok((pure_eff(), ts))
+    _ => Ok((pure_eff(0), ts))
   }
 
 # Parse the contents of `{Label1, Label2, ...}` until `}`. Returns the
@@ -1271,7 +1720,7 @@ fn build_fn_type(
     [Pair(_, t), ...rest] =>
       match rest {
         [] => TyFn(t, ret_ty, fn_eff);
-        _  => TyFn(t, build_fn_type(rest, ret_ty, fn_eff), pure_eff())
+        _  => TyFn(t, build_fn_type(rest, ret_ty, fn_eff), pure_eff(0))
       }
   }
 
@@ -1566,9 +2015,9 @@ fn str_eq_set(xs: List<String>, ys: List<String>) : Bool =
   if str_subset(xs, ys) then str_subset(ys, xs) else false
 
 # Effect-row helpers.
-fn empty_sub() : Sub = Sub([], [])
+fn empty_sub(_d: Int) : Sub = Sub([], [])
 
-fn pure_eff() : EffRow = EffRow([], None)
+fn pure_eff(_d: Int) : EffRow = EffRow([], None)
 
 fn fresh_eff_var(next: Int) : (EffRow, Int) =
   (EffRow([], Some(next)), next + 1)
@@ -2216,16 +2665,16 @@ fn infer(
   next: Int
 ) : Result<(Type, EffRow, Sub, Int), String> =
   match e {
-    EInt(_)  => Ok((TyInt,  pure_eff(), s, next));
-    EBool(_) => Ok((TyBool, pure_eff(), s, next));
-    EStr(_)  => Ok((TyStr,  pure_eff(), s, next));
+    EInt(_)  => Ok((TyInt,  pure_eff(0), s, next));
+    EBool(_) => Ok((TyBool, pure_eff(0), s, next));
+    EStr(_)  => Ok((TyStr,  pure_eff(0), s, next));
 
     EVar(name) =>
       match lookup_ty_env(env, name) {
         None      => Err("type: unbound variable: " ++ name);
         Some(sch) =>
           match instantiate(sch, next) {
-            (t, new_next) => Ok((t, pure_eff(), s, new_next))
+            (t, new_next) => Ok((t, pure_eff(0), s, new_next))
           }
       };
 
@@ -2262,6 +2711,43 @@ fn infer(
         });
 
     EMul(a, b) =>
+      bind_result(infer(a, env, s, next), fn(r1: (Type, EffRow, Sub, Int)) ->
+        match r1 { (ta, ea, s1, n1) =>
+          bind_result(unify(ta, TyInt, s1, n1), fn(r2: (Sub, Int)) ->
+            match r2 { (s2, n2) =>
+              bind_result(infer(b, env, s2, n2),
+                          fn(r3: (Type, EffRow, Sub, Int)) ->
+                match r3 { (tb, eb, s3, n3) =>
+                  bind_result(unify(tb, TyInt, s3, n3), fn(r4: (Sub, Int)) ->
+                    match r4 { (s4, n4) =>
+                      Ok((TyInt, eff_union_via(s4, ea, eb), s4, n4))
+                    })
+                })
+            })
+        });
+
+    # v4.26: floor division. Same shape as EMul — both operands Int,
+    # result Int. Refinement on the divisor (`b != 0`) is enforced
+    # by the runtime check at the call site, not inside the operator.
+    EDiv(a, b) =>
+      bind_result(infer(a, env, s, next), fn(r1: (Type, EffRow, Sub, Int)) ->
+        match r1 { (ta, ea, s1, n1) =>
+          bind_result(unify(ta, TyInt, s1, n1), fn(r2: (Sub, Int)) ->
+            match r2 { (s2, n2) =>
+              bind_result(infer(b, env, s2, n2),
+                          fn(r3: (Type, EffRow, Sub, Int)) ->
+                match r3 { (tb, eb, s3, n3) =>
+                  bind_result(unify(tb, TyInt, s3, n3), fn(r4: (Sub, Int)) ->
+                    match r4 { (s4, n4) =>
+                      Ok((TyInt, eff_union_via(s4, ea, eb), s4, n4))
+                    })
+                })
+            })
+        });
+
+    # v4.53: modulo. Same shape as EDiv — Int, Int → Int. Refinement
+    # users typically write `n % K == M` for parity / divisibility.
+    EMod(a, b) =>
       bind_result(infer(a, env, s, next), fn(r1: (Type, EffRow, Sub, Int)) ->
         match r1 { (ta, ea, s1, n1) =>
           bind_result(unify(ta, TyInt, s1, n1), fn(r2: (Sub, Int)) ->
@@ -2387,6 +2873,53 @@ fn infer(
             })
         });
 
+    # v4.52: boolean combinators. Both sides unified against TyBool;
+    # result is TyBool. Effects union as elsewhere — the operator
+    # itself is pure, so the only effects come from its operands.
+    EAnd(a, b) =>
+      bind_result(infer(a, env, s, next), fn(r1: (Type, EffRow, Sub, Int)) ->
+        match r1 { (ta, ea, s1, n1) =>
+          bind_result(unify(ta, TyBool, s1, n1), fn(r2: (Sub, Int)) ->
+            match r2 { (s2, n2) =>
+              bind_result(infer(b, env, s2, n2),
+                          fn(r3: (Type, EffRow, Sub, Int)) ->
+                match r3 { (tb, eb, s3, n3) =>
+                  bind_result(unify(tb, TyBool, s3, n3), fn(r4: (Sub, Int)) ->
+                    match r4 { (s4, n4) =>
+                      Ok((TyBool, eff_union_via(s4, ea, eb), s4, n4))
+                    })
+                })
+            })
+        });
+
+    EOr(a, b) =>
+      bind_result(infer(a, env, s, next), fn(r1: (Type, EffRow, Sub, Int)) ->
+        match r1 { (ta, ea, s1, n1) =>
+          bind_result(unify(ta, TyBool, s1, n1), fn(r2: (Sub, Int)) ->
+            match r2 { (s2, n2) =>
+              bind_result(infer(b, env, s2, n2),
+                          fn(r3: (Type, EffRow, Sub, Int)) ->
+                match r3 { (tb, eb, s3, n3) =>
+                  bind_result(unify(tb, TyBool, s3, n3), fn(r4: (Sub, Int)) ->
+                    match r4 { (s4, n4) =>
+                      Ok((TyBool, eff_union_via(s4, ea, eb), s4, n4))
+                    })
+                })
+            })
+        });
+
+    # v4.54: unary NOT. Operand unified against TyBool; result TyBool.
+    # Effect row passes through unchanged (NOT itself is pure).
+    EUNot(inner) =>
+      bind_result(infer(inner, env, s, next),
+                  fn(r1: (Type, EffRow, Sub, Int)) ->
+        match r1 { (ti, ei, s1, n1) =>
+          bind_result(unify(ti, TyBool, s1, n1), fn(r2: (Sub, Int)) ->
+            match r2 { (s2, n2) =>
+              Ok((TyBool, ei, s2, n2))
+            })
+        });
+
     EIf(c, t, e_b) =>
       bind_result(infer(c, env, s, next), fn(r1: (Type, EffRow, Sub, Int)) ->
         match r1 { (tc, ec, s1, n1) =>
@@ -2424,7 +2957,25 @@ fn infer(
             TyFn(apply_sub(s1, a),
                  apply_sub(s1, tb),
                  apply_sub_eff(s1, eb)) in
-          Ok((fn_ty, pure_eff(), s1, n))
+          Ok((fn_ty, pure_eff(0), s1, n))
+        });
+
+    ELamR(x, refined_ty, body) =>
+      # v4.47: refined-param lambda. Like ELam but the param's type
+      # is the user-declared TyRefine (not a fresh tyvar). The body
+      # is inferred with the param bound to that concrete refined
+      # type. The lambda's resulting TyFn carries the refinement in
+      # its arg type so callers see it at the call site.
+      let env2 : List<Pair<String, Scheme>> =
+        [Pair(x, Scheme([], [], refined_ty))] ++ env in
+      bind_result(infer(body, env2, s, next),
+                  fn(r: (Type, EffRow, Sub, Int)) ->
+        match r { (tb, eb, s1, n) =>
+          let fn_ty : Type =
+            TyFn(refined_ty,
+                 apply_sub(s1, tb),
+                 apply_sub_eff(s1, eb)) in
+          Ok((fn_ty, pure_eff(0), s1, n))
         });
 
     EApp(f, arg) =>
@@ -2499,7 +3050,7 @@ fn infer(
         });
 
     ERec(fields) =>
-      bind_result(infer_record_fields(fields, env, s, next, pure_eff()),
+      bind_result(infer_record_fields(fields, env, s, next, pure_eff(0)),
                   fn(r: (List<Pair<String, Type>>, EffRow, Sub, Int)) ->
         match r { (fts, eff, s1, n1) =>
           Ok((TyRec(fts), eff, s1, n1))
@@ -2517,7 +3068,7 @@ fn infer(
       match lookup_ty_env(env, rec_name) {
         None =>
           # Unknown record name — fall back to structural ERec inference.
-          bind_result(infer_record_fields(user_fields, env, s, next, pure_eff()),
+          bind_result(infer_record_fields(user_fields, env, s, next, pure_eff(0)),
                       fn(r: (List<Pair<String, Type>>, EffRow, Sub, Int)) ->
             match r { (fts, eff, s1, n1) =>
               Ok((TyRec(fts), eff, s1, n1))
@@ -2528,11 +3079,11 @@ fn infer(
               match template {
                 TyRec(decl_fields) =>
                   check_named_rec_fields(
-                    user_fields, decl_fields, env, s, n1, pure_eff());
+                    user_fields, decl_fields, env, s, n1, pure_eff(0));
                 _ =>
                   # Name resolves to something other than a record (e.g. a
                   # function or constructor). Fall back to structural.
-                  bind_result(infer_record_fields(user_fields, env, s, n1, pure_eff()),
+                  bind_result(infer_record_fields(user_fields, env, s, n1, pure_eff(0)),
                               fn(r: (List<Pair<String, Type>>, EffRow, Sub, Int)) ->
                     match r { (fts, eff, s1, n2) =>
                       Ok((TyRec(fts), eff, s1, n2))
@@ -2541,8 +3092,8 @@ fn infer(
           }
       };
 
-    EField(rec, name) =>
-      bind_result(infer(rec, env, s, next),
+    EField(recd, name) =>
+      bind_result(infer(recd, env, s, next),
                   fn(r1: (Type, EffRow, Sub, Int)) ->
         match r1 { (tr, er, s1, n1) =>
           let resolved : Type = apply_sub(s1, tr) in
@@ -2570,7 +3121,7 @@ fn infer(
         Some(sch) =>
           match instantiate(sch, next) {
             (t_ctor, n1) =>
-              apply_ctor_args(t_ctor, args, env, s, n1, pure_eff())
+              apply_ctor_args(t_ctor, args, env, s, n1, pure_eff(0))
           }
       };
 
@@ -2586,7 +3137,7 @@ fn infer(
         });
 
     ETuple(elems) =>
-      bind_result(infer_tuple_elems(elems, env, s, next, pure_eff()),
+      bind_result(infer_tuple_elems(elems, env, s, next, pure_eff(0)),
                   fn(r: (List<Type>, EffRow, Sub, Int)) ->
         match r { (ts, eff, s1, n1) =>
           Ok((TyTuple(ts), eff, s1, n1))
@@ -2856,7 +3407,7 @@ fn find_decl_field_ty(
 
 fn run_infer(e: Expr, init_env: List<Pair<String, Scheme>>, start: Int)
     : Result<(Type, EffRow), String> =
-  bind_result(infer(e, init_env, empty_sub(), start),
+  bind_result(infer(e, init_env, empty_sub(0), start),
               fn(r: (Type, EffRow, Sub, Int)) ->
     match r { (t, eff, s, _) =>
       Ok((apply_sub(s, t), close_top_eff(apply_sub_eff(s, eff))))
@@ -2931,6 +3482,22 @@ fn eval_pred(e: Expr, env: List<Pair<String, Value>>) : Result<Value, String> =
     EMul(a, b) =>
       bind_result(eval_pred_int2(a, b, env),
                   fn(p: (Int, Int)) -> match p { (x, y) => Ok(VInt(x * y)) });
+    EDiv(a, b) =>
+      bind_result(eval_pred_int2(a, b, env),
+                  fn(p: (Int, Int)) -> match p { (x, y) =>
+                    if y == 0
+                      then Err("refinement: divide by zero in predicate")
+                      else Ok(VInt(x / y))
+                  });
+    # v4.53: modulo. Mirror EDiv shape including modulo-by-zero check.
+    # Glass v4.53 host added `%` so prism.glass can use it natively.
+    EMod(a, b) =>
+      bind_result(eval_pred_int2(a, b, env),
+                  fn(p: (Int, Int)) -> match p { (x, y) =>
+                    if y == 0
+                      then Err("refinement: modulo by zero in predicate")
+                      else Ok(VInt(x % y))
+                  });
     ELt(a, b) =>
       bind_result(eval_pred_int2(a, b, env),
                   fn(p: (Int, Int)) -> match p { (x, y) => Ok(VBool(x < y)) });
@@ -2955,6 +3522,30 @@ fn eval_pred(e: Expr, env: List<Pair<String, Value>>) : Result<Value, String> =
       bind_result(eval_pred(a, env), fn(va: Value) ->
         bind_result(eval_pred(b, env), fn(vb: Value) ->
           Ok(VBool(if value_eq(va, vb) then false else true))));
+    # v4.52: short-circuit && / || at the predicate-eval layer too.
+    # Used by static refinement-discharge to evaluate a literal-arg
+    # predicate at compile time.
+    EAnd(a, b) =>
+      bind_result(eval_pred(a, env), fn(va: Value) ->
+        match va {
+          VBool(false) => Ok(VBool(false));
+          VBool(true)  => eval_pred(b, env);
+          _ => Err("refinement: && lhs not Bool")
+        });
+    EOr(a, b) =>
+      bind_result(eval_pred(a, env), fn(va: Value) ->
+        match va {
+          VBool(true)  => Ok(VBool(true));
+          VBool(false) => eval_pred(b, env);
+          _ => Err("refinement: || lhs not Bool")
+        });
+    # v4.54: unary NOT at the predicate-eval layer.
+    EUNot(inner) =>
+      bind_result(eval_pred(inner, env), fn(vi: Value) ->
+        match vi {
+          VBool(b) => Ok(VBool(if b then false else true));
+          _ => Err("refinement: ! operand not Bool")
+        });
     EIf(c, t, f) =>
       bind_result(eval_pred(c, env), fn(vc: Value) ->
         match vc {
@@ -2991,6 +3582,10 @@ fn alpha_rename_pred(e: Expr, from: String, to: String) : Expr =
                           alpha_rename_pred(b, from, to));
     EMul(a, b)    => EMul(alpha_rename_pred(a, from, to),
                           alpha_rename_pred(b, from, to));
+    EDiv(a, b)    => EDiv(alpha_rename_pred(a, from, to),
+                          alpha_rename_pred(b, from, to));
+    EMod(a, b)    => EMod(alpha_rename_pred(a, from, to),
+                          alpha_rename_pred(b, from, to));
     EConcat(a, b) => EConcat(alpha_rename_pred(a, from, to),
                              alpha_rename_pred(b, from, to));
     ELt(a, b)     => ELt(alpha_rename_pred(a, from, to),
@@ -3005,6 +3600,13 @@ fn alpha_rename_pred(e: Expr, from: String, to: String) : Expr =
                          alpha_rename_pred(b, from, to));
     ENeq(a, b)    => ENeq(alpha_rename_pred(a, from, to),
                           alpha_rename_pred(b, from, to));
+    # v4.52: alpha-rename descends into both sides of EAnd / EOr.
+    EAnd(a, b)    => EAnd(alpha_rename_pred(a, from, to),
+                          alpha_rename_pred(b, from, to));
+    EOr(a, b)     => EOr(alpha_rename_pred(a, from, to),
+                         alpha_rename_pred(b, from, to));
+    # v4.54: alpha-rename descends into the operand of EUNot.
+    EUNot(x)      => EUNot(alpha_rename_pred(x, from, to));
     EIf(c, t, f)  => EIf(alpha_rename_pred(c, from, to),
                          alpha_rename_pred(t, from, to),
                          alpha_rename_pred(f, from, to));
@@ -3032,6 +3634,14 @@ fn ast_equal_pred(a: Expr, b: Expr) : Bool =
         _ => false };
     EMul(x, y) =>
       match b { EMul(u, v) =>
+        if ast_equal_pred(x, u) then ast_equal_pred(y, v) else false;
+        _ => false };
+    EDiv(x, y) =>
+      match b { EDiv(u, v) =>
+        if ast_equal_pred(x, u) then ast_equal_pred(y, v) else false;
+        _ => false };
+    EMod(x, y) =>
+      match b { EMod(u, v) =>
         if ast_equal_pred(x, u) then ast_equal_pred(y, v) else false;
         _ => false };
     EConcat(x, y) =>
@@ -3062,6 +3672,19 @@ fn ast_equal_pred(a: Expr, b: Expr) : Bool =
       match b { ENeq(u, v) =>
         if ast_equal_pred(x, u) then ast_equal_pred(y, v) else false;
         _ => false };
+    # v4.52: structural equality on boolean combinators. Two EAnd
+    # nodes match iff both sides match; same for EOr.
+    EAnd(x, y) =>
+      match b { EAnd(u, v) =>
+        if ast_equal_pred(x, u) then ast_equal_pred(y, v) else false;
+        _ => false };
+    EOr(x, y) =>
+      match b { EOr(u, v) =>
+        if ast_equal_pred(x, u) then ast_equal_pred(y, v) else false;
+        _ => false };
+    # v4.54: structural equality on unary NOT — operands must match.
+    EUNot(x) =>
+      match b { EUNot(u) => ast_equal_pred(x, u); _ => false };
     EIf(c, t, f) =>
       match b { EIf(c2, t2, f2) =>
         if ast_equal_pred(c, c2) then
@@ -3275,6 +3898,272 @@ fn strip_refine_outer(t: Type) : Option<(Type, String, Expr)> =
     _ => None
   }
 
+# v4.23: Walk down stacked TyRefine layers and evaluate each predicate
+# against `val` bound to its binder. Returns Ok(()) if every layer
+# passes; Err with a human-readable message on the first violation.
+# Mirrors the host's check_refinement_runtime: predicates evaluate in
+# a small env consisting only of {binder -> val}, so the predicate
+# subset eval_pred supports (literals, arithmetic, comparisons,
+# equality, conditionals) is the same subset enforced at runtime.
+# If eval_pred itself errors (predicate uses an unsupported form),
+# we conservatively accept — the static checker should have caught
+# that case; falling through here keeps the runtime forgiving rather
+# than turning every unsupported predicate into a crash.
+fn check_refine_runtime(
+  param_name: String, ty: Type, val: Value,
+  arg_env: List<Pair<String, Value>>
+) : Result<Bool, String> =
+  match ty {
+    TyRefine(base, binder, pred) =>
+      # v4.56: evaluate the predicate against the bound value AND the
+      # accumulated arg env, so cross-parameter refinements (a later
+      # param's predicate mentioning an earlier param) resolve. The
+      # binder shadows any same-named entry in arg_env by being first.
+      match eval_pred(pred, [Pair(binder, val)] ++ arg_env) {
+        Ok(VBool(true))  => check_refine_runtime(param_name, base, val, arg_env);
+        Ok(VBool(false)) =>
+          Err("refinement violated at runtime: " ++ param_name ++
+              " = " ++ show_value(val) ++ " fails predicate");
+        Ok(_)            => check_refine_runtime(param_name, base, val, arg_env);
+        Err(_)           => check_refine_runtime(param_name, base, val, arg_env)
+      };
+    _ => Ok(true)
+  }
+
+# Extract the formal type of the first parameter from a TyFn chain.
+# A multi-param fn like `add(x: Int where (x > 0), y: Int)` parses to
+# TyFn(Int where (x>0), TyFn(Int, ret, _), _) — this helper peels off
+# the outermost arg type. Used by the VMutRecClos branch in eval/EApp
+# to find the formal that the FIRST applied argument is binding.
+fn first_param_type(ty: Type) : Option<Type> =
+  match ty {
+    TyFn(arg, _, _) => Some(arg);
+    _ => None
+  }
+
+# Lookup an FnDecl by name in the list of mutually-recursive top-level
+# fns carried in VMutRecClos. Returns the declared TyFn (full chain) so
+# callers can inspect the formal-parameter type of any position.
+fn lookup_fn_decl_type(name: String, decls: List<FnDecl>) : Option<Type> =
+  match decls {
+    [] => None;
+    [d, ...rest] =>
+      match d {
+        FnDecl(dname, _, ty, _) =>
+          if dname == name then Some(ty)
+          else lookup_fn_decl_type(name, rest)
+      }
+  }
+
+# v4.56: look up a top-level fn's parameter NAMES (the FnDecl carries
+# them as a List<String>). Parallel to lookup_fn_decl_type — the names
+# list lines up 1:1 with param_types(fn_ty). Used to thread real param
+# names into VRefinedClos so cross-parameter refinements can reference
+# earlier params by name (including non-refined middle params, whose
+# names aren't recoverable from the type chain alone).
+fn lookup_fn_decl_params(name: String, decls: List<FnDecl>) : List<String> =
+  match decls {
+    [] => [];
+    [d, ...rest] =>
+      match d {
+        FnDecl(dname, pnames, _, _) =>
+          if dname == name then pnames
+          else lookup_fn_decl_params(name, rest)
+      }
+  }
+
+# v4.24: walk a TyFn chain and collect all formal parameter types in
+# order. `TyFn(A, TyFn(B, TyFn(C, R, _), _), _)` returns `[A, B, C]`.
+# Used to find the remaining formals after the first argument has been
+# consumed at a VMutRecClos application — those tail types drive the
+# VRefinedClos wrapping that propagates runtime checks through curried
+# multi-param applications.
+fn param_types(ty: Type) : List<Type> =
+  match ty {
+    TyFn(arg, ret, _) => [arg] ++ param_types(ret);
+    _ => []
+  }
+
+# True if any type in the list carries a TyRefine layer. Used to skip
+# the VRefinedClos wrapper when no remaining param needs a runtime
+# check — non-refined curried fns then have zero per-call overhead.
+fn any_refined(tys: List<Type>) : Bool =
+  match tys {
+    [] => false;
+    [t, ...rest] =>
+      match t {
+        TyRefine(_, _, _) => true;
+        _ => any_refined(rest)
+      }
+  }
+
+# True if `ty` is a TyRefine layer at the outer level. Used by
+# wrap_refined to decide whether to wrap purely because the return
+# type itself carries a refinement (no params left to check, but the
+# next apply still needs to validate the final result).
+fn is_refined(ty: Type) : Bool =
+  match ty {
+    TyRefine(_, _, _) => true;
+    _ => false
+  }
+
+# Walk a TyFn chain to the innermost (return) type. For non-fn types
+# returns the type as-is. Used by VMutRecClos to extract the return
+# type that VRefinedClos needs to carry forward.
+fn return_type(ty: Type) : Type =
+  match ty {
+    TyFn(_, ret, _) => return_type(ret);
+    _ => ty
+  }
+
+# Conditional wrapper: wrap `val` in VRefinedClos when at least one
+# downstream check would fire — either some remaining param is refined
+# OR the return type itself is refined (and there's at least one more
+# apply to drive it). Otherwise return `val` untouched.
+fn wrap_refined(
+  remaining: List<Type>, remaining_names: List<String>,
+  ret_ty: Type, val: Value,
+  arg_env: List<Pair<String, Value>>
+) : Value =
+  if any_refined(remaining)
+    then VRefinedClos(remaining, remaining_names, ret_ty, val, arg_env)
+  else if is_refined(ret_ty)
+    then
+      if len(remaining) == 0 then val
+      else VRefinedClos(remaining, remaining_names, ret_ty, val, arg_env)
+  else val
+
+# Apply a callable Value to a single argument. Factored out of EApp so
+# VRefinedClos can apply its inner value without duplicating the
+# closure-dispatch logic. The Result wrapping mirrors EApp's branches.
+fn apply_value(
+  vf: Value, varg: Value
+) : Result<Value, String> !{IO, File} =
+  match vf {
+    VClos(param, body, clos_env) =>
+      eval(body, [Pair(param, varg)] ++ clos_env);
+    VRecClos(rec_name, param, body, clos_env) =>
+      eval(body,
+           [Pair(param, varg), Pair(rec_name, vf)] ++ clos_env);
+    VMutRecClos(fn_name, body_expr, all_decls, outer_env) =>
+      let sibling_env : List<Pair<String, Value>> =
+        build_mutrec_env_at(all_decls, outer_env) ++ outer_env in
+      bind_result(eval(body_expr, sibling_env), fn(actual_clos: Value) ->
+        match actual_clos {
+          VClos(param, body, clos_env) =>
+            match lookup_fn_decl_type(fn_name, all_decls) {
+              None =>
+                eval(body, [Pair(param, varg)] ++ clos_env);
+              Some(fn_ty) =>
+                let all_params : List<Type> = param_types(fn_ty) in
+                let ret_ty : Type = return_type(fn_ty) in
+                match first_param_type(fn_ty) {
+                  None =>
+                    eval(body, [Pair(param, varg)] ++ clos_env);
+                  Some(formal) =>
+                    # v4.56: first param — no earlier args yet, so the
+                    # check env is empty. But we SEED the accumulator
+                    # with this param so later params (and a return
+                    # refinement) can reference it: `[Pair(param, varg)]`.
+                    match check_refine_runtime(param, formal, varg, []) {
+                      Err(msg) => Err(msg);
+                      Ok(_) =>
+                        bind_result(
+                          eval(body, [Pair(param, varg)] ++ clos_env),
+                          fn(result: Value) ->
+                            # v4.25: when no more params remain (1-param
+                            # fn), this apply produced the final return
+                            # value. Check the return-type refinement now.
+                            # When more params remain, defer to the
+                            # VRefinedClos wrapper which carries ret_ty
+                            # forward and checks on the last apply.
+                            let rest : List<Type> = tail(all_params) in
+                            # v4.56: the param names parallel the types;
+                            # drop the head (just-applied first param) to
+                            # get the remaining names. acc0 seeds the env
+                            # with the first param under its REAL name.
+                            let rest_names : List<String> =
+                              match lookup_fn_decl_params(fn_name, all_decls) {
+                                [] => [];
+                                [_, ...rns] => rns
+                              } in
+                            let acc0 : List<Pair<String, Value>> =
+                              [Pair(param, varg)] in
+                            if len(rest) == 0
+                              then
+                                match check_refine_runtime(
+                                        "result", ret_ty, result, acc0) {
+                                  Err(msg) => Err(msg);
+                                  Ok(_)    => Ok(result)
+                                }
+                              else
+                                Ok(wrap_refined(
+                                     rest, rest_names, ret_ty, result, acc0)))
+                    }
+                }
+            };
+          _ => Err("eval: top-level fn body did not produce a closure")
+        });
+    VBuiltin(name, arity, acc) =>
+      let new_acc : List<Value> = acc ++ [varg] in
+      if len(new_acc) == arity
+        then apply_builtin(name, new_acc)
+        else Ok(VBuiltin(name, arity, new_acc));
+    VRefinedClos(remaining, remaining_names, ret_ty, inner, arg_env) =>
+      match remaining {
+        [] => apply_value(inner, varg);
+        [head_ty, ...rest_tys] =>
+          # v4.56: the param's real name comes from the parallel
+          # names list (correct even for non-refined params). Fall
+          # back to the refinement binder, then "_arg", if the names
+          # list is somehow short.
+          let pname : String =
+            match remaining_names {
+              [hn, ..._] => hn;
+              [] =>
+                match strip_refine_outer(head_ty) {
+                  Some(triple) => match triple { (_, bn, _) => bn };
+                  None => "_arg"
+                }
+            } in
+          let rest_names : List<String> =
+            match remaining_names { [] => []; [_, ...rns] => rns } in
+          # Check this param's refinement against the accumulated env
+          # (earlier params), then thread this param into the env for
+          # any subsequent param / return refinement.
+          match check_refine_runtime(pname, head_ty, varg, arg_env) {
+            Err(msg) => Err(msg);
+            Ok(_) =>
+              let acc1 : List<Pair<String, Value>> =
+                [Pair(pname, varg)] ++ arg_env in
+              bind_result(apply_value(inner, varg), fn(result: Value) ->
+                # v4.25: if this was the last arg (rest_tys empty),
+                # the apply produced the final return value — check
+                # the return-type refinement against it. Otherwise
+                # rewrap with the tail so subsequent applies still
+                # see remaining formals + ret_ty.
+                if len(rest_tys) == 0
+                  then
+                    match check_refine_runtime(
+                            "result", ret_ty, result, acc1) {
+                      Err(msg) => Err(msg);
+                      Ok(_)    => Ok(result)
+                    }
+                  else
+                    Ok(wrap_refined(
+                         rest_tys, rest_names, ret_ty, result, acc1)))
+          }
+      };
+    _ => Err("eval: not a function")
+  }
+
+# Tail of a list. Returns [] for an empty input.
+fn tail(xs: List<Type>) : List<Type> =
+  match xs {
+    [] => [];
+    [_, ...rest] => rest
+  }
+
 # Close a top-level open row: if no concrete effects accumulated, the
 # expression is pure; if the tail var was never bound, hide it (it
 # would be a no-op variable cluttering the display).
@@ -3381,7 +4270,8 @@ fn value_eq(a: Value, b: Value) : Bool =
     VRec(_)                 => false;
     VCtor(_, _)             => false;
     VTuple(_)               => false;
-    VBuiltin(_, _, _)       => false
+    VBuiltin(_, _, _)       => false;
+    VRefinedClos(_, _, _, _, _) => false
   }
 
 # Concatenate two list values represented as Cons/Nil chains. Used by
@@ -3418,6 +4308,11 @@ fn eval(e: Expr, env: List<Pair<String, Value>>) : Result<Value, String> !{IO, F
     EAdd(a, b) => eval_int_bin(a, b, env, fn(x: Int, y: Int) -> VInt(x + y));
     ESub(a, b) => eval_int_bin(a, b, env, fn(x: Int, y: Int) -> VInt(x - y));
     EMul(a, b) => eval_int_bin(a, b, env, fn(x: Int, y: Int) -> VInt(x * y));
+    EDiv(a, b) => eval_int_bin(a, b, env, fn(x: Int, y: Int) -> VInt(x / y));
+    # v4.53: modulo. Same shape as EDiv. Glass `%` is Python floor-mod
+    # (sign of divisor); Quartz emits C `%` (sign of dividend). They
+    # agree on non-negative operands, the canonical parity case.
+    EMod(a, b) => eval_int_bin(a, b, env, fn(x: Int, y: Int) -> VInt(x % y));
     EConcat(a, b) =>
       bind_result(eval(a, env), fn(va: Value) ->
         bind_result(eval(b, env), fn(vb: Value) ->
@@ -3444,6 +4339,36 @@ fn eval(e: Expr, env: List<Pair<String, Value>>) : Result<Value, String> !{IO, F
       bind_result(eval(a, env), fn(va: Value) ->
         bind_result(eval(b, env), fn(vb: Value) ->
           Ok(VBool(if value_eq(va, vb) then false else true))));
+
+    # v4.52: short-circuit boolean combinators. Same shape as host
+    # eval_binop's && / || arms — evaluate lhs first, return early
+    # when the outcome is already determined. Glass is pure so the
+    # observable result agrees with eager-evaluating both sides,
+    # but short-circuit matches user expectation (and avoids wasted
+    # work in predicates like `n != 0 && safe_div(n) > 0`).
+    EAnd(a, b) =>
+      bind_result(eval(a, env), fn(va: Value) ->
+        match va {
+          VBool(false) => Ok(VBool(false));
+          VBool(true)  => eval(b, env);
+          _ => Err("eval: && lhs not Bool")
+        });
+
+    EOr(a, b) =>
+      bind_result(eval(a, env), fn(va: Value) ->
+        match va {
+          VBool(true)  => Ok(VBool(true));
+          VBool(false) => eval(b, env);
+          _ => Err("eval: || lhs not Bool")
+        });
+
+    # v4.54: unary NOT. Flip the Bool; error if operand isn't one.
+    EUNot(inner) =>
+      bind_result(eval(inner, env), fn(vi: Value) ->
+        match vi {
+          VBool(b) => Ok(VBool(if b then false else true));
+          _ => Err("eval: ! operand not Bool")
+        });
 
     EIf(c, t, e_b) =>
       bind_result(eval(c, env), fn(vc: Value) ->
@@ -3475,32 +4400,31 @@ fn eval(e: Expr, env: List<Pair<String, Value>>) : Result<Value, String> !{IO, F
 
     ELam(name, body) => Ok(VClos(name, body, env));
 
+    ELamR(name, refined_ty, body) =>
+      # v4.47: refined-param lambda. Build a normal VClos but wrap
+      # it in VRefinedClos so apply_value runs the refinement check
+      # on the argument before entering the body. The wrapper holds
+      # a single-formal list (this param's refinement) and an
+      # unrefined ret_ty placeholder (TyInt) — apply_value's final
+      # ret_ty check uses check_refine_runtime which is a no-op on
+      # non-TyRefine types.
+      #
+      # v4.56: the param-name list is [name], and the accumulated arg
+      # env is the current `env` — so a refined param in a multi-arg
+      # lambda (e.g. `fn(a, b: Int where (b > a)) -> ...`) sees `a`,
+      # which the desugared outer ELam already bound into `env`.
+      Ok(VRefinedClos([refined_ty], [name], TyInt,
+                      VClos(name, body, env), env));
+
     EApp(f, arg) =>
+      # v4.24: dispatch via apply_value so all callable cases (VClos,
+      # VRecClos, VMutRecClos, VBuiltin, VRefinedClos) live in one place.
+      # The VMutRecClos branch wraps its result with the curried fn's
+      # remaining param types when any of them carry refinements; the
+      # VRefinedClos branch unrolls the chain on subsequent applies.
       bind_result(eval(f, env), fn(vf: Value) ->
         bind_result(eval(arg, env), fn(varg: Value) ->
-          match vf {
-            VClos(param, body, clos_env) =>
-              eval(body, [Pair(param, varg)] ++ clos_env);
-            VRecClos(rec_name, param, body, clos_env) =>
-              eval(body,
-                   [Pair(param, varg), Pair(rec_name, vf)] ++ clos_env);
-            VMutRecClos(_, body_expr, all_decls, outer_env) =>
-              # Build env: top-level fns + outer env (with builtins & ctors).
-              let sibling_env : List<Pair<String, Value>> =
-                build_mutrec_env_at(all_decls, outer_env) ++ outer_env in
-              bind_result(eval(body_expr, sibling_env), fn(actual_clos: Value) ->
-                match actual_clos {
-                  VClos(param, body, clos_env) =>
-                    eval(body, [Pair(param, varg)] ++ clos_env);
-                  _ => Err("eval: top-level fn body did not produce a closure")
-                });
-            VBuiltin(name, arity, acc) =>
-              let new_acc : List<Value> = acc ++ [varg] in
-              if len(new_acc) == arity
-                then apply_builtin(name, new_acc)
-                else Ok(VBuiltin(name, arity, new_acc));
-            _ => Err("eval: not a function")
-          }));
+          apply_value(vf, varg)));
 
     ERec(fields) =>
       bind_result(eval_record_fields(fields, env), fn(vfs: List<Pair<String, Value>>) ->
@@ -3512,8 +4436,8 @@ fn eval(e: Expr, env: List<Pair<String, Value>>) : Result<Value, String> !{IO, F
       bind_result(eval_record_fields(fields, env), fn(vfs: List<Pair<String, Value>>) ->
         Ok(VRec(vfs)));
 
-    EField(rec, name) =>
-      bind_result(eval(rec, env), fn(vr: Value) ->
+    EField(recd, name) =>
+      bind_result(eval(recd, env), fn(vr: Value) ->
         match vr {
           VRec(fs) =>
             match lookup_field_val(fs, name) {
@@ -3836,6 +4760,7 @@ fn show_value(v: Value) : String =
     VRecClos(_, _, _, _) => "<rec-closure>";
     VMutRecClos(name, _, _, _) => "<top-fn: " ++ name ++ ">";
     VBuiltin(name, _, _) => "<builtin: " ++ name ++ ">";
+    VRefinedClos(_, _, _, inner, _) => "<refined: " ++ show_value(inner) ++ ">";
     VRec(fs)             => "{ " ++ show_value_fields(fs) ++ " }";
     VCtor(name, args) =>
       if is_list_value(v) then "[" ++ show_list_value(v) ++ "]"
@@ -4161,7 +5086,7 @@ fn lookup_param(
 fn build_ctor_type(arg_tys: List<Type>, result: Type) : Type =
   match arg_tys {
     [] => result;
-    [t, ...rest] => TyFn(t, build_ctor_type(rest, result), pure_eff())
+    [t, ...rest] => TyFn(t, build_ctor_type(rest, result), pure_eff(0))
   }
 
 # Build the initial type and value envs, including the demo effectful
@@ -4180,7 +5105,7 @@ fn initial_envs(decls: List<TypeDecl>)
     Scheme([0], [], list_adt) in
   let cons_scheme : Scheme =
     Scheme([0], [],
-      TyFn(list_param_ty, TyFn(list_adt, list_adt, pure_eff()), pure_eff())) in
+      TyFn(list_param_ty, TyFn(list_adt, list_adt, pure_eff(0)), pure_eff(0))) in
   # Pre-declare the built-in `type Option<A> = | None | Some(A)`.
   # Required for string_index_of's return type and any user code that
   # uses Option without re-declaring it.
@@ -4190,7 +5115,7 @@ fn initial_envs(decls: List<TypeDecl>)
     Scheme([1], [], option_adt) in
   let some_scheme : Scheme =
     Scheme([1], [],
-      TyFn(option_param_ty, option_adt, pure_eff())) in
+      TyFn(option_param_ty, option_adt, pure_eff(0))) in
   # Pre-declare the built-in `type Pair<A, B> = | Pair(A, B)`.
   # Two type variables — TyVar(2) for A, TyVar(3) for B.
   let pair_a : Type = TyVar(2) in
@@ -4198,7 +5123,7 @@ fn initial_envs(decls: List<TypeDecl>)
   let pair_adt : Type = TyAdt("Pair", [pair_a, pair_b]) in
   let pair_scheme : Scheme =
     Scheme([2, 3], [],
-      TyFn(pair_a, TyFn(pair_b, pair_adt, pure_eff()), pure_eff())) in
+      TyFn(pair_a, TyFn(pair_b, pair_adt, pure_eff(0)), pure_eff(0))) in
   # Pre-declare the built-in `type Result<T, E> = | Ok(T) | Err(E)`.
   # TyVar(4) for T, TyVar(5) for E.
   let result_t : Type = TyVar(4) in
@@ -4206,25 +5131,25 @@ fn initial_envs(decls: List<TypeDecl>)
   let result_adt : Type = TyAdt("Result", [result_t, result_e]) in
   let ok_scheme : Scheme =
     Scheme([4, 5], [],
-      TyFn(result_t, result_adt, pure_eff())) in
+      TyFn(result_t, result_adt, pure_eff(0))) in
   let err_scheme : Scheme =
     Scheme([4, 5], [],
-      TyFn(result_e, result_adt, pure_eff())) in
+      TyFn(result_e, result_adt, pure_eff(0))) in
   # String inspection builtins. Pure (no effects).
   # string_length : String -> Int
   let strlen_scheme : Scheme =
-    Scheme([], [], TyFn(TyStr, TyInt, pure_eff())) in
+    Scheme([], [], TyFn(TyStr, TyInt, pure_eff(0))) in
   # char_at : String -> Int -> String   (curried; returns single-char string)
   let char_at_scheme : Scheme =
     Scheme([], [],
-      TyFn(TyStr, TyFn(TyInt, TyStr, pure_eff()), pure_eff())) in
+      TyFn(TyStr, TyFn(TyInt, TyStr, pure_eff(0)), pure_eff(0))) in
   # int_to_str : Int -> String
   let int_to_str_scheme : Scheme =
-    Scheme([], [], TyFn(TyInt, TyStr, pure_eff())) in
+    Scheme([], [], TyFn(TyInt, TyStr, pure_eff(0))) in
   # string_eq : String -> String -> Bool
   let string_eq_scheme : Scheme =
     Scheme([], [],
-      TyFn(TyStr, TyFn(TyStr, TyBool, pure_eff()), pure_eff())) in
+      TyFn(TyStr, TyFn(TyStr, TyBool, pure_eff(0)), pure_eff(0))) in
   # print : String -> String !{IO}
   let print_scheme : Scheme =
     Scheme([], [], TyFn(TyStr, TyStr, EffRow(["IO"], None))) in
@@ -4236,25 +5161,25 @@ fn initial_envs(decls: List<TypeDecl>)
     Scheme([], [],
       TyFn(TyStr,
         TyFn(TyInt,
-          TyFn(TyInt, TyStr, pure_eff()),
-          pure_eff()),
-        pure_eff())) in
+          TyFn(TyInt, TyStr, pure_eff(0)),
+          pure_eff(0)),
+        pure_eff(0))) in
   # string_index_of : String -> String -> Option<Int>
   # Mirrors the host's signature exactly. Returns Some(i) at first match,
   # None if the needle does not appear in the haystack.
   let string_index_of_scheme : Scheme =
     Scheme([], [],
       TyFn(TyStr,
-        TyFn(TyStr, TyAdt("Option", [TyInt]), pure_eff()),
-        pure_eff())) in
+        TyFn(TyStr, TyAdt("Option", [TyInt]), pure_eff(0)),
+        pure_eff(0))) in
   # string_contains : String -> String -> Bool
   # Added for Stage 4.5 (v2.15): prism's own source uses this in
   # is_digit / is_letter. Without it, prism can't compile its own source.
   let string_contains_scheme : Scheme =
     Scheme([], [],
       TyFn(TyStr,
-        TyFn(TyStr, TyBool, pure_eff()),
-        pure_eff())) in
+        TyFn(TyStr, TyBool, pure_eff(0)),
+        pure_eff(0))) in
   let builtin_ty_env : List<Pair<String, Scheme>> =
     [Pair("tick", tick_scheme),
      Pair("Nil",  nil_scheme),
@@ -4384,7 +5309,7 @@ fn check_fn_decls(
         let tyvars : List<Type> = ids_to_tvars(ids) in
         let resolved_fn_ty : Type =
           resolve_param(fn_ty, tparams, tyvars) in
-        bind_result(check_fn_body(resolved_fn_ty, body, ty_env, empty_sub(), n2),
+        bind_result(check_fn_body(resolved_fn_ty, body, ty_env, empty_sub(0), n2),
                     fn(r: (Sub, Int)) ->
           match r { (_, n3) =>
             check_fn_decls(rest, ty_env, n3)
@@ -4430,7 +5355,7 @@ fn check_fn_body(
         })
   }
 
-fn empty_sub() : Sub = Sub([], [])
+fn empty_sub(_d: Int) : Sub = Sub([], [])
 
 
 # --- Demo ---------------------------------------------------------------
@@ -5363,6 +6288,300 @@ let _ : String = match read_file("examples/features/imply_refine.glass") {
             print("examples/features/imply_refine.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
         };
       Err(msg) => print("compile error: " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+# v4.23: refinement runtime checks. The argument here is a let-bound
+# variable, so const-fold static discharge defers and prism's new
+# runtime check fires on entry to the fn. Positive case (predicate
+# holds): the call returns its result normally. Negative case (predicate
+# fails): the call returns Err with "refinement violated at runtime",
+# which propagates through compile() and surfaces as a "compile error"
+# in the demo loop.
+let _ : String = match read_file("examples/features/runtime_refine.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/features/runtime_refine.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("compile error: " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+let _ : String = match read_file("examples/features/runtime_refine_bad.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/features/runtime_refine_bad.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("examples/features/runtime_refine_bad.glass ==> " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+# v4.24: refinement runtime checks on later parameters of curried
+# top-level fns. The VRefinedClos wrapper carries the remaining formal
+# types past the first apply so the second, third, ... applies still
+# see their refinements.
+let _ : String = match read_file("examples/features/curried_refine.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/features/curried_refine.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("examples/features/curried_refine.glass ==> " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+let _ : String = match read_file("examples/features/curried_refine_bad.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/features/curried_refine_bad.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("examples/features/curried_refine_bad.glass ==> " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+# v4.25: return-type refinement runtime checks. The parser now accepts
+# `where (result <pred>)` after a fn's return type, and the VRefinedClos
+# wrapper carries the return type forward so it can be checked against
+# the final value on the last apply. 1-param fns check the return
+# refinement immediately at the VMutRecClos branch.
+let _ : String = match read_file("examples/features/return_refine.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/features/return_refine.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("examples/features/return_refine.glass ==> " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+let _ : String = match read_file("examples/features/return_refine_bad.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/features/return_refine_bad.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("examples/features/return_refine_bad.glass ==> " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+# v4.27: parens-after-let parser fix in prism. The trailing
+# `(r1, r2)` on a new line at column 1 used to be eaten as a call
+# against the previous let's value. v4.27 injects a TNlBdy boundary
+# marker before such an `(`, and parse_app_loop uses it to break the
+# postfix-call chain. Mirrors the v4.21 host fix.
+let _ : String = match read_file("examples/features/parens_after_let.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/features/parens_after_let.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("examples/features/parens_after_let.glass ==> " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+# v4.26: division `/` now parses + evals in prism. The textbook
+# refinement example finally runs end-to-end here.
+let _ : String = match read_file("examples/features/safe_div.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/features/safe_div.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("examples/features/safe_div.glass ==> " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+# v4.47: refined-param lambdas. The parser now accepts `where (pred)`
+# after a lambda's typed param; eval wraps the resulting closure in a
+# VRefinedClos so the predicate fires on every application. Positive
+# case returns the body's result; negative case surfaces the standard
+# "refinement violated at runtime" message through the demo loop.
+let _ : String = match read_file("examples/features/lambda_refine.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/features/lambda_refine.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("examples/features/lambda_refine.glass ==> " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+let _ : String = match read_file("examples/features/lambda_refine_bad.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/features/lambda_refine_bad.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("examples/features/lambda_refine_bad.glass ==> " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+# v4.48: multi-parameter lambdas. Prism's parse_fn now accepts a
+# comma-separated parameter list. The first demo is a plain two-arg
+# lambda; the second composes v4.48's multi-param syntax with v4.47's
+# refined-param ELamR — each param's predicate fires on its own apply
+# step.
+let _ : String = match read_file("examples/features/lambda_multi.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/features/lambda_multi.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("examples/features/lambda_multi.glass ==> " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+let _ : String = match read_file("examples/features/lambda_multi_refine.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/features/lambda_multi_refine.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("examples/features/lambda_multi_refine.glass ==> " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+# v4.52: `&&` and `||` end-to-end through prism. v4.51 landed the
+# operators in host + Quartz but deferred prism's lexer/parser/Expr/
+# infer/eval. This file is the canonical interval refinement, which
+# was unwritable in prism prior to this release.
+let _ : String = match read_file("examples/features/and_or.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/features/and_or.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("examples/features/and_or.glass ==> " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+# v4.53: modulo lands. Parity refinements like `n % 2 == 0` are
+# now expressible across host + Quartz + prism. The canonical case.
+let _ : String = match read_file("examples/features/mod_refine.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/features/mod_refine.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("examples/features/mod_refine.glass ==> " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+# v4.54: unary NOT. `!(n == 0)` rounds out the boolean trio
+# (&& v4.51, || v4.52, ! v4.54). nonzero(5) = 100 / 5 = 20.
+let _ : String = match read_file("examples/features/not_refine.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/features/not_refine.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("examples/features/not_refine.glass ==> " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+# v4.68: linear types in prism — a `let lin` resource must be consumed
+# exactly once. The OK case compiles to 50; the clone case is rejected
+# at parse time with "used 2 times (no cloning)".
+let _ : String = match read_file("examples/features/linear_ok.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/features/linear_ok.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("examples/features/linear_ok.glass ==> " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+let _ : String = match read_file("examples/features/linear_clone.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/features/linear_clone.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("examples/features/linear_clone.glass ==> " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+# v4.56: cross-parameter refinement. `hi > lo` references an earlier
+# param; prism threads the applied args through VRefinedClos so it
+# resolves. clamp(3, 10) = 7.
+let _ : String = match read_file("examples/features/xparam_refine.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/features/xparam_refine.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("examples/features/xparam_refine.glass ==> " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+let _ : String = match read_file("examples/features/xparam_refine_bad.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/features/xparam_refine_bad.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("examples/features/xparam_refine_bad.glass ==> " ++ msg)
     };
   Err(msg) => print("read error: " ++ msg)
 }

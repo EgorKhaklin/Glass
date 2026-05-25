@@ -1,0 +1,14 @@
+/* fizzbuzz.glass — classic interview problem in Glass.
+   For each number 1..n: print "fizz" if divisible by 3, "buzz" if 5,
+   "fizzbuzz" if both, else the number.
+
+   Single-output simplification: count how many "fizzbuzz" hits there are
+   in 1..n. fizzbuzz at multiples of 15. For n=30, expect floor(30/15) = 2. */
+
+fn fizzbuzz_count(n, i, acc) =
+  if i > n then acc
+  else if i % 15 == 0 then fizzbuzz_count(n, i + 1, acc + 1)
+  else fizzbuzz_count(n, i + 1, acc)
+
+# Count fizzbuzz hits in 1..30. Expected: 2 (at 15 and 30).
+fizzbuzz_count(30, 1, 0)

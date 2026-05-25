@@ -1,0 +1,17 @@
+# =============================================================================
+# not_refine.glass — refinement using unary NOT (v4.54).
+#
+# v4.54 rounds out the boolean operator trio: && (v4.51), || (v4.52),
+# and now `!`. The TBang token was already used for effect rows
+# (`!{IO}`) in type position; v4.54 overloads it as unary logical NOT
+# in expression position, disambiguated by the parser (parse_type vs
+# parse_unary). End-to-end across host + Quartz + prism.
+#
+# `!(n == 0)` is the "anything but zero" refinement — equivalent to
+# `n != 0` but exercises the NOT path. 5 is nonzero, so the predicate
+# holds and 100 / 5 = 20.
+# =============================================================================
+
+fn nonzero(n: Int where (!(n == 0))) : Int = 100 / n
+let r : Int = nonzero(5)
+r

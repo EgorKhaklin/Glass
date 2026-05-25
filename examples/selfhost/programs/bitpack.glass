@@ -1,0 +1,22 @@
+# bitpack.glass — pack two bytes into a 16-bit value and unpack.
+# Demonstrates all six bitwise builtins from v4.16 + hex literals
+# from v4.17. Verifies roundtrip: pack(hi, lo) → x, unpack returns hi, lo.
+
+# Pack: shift hi up by 8 bits, OR in lo.
+fn pack(hi, lo) =
+  bit_or(bit_shl(hi, 8), lo)
+
+# Unpack hi: shift right 8 bits.
+fn unpack_hi(x) =
+  bit_shr(x, 8)
+
+# Unpack lo: mask with 0xFF.
+fn unpack_lo(x) =
+  bit_and(x, 0xFF)
+
+# Test: pack 0xAB (171) and 0xCD (205) → 0xABCD (43981).
+# Encode both halves into a single Int: hi * 1000 + lo = 171205.
+let packed = pack(0xAB, 0xCD) in
+let hi_back = unpack_hi(packed) in
+let lo_back = unpack_lo(packed) in
+hi_back * 1000 + lo_back
