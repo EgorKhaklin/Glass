@@ -39,7 +39,7 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Shipped (through v4.82)
+## Shipped (through v4.83)
 
 - **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
 - **Pane** — a query language in Glass.
@@ -72,11 +72,14 @@ language feature, not a library you assemble by hand.
   helpers); parser/type diagnostics that *explain* the gotchas (uppercase =
   constructor; tuple-vs-`Pair`); a `--version` flag. (The "monomorphic length"
   papercut was self-inflicted — `len` is already polymorphic.)
-- **N4 — Performance & crypto rigor.** Recursive NTT/FFT (replace the O(n²)
-  transform); a production-grade field/parameters; harden the emitted C runtime
-  (`run_command` temp-file handling, OOM checks).
-- **N5 — Tooling.** `glass prove` / `glass test` as first-class CLIs; a written
-  operational semantics (glass.py is the de-facto spec — make it explicit).
+- **N4 — Performance & crypto rigor.** ✅ Recursive O(n log n) NTT (`frost_ntt`),
+  the z-accumulator succinct permutation (`prove_zperm`), and structured-`match`
+  ADT values in circuits (`prove_adt`). *Remaining:* a production-grade bignum
+  field (the int64 wall — Goldilocks overflows int64), and hardening the emitted
+  C runtime (`run_command` temp files, OOM checks).
+- **N5 — Tooling.** ✅ `dogfood.sh` — differential self-host testing as one
+  command; `glass --quiet`. *Remaining:* a written operational semantics
+  (glass.py is the de-facto spec — make it explicit).
 
 ## Success criteria (the Glass discipline)
 

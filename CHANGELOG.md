@@ -7,6 +7,11 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [4.83.0] — 2026-05-25 — Structured match, a unified bridge, and self-host tooling
+- The prove bridge compiles structured **`match` on ADTs** — a value becomes a `(tag, fields…)` wire-tuple, dispatched by tag and bound by field. (`examples/prove/prove_adt`)
+- A **unified front end** proves real multi-function Glass programs — function calls, `match`, `if`, `==`, and arithmetic all interacting. (`examples/prove/prove_full`)
+- **`dogfood.sh`** runs any file on both `glass.py` and the self-hosted compiler and checks byte-identical output — the differential-testing discipline as one command; plus a `glass --quiet` flag that suppresses declaration echoes. (`examples/selfhost/dogfood.sh`)
+
 ## [4.82.0] — 2026-05-25 — The prove bridge closes the loop: Glass source → a succinct, zero-knowledge proof
 - Write a Glass function, get a STARK proof of its execution that is sound, succinct, *and* zero-knowledge — the circuit is lowered through a PLONK arithmetization, copy constraints (a z-accumulator permutation), a gate-constraint quotient, and a blinded FRI over F_{p⁴}. (`examples/prove/prove_stark`, `prove_copy`, `prove_quotient`, `prove_zk`, `prove_zperm`)
 - The bridge now also handles **function calls** (by inlining) and **`match`** (scalar dispatch), over real prism-parsed Glass. (`prove_calls`, `prove_match`)

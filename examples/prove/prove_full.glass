@@ -1,0 +1,151 @@
+# =============================================================================
+# prove_full.glass — the unified prove bridge: a real Glass program -> a proof
+#
+# The bridge's features grew across files: arithmetic/==/if/let (prove_glass),
+# function calls by inlining (prove_calls), scalar `match` (prove_match). This
+# unifies them into ONE front end, so a realistic multi-function Glass program —
+# helpers, control flow, equality, and match together — parses with prism and
+# compiles to a circuit whose proof verifies. (Feed that circuit to prove_zk for
+# the succinct, zero-knowledge STARK; here we use the RLC proof to keep focus on
+# the front end.)
+#
+# Supported: EInt, EVar, EAdd/ESub/EMul, EEq, EIf, ELet, EApp (inlined),
+# EMatch (scalar dispatch: PInt/PVar/PWild). The Glass discipline holds across
+# all of it: a reference evaluator and the circuit agree on every input.
+# Real prism-parsed Glass; dogfoods via the inline-prism recipe.
+# =============================================================================
+
+import "../selfhost/prism.glass"
+
+fn fadd(a: Int, b: Int) : Int = (a + b) % 2147483647
+fn fmul(a: Int, b: Int) : Int = (a * b) % 2147483647
+fn fsub(a: Int, b: Int) : Int = ((a - b) % 2147483647 + 2147483647) % 2147483647
+fn fnorm(a: Int) : Int = (a % 2147483647 + 2147483647) % 2147483647
+fn fpow(base: Int, e: Int) : Int = if e == 0 then 1 else if e % 2 == 0 then let h : Int = fpow(base, e / 2) in fmul(h, h) else fmul(base, fpow(base, e - 1))
+fn finv(x: Int) : Int = fpow(x, 2147483645)
+fn sbox(x: Int) : Int = let x2 : Int = fmul(x, x) in let x4 : Int = fmul(x2, x2) in fmul(x4, x)
+fn rconst(i: Int) : Int = fnorm((i + 1) * (i + 1) * (i + 1) + i * 1009 + 1234567)
+fn mimc(x: Int, k: Int, i: Int) : Int = if i >= 16 then fadd(x, k) else mimc(sbox(fadd(fadd(x, k), rconst(i))), k, i + 1)
+fn hash2(a: Int, b: Int) : Int = fadd(fadd(mimc(a, b, 0), a), b)
+fn hash_fold(xs: List<Int>, acc: Int) : Int = match xs { [] => acc; [x, ...r] => hash_fold(r, hash2(acc, x)) }
+fn hash_list(xs: List<Int>) : Int = hash_fold(xs, 0)
+
+type Gate = | GConst(Int, Int) | GAdd(Int, Int, Int) | GSub(Int, Int, Int) | GMul(Int, Int, Int) | GAssertEq(Int, Int)
+fn glen(gs: List<Gate>) : Int = match gs { [] => 0; [g, ...r] => 1 + glen(r) }
+type Build = | Build(Int, List<Gate>, List<Pair<Int, Int>>)
+fn assoc(vs: List<Pair<Int, Int>>, w: Int) : Int = match vs { [] => 0; [Pair(k, v), ...r] => if k == w then v else assoc(r, w) }
+fn b_fresh(b: Build) : (Int, Build) = match b { Build(n, gs, vs) => (n, Build(n + 1, gs, vs)) }
+fn b_emit(g: Gate, b: Build) : Build = match b { Build(n, gs, vs) => Build(n, [g] ++ gs, vs) }
+fn b_set(w: Int, v: Int, b: Build) : Build = match b { Build(n, gs, vs) => Build(n, gs, [Pair(w, v)] ++ vs) }
+fn b_val(b: Build, w: Int) : Int = match b { Build(n, gs, vs) => assoc(vs, w) }
+fn mk_const(c: Int, b: Build) : (Int, Build) = match b_fresh(b) { (w, b1) => (w, b_set(w, fnorm(c), b_emit(GConst(w, fnorm(c)), b1))) }
+fn mk_add(a: Int, bw: Int, b: Build) : (Int, Build) = match b_fresh(b) { (o, b1) => (o, b_set(o, fadd(b_val(b1, a), b_val(b1, bw)), b_emit(GAdd(o, a, bw), b1))) }
+fn mk_mul(a: Int, bw: Int, b: Build) : (Int, Build) = match b_fresh(b) { (o, b1) => (o, b_set(o, fmul(b_val(b1, a), b_val(b1, bw)), b_emit(GMul(o, a, bw), b1))) }
+fn mk_sub(a: Int, bw: Int, b: Build) : (Int, Build) = match b_fresh(b) { (o, b1) => (o, b_set(o, fsub(b_val(b1, a), b_val(b1, bw)), b_emit(GSub(o, a, bw), b1))) }
+fn mk_eq(wx: Int, wy: Int, b: Build) : (Int, Build) =
+  match mk_sub(wx, wy, b) { (wd, b1) => let dv : Int = b_val(b1, wd) in let inv : Int = if dv == 0 then 0 else finv(dv) in
+    match b_fresh(b1) { (winv, b2) => let b3 : Build = b_set(winv, inv, b2) in
+      match mk_mul(wd, winv, b3) { (wp, b4) => match mk_const(1, b4) { (wone, b5) =>
+        match mk_sub(wone, wp, b5) { (wout, b6) => match mk_mul(wd, wout, b6) { (wz, b7) =>
+          match mk_const(0, b7) { (wzero, b8) => (wout, b_emit(GAssertEq(wz, wzero), b8)) } } } } } } }
+fn mk_mux(wc: Int, wt: Int, wf: Int, b: Build) : (Int, Build) =
+  match mk_const(1, b) { (one, b1) => match mk_sub(wc, one, b1) { (cm1, b2) => match mk_mul(wc, cm1, b2) { (bc, b3) =>
+    match mk_const(0, b3) { (zero, b4) => let b5 : Build = b_emit(GAssertEq(bc, zero), b4) in
+      match mk_sub(wt, wf, b5) { (dtf, b6) => match mk_mul(wc, dtf, b6) { (ct, b7) => mk_add(wf, ct, b7) } } } } } }
+fn residual(g: Gate, vs: List<Pair<Int, Int>>) : Int =
+  match g {
+    GConst(o, c) => fsub(assoc(vs, o), fnorm(c)); GAdd(o, a, b) => fsub(assoc(vs, o), fadd(assoc(vs, a), assoc(vs, b)));
+    GSub(o, a, b) => fsub(assoc(vs, o), fsub(assoc(vs, a), assoc(vs, b))); GMul(o, a, b) => fsub(assoc(vs, o), fmul(assoc(vs, a), assoc(vs, b)));
+    GAssertEq(a, b) => fsub(assoc(vs, a), assoc(vs, b))
+  }
+fn env_get(env: List<Pair<String, Int>>, name: String) : Int = match env { [] => 0; [Pair(k, v), ...rest] => if k == name then v else env_get(rest, name) }
+fn fn_body_of(fns: List<FnDecl>, name: String) : Expr = match fns { [] => EInt(0); [FnDecl(fnm, tps, ty, body), ...rest] => if fnm == name then body else fn_body_of(rest, name) }
+fn unwind_app(e: Expr, acc: List<Expr>) : (Expr, List<Expr>) = match e { EApp(f, a) => unwind_app(f, [a] ++ acc); _ => (e, acc) }
+fn pat_matches(p: Pattern, v: Int) : Bool = match p { PWild => true; PVar(x) => true; PInt(n) => v == fnorm(n); PBool(bb) => v == (if bb then 1 else 0); PCtor(nm, ps) => false; PTuple(ps) => false; PStr(s) => false }
+fn pat_bind(p: Pattern, v: Int, env: List<Pair<String, Int>>) : List<Pair<String, Int>> = match p { PVar(x) => [Pair(x, v)] ++ env; PWild => env; PInt(n) => env; PBool(bb) => env; PCtor(nm, ps) => env; PTuple(ps) => env; PStr(s) => env }
+fn pat_cenv(p: Pattern, ws: Int, cenv: List<Pair<String, Int>>) : List<Pair<String, Int>> = match p { PVar(x) => [Pair(x, ws)] ++ cenv; PWild => cenv; PInt(n) => cenv; PBool(bb) => cenv; PCtor(nm, ps) => cenv; PTuple(ps) => cenv; PStr(s) => cenv }
+
+# --- 1. REFERENCE SEMANTICS --------------------------------------------------
+fn reval(e: Expr, env: List<Pair<String, Int>>, fns: List<FnDecl>) : Int =
+  match e {
+    EInt(n)    => fnorm(n);
+    EVar(nm)   => env_get(env, nm);
+    EAdd(a, b) => fadd(reval(a, env, fns), reval(b, env, fns));
+    ESub(a, b) => fsub(reval(a, env, fns), reval(b, env, fns));
+    EMul(a, b) => fmul(reval(a, env, fns), reval(b, env, fns));
+    EEq(a, b)  => if reval(a, env, fns) == reval(b, env, fns) then 1 else 0;
+    EIf(c, t, f) => if reval(c, env, fns) == 1 then reval(t, env, fns) else reval(f, env, fns);
+    ELet(nm, v, bd) => reval(bd, [Pair(nm, reval(v, env, fns))] ++ env, fns);
+    EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fnm) => reval_call(fn_body_of(fns, fnm), args, env, [], fns); _ => 0 } };
+    EMatch(scrut, arms) => reval_match(reval(scrut, env, fns), arms, env, fns);
+    _ => 0
+  }
+fn reval_call(body: Expr, args: List<Expr>, ccenv: List<Pair<String, Int>>, fcenv: List<Pair<String, Int>>, fns: List<FnDecl>) : Int =
+  match body { ELam(p, inner) => match args { [a, ...rest] => reval_call(inner, rest, ccenv, [Pair(p, reval(a, ccenv, fns))] ++ fcenv, fns); [] => reval(body, fcenv, fns) }; _ => reval(body, fcenv, fns) }
+fn reval_match(sv: Int, arms: List<Pair<Pattern, Expr>>, env: List<Pair<String, Int>>, fns: List<FnDecl>) : Int =
+  match arms { [] => 0; [Pair(p, body), ...rest] => if pat_matches(p, sv) then reval(body, pat_bind(p, sv, env), fns) else reval_match(sv, rest, env, fns) }
+
+# --- 2. CIRCUIT COMPILER -----------------------------------------------------
+fn cgen(e: Expr, cenv: List<Pair<String, Int>>, fns: List<FnDecl>, b: Build) : (Int, Build) =
+  match e {
+    EInt(c)  => mk_const(c, b);
+    EVar(nm) => (env_get(cenv, nm), b);
+    EAdd(x, y) => match cgen(x, cenv, fns, b) { (wx, b1) => match cgen(y, cenv, fns, b1) { (wy, b2) => mk_add(wx, wy, b2) } };
+    ESub(x, y) => match cgen(x, cenv, fns, b) { (wx, b1) => match cgen(y, cenv, fns, b1) { (wy, b2) => mk_sub(wx, wy, b2) } };
+    EMul(x, y) => match cgen(x, cenv, fns, b) { (wx, b1) => match cgen(y, cenv, fns, b1) { (wy, b2) => mk_mul(wx, wy, b2) } };
+    EEq(x, y)  => match cgen(x, cenv, fns, b) { (wx, b1) => match cgen(y, cenv, fns, b1) { (wy, b2) => mk_eq(wx, wy, b2) } };
+    EIf(c, t, f) => match cgen(c, cenv, fns, b) { (wc, b1) => match cgen(t, cenv, fns, b1) { (wt, b2) => match cgen(f, cenv, fns, b2) { (wf, b3) => mk_mux(wc, wt, wf, b3) } } };
+    ELet(nm, v, bd) => match cgen(v, cenv, fns, b) { (wv, b1) => cgen(bd, [Pair(nm, wv)] ++ cenv, fns, b1) };
+    EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fnm) => cgen_call(fn_body_of(fns, fnm), args, cenv, [], fns, b); _ => mk_const(0, b) } };
+    EMatch(scrut, arms) => match cgen(scrut, cenv, fns, b) { (ws, b1) => match mk_const(0, b1) { (zm, b2) => match mk_const(0, b2) { (zr, b3) => cgen_match(arms, ws, cenv, fns, zm, zr, b3) } } };
+    _ => mk_const(0, b)
+  }
+fn cgen_call(body: Expr, args: List<Expr>, ccenv: List<Pair<String, Int>>, fcenv: List<Pair<String, Int>>, fns: List<FnDecl>, b: Build) : (Int, Build) =
+  match body { ELam(p, inner) => match args { [a, ...rest] => match cgen(a, ccenv, fns, b) { (wa, b1) => cgen_call(inner, rest, ccenv, [Pair(p, wa)] ++ fcenv, fns, b1) }; [] => cgen(body, fcenv, fns, b) }; _ => cgen(body, fcenv, fns, b) }
+fn pat_sel(p: Pattern, ws: Int, b: Build) : (Int, Build) =
+  match p { PWild => mk_const(1, b); PVar(x) => mk_const(1, b); PInt(n) => match mk_const(n, b) { (wn, b1) => mk_eq(ws, wn, b1) }; PBool(bb) => match mk_const(if bb then 1 else 0, b) { (wn, b1) => mk_eq(ws, wn, b1) }; PCtor(nm, ps) => mk_const(0, b); PTuple(ps) => mk_const(0, b); PStr(s) => mk_const(0, b) }
+fn cgen_match(arms: List<Pair<Pattern, Expr>>, ws: Int, cenv: List<Pair<String, Int>>, fns: List<FnDecl>, matched: Int, result: Int, b: Build) : (Int, Build) =
+  match arms { [] => (result, b);
+    [Pair(p, body), ...rest] =>
+      match pat_sel(p, ws, b) { (sel, b1) => match mk_const(1, b1) { (one, b2) => match mk_sub(one, matched, b2) { (notm, b3) =>
+      match mk_mul(sel, notm, b3) { (eff, b4) => match cgen(body, pat_cenv(p, ws, cenv), fns, b4) { (wbody, b5) =>
+      match mk_mul(eff, wbody, b5) { (contrib, b6) => match mk_add(result, contrib, b6) { (nres, b7) => match mk_add(matched, eff, b7) { (nm, b8) =>
+        cgen_match(rest, ws, cenv, fns, nm, nres, b8) } } } } } } } }
+  }
+
+# --- input + RLC proof + parse -----------------------------------------------
+fn plen(ps: List<Pair<String, Int>>) : Int = match ps { [] => 0; [p, ...r] => 1 + plen(r) }
+fn in_cenv(inputs: List<Pair<String, Int>>, i: Int) : List<Pair<String, Int>> = match inputs { [] => []; [Pair(nm, val), ...rest] => [Pair(nm, i)] ++ in_cenv(rest, i + 1) }
+fn in_vs(inputs: List<Pair<String, Int>>, i: Int) : List<Pair<Int, Int>> = match inputs { [] => []; [Pair(nm, val), ...rest] => [Pair(i, val)] ++ in_vs(rest, i + 1) }
+fn cgen_top(e: Expr, inputs: List<Pair<String, Int>>, fns: List<FnDecl>) : (Int, Build) = cgen(e, in_cenv(inputs, 0), fns, Build(plen(inputs), [], in_vs(inputs, 0)))
+fn ordered_w(vs: List<Pair<Int, Int>>, i: Int, n: Int) : List<Int> = if i >= n then [] else [assoc(vs, i)] ++ ordered_w(vs, i + 1, n)
+fn rlc(gates: List<Gate>, vs: List<Pair<Int, Int>>, r: Int, rpow: Int) : Int = match gates { [] => 0; [g, ...rest] => fadd(fmul(rpow, residual(g, vs)), rlc(rest, vs, r, fmul(rpow, r))) }
+fn prove_ok(gates: List<Gate>, vs: List<Pair<Int, Int>>, n: Int) : Bool = rlc(gates, vs, hash2(hash_list(ordered_w(vs, 0, n)), 777), 1) == 0
+fn parse_prog(src: String) : Program = match parse_program(src) { Ok(p) => p; Err(m) => Program([], [], EInt(0)) }
+
+# --- demo --------------------------------------------------------------------
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+fn show_a(b: Bool) : String = if b then "ACCEPT" else "REJECT"
+# functions + match + if + == + arithmetic, all at once:
+let src : String =
+  "fn dbl(n: Int) : Int = n + n\nfn classify(x: Int) : Int = match x { 0 => 0; k => if k == dbl(5) then 100 else dbl(k) }\nclassify(inp)"
+
+fn run(src: String, x: Int) : String !{IO} =
+  match parse_prog(src) { Program(types, fns, main) =>
+    let inputs : List<Pair<String, Int>> = [Pair("inp", x)] in
+    let spec : Int = reval(main, inputs, fns) in
+    match cgen_top(main, inputs, fns) { (out, bld) => match bld { Build(n, gates, vs) =>
+      print("  inp=" ++ int_to_string(x) ++ ": reference=" ++ int_to_string(spec) ++ ", circuit=" ++ int_to_string(b_val(bld, out)) ++
+            " (match " ++ show_b(b_val(bld, out) == spec) ++ "), " ++ int_to_string(glen(gates)) ++ " gates, proof " ++ show_a(prove_ok(gates, vs, n))) } } }
+
+let _ : String = print("--- prove_full.glass: the unified bridge — calls + match + if + == together ---")
+let _ : String = print("fn dbl(n)=n+n;  fn classify(x)=match x {0=>0; k=>if k==dbl(5) then 100 else dbl(k)};  classify(inp)")
+let _ : String = print("")
+let _ : String = run(src, 0)      # match 0 -> 0
+let _ : String = run(src, 10)     # k=10; 10 == dbl(5)=10 -> 100
+let _ : String = run(src, 3)      # k=3;  3 != 10 -> dbl(3) = 6
+let _ : String = print("")
+let _ : String = print("one front end: real multi-function Glass with control flow, equality, and match")
+let _ : String = print("parses (prism) and compiles to a circuit whose proof verifies. -> prove_zk for ZK.")
+
+"prove_full v0.1 — unified prove bridge: calls + scalar match + if/== over real Glass programs"

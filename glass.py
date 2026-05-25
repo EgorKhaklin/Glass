@@ -1,5 +1,5 @@
 """
-Glass v4.82 — reference implementation.
+Glass v4.83 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -3384,7 +3384,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v4.82 — interactive REPL")
+    print("Glass v4.83 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3496,13 +3496,17 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 4.82.0")
+        print("Glass 4.83.0")
     else:
-        with open(sys.argv[1]) as f:
+        # -q/--quiet: run a file printing only its output (no type-signature
+        # echoes) — handy for diffing against the self-hosted compiler.
+        quiet = sys.argv[1] in ("-q", "--quiet")
+        path = sys.argv[2] if quiet else sys.argv[1]
+        with open(path) as f:
             src = f.read()
         # v4.70: resolve `import` paths relative to the source file's dir.
-        run_source(src, verbose=True,
-                   base_dir=os.path.dirname(os.path.abspath(sys.argv[1])))
+        run_source(src, verbose=not quiet,
+                   base_dir=os.path.dirname(os.path.abspath(path)))
 
 
 if __name__ == "__main__":
