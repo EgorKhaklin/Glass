@@ -134,8 +134,9 @@ A parser-parity audit closed several cases where they had drifted: the reference
 
 - **Record patterns in `match`** (`Point { x, y } => …`) run in the interpreter and compile through Quartz, but `prism` doesn't parse them yet, so they don't self-host. In self-hosted code, bind the value with a plain pattern and read fields with `.field`.
 - **A bare top-level function used as a first-class value** (`map(xs, inc)`) runs in the interpreter but *neither* C back end compiles it (both want a closure). Wrap it in a lambda — `map(xs, fn(x) -> inc(x))` — which both back ends handle.
+- **A few prelude helpers are interpreter-only.** The reference injects a small prelude (`fst`, `snd`, `reverse`, the `map_option`/`bind_option` family); `glassc`'s emitted runtime defines most builtins but not these. In self-hosted code, inline them (`match p { Pair(a, _) => a }` for `fst`, a fold for `reverse`).
 
-Everything the test suite and `dogfood.sh` exercise stays on the agreed-upon subset; these two notes are the boundary.
+Everything the test suite and `dogfood.sh` exercise stays on the agreed-upon subset; these notes are the boundary. The principle: **the self-hosted compiler implements a subset of the reference, and the dogfooded corpus lives inside it.**
 
 ---
 
