@@ -14,7 +14,7 @@
 
 <br/>
 
-A functional language where every signature tells the **whole truth** — what it
+A functional language where every signature tells the **whole truth**: what it
 takes, what it returns, what it touches, how it can fail. Read one function and
 you know exactly what it does. Nothing hidden. Nothing implicit. Like glass.
 
