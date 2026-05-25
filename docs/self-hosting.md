@@ -116,6 +116,24 @@ These are the **Quartz** roadmap items. See [`../CHANGELOG.md`](../CHANGELOG.md)
 
 ---
 
+## Running at native speed
+
+Glass has two execution paths, and they are *not* interchangeable in cost:
+
+- **`glass.py`** — the reference interpreter. Readable, the spec, the differential-testing oracle. But a tree-walker in Python: heavy programs (the from-scratch zk-STARK, large circuits) take tens of seconds.
+- **`native_glassc`** — the self-hosted compiler: Glass → C → a native binary. **~50–100× faster**, and bit-for-bit identical to the interpreter (that's exactly what `dogfood.sh` guarantees).
+
+One command compiles and runs through the fast path:
+
+```bash
+bash examples/selfhost/run_native.sh examples/prove/prove_query_zk.glass
+# the full zero-knowledge query demo: ~0.4s native vs ~38s interpreted (~95×).
+```
+
+So the working rhythm is: **prototype and verify on the interpreter** (small inputs, `dogfood.sh` for the reference⟷compiler check), then **run at scale natively**. The interpreter is the meaning; the compiler is the engine — and they agree.
+
+---
+
 ## Why this is worth doing
 
 The traditional reason to self-host a language is performance: a native compiler produces faster code than an interpreter. That's not Glass's reason — performance is a v2.0 problem.
