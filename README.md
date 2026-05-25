@@ -33,7 +33,7 @@ And that single idea — *transparency* — turns out to go further than anyone 
 >
 > ### It proves itself.
 > Built from scratch, in Glass: a **zero-knowledge prover**. Hand it a
-> computation, get back a cryptographic proof that it ran correctly — revealing
+> computation, get back a cryptographic proof that it ran correctly, revealing
 > nothing else.
 
 <br/>
