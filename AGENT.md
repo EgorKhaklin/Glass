@@ -1,6 +1,6 @@
 # AGENT.md
 
-> Instructions for AI agents (Claude, others) and human contributors picking up work on the Glass language. This file is the single source of truth for "how this project thinks." Read it once at the start of a session.
+> Instructions for AI agents and human contributors picking up work on the Glass language. This file is the single source of truth for "how this project thinks." Read it once at the start of a session.
 
 ---
 
