@@ -75,6 +75,10 @@ type Query =
   | Limit(Int, Query)            # first n rows
   | CountQ(Query)                # -> 1-row table with column "count"
   | SumQ(String, Query)          # -> 1-row table with column "sum"
+  | AvgQ(String, Query)          # -> 1-row table with "sum" and "count" (avg = sum/count; no field division)
+  | MinQ(String, Query)          # -> 1-row table with column "min"
+  | MaxQ(String, Query)          # -> 1-row table with column "max"
+  | GroupByQ(String, String, List<Int>, Query)  # group by key col, SUM val col over the given Int groups
 
 # --- small list helpers (self-contained, no prelude needed) ------------------
 fn plen(xs: List<Row>) : Int =
@@ -155,6 +159,22 @@ fn sum_col(rows: List<Row>, col: String) : Int =
     [r, ...rest] => vint(row_get(r, col)) + sum_col(rest, col)
   }
 
+# GROUP BY: SUM(sc) over rows whose key column kc equals g, for each group g.
+fn sum_where(rows: List<Row>, kc: String, sc: String, g: Int) : Int =
+  match rows {
+    [] => 0;
+    [r, ...rest] => (if vint(row_get(r, kc)) == g then vint(row_get(r, sc)) else 0) + sum_where(rest, kc, sc, g)
+  }
+fn group_rows(rows: List<Row>, kc: String, sc: String, groups: List<Int>) : List<Row> =
+  match groups {
+    [] => [];
+    [g, ...rest] => [Row([Pair(kc, VInt(g)), Pair("sum", VInt(sum_where(rows, kc, sc, g)))])] ++ group_rows(rows, kc, sc, rest)
+  }
+fn min_col(rows: List<Row>, col: String) : Int =
+  match rows { [] => 0; [r, ...rest] => match rest { [] => vint(row_get(r, col)); _ => let m : Int = min_col(rest, col) in let v : Int = vint(row_get(r, col)) in if v < m then v else m } }
+fn max_col(rows: List<Row>, col: String) : Int =
+  match rows { [] => 0; [r, ...rest] => match rest { [] => vint(row_get(r, col)); _ => let m : Int = max_col(rest, col) in let v : Int = vint(row_get(r, col)) in if v > m then v else m } }
+
 # --- the interpreter ---------------------------------------------------------
 # run_query : Query -> Table. Aggregates return a single-row table so the
 # result type is uniform (a Table), which Frost likes: the public output is
@@ -175,7 +195,15 @@ fn run_query(q: Query) : Table =
     SumQ(col, sub) =>
       match run_query(sub) {
         Table(rows) => Table([Row([Pair("sum", VInt(sum_col(rows, col)))])])
-      }
+      };
+    AvgQ(col, sub) =>
+      match run_query(sub) {
+        Table(rows) => Table([Row([Pair("sum", VInt(sum_col(rows, col))), Pair("count", VInt(plen(rows)))])])
+      };
+    MinQ(col, sub) => match run_query(sub) { Table(rows) => Table([Row([Pair("min", VInt(min_col(rows, col)))])]) };
+    MaxQ(col, sub) => match run_query(sub) { Table(rows) => Table([Row([Pair("max", VInt(max_col(rows, col)))])]) };
+    GroupByQ(kc, sc, groups, sub) =>
+      match run_query(sub) { Table(rows) => Table(group_rows(rows, kc, sc, groups)) }
   }
 
 # --- rendering (for demos) ---------------------------------------------------
@@ -257,5 +285,24 @@ let _ : String =
       Limit(1,
         Where(AndE(EqE(Col("city"), LitS("nyc")), GtE(Col("age"), LitI(30))),
               From(people))))))
+
+# GROUP BY: SUM(salary) by dept over a tiny (dept, salary) table
+let depts : Table =
+  Table([
+    Row([Pair("dept", VInt(0)), Pair("salary", VInt(100))]),
+    Row([Pair("dept", VInt(1)), Pair("salary", VInt(90))]),
+    Row([Pair("dept", VInt(0)), Pair("salary", VInt(150))])
+  ])
+let _ : String = print("SUM(salary) GROUP BY dept (0, 1):")
+let _ : String = print(run_show(GroupByQ("dept", "salary", [0, 1], From(depts))))
+
+# AVG(salary) of dept 0 — reported as sum + count (avg = sum/count, no field division)
+let _ : String = print("AVG(salary) WHERE dept=0, as sum + count:")
+let _ : String = print(run_show(AvgQ("salary", Where(EqE(Col("dept"), LitI(0)), From(depts)))))
+
+# MIN / MAX salary across the table
+let _ : String = print("MIN(salary) / MAX(salary):")
+let _ : String = print(run_show(MinQ("salary", From(depts))))
+let _ : String = print(run_show(MaxQ("salary", From(depts))))
 
 "pane v0.1 — query algebra + reference interpreter (Frost-ready)"

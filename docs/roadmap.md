@@ -39,7 +39,7 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Shipped (through v4.85)
+## Shipped (through v4.86)
 
 - **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
 - **Pane** — a query language in Glass.
@@ -112,9 +112,19 @@ proves the things the project was for."
     low-degree quotient (the gadget's inverse hint is supplied as an input wire,
     not a gate row). Honest ACCEPT, lies REJECT, two blinding seeds give different
     openings (ZK). Self-hosted byte-identical.
-  - **Next:** `GROUP BY` / multi-column projection; a bigger field (H2) so the
-    proof has cryptographic, not toy, security; lifting the range gadget into the
-    ZK backend (it's ~90 gates per comparison — feasible but pushes the trace up).
+  - ✅ **The full aggregate set** (`pane.glass` + `prove_pane.glass`): Pane's
+    algebra gains `AvgQ`, `MinQ`, `MaxQ`, and `GroupByQ(keyCol, sumCol, groups, sub)`,
+    each proven over the *same committed table*. GROUP BY decomposes to per-group
+    filtered sums; AVG is a proven `sum` + `count` (a field has no exact division,
+    so the verifier divides); MIN/MAX claim `M` and prove it's a *bound* (`M ≤ sᵢ` /
+    `sᵢ ≤ M` for every row via the range gadget) and *present* (`Σ[sᵢ == M] ≠ 0`, by
+    an inverse hint). `GROUP BY dept` → eng 250 / sales 170; `AVG(salary) WHERE
+    dept=eng` → 250/2 (avg 125); `MIN/MAX(salary)` → 80 / 150 — each ACCEPT (lies
+    REJECT), Frost == Pane.
+  - **Next:** a bigger field (H2) — but note the FRI challenges already live in
+    F_{p⁴}≈2¹²⁴, so the *challenge space* is already cryptographic; the toy part
+    is the small base field (value range) and the MiMC hash. Lifting the range
+    gadget into the ZK backend (~90 gates/comparison) is feasible but slow.
   - **Hardened the discipline along the way:** glass.py now rejects uppercase
     value bindings (they silently miscompiled — glassc read them as constructors);
     `dogfood.sh`'s build seed was fixed (it was seeding the wrong path).

@@ -7,6 +7,11 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [4.86.0] — 2026-05-25 — The complete aggregate set
+- Pane's query algebra (and its Frost proof backend) now covers the full analytics surface over a committed private table: **SUM, COUNT, AVG, MIN, MAX, and GROUP BY**, on top of equality / boolean / arithmetic / `<`–`>` range filters. (`examples/pane/pane.glass`, `examples/prove/prove_pane.glass`)
+- **AVG** is revealed as a proven `sum` + `count` (a finite field has no exact division, so the verifier forms the average); **MIN/MAX** claim a value and prove it is both a *bound* (via the range gadget) and *present* (via an inverse hint); **GROUP BY** decomposes into per-group filtered sums — each proven over the *same* committed table.
+- `run_query` and the prover stay in lockstep: the circuit ACCEPTs exactly when its answer equals the reference interpreter's.
+
 ## [4.85.0] — 2026-05-25 — Pane ⊕ Frost: zero-knowledge queries
 - The founding vision, realized: commit a **private table**, then prove the result of a query — revealing only the commitment, the query, and the answer, never a row. (`examples/prove/prove_query`)
 - **Frost as a second backend over the real Pane query algebra**: a genuine Pane `Query` value (`SumQ`/`CountQ`/`Where`) is *lowered* into a Frost circuit — equality, booleans, arithmetic, and `<`/`>` range comparisons — with one AST and two evaluators (`run_query` interprets, `prove_pane` proves) kept honest by their agreement. (`examples/prove/prove_pane`)

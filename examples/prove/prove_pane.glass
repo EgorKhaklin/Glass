@@ -71,6 +71,8 @@ type PExpr = | Col(String) | LitI(Int) | LitS(String) | LitB(Bool)
              | AddE(PExpr, PExpr) | SubE(PExpr, PExpr) | MulE(PExpr, PExpr)
 type Query = | From(Table) | Where(PExpr, Query) | Select(List<String>, Query)
              | Limit(Int, Query) | CountQ(Query) | SumQ(String, Query)
+             | AvgQ(String, Query) | MinQ(String, Query) | MaxQ(String, Query)
+             | GroupByQ(String, String, List<Int>, Query)
 fn plen(xs: List<Row>) : Int = match xs { [] => 0; [x, ...rest] => 1 + plen(rest) }
 fn lookup_cell(cells: List<Pair<String, Val>>, name: String) : Val = match cells { [] => VBool(false); [Pair(k, v), ...rest] => if k == name then v else lookup_cell(rest, name) }
 fn row_get(r: Row, name: String) : Val = match r { Row(cells) => lookup_cell(cells, name) }
@@ -89,13 +91,21 @@ fn project_row(r: Row, cols: List<String>) : Row = match cols { [] => Row([]); [
 fn project_rows(rows: List<Row>, cols: List<String>) : List<Row> = match rows { [] => []; [r, ...rest] => [project_row(r, cols)] ++ project_rows(rest, cols) }
 fn take_rows(rows: List<Row>, n: Int) : List<Row> = if n <= 0 then [] else match rows { [] => []; [r, ...rest] => [r] ++ take_rows(rest, n - 1) }
 fn sum_col(rows: List<Row>, col: String) : Int = match rows { [] => 0; [r, ...rest] => vint(row_get(r, col)) + sum_col(rest, col) }
+fn sum_where(rows: List<Row>, kc: String, sc: String, g: Int) : Int = match rows { [] => 0; [r, ...rest] => (if vint(row_get(r, kc)) == g then vint(row_get(r, sc)) else 0) + sum_where(rest, kc, sc, g) }
+fn group_rows(rows: List<Row>, kc: String, sc: String, groups: List<Int>) : List<Row> = match groups { [] => []; [g, ...rest] => [Row([Pair(kc, VInt(g)), Pair("sum", VInt(sum_where(rows, kc, sc, g)))])] ++ group_rows(rows, kc, sc, rest) }
+fn min_col(rows: List<Row>, col: String) : Int = match rows { [] => 0; [r, ...rest] => match rest { [] => vint(row_get(r, col)); _ => let m : Int = min_col(rest, col) in let v : Int = vint(row_get(r, col)) in if v < m then v else m } }
+fn max_col(rows: List<Row>, col: String) : Int = match rows { [] => 0; [r, ...rest] => match rest { [] => vint(row_get(r, col)); _ => let m : Int = max_col(rest, col) in let v : Int = vint(row_get(r, col)) in if v > m then v else m } }
 fn run_query(q: Query) : Table =
   match q { From(t) => t;
     Where(p, sub) => match run_query(sub) { Table(rows) => Table(filter_rows(rows, p)) };
     Select(cols, sub) => match run_query(sub) { Table(rows) => Table(project_rows(rows, cols)) };
     Limit(n, sub) => match run_query(sub) { Table(rows) => Table(take_rows(rows, n)) };
     CountQ(sub) => match run_query(sub) { Table(rows) => Table([Row([Pair("count", VInt(plen(rows)))])]) };
-    SumQ(col, sub) => match run_query(sub) { Table(rows) => Table([Row([Pair("sum", VInt(sum_col(rows, col)))])]) } }
+    SumQ(col, sub) => match run_query(sub) { Table(rows) => Table([Row([Pair("sum", VInt(sum_col(rows, col)))])]) };
+    AvgQ(col, sub) => match run_query(sub) { Table(rows) => Table([Row([Pair("sum", VInt(sum_col(rows, col))), Pair("count", VInt(plen(rows)))])]) };
+    MinQ(col, sub) => match run_query(sub) { Table(rows) => Table([Row([Pair("min", VInt(min_col(rows, col)))])]) };
+    MaxQ(col, sub) => match run_query(sub) { Table(rows) => Table([Row([Pair("max", VInt(max_col(rows, col)))])]) };
+    GroupByQ(kc, sc, groups, sub) => match run_query(sub) { Table(rows) => Table(group_rows(rows, kc, sc, groups)) } }
 # extract the single aggregate cell's int from a 1-row result table
 fn result_int(t: Table) : Int = match t { Table(rows) => match rows { [] => 0; [r, ...rr] => match r { Row(cells) => match cells { [] => 0; [Pair(k, v), ...cc] => vint(v) } } } }
 
@@ -224,6 +234,56 @@ fn report(label: String, q: Query, gamma: Int) : String !{IO} =
     ++ " | proof(wrong " ++ int_to_string(want + 1) ++ ") " ++ show_a(prove_pane(q, gamma, c, want + 1))
     ++ " | Frost==Pane: " ++ show_b(prove_pane(q, gamma, c, want)))
 
+# GROUP BY: each group is the filtered sum SumQ(sc, Where(key == g, sub)) — proven
+# by the existing machinery, all over the SAME committed table (identical commitment).
+fn gb_line(kc: String, sc: String, g: Int, sub: Query, gamma: Int) : String =
+  let q : Query = SumQ(sc, Where(EqE(Col(kc), LitI(g)), sub)) in
+  let want : Int = result_int(run_query(q)) in
+  let c : Int = commit_of(q, gamma) in
+  "key=" ++ int_to_string(g) ++ " -> sum " ++ int_to_string(want) ++ "  " ++ show_a(prove_pane(q, gamma, c, want)) ++ "  (Frost==Pane: " ++ show_b(prove_pane(q, gamma, c, want)) ++ ")"
+
+# AVG: a field has no exact division, so reveal SUM and COUNT (each proven over
+# the same committed table) and let the verifier form avg = sum/count.
+fn avg_line(label: String, col: String, sub: Query, gamma: Int) : String =
+  let qs : Query = SumQ(col, sub) in
+  let qc : Query = CountQ(sub) in
+  let s : Int = result_int(run_query(qs)) in
+  let cnt : Int = result_int(run_query(qc)) in
+  let comm : Int = commit_of(qs, gamma) in
+  label ++ ": sum=" ++ int_to_string(s) ++ " count=" ++ int_to_string(cnt) ++ " (avg = " ++ int_to_string(s / cnt) ++ ")  sum-proof " ++ show_a(prove_pane(qs, gamma, comm, s)) ++ ", count-proof " ++ show_a(prove_pane(qc, gamma, comm, cnt))
+
+# MIN / MAX: claim M, and prove (a) M is a bound — M ≤ sᵢ (min) or sᵢ ≤ M (max)
+# for every row, via the range gadget — and (b) M is *present* — Σ[sᵢ == M] ≠ 0,
+# proven by an inverse hint (count·count⁻¹ == 1). Both ⟹ M is exactly the min/max.
+fn commit_rows(rows: List<Row>, gamma: Int) : Int = ref_commit(flatten_table(schema_of(rows), rows), gamma, 1)
+fn minmax_loop(i: Int, nrows: Int, ncols: Int, colidx: Int, mw: Int, mv: Int, cntacc: Int, wone: Int, ismax: Bool, b: Build) : (Int, Build) =
+  if i >= nrows then (cntacc, b)
+  else let sw : Int = i * ncols + colidx in let sv : Int = b_val(b, sw) in
+    match (if ismax then lt_gadget(mw, mv, sw, sv, b) else lt_gadget(sw, sv, mw, mv, b)) { (slt, b1) =>   # min:[sᵢ<M] max:[M<sᵢ]
+      match mk_not(slt, b1) { (bound, b2) => let b3 : Build = b_emit(GAssertEq(bound, wone), b2) in        # assert the bound holds
+        match mk_eq(sw, mw, b3) { (eq, b4) => match mk_add(cntacc, eq, b4) { (na, b5) =>
+          minmax_loop(i + 1, nrows, ncols, colidx, mw, mv, na, wone, ismax, b5) } } } }
+fn prove_minmax(rows: List<Row>, col: String, gamma: Int, claimedC: Int, claimedM: Int, ismax: Bool) : Bool =
+  let schema : List<String> = schema_of(rows) in
+  let ncols : Int = ncount(schema) in let nrows : Int = rcount(rows) in
+  let colidx : Int = col_index(schema, col) in
+  let flat : List<Int> = flatten_table(schema, rows) in let m : Int = nrows * ncols in
+  let b0 : Build = Build(m, [], vs_of(flat, 0)) in
+  match mk_const(0, b0) { (zc, b1) => match commit_go(m, m - 1, gamma, zc, b1) { (wC, b2) =>
+  match mk_const(claimedC, b2) { (wCp, b3) => let b4 : Build = b_emit(GAssertEq(wC, wCp), b3) in
+  match mk_const(claimedM, b4) { (mw, b5) => match mk_const(1, b5) { (wone, b6) =>
+  match mk_const(0, b6) { (zcnt, b7) =>
+  match minmax_loop(0, nrows, ncols, colidx, mw, claimedM, zcnt, wone, ismax, b7) { (cntw, b8) =>
+    let cntv : Int = b_val(b8, cntw) in let invc : Int = if cntv == 0 then 0 else finv(cntv) in
+    match b_fresh(b8) { (wiv, b9) => let b10 : Build = b_set(wiv, invc, b9) in
+    match mk_mul(cntw, wiv, b10) { (prod, b11) => let b12 : Build = b_emit(GAssertEq(prod, wone), b11) in
+    match b12 { Build(n, gates, vs) => prove_ok(gates, vs, n) } } } } } } } } } }
+fn mm_line(label: String, col: String, rows: List<Row>, gamma: Int, ismax: Bool) : String =
+  let want : Int = if ismax then max_col(rows, col) else min_col(rows, col) in
+  let c : Int = commit_rows(rows, gamma) in
+  let lie : Int = if ismax then want - 7 else want + 7 in    # a value that can't be the bound
+  label ++ " = " ++ int_to_string(want) ++ "  honest " ++ show_a(prove_minmax(rows, col, gamma, c, want, ismax)) ++ ", lying(" ++ int_to_string(lie) ++ ") " ++ show_a(prove_minmax(rows, col, gamma, c, lie, ismax))
+
 let _ : String = print("--- prove_pane.glass: Frost as a second backend over the Pane query algebra (H1) ---")
 let _ : String = print("one AST, two evaluators: run_query interprets it; prove_pane proves it over a committed PRIVATE table")
 let _ : String = print("")
@@ -232,6 +292,17 @@ let _ : String = report("SELECT COUNT(*)    WHERE dept=sales         ", q2, gamm
 let _ : String = report("SELECT SUM(salary) WHERE dept=eng AND senior", q3, gamma)
 let _ : String = report("SELECT SUM(salary) WHERE salary > 85          ", q4, gamma)
 let _ : String = report("SELECT SUM(salary) WHERE dept=eng AND sal>120 ", q5, gamma)
+let _ : String = print("")
+let _ : String = print("SELECT dept, SUM(salary) GROUP BY dept — each group proven over the SAME committed table:")
+let _ : String = print("  " ++ gb_line("dept", "salary", 0, From(tbl), gamma))
+let _ : String = print("  " ++ gb_line("dept", "salary", 1, From(tbl), gamma))
+let _ : String = print("")
+let _ : String = print("AVG via sum + count (a field has no exact division — the verifier divides):")
+let _ : String = print("  " ++ avg_line("AVG(salary) WHERE dept=eng", "salary", Where(EqE(Col("dept"), LitI(0)), From(tbl)), gamma))
+let _ : String = print("")
+let _ : String = print("MIN / MAX over the committed table (range gadget proves the bound; an inverse hint proves it's present):")
+let _ : String = print("  " ++ mm_line("MIN(salary)", "salary", rows_of(tbl), gamma, false))
+let _ : String = print("  " ++ mm_line("MAX(salary)", "salary", rows_of(tbl), gamma, true))
 let _ : String = print("")
 let _ : String = print("the Frost circuit's answer ACCEPTs exactly when it equals run_query's; any other claim REJECTs.")
 let _ : String = print("revealed: the commitment, the query, the result. hidden: every row.")
