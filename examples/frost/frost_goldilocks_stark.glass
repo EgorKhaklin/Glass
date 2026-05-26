@@ -1,0 +1,180 @@
+# =============================================================================
+# frost_goldilocks_stark.glass — a committed, query-verified FRI over Goldilocks
+#                                — the cryptographic STARK core, complete (H2)
+#
+# The arc completes: frost_goldilocks (field) -> _fri (fold) -> _ext (F_{p^2}
+# challenge) -> this — a FRI proof that is COMMITTED and QUERY-VERIFIED, the same
+# shape as frost_crypto for Baby Bear, but over the production field.
+#
+# Three soundness mechanisms, all over Goldilocks, all int64-safe:
+#   • COMMITMENT — each layer's codeword is Merkle-committed (a Goldilocks MiMC
+#     hash, x^7 S-box) to a root; the prover is bound to it before challenges.
+#   • CHALLENGE — the fold β ∈ F_{p^2} ≈ 2^128 is derived from that root
+#     (Fiat-Shamir), so it's unpredictable and non-interactive.
+#   • QUERIES — the verifier samples positions from the transcript, opens each
+#     layer's (f(x), f(-x)) pair with a Merkle path, recomputes the fold, and
+#     checks it equals the next layer. A cheat is caught at (almost) every query.
+#
+# Demo: an honest low-degree codeword ACCEPTs (0 faults); a faked final layer
+# REJECTs (queries catch the inconsistency). Dogfoods byte-identical. Heavy
+# interpreted (bignum Merkle FRI) — run natively (examples/selfhost/run_native.sh).
+# =============================================================================
+
+# --- Goldilocks base field via base-2^16 limbs (from frost_goldilocks.glass) -
+fn lmod(x: Int) : Int = x % 65536
+fn ldiv(x: Int) : Int = x / 65536
+fn rev_go(xs: List<Int>, acc: List<Int>) : List<Int> = match xs { [] => acc; [h, ...t] => rev_go(t, [h] ++ acc) }
+fn rev(xs: List<Int>) : List<Int> = rev_go(xs, [])
+fn drop_zeros(xs: List<Int>) : List<Int> = match xs { [] => []; [h, ...t] => if h == 0 then drop_zeros(t) else xs }
+fn trim(xs: List<Int>) : List<Int> = rev(drop_zeros(rev(xs)))
+fn addc(a: List<Int>, b: List<Int>, carry: Int) : List<Int> =
+  match a {
+    [] => match b { [] => if carry == 0 then [] else [carry]; [hb, ...tb] => let s : Int = hb + carry in [lmod(s)] ++ addc([], tb, ldiv(s)) };
+    [ha, ...ta] => match b { [] => let s : Int = ha + carry in [lmod(s)] ++ addc(ta, [], ldiv(s)); [hb, ...tb] => let s : Int = ha + hb + carry in [lmod(s)] ++ addc(ta, tb, ldiv(s)) }
+  }
+fn bn_add(a: List<Int>, b: List<Int>) : List<Int> = trim(addc(a, b, 0))
+fn smul(xs: List<Int>, k: Int, carry: Int) : List<Int> =
+  match xs { [] => if carry == 0 then [] else [carry]; [h, ...t] => let p : Int = h * k + carry in [lmod(p)] ++ smul(t, k, ldiv(p)) }
+fn shift(xs: List<Int>, n: Int) : List<Int> = if n <= 0 then xs else [0] ++ shift(xs, n - 1)
+fn mul_go(a: List<Int>, b: List<Int>, i: Int) : List<Int> =
+  match b { [] => []; [hb, ...tb] => bn_add(shift(smul(a, hb, 0), i), mul_go(a, tb, i + 1)) }
+fn bn_mul(a: List<Int>, b: List<Int>) : List<Int> = trim(mul_go(a, b, 0))
+fn cmp_hi(a: List<Int>, b: List<Int>) : Int = match a { [] => 0; [ha, ...ta] => match b { [] => 0; [hb, ...tb] => if ha == hb then cmp_hi(ta, tb) else (if ha < hb then 0 - 1 else 1) } }
+fn bn_cmp(a: List<Int>, b: List<Int>) : Int =
+  let ta : List<Int> = trim(a) in let tb : List<Int> = trim(b) in
+  if len(ta) == len(tb) then cmp_hi(rev(ta), rev(tb)) else (if len(ta) < len(tb) then 0 - 1 else 1)
+fn subb(a: List<Int>, b: List<Int>, borrow: Int) : List<Int> =
+  match a { [] => [];
+    [ha, ...ta] => match b {
+      [] => let d : Int = ha - borrow in if d < 0 then [d + 65536] ++ subb(ta, [], 1) else [d] ++ subb(ta, [], 0);
+      [hb, ...tb] => let d : Int = ha - hb - borrow in if d < 0 then [d + 65536] ++ subb(ta, tb, 1) else [d] ++ subb(ta, tb, 0) } }
+fn bn_sub(a: List<Int>, b: List<Int>) : List<Int> = trim(subb(a, b, 0))
+fn take(xs: List<Int>, n: Int) : List<Int> = if n <= 0 then [] else match xs { [] => []; [h, ...t] => [h] ++ take(t, n - 1) }
+fn drop(xs: List<Int>, n: Int) : List<Int> = if n <= 0 then xs else match xs { [] => []; [h, ...t] => drop(t, n - 1) }
+fn pg(d: Int) : List<Int> = [1, 0, 65535, 65535]
+fn fold_hi(d: Int) : List<Int> = [65535, 65535]
+fn bn_mod_p(a: List<Int>) : List<Int> =
+  let t : List<Int> = trim(a) in
+  if len(t) > 4 then bn_mod_p(bn_add(take(t, 4), bn_mul(drop(t, 4), fold_hi(0))))
+  else if bn_cmp(t, pg(0)) >= 0 then bn_sub(t, pg(0)) else t
+fn fadd(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_add(a, b))
+fn fsub(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_add(a, bn_sub(pg(0), bn_mod_p(b))))
+fn fmul(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_mul(a, b))
+fn bn_eq(a: List<Int>, b: List<Int>) : Bool = bn_cmp(a, b) == 0
+fn bn_is_zero(e: List<Int>) : Bool = match trim(e) { [] => true; _ => false }
+fn bn_is_odd(e: List<Int>) : Bool = match e { [] => false; [h, ...t] => h % 2 == 1 }
+fn half_hl(xs: List<Int>, rem: Int) : List<Int> = match xs { [] => []; [h, ...t] => let cur : Int = rem * 65536 + h in [cur / 2] ++ half_hl(t, cur % 2) }
+fn bn_half(e: List<Int>) : List<Int> = trim(rev(half_hl(rev(trim(e)), 0)))
+fn fpow_bn(base: List<Int>, e: List<Int>) : List<Int> =
+  if bn_is_zero(e) then [1]
+  else let h : List<Int> = fpow_bn(fmul(base, base), bn_half(e)) in
+       if bn_is_odd(e) then fmul(base, h) else h
+fn finv(a: List<Int>) : List<Int> = fpow_bn(a, bn_sub(pg(0), [2]))
+fn halve_k(e: List<Int>, k: Int) : List<Int> = if k <= 0 then e else halve_k(bn_half(e), k - 1)
+fn root_pow2(k: Int) : List<Int> = fpow_bn([7], halve_k(bn_sub(pg(0), [1]), k))
+fn glit(c: Int) : List<Int> = trim([c % 65536, (c / 65536) % 65536, c / 4294967296])   # a small Int -> limbs
+
+# --- F_{p^2} = F_p[X]/(X^2 − 7) (from frost_goldilocks_ext.glass) -------------
+type G2 = | G2(List<Int>, List<Int>)
+fn ww(d: Int) : List<Int> = [7]
+fn gadd2(a: G2, b: G2) : G2 = match a { G2(a0, a1) => match b { G2(b0, b1) => G2(fadd(a0, b0), fadd(a1, b1)) } }
+fn gsub2(a: G2, b: G2) : G2 = match a { G2(a0, a1) => match b { G2(b0, b1) => G2(fsub(a0, b0), fsub(a1, b1)) } }
+fn gscale2(a: G2, s: List<Int>) : G2 = match a { G2(a0, a1) => G2(fmul(a0, s), fmul(a1, s)) }
+fn gmul2(a: G2, b: G2) : G2 = match a { G2(a0, a1) => match b { G2(b0, b1) =>
+  G2(fadd(fmul(a0, b0), fmul(ww(0), fmul(a1, b1))), fadd(fmul(a0, b1), fmul(a1, b0))) } }
+fn geq2(a: G2, b: G2) : Bool = match a { G2(a0, a1) => match b { G2(b0, b1) => bn_eq(a0, b0) && bn_eq(a1, b1) } }
+fn emb(x: List<Int>) : G2 = G2(x, [])
+
+# --- a Goldilocks hash (MiMC, x^7 S-box) for Merkle commitment ---------------
+fn g_sbox(x: List<Int>) : List<Int> = let x2 : List<Int> = fmul(x, x) in let x4 : List<Int> = fmul(x2, x2) in let x6 : List<Int> = fmul(x4, x2) in fmul(x6, x)
+fn rcg(i: Int) : List<Int> = glit((i + 1) * (i + 1) * 7919 + i * 1009 + 1234567)
+fn mimcg(x: List<Int>, k: List<Int>, i: Int) : List<Int> = if i >= 4 then fadd(x, k) else mimcg(g_sbox(fadd(fadd(x, k), rcg(i))), k, i + 1)
+fn hashg(a: List<Int>, b: List<Int>) : List<Int> = fadd(fadd(mimcg(a, b, 0), a), b)
+fn lhash(leaf: G2) : List<Int> = match leaf { G2(c0, c1) => hashg(hashg(glit(7), c0), c1) }   # absorb both coords
+
+# --- Merkle tree over Goldilocks hashes (ported from prove_query_zk) ---------
+fn nthb(xs: List<List<Int>>, i: Int) : List<Int> = match xs { [] => []; [h, ...t] => if i == 0 then h else nthb(t, i - 1) }
+fn nth2(xs: List<G2>, i: Int) : G2 = match xs { [] => G2([], []); [h, ...t] => if i == 0 then h else nth2(t, i - 1) }
+fn set_nth2(xs: List<G2>, i: Int, v: G2) : List<G2> = match xs { [] => []; [h, ...t] => if i == 0 then [v] ++ t else [h] ++ set_nth2(t, i - 1, v) }
+fn next_pow2(n: Int, p: Int) : Int = if p >= n then p else next_pow2(n, p * 2)
+fn leaf_hashes_g(cw: List<G2>) : List<List<Int>> = match cw { [] => []; [x, ...r] => [lhash(x)] ++ leaf_hashes_g(r) }
+fn gz(d: Int) : List<Int> = []   # the zero Goldilocks element, typed (avoids a polymorphic [[]])
+fn append_zeros_g(xs: List<List<Int>>, k: Int) : List<List<Int>> = if k <= 0 then xs else append_zeros_g(xs ++ [gz(0)], k - 1)
+fn pad_pow2_g(xs: List<List<Int>>) : List<List<Int>> = let n : Int = len(xs) in append_zeros_g(xs, next_pow2(n, 1) - n)
+fn level_up_g(xs: List<List<Int>>) : List<List<Int>> = match xs { [] => []; [a, ...rest] => match rest { [] => [a]; [b, ...r2] => [hashg(a, b)] ++ level_up_g(r2) } }
+fn root_of_g(xs: List<List<Int>>) : List<Int> = match xs { [] => []; [a, ...rest] => match rest { [] => a; _ => root_of_g(level_up_g(xs)) } }
+fn merkle_root_g(cw: List<G2>) : List<Int> = root_of_g(pad_pow2_g(leaf_hashes_g(cw)))
+fn path_of_g(xs: List<List<Int>>, index: Int) : List<List<Int>> =
+  match xs { [] => []; [a, ...rest] => match rest { [] => []; _ => let sib : List<Int> = if index % 2 == 0 then nthb(xs, index + 1) else nthb(xs, index - 1) in [sib] ++ path_of_g(level_up_g(xs), index / 2) } }
+fn merkle_path_g(cw: List<G2>, index: Int) : List<List<Int>> = path_of_g(pad_pow2_g(leaf_hashes_g(cw)), index)
+fn fold_path_g(h: List<Int>, index: Int, path: List<List<Int>>) : List<Int> = match path { [] => h; [s, ...rest] => let up : List<Int> = if index % 2 == 0 then hashg(h, s) else hashg(s, h) in fold_path_g(up, index / 2, rest) }
+fn merkle_verify_g(leaf: G2, index: Int, path: List<List<Int>>, root: List<Int>) : Bool = bn_eq(fold_path_g(lhash(leaf), index, path), root)
+
+# --- FRI commit + query-verify over F_{p^2} ----------------------------------
+fn poly_eval_g(coeffs: List<List<Int>>, x: List<Int>) : List<Int> = match coeffs { [] => []; [c, ...r] => fadd(c, fmul(x, poly_eval_g(r, x))) }
+fn dom_powers(cur: List<Int>, g: List<Int>, k: Int) : List<List<Int>> = if k <= 0 then [] else [cur] ++ dom_powers(fmul(cur, g), g, k - 1)
+fn eval_emb(coeffs: List<List<Int>>, dom: List<List<Int>>) : List<G2> = match dom { [] => []; [x, ...r] => [emb(poly_eval_g(coeffs, x))] ++ eval_emb(coeffs, r) }
+fn fold_pair2(fx: G2, fmx: G2, x: List<Int>, beta: G2, finv2: List<Int>) : G2 =
+  let even : G2 = gscale2(gadd2(fx, fmx), finv2) in
+  let odd : G2 = gscale2(gsub2(fx, fmx), finv(fmul([2], x))) in
+  gadd2(even, gmul2(beta, odd))
+fn fold_at2(cw: List<G2>, dom: List<List<Int>>, beta: G2, finv2: List<Int>, i: Int, half: Int) : List<G2> =
+  if i >= half then [] else [fold_pair2(nth2(cw, i), nth2(cw, i + half), nthb(dom, i), beta, finv2)] ++ fold_at2(cw, dom, beta, finv2, i + 1, half)
+fn sq_dom(dom: List<List<Int>>, i: Int, half: Int) : List<List<Int>> =
+  if i >= half then [] else [fmul(nthb(dom, i), nthb(dom, i))] ++ sq_dom(dom, i + 1, half)
+fn beta_of_root_g(root: List<Int>) : G2 = G2(hashg(root, glit(101)), hashg(root, glit(102)))
+type Layer = | Layer(List<G2>, List<List<Int>>, List<Int>, G2)
+fn commit_g(cw: List<G2>, dom: List<List<Int>>, acc: List<Layer>, finv2: List<Int>) : (List<Layer>, List<G2>) =
+  if len(cw) <= 2 then (acc, cw)
+  else let root : List<Int> = merkle_root_g(cw) in let beta : G2 = beta_of_root_g(root) in let half : Int = len(cw) / 2 in
+    commit_g(fold_at2(cw, dom, beta, finv2, 0, half), sq_dom(dom, 0, half), acc ++ [Layer(cw, dom, root, beta)], finv2)
+fn transcript_seed_g(layers: List<Layer>, acc: List<Int>) : List<Int> = match layers { [] => acc; [Layer(cw, dom, root, beta), ...rest] => transcript_seed_g(rest, hashg(acc, root)) }
+fn q_low(h: List<Int>, dsize: Int) : Int = match h { [] => 0; [x, ...t] => x % dsize }
+fn sample_queries_g(seed: List<Int>, count: Int, dsize: Int) : List<Int> = if count <= 0 then [] else [q_low(hashg(seed, glit(count)), dsize)] ++ sample_queries_g(seed, count - 1, dsize)
+fn next_val2(rest: List<Layer>, final: List<G2>, j: Int) : G2 = match rest { [] => nth2(final, j); [Layer(cw, dom, root, beta), ...more] => nth2(cw, j) }
+fn verify_query_g(layers: List<Layer>, final: List<G2>, p: Int, finv2: List<Int>) : Bool =
+  match layers { [] => true;
+    [Layer(cw, dom, root, beta), ...rest] =>
+      let half : Int = len(cw) / 2 in let j : Int = p % half in
+      let lx : G2 = nth2(cw, j) in let lmx : G2 = nth2(cw, j + half) in
+      let ok1 : Bool = merkle_verify_g(lx, j, merkle_path_g(cw, j), root) in
+      let ok2 : Bool = merkle_verify_g(lmx, j + half, merkle_path_g(cw, j + half), root) in
+      let folded : G2 = fold_pair2(lx, lmx, nthb(dom, j), beta, finv2) in
+      if ok1 then if ok2 then if geq2(folded, next_val2(rest, final, j)) then verify_query_g(rest, final, j, finv2) else false else false else false }
+fn count_catches_g(layers: List<Layer>, final: List<G2>, qs: List<Int>, finv2: List<Int>) : Int =
+  match qs { [] => 0; [p, ...rest] => (if verify_query_g(layers, final, p, finv2) then 0 else 1) + count_catches_g(layers, final, rest, finv2) }
+fn all_eq2(cw: List<G2>, x: G2) : Bool = match cw { [] => true; [y, ...r] => if geq2(y, x) then all_eq2(r, x) else false }
+fn is_const2(cw: List<G2>) : Bool = match cw { [] => true; [x, ...r] => all_eq2(r, x) }
+fn fri_verify_g(layers: List<Layer>, final: List<G2>, qs: List<Int>, finv2: List<Int>) : Bool =
+  if is_const2(final) then count_catches_g(layers, final, qs, finv2) == 0 else false
+
+# --- demo --------------------------------------------------------------------
+fn show_a(b: Bool) : String = if b then "ACCEPT" else "REJECT"
+fn layers_of(c: (List<Layer>, List<G2>)) : List<Layer> = match c { (l, f) => l }
+fn final_of(c: (List<Layer>, List<G2>)) : List<G2> = match c { (l, f) => f }
+let finv2 : List<Int> = finv([2])
+let g8 : List<Int> = root_pow2(3)
+let dom : List<List<Int>> = dom_powers([1], g8, 8)
+let coeffs : List<List<Int>> = [[3], [1], [4], [1]]
+let cw : List<G2> = eval_emb(coeffs, dom)
+let committed : (List<Layer>, List<G2>) = commit_g(cw, dom, [], finv2)
+let layers : List<Layer> = layers_of(committed)
+let final : List<G2> = final_of(committed)
+let qs : List<Int> = sample_queries_g(transcript_seed_g(layers, []), 12, 8)
+let cheatf : List<G2> = [emb([42]), emb([42])]
+# count once per scenario; the verdict is "final is constant AND no query caught a fault".
+let hfaults : Int = count_catches_g(layers, final, qs, finv2)
+let cfaults : Int = count_catches_g(layers, cheatf, qs, finv2)
+
+let _ : String = print("--- frost_goldilocks_stark.glass: a committed, query-verified FRI over Goldilocks (H2) ---")
+let _ : String = print("Merkle commitment (Goldilocks MiMC) + F_{p^2} Fiat-Shamir β + sampled queries.")
+let _ : String = print("")
+let _ : String = print("HONEST  low-degree, committed, " ++ int_to_string(len(layers)) ++ " folded layers:")
+let _ : String = print("  fri_verify:  " ++ show_a(is_const2(final) && hfaults == 0) ++ "   (faults: " ++ int_to_string(hfaults) ++ "/12)")
+let _ : String = print("CHEAT   real layers, faked final codeword:")
+let _ : String = print("  fri_verify:  " ++ show_a(is_const2(cheatf) && cfaults == 0) ++ "   (faults: " ++ int_to_string(cfaults) ++ "/12 — queries catch the inconsistency)")
+let _ : String = print("")
+let _ : String = print("a complete sound FRI — commitment + cryptographic challenge + queries — over the")
+let _ : String = print("production Goldilocks field, int64-safe and dogfooded. (Blinding -> full zk-STARK.)")
+
+"frost goldilocks stark v0.1 (H2) — committed, query-verified FRI over Goldilocks (Merkle + F_{p^2} Fiat-Shamir)"

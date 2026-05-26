@@ -39,7 +39,7 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Shipped (through v4.96)
+## Shipped (through v4.97)
 
 - **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
 - **Pane** — a query language in Glass.
@@ -155,8 +155,19 @@ proves the things the project was for."
     (a⁻¹ = conj(a)·N(a)⁻¹, N(a) ∈ F_p inverted by the base Fermat inverse). FRI now
     folds with β ∈ F_{p²} (≈2¹²⁸ per-round soundness, not a guessable 2⁶⁴): honest
     codeword folds to a constant, tampered doesn't. Int64-safe, dogfooded.
-  - **Next:** Merkle commitment + Fiat-Shamir query sampling over Goldilocks — a
-    full cryptographic STARK on the production field.
+  - ✅ **A committed, query-verified FRI — the cryptographic STARK core, complete**
+    ([`frost_goldilocks_stark.glass`](../examples/frost/frost_goldilocks_stark.glass)):
+    every layer's codeword is Merkle-committed (a Goldilocks MiMC hash, x⁷ S-box),
+    the fold β ∈ F_{p²} is derived from the root (Fiat-Shamir), and the verifier
+    samples query positions from the transcript, opens each (f(x), f(−x)) pair with
+    a Merkle path, recomputes the fold, and checks it against the next layer. An
+    honest low-degree codeword ACCEPTs (0 faults); a faked final layer REJECTs (the
+    queries catch it at every position). All three soundness mechanisms —
+    commitment, cryptographic challenge, queries — over Goldilocks, int64-safe,
+    dogfooded. The Baby Bear `frost_crypto` capstone, now on the production field.
+  - **Next:** trace-polynomial blinding over Goldilocks → a full *zero-knowledge*
+    STARK on the production field (the blinding mechanism exists for Baby Bear in
+    `frost_zk_blind`/`prove_zk`).
 - **H3 — Recursive proofs. 🚧 IN PROGRESS.** A proof that verifies another proof. The
   hard core is expressing a verifier as a circuit; a STARK verifier's algebraic
   heart is the FRI **fold check**.

@@ -7,6 +7,9 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [4.97.0] — 2026-05-25 — A committed, query-verified FRI over Goldilocks
+- **The cryptographic STARK core, complete on the production field.** [`frost_goldilocks_stark.glass`](examples/frost/frost_goldilocks_stark.glass) brings all three FRI soundness mechanisms together over Goldilocks: each layer's codeword is **Merkle-committed** (a Goldilocks MiMC hash with the x⁷ S-box), the fold **challenge β ∈ F_{p²}** is derived from the root (Fiat-Shamir), and the verifier **samples query positions** from the transcript, opens each `(f(x), f(−x))` pair with a Merkle path, recomputes the fold, and checks it equals the next layer. An honest low-degree codeword ACCEPTs (0/12 faults); a faked final layer REJECTs (12/12 — caught at every query). All int64-safe, dogfooded byte-identical — the Baby Bear `frost_crypto` capstone, now on the field real provers use. (Next: blinding → a full zero-knowledge STARK over Goldilocks.)
+
 ## [4.96.0] — 2026-05-25 — F_{p²} over Goldilocks: a cryptographic challenge space
 - **FRI over Goldilocks gains cryptographic soundness.** [`frost_goldilocks_ext.glass`](examples/frost/frost_goldilocks_ext.glass) builds the degree-2 extension F_{p²} = F_p[X]/(X² − 7) over Goldilocks (W = 7 is a non-residue, 7^((p−1)/2) = −1). Since p ≈ 2⁶⁴, F_{p²} ≈ 2¹²⁸ — a challenge space too large to guess. Inversion stays int64-safe via the norm (a⁻¹ = conj(a)·N(a)⁻¹, N(a) ∈ F_p inverted by the base Fermat inverse). FRI now folds with β ∈ F_{p²} (≈2¹²⁸ per-round soundness instead of a guessable 2⁶⁴): a low-degree codeword folds to a constant, a tampered one doesn't. All int64-safe, dogfooded byte-identical. (Mirrors the Baby Bear arc frost_fri → frost_fri_ext; next is Merkle + Fiat-Shamir over Goldilocks.)
 
