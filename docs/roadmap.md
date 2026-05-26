@@ -39,7 +39,7 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Shipped (through v4.94)
+## Shipped (through v4.95)
 
 - **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
 - **Pane** — a query language in Glass.
@@ -140,8 +140,17 @@ proves the things the project was for."
     that gives radix-2 NTT layers for any practical trace. All int64-safe via
     base-2¹⁶ limbs — so it dogfoods (Python bignum ≡ C int64). (A 128-bit field
     `frost_field` exists too, from N4.)
-  - **Next:** the integration — swap the STARK's base field from toy Baby Bear to
-    Goldilocks (the NTT roots, FRI domain, and Merkle hashing over the wider field).
+  - ✅ **FRI over Goldilocks — the core engine on the real field**
+    ([`frost_goldilocks_fri.glass`](../examples/frost/frost_goldilocks_fri.glass)):
+    the STARK's low-degree test runs over p = 2⁶⁴ − 2³² + 1. The evaluation domain
+    is a real 2ᵏ-th-root-of-unity subgroup (using the field's 2-adicity), the fold
+    `(f(x)+f(−x))/2 + β·(f(x)−f(−x))/(2x)` uses the limb-walked inverse, and a
+    low-degree codeword folds to a constant while a tampered one doesn't — all
+    int64-safe, dogfooded. (Base-field β for now; the degree-2 extension challenge
+    space + Merkle/Fiat-Shamir are the layers on top, as in the Baby Bear path.)
+  - **Next:** the degree-2 Goldilocks extension (≈2¹²⁸ challenge space) threaded
+    through the fold, then Merkle commitment + Fiat-Shamir sampling — a full
+    cryptographic STARK over Goldilocks.
 - **H3 — Recursive proofs. 🚧 IN PROGRESS.** A proof that verifies another proof. The
   hard core is expressing a verifier as a circuit; a STARK verifier's algebraic
   heart is the FRI **fold check**.

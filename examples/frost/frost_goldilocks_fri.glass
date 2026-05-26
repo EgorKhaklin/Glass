@@ -1,0 +1,126 @@
+# =============================================================================
+# frost_goldilocks_fri.glass — FRI over the Goldilocks field (H2 integration)
+#
+# frost_goldilocks.glass built the field p = 2^64 − 2^32 + 1; this runs the
+# STARK's core engine — the FRI low-degree test — OVER it. Two pieces of that
+# field do the work here:
+#
+#   • its 2-adicity: p − 1 = 2^32·(2^32 − 1), so the evaluation domain is a real
+#     2^k-th-root-of-unity subgroup (g^(2^k) = 1, g^(2^(k-1)) = −1), exactly what
+#     FRI's fold(f(x), f(−x)) needs;
+#   • its inverse: the fold divides by 2 and by 2x, and a^(p−2) gives those — the
+#     exponent overflows int64, so it's walked in limbs.
+#
+# The test: a low-degree codeword folds — fold(f(x),f(-x)) = (f(x)+f(-x))/2 +
+# β·(f(x)-f(-x))/(2x), domain squared each layer — down to a CONSTANT; a tampered
+# codeword (one value corrupted, no longer a low-degree evaluation) does not.
+# That is FRI's soundness in miniature, here over a production-grade field with
+# every step int64-safe — so it DOGFOODS (Python bignum ≡ C int64).
+#
+# Honest scope: the fold challenge β is in the BASE field for now (this is the
+# mechanism); a degree-2 extension for cryptographic challenge soundness, plus
+# Merkle commitment + Fiat-Shamir sampling, are the layers on top — exactly how
+# the Baby Bear path grew (frost_fri → frost_fri_ext → frost_crypto). Heavy
+# interpreted (bignum FRI); run it natively (examples/selfhost/run_native.sh).
+# =============================================================================
+
+# --- Goldilocks field via base-2^16 limbs (from frost_goldilocks.glass) ------
+fn lmod(x: Int) : Int = x % 65536
+fn ldiv(x: Int) : Int = x / 65536
+fn rev_go(xs: List<Int>, acc: List<Int>) : List<Int> = match xs { [] => acc; [h, ...t] => rev_go(t, [h] ++ acc) }
+fn rev(xs: List<Int>) : List<Int> = rev_go(xs, [])
+fn drop_zeros(xs: List<Int>) : List<Int> = match xs { [] => []; [h, ...t] => if h == 0 then drop_zeros(t) else xs }
+fn trim(xs: List<Int>) : List<Int> = rev(drop_zeros(rev(xs)))
+fn addc(a: List<Int>, b: List<Int>, carry: Int) : List<Int> =
+  match a {
+    [] => match b { [] => if carry == 0 then [] else [carry]; [hb, ...tb] => let s : Int = hb + carry in [lmod(s)] ++ addc([], tb, ldiv(s)) };
+    [ha, ...ta] => match b { [] => let s : Int = ha + carry in [lmod(s)] ++ addc(ta, [], ldiv(s)); [hb, ...tb] => let s : Int = ha + hb + carry in [lmod(s)] ++ addc(ta, tb, ldiv(s)) }
+  }
+fn bn_add(a: List<Int>, b: List<Int>) : List<Int> = trim(addc(a, b, 0))
+fn smul(xs: List<Int>, k: Int, carry: Int) : List<Int> =
+  match xs { [] => if carry == 0 then [] else [carry]; [h, ...t] => let p : Int = h * k + carry in [lmod(p)] ++ smul(t, k, ldiv(p)) }
+fn shift(xs: List<Int>, n: Int) : List<Int> = if n <= 0 then xs else [0] ++ shift(xs, n - 1)
+fn mul_go(a: List<Int>, b: List<Int>, i: Int) : List<Int> =
+  match b { [] => []; [hb, ...tb] => bn_add(shift(smul(a, hb, 0), i), mul_go(a, tb, i + 1)) }
+fn bn_mul(a: List<Int>, b: List<Int>) : List<Int> = trim(mul_go(a, b, 0))
+fn cmp_hi(a: List<Int>, b: List<Int>) : Int = match a { [] => 0; [ha, ...ta] => match b { [] => 0; [hb, ...tb] => if ha == hb then cmp_hi(ta, tb) else (if ha < hb then 0 - 1 else 1) } }
+fn bn_cmp(a: List<Int>, b: List<Int>) : Int =
+  let ta : List<Int> = trim(a) in let tb : List<Int> = trim(b) in
+  if len(ta) == len(tb) then cmp_hi(rev(ta), rev(tb)) else (if len(ta) < len(tb) then 0 - 1 else 1)
+fn subb(a: List<Int>, b: List<Int>, borrow: Int) : List<Int> =
+  match a { [] => [];
+    [ha, ...ta] => match b {
+      [] => let d : Int = ha - borrow in if d < 0 then [d + 65536] ++ subb(ta, [], 1) else [d] ++ subb(ta, [], 0);
+      [hb, ...tb] => let d : Int = ha - hb - borrow in if d < 0 then [d + 65536] ++ subb(ta, tb, 1) else [d] ++ subb(ta, tb, 0) } }
+fn bn_sub(a: List<Int>, b: List<Int>) : List<Int> = trim(subb(a, b, 0))
+fn take(xs: List<Int>, n: Int) : List<Int> = if n <= 0 then [] else match xs { [] => []; [h, ...t] => [h] ++ take(t, n - 1) }
+fn drop(xs: List<Int>, n: Int) : List<Int> = if n <= 0 then xs else match xs { [] => []; [h, ...t] => drop(t, n - 1) }
+fn pg(d: Int) : List<Int> = [1, 0, 65535, 65535]
+fn fold_hi(d: Int) : List<Int> = [65535, 65535]
+fn bn_mod_p(a: List<Int>) : List<Int> =
+  let t : List<Int> = trim(a) in
+  if len(t) > 4 then bn_mod_p(bn_add(take(t, 4), bn_mul(drop(t, 4), fold_hi(0))))
+  else if bn_cmp(t, pg(0)) >= 0 then bn_sub(t, pg(0)) else t
+fn fadd(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_add(a, b))
+fn fsub(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_add(a, bn_sub(pg(0), bn_mod_p(b))))
+fn fmul(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_mul(a, b))
+fn bn_eq(a: List<Int>, b: List<Int>) : Bool = bn_cmp(a, b) == 0
+fn bn_is_zero(e: List<Int>) : Bool = match trim(e) { [] => true; _ => false }
+fn bn_is_odd(e: List<Int>) : Bool = match e { [] => false; [h, ...t] => h % 2 == 1 }
+fn half_hl(xs: List<Int>, rem: Int) : List<Int> = match xs { [] => []; [h, ...t] => let cur : Int = rem * 65536 + h in [cur / 2] ++ half_hl(t, cur % 2) }
+fn bn_half(e: List<Int>) : List<Int> = trim(rev(half_hl(rev(trim(e)), 0)))
+fn fpow_bn(base: List<Int>, e: List<Int>) : List<Int> =
+  if bn_is_zero(e) then [1]
+  else let h : List<Int> = fpow_bn(fmul(base, base), bn_half(e)) in
+       if bn_is_odd(e) then fmul(base, h) else h
+fn finv(a: List<Int>) : List<Int> = fpow_bn(a, bn_sub(pg(0), [2]))
+
+# --- FRI low-degree test over Goldilocks -------------------------------------
+# field elements are limb-lists, so a codeword/domain is List<List<Int>>.
+fn nthg(xs: List<List<Int>>, i: Int) : List<Int> = match xs { [] => []; [h, ...t] => if i == 0 then h else nthg(t, i - 1) }
+fn set_nthg(xs: List<List<Int>>, i: Int, v: List<Int>) : List<List<Int>> = match xs { [] => []; [h, ...t] => if i == 0 then [v] ++ t else [h] ++ set_nthg(t, i - 1, v) }
+fn poly_eval_g(coeffs: List<List<Int>>, x: List<Int>) : List<Int> = match coeffs { [] => []; [c, ...r] => fadd(c, fmul(x, poly_eval_g(r, x))) }
+# (p−1)/2^k, by halving the exponent k times -> the 2^k-th root of unity exponent.
+fn halve_k(e: List<Int>, k: Int) : List<Int> = if k <= 0 then e else halve_k(bn_half(e), k - 1)
+fn root_pow2(k: Int) : List<Int> = fpow_bn([7], halve_k(bn_sub(pg(0), [1]), k))
+fn dom_powers(cur: List<Int>, g: List<Int>, k: Int) : List<List<Int>> = if k <= 0 then [] else [cur] ++ dom_powers(fmul(cur, g), g, k - 1)
+fn eval_all(coeffs: List<List<Int>>, dom: List<List<Int>>) : List<List<Int>> = match dom { [] => []; [x, ...r] => [poly_eval_g(coeffs, x)] ++ eval_all(coeffs, r) }
+# fold(f(x), f(−x)) = (f(x)+f(−x))/2 + β·(f(x)−f(−x))/(2x)
+fn fold_pair_g(fx: List<Int>, fmx: List<Int>, x: List<Int>, beta: List<Int>, finv2: List<Int>) : List<Int> =
+  let even : List<Int> = fmul(fadd(fx, fmx), finv2) in
+  let odd : List<Int> = fmul(fsub(fx, fmx), finv(fmul([2], x))) in
+  fadd(even, fmul(beta, odd))
+fn fold_at_g(cw: List<List<Int>>, dom: List<List<Int>>, beta: List<Int>, finv2: List<Int>, i: Int, half: Int) : List<List<Int>> =
+  if i >= half then [] else [fold_pair_g(nthg(cw, i), nthg(cw, i + half), nthg(dom, i), beta, finv2)] ++ fold_at_g(cw, dom, beta, finv2, i + 1, half)
+fn sq_dom(dom: List<List<Int>>, i: Int, half: Int) : List<List<Int>> =
+  if i >= half then [] else [fmul(nthg(dom, i), nthg(dom, i))] ++ sq_dom(dom, i + 1, half)
+fn fri_to2(cw: List<List<Int>>, dom: List<List<Int>>, beta: List<Int>, finv2: List<Int>) : List<List<Int>> =
+  if len(cw) <= 2 then cw
+  else let half : Int = len(cw) / 2 in fri_to2(fold_at_g(cw, dom, beta, finv2, 0, half), sq_dom(dom, 0, half), beta, finv2)
+fn all_eq_g(cw: List<List<Int>>, x: List<Int>) : Bool = match cw { [] => true; [y, ...r] => if bn_eq(y, x) then all_eq_g(r, x) else false }
+fn is_const_g(cw: List<List<Int>>) : Bool = match cw { [] => true; [x, ...r] => all_eq_g(r, x) }
+
+# --- demo --------------------------------------------------------------------
+fn show(xs: List<Int>) : String = match trim(xs) { [] => "0"; [h, ...t] => match t { [] => int_to_string(h); _ => int_to_string(h) ++ "+…(" ++ int_to_string(len(trim(xs))) ++ " limbs)" } }
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+
+let g8 : List<Int> = root_pow2(3)                                   # a primitive 8th root of unity
+let dom : List<List<Int>> = dom_powers([1], g8, 8)                  # {g^0 … g^7}, the FRI domain
+let coeffs : List<List<Int>> = [[3], [1], [4], [1]]                 # f(x) = 3 + x + 4x² + x³  (degree 3 < 8)
+let cw : List<List<Int>> = eval_all(coeffs, dom)                    # the low-degree codeword
+let beta : List<Int> = [123456789]                                  # fold challenge (base field; see header)
+let finv2 : List<Int> = finv([2])
+let bad : List<List<Int>> = set_nthg(cw, 2, fadd(nthg(cw, 2), [1]))  # corrupt one evaluation
+
+let _ : String = print("--- frost_goldilocks_fri.glass: the FRI low-degree test over Goldilocks (H2) ---")
+let _ : String = print("the STARK's core engine running over the real field p = 2^64 − 2^32 + 1.")
+let _ : String = print("")
+let _ : String = print("domain = a 2^3-th-root-of-unity subgroup.  g8^8 == 1:  " ++ show_b(bn_eq(fpow_bn(g8, [8]), [1])) ++ ",  g8^4 == −1: " ++ show_b(bn_eq(fpow_bn(g8, [4]), bn_sub(pg(0), [1]))))
+let _ : String = print("")
+let _ : String = print("HONEST  low-degree codeword folds to a constant:  " ++ show_b(is_const_g(fri_to2(cw, dom, beta, finv2))))
+let _ : String = print("TAMPER  one value corrupted -> folds to a constant: " ++ show_b(is_const_g(fri_to2(bad, dom, beta, finv2))) ++ "   (no => the low-degree test catches it)")
+let _ : String = print("")
+let _ : String = print("FRI — fold + low-degree test — now runs over the production STARK field, int64-safe")
+let _ : String = print("and dogfooded. base-field β here; the degree-2 extension + Merkle/Fiat-Shamir are next.")
+
+"frost goldilocks fri v0.1 (H2) — the FRI low-degree test over Goldilocks (p = 2^64−2^32+1), int64-safe"
