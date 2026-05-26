@@ -7,6 +7,9 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [5.1.0] — 2026-05-26 — The source→ZK bridge gains scalar `match`
+- **`prove_source_zk` now proves real `match` expressions.** [`prove_source_zk.glass`](examples/prove/prove_source_zk.glass) extends the bridge with scalar pattern dispatch: `match x { 7 => 100; k => k * k }`. Each arm becomes a selector (`PInt`/`PBool` via the is-zero gadget — consuming an inverse hint; `PVar`/`PWild` always match), combined first-match style (`eff = sel·(1−matched)`, `result += eff·body`, `matched += eff`) so the circuit is branchless. The hint pre-pass (`heval`) was extended to collect each arm's selector hint and all bodies' hints in the exact order `cgen_match` consumes them. Demo: `fn grade(x) = match x { 7 => 100; k => k * k }` over a private input proves `grade(inp) = 100` (honest ACCEPT). Self-hosted byte-identical. (`PCtor`/`PTuple`/`PRecord`/`PStr` patterns are treated as non-matching — structured-pattern circuits are the next step.)
+
 ## [5.0.0] — 2026-05-26 — The thesis, realized: real branching Glass source → a zero-knowledge proof
 *A milestone release (not a breaking change). The founding bet — write a Glass function, get a zero-knowledge proof of its result — is now real end to end: real multi-function Glass source with control flow, parsed by Glass's own front end, lowered to a circuit, and proven succinct + zero-knowledge. Alongside, this session built a complete from-scratch zk-STARK on the production Goldilocks field (v4.95–v4.98). Glass remains a research language (see LANG.md), not production-hardened.*
 

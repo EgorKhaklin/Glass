@@ -206,6 +206,7 @@ fn heval(e: Expr, env: List<Pair<String, Int>>, fns: List<FnDecl>) : (Int, List<
     EIf(c, t, f) => match heval(c, env, fns) { (vc, hc) => match heval(t, env, fns) { (vt, ht) => match heval(f, env, fns) { (vf, hf) => (if vc == 1 then vt else vf, hc ++ ht ++ hf) } } };
     ELet(nm, v, body) => match heval(v, env, fns) { (vv, hv) => match heval(body, [Pair(nm, vv)] ++ env, fns) { (vb, hb) => (vb, hv ++ hb) } };
     EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => heval_call(fn_body_of(fns, fname), args, [], env, fns); _ => (0, []) } };
+    EMatch(scrut, arms) => match heval(scrut, env, fns) { (sv, hs) => match heval_match(sv, arms, env, fns) { (rv, ha) => (rv, hs ++ ha) } };
     _ => (0, []) }
 fn heval_call(body: Expr, args: List<Expr>, ccenv: List<Pair<String, Int>>, fcenv: List<Pair<String, Int>>, fns: List<FnDecl>) : (Int, List<Int>) =
   match body {
@@ -245,11 +246,47 @@ fn cgen(e: Expr, cenv: List<Pair<String, Int>>, fns: List<FnDecl>, hbase: Int, h
     EIf(c, t, f) => match cgen(c, cenv, fns, hbase, hidx, b) { (wc, h1, b1) => match cgen(t, cenv, fns, hbase, h1, b1) { (wt, h2, b2) => match cgen(f, cenv, fns, hbase, h2, b2) { (wf, h3, b3) => match mk_mux(wc, wt, wf, b3) { (wo, b4) => (wo, h3, b4) } } } };
     ELet(nm, v, body) => match cgen(v, cenv, fns, hbase, hidx, b) { (wv, h1, b1) => cgen(body, [Pair(nm, wv)] ++ cenv, fns, hbase, h1, b1) };
     EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => cgen_call(fn_body_of(fns, fname), args, [], cenv, fns, hbase, hidx, b); _ => match mkc(0, b) { (w, b1) => (w, hidx, b1) } } };
+    EMatch(scrut, arms) => match cgen(scrut, cenv, fns, hbase, hidx, b) { (ws, h1, b1) => match mkc(0, b1) { (zm, b2) => match mkc(0, b2) { (zr, b3) => cgen_match(arms, ws, cenv, fns, hbase, h1, zm, zr, b3) } } };
     _ => match mkc(0, b) { (w, b1) => (w, hidx, b1) } }
 fn cgen_call(body: Expr, args: List<Expr>, ccenv: List<Pair<String, Int>>, fcenv: List<Pair<String, Int>>, fns: List<FnDecl>, hbase: Int, hidx: Int, b: Build) : (Int, Int, Build) =
   match body {
     ELam(p, inner) => match args { [] => cgen(body, ccenv, fns, hbase, hidx, b); [a, ...rest] => match cgen(a, fcenv, fns, hbase, hidx, b) { (wa, h1, b1) => cgen_call(inner, rest, [Pair(p, wa)] ++ ccenv, fcenv, fns, hbase, h1, b1) } };
     _ => cgen(body, ccenv, fns, hbase, hidx, b) }
+# scalar match (PInt/PBool/PVar/PWild; PCtor/PTuple/PStr unsupported -> selector 0)
+fn pat_matches(p: Pattern, sv: Int) : Bool = match p { PWild => true; PVar(x) => true; PInt(n) => sv == fnorm(n); PBool(bb) => sv == bconst(bb); PCtor(nm, ps) => false; PTuple(ps) => false; PStr(s) => false; PRecord(nm, fs) => false }
+fn pat_bind(p: Pattern, sv: Int, env: List<Pair<String, Int>>) : List<Pair<String, Int>> = match p { PVar(x) => [Pair(x, sv)] ++ env; PWild => env; PInt(n) => env; PBool(bb) => env; PCtor(nm, ps) => env; PTuple(ps) => env; PStr(s) => env; PRecord(nm, fs) => env }
+fn sel_hint(p: Pattern, sv: Int) : List<Int> = match p { PInt(n) => let d : Int = fsub(sv, fnorm(n)) in [if d == 0 then 0 else finv(d)]; PBool(bb) => let d : Int = fsub(sv, bconst(bb)) in [if d == 0 then 0 else finv(d)]; PWild => []; PVar(x) => []; PCtor(nm, ps) => []; PTuple(ps) => []; PStr(s) => []; PRecord(nm, fs) => [] }
+fn pat_cenv(p: Pattern, ws: Int, cenv: List<Pair<String, Int>>) : List<Pair<String, Int>> = match p { PVar(x) => [Pair(x, ws)] ++ cenv; PWild => cenv; PInt(n) => cenv; PBool(bb) => cenv; PCtor(nm, ps) => cenv; PTuple(ps) => cenv; PStr(s) => cenv; PRecord(nm, fs) => cenv }
+fn pat_sel(p: Pattern, ws: Int, hbase: Int, hidx: Int, b: Build) : (Int, Int, Build) =
+  match p {
+    PWild => match mkc(1, b) { (w, b1) => (w, hidx, b1) };
+    PVar(x) => match mkc(1, b) { (w, b1) => (w, hidx, b1) };
+    PInt(n) => match mkc(n, b) { (wn, b1) => mk_eq(ws, wn, hbase, hidx, b1) };
+    PBool(bb) => match mkc(bconst(bb), b) { (wn, b1) => mk_eq(ws, wn, hbase, hidx, b1) };
+    PCtor(nm, ps) => match mkc(0, b) { (w, b1) => (w, hidx, b1) };
+    PTuple(ps) => match mkc(0, b) { (w, b1) => (w, hidx, b1) };
+    PStr(s) => match mkc(0, b) { (w, b1) => (w, hidx, b1) };
+    PRecord(nm, fs) => match mkc(0, b) { (w, b1) => (w, hidx, b1) } }
+# pre-pass match: first-match VALUE + selector/body hints (all arms, in cgen order)
+fn heval_match(sv: Int, arms: List<Pair<Pattern, Expr>>, env: List<Pair<String, Int>>, fns: List<FnDecl>) : (Int, List<Int>) =
+  match arms { [] => (0, []);
+    [Pair(p, body), ...rest] =>
+      let sh : List<Int> = sel_hint(p, sv) in
+      match heval(body, pat_bind(p, sv, env), fns) { (bv, bh) =>
+      match heval_match(sv, rest, env, fns) { (rv, rh) =>
+        (if pat_matches(p, sv) then bv else rv, sh ++ bh ++ rh) } } }
+# circuit match: eff = sel·(1−matched);  result += eff·body;  matched += eff
+fn cgen_match(arms: List<Pair<Pattern, Expr>>, ws: Int, cenv: List<Pair<String, Int>>, fns: List<FnDecl>, hbase: Int, hidx: Int, matched: Int, result: Int, b: Build) : (Int, Int, Build) =
+  match arms { [] => (result, hidx, b);
+    [Pair(p, body), ...rest] =>
+      match pat_sel(p, ws, hbase, hidx, b) { (sel, h1, b1) =>
+      match mkc(1, b1) { (one, b2) => match mks(one, matched, b2) { (notm, b3) =>
+      match mkm(sel, notm, b3) { (eff, b4) =>
+      match cgen(body, pat_cenv(p, ws, cenv), fns, hbase, h1, b4) { (wbody, h2, b5) =>
+      match mkm(eff, wbody, b5) { (contrib, b6) =>
+      match mka(result, contrib, b6) { (nres, b7) =>
+      match mka(matched, eff, b7) { (nmatched, b8) =>
+        cgen_match(rest, ws, cenv, fns, hbase, h2, nmatched, nres, b8) } } } } } } } } }
 fn in_cenv(inputs: List<Pair<String, Int>>, i: Int) : List<Pair<String, Int>> = match inputs { [] => []; [Pair(nm, v), ...r] => [Pair(nm, i)] ++ in_cenv(r, i + 1) }
 fn in_vals(inputs: List<Pair<String, Int>>) : List<Int> = match inputs { [] => []; [Pair(nm, v), ...r] => [v] ++ in_vals(r) }
 fn plen(xs: List<Pair<String, Int>>) : Int = match xs { [] => 0; [x, ...r] => 1 + plen(r) }
@@ -281,6 +318,10 @@ let r1 : Int = ref_result(src1, in1)                # f(3) = 27 - 9 + 7 = 25
 let src2 : String = "fn classify(x: Int) : Int = if x == 7 then 100 else x * x\nclassify(inp)"
 let in2 : List<Pair<String, Int>> = [Pair("inp", 7)]
 let r2 : Int = ref_result(src2, in2)                # classify(7) = 100 (the == branch)
+# (3) match: scalar pattern dispatch (a PInt arm via is-zero, a PVar catch-all)
+let src3 : String = "fn grade(x: Int) : Int = match x { 7 => 100; k => k * k }\ngrade(inp)"
+let in3 : List<Pair<String, Int>> = [Pair("inp", 7)]
+let r3 : Int = ref_result(src3, in3)                # grade(7) = 100 (the PInt arm)
 
 let _ : String = print("--- prove_source_zk.glass: REAL Glass source -> a succinct, ZERO-KNOWLEDGE proof ---")
 let _ : String = print("real prism-parsed programs -> circuit -> the blinded F_{p^4} FRI STARK.")
@@ -298,7 +339,10 @@ let _ : String =
       ++ show_a(stark_ok(gates, w, 11111, bbv, bbw)) ++ " / " ++ show_a(stark_ok(gates, w, 22222, bbv, bbw))
       ++ "; opening #5 differs: " ++ show_b(eq4(qopen5(gates, w, 11111), qopen5(gates, w, 22222)) == false)) }
 let _ : String = print("")
-let _ : String = print("real Glass source — arithmetic, calls, ==, if — proven succinct + zero-knowledge.")
+let _ : String = print("(3) match (scalar dispatch):  fn grade(x) = match x { 7 => 100; k => k * k };  grade(inp)")
+let _ : String = print("    public R = grade(inp) = " ++ int_to_string(r3) ++ ";   honest proof: " ++ show_a(prove(src3, in3, r3, 11111, bbv, bbw)))
+let _ : String = print("")
+let _ : String = print("real Glass source — arithmetic, calls, ==, if, match — proven succinct + zero-knowledge.")
 let _ : String = print("the thesis, end to end: write a Glass function, get a proof of its result.")
 
-"prove_source_zk v0.2 — real prism source (arith/calls/==/if) -> blinded F_{p^4} FRI STARK"
+"prove_source_zk v0.3 — real prism source (arith/calls/==/if/match) -> blinded F_{p^4} FRI STARK"
