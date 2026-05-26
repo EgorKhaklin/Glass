@@ -7,6 +7,9 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [4.98.0] — 2026-05-26 — Zero-knowledge over Goldilocks (the arc complete)
+- **The full zk-STARK shape, now on the production field.** [`frost_goldilocks_zk.glass`](examples/frost/frost_goldilocks_zk.glass) adds the last property — zero-knowledge — to the Goldilocks FRI via blinding: the codeword is masked with a random low-degree polynomial R (degree below the fold-to-constant bound), so f + R still folds to a constant and the proof ACCEPTs, while the committed Merkle root and every opened value are randomized. Two independent blinding seeds produce two different valid proofs of the same statement (both ACCEPT; layer-0 commitment differs; opened value #5 differs) — the verifier learns only "low-degree", nothing about the codeword. **Sound + committed + zero-knowledge, over Goldilocks**, int64-safe and dogfooded. This completes the Goldilocks arc: field → FRI fold → F_{p²} challenge → committed/query-verified → zero-knowledge.
+
 ## [4.97.0] — 2026-05-25 — A committed, query-verified FRI over Goldilocks
 - **The cryptographic STARK core, complete on the production field.** [`frost_goldilocks_stark.glass`](examples/frost/frost_goldilocks_stark.glass) brings all three FRI soundness mechanisms together over Goldilocks: each layer's codeword is **Merkle-committed** (a Goldilocks MiMC hash with the x⁷ S-box), the fold **challenge β ∈ F_{p²}** is derived from the root (Fiat-Shamir), and the verifier **samples query positions** from the transcript, opens each `(f(x), f(−x))` pair with a Merkle path, recomputes the fold, and checks it equals the next layer. An honest low-degree codeword ACCEPTs (0/12 faults); a faked final layer REJECTs (12/12 — caught at every query). All int64-safe, dogfooded byte-identical — the Baby Bear `frost_crypto` capstone, now on the field real provers use. (Next: blinding → a full zero-knowledge STARK over Goldilocks.)
 

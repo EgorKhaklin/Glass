@@ -39,7 +39,7 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Shipped (through v4.97)
+## Shipped (through v4.98)
 
 - **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
 - **Pane** — a query language in Glass.
@@ -165,9 +165,21 @@ proves the things the project was for."
     queries catch it at every position). All three soundness mechanisms —
     commitment, cryptographic challenge, queries — over Goldilocks, int64-safe,
     dogfooded. The Baby Bear `frost_crypto` capstone, now on the production field.
-  - **Next:** trace-polynomial blinding over Goldilocks → a full *zero-knowledge*
-    STARK on the production field (the blinding mechanism exists for Baby Bear in
-    `frost_zk_blind`/`prove_zk`).
+  - ✅ **Zero-knowledge over Goldilocks — the arc complete**
+    ([`frost_goldilocks_zk.glass`](../examples/frost/frost_goldilocks_zk.glass)): the
+    codeword is masked with a random low-degree polynomial R (degree below the
+    fold-to-constant bound), so f + R still folds to a constant and the proof
+    ACCEPTs — but the committed root and every opened value are randomized. Two
+    independent blinding seeds give two *different* valid proofs of the same
+    statement (both ACCEPT; layer-0 commitment differs; opened value #5 differs):
+    the verifier learns only "low-degree", nothing about f. **Sound + committed +
+    zero-knowledge, over Goldilocks** — the full zk-STARK shape on the production
+    field, int64-safe and dogfooded.
+  - **H2 core is complete**: field → FRI fold → F_{p²} challenge → committed +
+    query-verified → zero-knowledge, all over Goldilocks. The open follow-on is
+    *end-to-end integration* — swapping the prove-bridge's STARK backend
+    (`prove_zk`) from Baby Bear to this Goldilocks stack, so a proof of real Glass
+    source runs on the production field.
 - **H3 — Recursive proofs. 🚧 IN PROGRESS.** A proof that verifies another proof. The
   hard core is expressing a verifier as a circuit; a STARK verifier's algebraic
   heart is the FRI **fold check**.
