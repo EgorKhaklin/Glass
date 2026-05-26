@@ -7,6 +7,9 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [4.96.0] — 2026-05-25 — F_{p²} over Goldilocks: a cryptographic challenge space
+- **FRI over Goldilocks gains cryptographic soundness.** [`frost_goldilocks_ext.glass`](examples/frost/frost_goldilocks_ext.glass) builds the degree-2 extension F_{p²} = F_p[X]/(X² − 7) over Goldilocks (W = 7 is a non-residue, 7^((p−1)/2) = −1). Since p ≈ 2⁶⁴, F_{p²} ≈ 2¹²⁸ — a challenge space too large to guess. Inversion stays int64-safe via the norm (a⁻¹ = conj(a)·N(a)⁻¹, N(a) ∈ F_p inverted by the base Fermat inverse). FRI now folds with β ∈ F_{p²} (≈2¹²⁸ per-round soundness instead of a guessable 2⁶⁴): a low-degree codeword folds to a constant, a tampered one doesn't. All int64-safe, dogfooded byte-identical. (Mirrors the Baby Bear arc frost_fri → frost_fri_ext; next is Merkle + Fiat-Shamir over Goldilocks.)
+
 ## [4.95.0] — 2026-05-25 — FRI over Goldilocks
 - **The STARK's core engine now runs over the real field.** [`frost_goldilocks_fri.glass`](examples/frost/frost_goldilocks_fri.glass) runs the FRI low-degree test over Goldilocks (p = 2⁶⁴ − 2³² + 1): the evaluation domain is a genuine 2ᵏ-th-root-of-unity subgroup (built from the field's 2-adicity), the fold `(f(x)+f(−x))/2 + β·(f(x)−f(−x))/(2x)` uses the limb-walked inverse, and a low-degree codeword folds to a constant while a tampered one does not. Every step is int64-safe, so it dogfoods byte-identical — FRI over a production-grade field, not toy Baby Bear. (Base-field β for now; the degree-2 extension challenge space and Merkle/Fiat-Shamir are the next layers, mirroring how the Baby Bear path grew.)
 

@@ -39,7 +39,7 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Shipped (through v4.95)
+## Shipped (through v4.96)
 
 - **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
 - **Pane** — a query language in Glass.
@@ -148,9 +148,15 @@ proves the things the project was for."
     low-degree codeword folds to a constant while a tampered one doesn't — all
     int64-safe, dogfooded. (Base-field β for now; the degree-2 extension challenge
     space + Merkle/Fiat-Shamir are the layers on top, as in the Baby Bear path.)
-  - **Next:** the degree-2 Goldilocks extension (≈2¹²⁸ challenge space) threaded
-    through the fold, then Merkle commitment + Fiat-Shamir sampling — a full
-    cryptographic STARK over Goldilocks.
+  - ✅ **F_{p²} ≈ 2¹²⁸ — the cryptographic challenge space**
+    ([`frost_goldilocks_ext.glass`](../examples/frost/frost_goldilocks_ext.glass)):
+    the degree-2 extension F_{p²} = F_p[X]/(X² − 7) over Goldilocks (W = 7 is a
+    non-residue: 7^((p−1)/2) = −1), with norm-based inversion that stays int64-safe
+    (a⁻¹ = conj(a)·N(a)⁻¹, N(a) ∈ F_p inverted by the base Fermat inverse). FRI now
+    folds with β ∈ F_{p²} (≈2¹²⁸ per-round soundness, not a guessable 2⁶⁴): honest
+    codeword folds to a constant, tampered doesn't. Int64-safe, dogfooded.
+  - **Next:** Merkle commitment + Fiat-Shamir query sampling over Goldilocks — a
+    full cryptographic STARK on the production field.
 - **H3 — Recursive proofs. 🚧 IN PROGRESS.** A proof that verifies another proof. The
   hard core is expressing a verifier as a circuit; a STARK verifier's algebraic
   heart is the FRI **fold check**.

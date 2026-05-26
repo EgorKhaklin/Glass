@@ -45,6 +45,7 @@ compiles identically through the self-hosted toolchain.
 - [`frost_field.glass`](frost_field.glass) — a **128-bit field** (2¹²⁸ − 159) from base-2¹⁶ bignum limbs: arithmetic past the single-int64 ceiling.
 - [`frost_goldilocks.glass`](frost_goldilocks.glass) — the **Goldilocks field** (2⁶⁴ − 2³² + 1), the one real STARK provers (Plonky2, RISC Zero) run on: its signature division-free fast reduction (2⁶⁴ ≡ 2³² − 1), a real Fermat inverse (the exponent p − 2 overflows int64, so it's walked in limbs too), and the 2³²-th root of unity that gives it 32 NTT layers — all int64-safe, so it dogfoods.
 - [`frost_goldilocks_fri.glass`](frost_goldilocks_fri.glass) — the **FRI low-degree test over Goldilocks**: the STARK's core engine on the real field. A 2ᵏ-root-of-unity domain, the fold `(f(x)+f(−x))/2 + β·(f(x)−f(−x))/(2x)` with the limb-walked inverse — a low-degree codeword folds to a constant, a tampered one doesn't. Int64-safe, dogfooded.
+- [`frost_goldilocks_ext.glass`](frost_goldilocks_ext.glass) — **F_{p²} ≈ 2¹²⁸ over Goldilocks**, the cryptographic challenge space: the degree-2 extension `F_p[X]/(X²−7)` with norm-based (int64-safe) inversion, and FRI folded with β ∈ F_{p²} (~2¹²⁸ per-round soundness, not a guessable 2⁶⁴). Honest folds to a constant, tampered doesn't. Dogfooded.
 
 > Honest note: the field and parameters are real enough to be *correct* and to
 > demonstrate every property; the sizes are kept small so each file reads in one
