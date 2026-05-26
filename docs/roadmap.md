@@ -39,7 +39,7 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Shipped (through v4.98)
+## Shipped (through v4.99)
 
 - **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
 - **Pane** — a query language in Glass.
@@ -87,6 +87,15 @@ language feature, not a library you assemble by hand.
 N1–N5 reached the founding thesis: *write Glass, get a zero-knowledge proof.*
 What's next is making that proof matter — moving from "it can prove" to "it
 proves the things the project was for."
+
+> **The thesis, unified end to end** ([`prove_source_zk.glass`](../examples/prove/prove_source_zk.glass)):
+> real multi-function Glass source, parsed by prism, lowered to a circuit (calls
+> inlined, arithmetic → gates, output bound to a public claim via `qassert`), and
+> proven with the blinded F_{p⁴} FRI STARK — *succinct and zero-knowledge*. The
+> two halves that were apart (real-source front end in `prove_glass`/`prove_calls`,
+> the ZK STARK backend in `prove_zk`/`prove_query_zk`) are now one file: write a
+> Glass function, get a proof of its result. (Hint-free subset — arithmetic + let +
+> calls; `==`/`if` ride the RLC bridge until their inverse-hint wires are added.)
 
 - **H1 — Pane ⊕ Frost: zero-knowledge queries. 🚧 IN PROGRESS.** The founding
   vision (*Frost = the ZK extension of Pane*): commit a private table, run a Pane

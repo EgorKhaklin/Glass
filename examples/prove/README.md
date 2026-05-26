@@ -26,6 +26,7 @@ The four stages that lower the bridge circuit into the cryptographic STARK:
 - [`prove_adt.glass`](prove_adt.glass) — structured `match` over ADT values (`(tag, fields)` wire-tuples).
 - [`prove_zperm.glass`](prove_zperm.glass) — the succinct permutation as a FRI'd z-accumulator.
 - [`prove_full.glass`](prove_full.glass) — the unified bridge: arithmetic + `==` + `if` + `let` + `EApp` + `EMatch` over real prism programs.
+- [`prove_source_zk.glass`](prove_source_zk.glass) — **the thesis, unified end to end: real Glass source → a succinct, *zero-knowledge* proof.** Earlier the two halves lived apart — `prove_glass`/`prove_calls` parse real source but prove with the sound *RLC* argument; `prove_zk`/`prove_query_zk` are the blinded F_{p⁴} FRI STARK but over hand-built circuits. This joins them: a real multi-function program (`fn sq … fn cube … fn f … f(inp)`, parsed by prism) is lowered to a circuit (calls inlined, arithmetic → gates) with a `qassert` binding the output to a public claim `R`, then proven with the blinded FRI STARK. With a *private* input `inp`, it proves "I know an input with `f(input) = R`" (R = 25) — honest ACCEPT, lying about R REJECTs, two blinding seeds give different openings (ZK). Scope: arithmetic + `let` + calls (the hint-free subset); `==`/`if` need an inverse-hint input wire (see `prove_query_zk`). Self-hosted byte-identical.
 
 ### Pane ⊕ Frost — a zero-knowledge query (H1)
 
