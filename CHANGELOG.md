@@ -7,6 +7,9 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [5.2.0] — 2026-05-26 — Structured ADT match, in zero-knowledge
+- **`prove_adt_zk.glass` proves a structured ADT match succinct + zero-knowledge.** Upgrades `prove_adt`'s sound-RLC structured match to the blinded F_{p⁴} FRI STARK. An ADT value is a tagged tuple `(tag, f0, f1)`; `match s { Circle(r) => 3·r·r; Rect(w, h) => w·h }` dispatches on the tag (is-zero gadget, inverse hint on an input wire), binds the field wires, and multiplexes the bodies (first-match). The ADT value is *private*; a `qassert` binds the match output to a public claim `R`. Proves "I know an `s` with `area(s) = R`" (R = 27): honest ACCEPT, lying REJECT, two blinding seeds give different openings (zero-knowledge). Self-hosted byte-identical. (Hand-shaped `(tag, f0, f1)` representation — wiring prism's real `ECtor`/`PCtor` through the general source bridge, where every value becomes multi-wire, is the larger follow-on.)
+
 ## [5.1.0] — 2026-05-26 — The source→ZK bridge gains scalar `match`
 - **`prove_source_zk` now proves real `match` expressions.** [`prove_source_zk.glass`](examples/prove/prove_source_zk.glass) extends the bridge with scalar pattern dispatch: `match x { 7 => 100; k => k * k }`. Each arm becomes a selector (`PInt`/`PBool` via the is-zero gadget — consuming an inverse hint; `PVar`/`PWild` always match), combined first-match style (`eff = sel·(1−matched)`, `result += eff·body`, `matched += eff`) so the circuit is branchless. The hint pre-pass (`heval`) was extended to collect each arm's selector hint and all bodies' hints in the exact order `cgen_match` consumes them. Demo: `fn grade(x) = match x { 7 => 100; k => k * k }` over a private input proves `grade(inp) = 100` (honest ACCEPT). Self-hosted byte-identical. (`PCtor`/`PTuple`/`PRecord`/`PStr` patterns are treated as non-matching — structured-pattern circuits are the next step.)
 
