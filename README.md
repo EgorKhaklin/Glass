@@ -34,8 +34,14 @@ And that single idea — *transparency* — turns out to go further than anyone 
 > ### It proves itself.
 > Built from scratch, in Glass: a **zero-knowledge prover**. Commit a private
 > dataset, ask it a question — *the total payroll, the headcount, the average
-> salary* and get back a cryptographic proof of the answer that reveals the
+> salary* — and get back a cryptographic proof of the answer that reveals the
 > commitment, the query, the result, and **not a single row**.
+>
+> And it closes the loop: **write a Glass function — arithmetic, calls, `if`,
+> `match` — and get a zero-knowledge proof of its result.** The prover is a
+> from-scratch STARK (field, hash, Merkle, FRI, blinding), now also over the
+> production **Goldilocks** field that real provers use. You write what a program
+> *means*; you get a machine-checkable proof it did exactly that.
 
 <br/>
 
