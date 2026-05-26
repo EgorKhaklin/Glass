@@ -10,16 +10,18 @@
 # own front end (prism), lowered to a circuit, and proven with the blinded FRI
 # STARK. "Write a Glass function, get a zero-knowledge proof of its result."
 #
-# The program is `{ fn sq(n)=…; fn cube(n)=…; fn f(x)=…; f(inp) }` — a real
-# curried, multi-function source string. `inp` is the SECRET input; the public
-# claim is R = f(inp). Calls are inlined (peel each fn's ELam binders, bind the
-# parameter to its argument's wire), arithmetic becomes add/mul/sub gates, and a
-# qassert gate binds the output wire to R — so the STARK proves "I know an input
-# with f(input) = R" while revealing only the circuit and R.
+# `inp` is the SECRET input; the public claim is R = f(inp). Calls are inlined
+# (peel each fn's ELam binders, bind the parameter to its argument's wire),
+# arithmetic becomes add/mul/sub gates, == becomes an is-zero gadget, if becomes
+# a multiplexer, and a qassert gate binds the output wire to R — so the STARK
+# proves "I know an input with f(input) = R" revealing only the circuit and R.
 #
-# Scope: arithmetic + let + calls — the hint-free subset (every gate is
-# add/mul/sub/const, directly a trace row). == / if need an inverse-hint input
-# wire (see prove_query_zk's filter) and are the RLC bridge's domain (prove_full).
+# Scope: arithmetic, let, calls, == / != , && / || / not, and if. The control-flow
+# gadgets need an is-zero INVERSE HINT (out = 1 − d·inv, constraint d·out == 0),
+# which can't be a gate output — so a pre-pass (heval) evaluates the program to
+# compute the hints, laid on INPUT wires [k..k+H-1], in the exact order cgen
+# consumes them. (Order comparisons </> would add a ~17-bit range gadget — heavy
+# for the trace — so they stay in the RLC bridge, prove_pane.)
 #
 # Baby Bear field (NTT-friendly + F_{p^4}); imports prism; dogfoods.
 # =============================================================================
@@ -178,50 +180,91 @@ fn qopen5(gates: List<Gate>, w: List<Int>, seed: Int) : F4 =
 
 # --- the front end: REAL prism-parsed Glass source -> circuit ----------------
 # cenv maps a name to its WIRE; fns is the parsed function table; calls inline.
+# == / != need an is-zero inverse HINT that is NOT a gate output (it's not
+# add/mul/sub of existing wires) — so hints live on INPUT wires [k..k+H-1],
+# computed by a pre-pass (heval) in the SAME order cgen consumes them.
 fn env_get(cenv: List<Pair<String, Int>>, name: String) : Int = match cenv { [] => 0; [Pair(k, wv), ...r] => if k == name then wv else env_get(r, name) }
 fn fn_body_of(fns: List<FnDecl>, name: String) : Expr = match fns { [] => EInt(0); [FnDecl(fnm, tps, ty, body), ...rest] => if fnm == name then body else fn_body_of(rest, name) }
 fn unwind_app(e: Expr, acc: List<Expr>) : (Expr, List<Expr>) = match e { EApp(f, a) => unwind_app(f, [a] ++ acc); _ => (e, acc) }
-# reference evaluator (the SPEC the circuit must match)
-fn reval(e: Expr, env: List<Pair<String, Int>>, fns: List<FnDecl>) : Int =
+
+# pre-pass: the SPEC value AND the is-zero inverse hints, in cgen traversal order.
+fn heval(e: Expr, env: List<Pair<String, Int>>, fns: List<FnDecl>) : (Int, List<Int>) =
   match e {
-    EInt(n) => n;
-    EVar(x) => env_get(env, x);
-    EAdd(a, b) => fadd(reval(a, env, fns), reval(b, env, fns));
-    ESub(a, b) => fsub(reval(a, env, fns), reval(b, env, fns));
-    EMul(a, b) => fmul(reval(a, env, fns), reval(b, env, fns));
-    ELet(nm, v, body) => reval(body, [Pair(nm, reval(v, env, fns))] ++ env, fns);
-    EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => reval_call(fn_body_of(fns, fname), args, [], env, fns); _ => 0 } };
-    _ => 0 }
-fn reval_call(body: Expr, args: List<Expr>, ccenv: List<Pair<String, Int>>, fcenv: List<Pair<String, Int>>, fns: List<FnDecl>) : Int =
+    EInt(n) => (fnorm(n), []);
+    EBool(tf) => (if tf then 1 else 0, []);
+    EVar(x) => (env_get(env, x), []);
+    EAdd(a, b) => match heval(a, env, fns) { (va, ha) => match heval(b, env, fns) { (vb, hb) => (fadd(va, vb), ha ++ hb) } };
+    ESub(a, b) => match heval(a, env, fns) { (va, ha) => match heval(b, env, fns) { (vb, hb) => (fsub(va, vb), ha ++ hb) } };
+    EMul(a, b) => match heval(a, env, fns) { (va, ha) => match heval(b, env, fns) { (vb, hb) => (fmul(va, vb), ha ++ hb) } };
+    EEq(a, b) => match heval(a, env, fns) { (va, ha) => match heval(b, env, fns) { (vb, hb) =>
+      let d : Int = fsub(va, vb) in (if d == 0 then 1 else 0, ha ++ hb ++ [if d == 0 then 0 else finv(d)]) } };
+    ENeq(a, b) => match heval(a, env, fns) { (va, ha) => match heval(b, env, fns) { (vb, hb) =>
+      let d : Int = fsub(va, vb) in (if d == 0 then 0 else 1, ha ++ hb ++ [if d == 0 then 0 else finv(d)]) } };
+    EAnd(a, b) => match heval(a, env, fns) { (va, ha) => match heval(b, env, fns) { (vb, hb) => (fmul(va, vb), ha ++ hb) } };
+    EOr(a, b) => match heval(a, env, fns) { (va, ha) => match heval(b, env, fns) { (vb, hb) => (fsub(fadd(va, vb), fmul(va, vb)), ha ++ hb) } };
+    EUNot(a) => match heval(a, env, fns) { (va, ha) => (fsub(1, va), ha) };
+    EIf(c, t, f) => match heval(c, env, fns) { (vc, hc) => match heval(t, env, fns) { (vt, ht) => match heval(f, env, fns) { (vf, hf) => (if vc == 1 then vt else vf, hc ++ ht ++ hf) } } };
+    ELet(nm, v, body) => match heval(v, env, fns) { (vv, hv) => match heval(body, [Pair(nm, vv)] ++ env, fns) { (vb, hb) => (vb, hv ++ hb) } };
+    EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => heval_call(fn_body_of(fns, fname), args, [], env, fns); _ => (0, []) } };
+    _ => (0, []) }
+fn heval_call(body: Expr, args: List<Expr>, ccenv: List<Pair<String, Int>>, fcenv: List<Pair<String, Int>>, fns: List<FnDecl>) : (Int, List<Int>) =
   match body {
-    ELam(p, inner) => match args { [] => reval(body, ccenv, fns); [a, ...rest] => reval_call(inner, rest, [Pair(p, reval(a, fcenv, fns))] ++ ccenv, fcenv, fns) };
-    _ => reval(body, ccenv, fns) }
-# circuit generator (the IMPLEMENTATION); each subexpr -> a wire, each op -> a gate
-fn cgen(e: Expr, cenv: List<Pair<String, Int>>, fns: List<FnDecl>, b: Build) : (Int, Build) =
+    ELam(p, inner) => match args { [] => heval(body, ccenv, fns); [a, ...rest] => match heval(a, fcenv, fns) { (va, ha) => match heval_call(inner, rest, [Pair(p, va)] ++ ccenv, fcenv, fns) { (vr, hr) => (vr, ha ++ hr) } } };
+    _ => heval(body, ccenv, fns) }
+
+# is-zero gadget: out = 1 − d·inv with d·out == 0 (inv = the hint at hbase+hidx).
+fn mk_eq(wx: Int, wy: Int, hbase: Int, hidx: Int, b: Build) : (Int, Int, Build) =
+  match mks(wx, wy, b) { (wd, b1) => let winv : Int = hbase + hidx in
+  match mkm(wd, winv, b1) { (wp, b2) => match mkc(1, b2) { (wone, b3) =>
+  match mks(wone, wp, b3) { (wout, b4) => match mkm(wd, wout, b4) { (wz, b5) =>
+  match mkc(0, b5) { (wzero, b6) => let b7 : Build = asrt(wz, wzero, b6) in (wout, hidx + 1, b7) } } } } } }
+# multiplexer: out = f + c·(t−f), with c constrained boolean (c·(c−1) == 0).
+fn mk_mux(wc: Int, wt: Int, wf: Int, b: Build) : (Int, Build) =
+  match mks(wt, wf, b) { (wdiff, b1) => match mkm(wc, wdiff, b1) { (wcd, b2) =>
+  match mka(wf, wcd, b2) { (wout, b3) => match mkc(1, b3) { (wone, b4) =>
+  match mks(wc, wone, b4) { (wcm1, b5) => match mkm(wc, wcm1, b5) { (wcc, b6) =>
+  match mkc(0, b6) { (wzero, b7) => let b8 : Build = asrt(wcc, wzero, b7) in (wout, b8) } } } } } } }
+fn mk_not(wx: Int, b: Build) : (Int, Build) = match mkc(1, b) { (wone, b1) => mks(wone, wx, b1) }
+fn mk_or(wx: Int, wy: Int, b: Build) : (Int, Build) = match mka(wx, wy, b) { (ws, b1) => match mkm(wx, wy, b1) { (wp, b2) => mks(ws, wp, b2) } }
+fn bconst(tf: Bool) : Int = if tf then 1 else 0
+
+# circuit generator; threads hidx = the next is-zero hint index.
+fn cgen(e: Expr, cenv: List<Pair<String, Int>>, fns: List<FnDecl>, hbase: Int, hidx: Int, b: Build) : (Int, Int, Build) =
   match e {
-    EInt(n) => mkc(n, b);
-    EVar(x) => (env_get(cenv, x), b);
-    EAdd(x, y) => match cgen(x, cenv, fns, b) { (wx, b1) => match cgen(y, cenv, fns, b1) { (wy, b2) => mka(wx, wy, b2) } };
-    ESub(x, y) => match cgen(x, cenv, fns, b) { (wx, b1) => match cgen(y, cenv, fns, b1) { (wy, b2) => mks(wx, wy, b2) } };
-    EMul(x, y) => match cgen(x, cenv, fns, b) { (wx, b1) => match cgen(y, cenv, fns, b1) { (wy, b2) => mkm(wx, wy, b2) } };
-    ELet(nm, v, body) => match cgen(v, cenv, fns, b) { (wv, b1) => cgen(body, [Pair(nm, wv)] ++ cenv, fns, b1) };
-    EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => cgen_call(fn_body_of(fns, fname), args, [], cenv, fns, b); _ => mkc(0, b) } };
-    _ => mkc(0, b) }
-fn cgen_call(body: Expr, args: List<Expr>, ccenv: List<Pair<String, Int>>, fcenv: List<Pair<String, Int>>, fns: List<FnDecl>, b: Build) : (Int, Build) =
+    EInt(n) => match mkc(n, b) { (w, b1) => (w, hidx, b1) };
+    EBool(tf) => match mkc(bconst(tf), b) { (w, b1) => (w, hidx, b1) };
+    EVar(x) => (env_get(cenv, x), hidx, b);
+    EAdd(x, y) => match cgen(x, cenv, fns, hbase, hidx, b) { (wx, h1, b1) => match cgen(y, cenv, fns, hbase, h1, b1) { (wy, h2, b2) => match mka(wx, wy, b2) { (wo, b3) => (wo, h2, b3) } } };
+    ESub(x, y) => match cgen(x, cenv, fns, hbase, hidx, b) { (wx, h1, b1) => match cgen(y, cenv, fns, hbase, h1, b1) { (wy, h2, b2) => match mks(wx, wy, b2) { (wo, b3) => (wo, h2, b3) } } };
+    EMul(x, y) => match cgen(x, cenv, fns, hbase, hidx, b) { (wx, h1, b1) => match cgen(y, cenv, fns, hbase, h1, b1) { (wy, h2, b2) => match mkm(wx, wy, b2) { (wo, b3) => (wo, h2, b3) } } };
+    EEq(x, y) => match cgen(x, cenv, fns, hbase, hidx, b) { (wx, h1, b1) => match cgen(y, cenv, fns, hbase, h1, b1) { (wy, h2, b2) => mk_eq(wx, wy, hbase, h2, b2) } };
+    ENeq(x, y) => match cgen(x, cenv, fns, hbase, hidx, b) { (wx, h1, b1) => match cgen(y, cenv, fns, hbase, h1, b1) { (wy, h2, b2) => match mk_eq(wx, wy, hbase, h2, b2) { (weq, h3, b3) => match mk_not(weq, b3) { (wo, b4) => (wo, h3, b4) } } } };
+    EAnd(x, y) => match cgen(x, cenv, fns, hbase, hidx, b) { (wx, h1, b1) => match cgen(y, cenv, fns, hbase, h1, b1) { (wy, h2, b2) => match mkm(wx, wy, b2) { (wo, b3) => (wo, h2, b3) } } };
+    EOr(x, y) => match cgen(x, cenv, fns, hbase, hidx, b) { (wx, h1, b1) => match cgen(y, cenv, fns, hbase, h1, b1) { (wy, h2, b2) => match mk_or(wx, wy, b2) { (wo, b3) => (wo, h2, b3) } } };
+    EUNot(x) => match cgen(x, cenv, fns, hbase, hidx, b) { (wx, h1, b1) => match mk_not(wx, b1) { (wo, b2) => (wo, h1, b2) } };
+    EIf(c, t, f) => match cgen(c, cenv, fns, hbase, hidx, b) { (wc, h1, b1) => match cgen(t, cenv, fns, hbase, h1, b1) { (wt, h2, b2) => match cgen(f, cenv, fns, hbase, h2, b2) { (wf, h3, b3) => match mk_mux(wc, wt, wf, b3) { (wo, b4) => (wo, h3, b4) } } } };
+    ELet(nm, v, body) => match cgen(v, cenv, fns, hbase, hidx, b) { (wv, h1, b1) => cgen(body, [Pair(nm, wv)] ++ cenv, fns, hbase, h1, b1) };
+    EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => cgen_call(fn_body_of(fns, fname), args, [], cenv, fns, hbase, hidx, b); _ => match mkc(0, b) { (w, b1) => (w, hidx, b1) } } };
+    _ => match mkc(0, b) { (w, b1) => (w, hidx, b1) } }
+fn cgen_call(body: Expr, args: List<Expr>, ccenv: List<Pair<String, Int>>, fcenv: List<Pair<String, Int>>, fns: List<FnDecl>, hbase: Int, hidx: Int, b: Build) : (Int, Int, Build) =
   match body {
-    ELam(p, inner) => match args { [] => cgen(body, ccenv, fns, b); [a, ...rest] => match cgen(a, fcenv, fns, b) { (wa, b1) => cgen_call(inner, rest, [Pair(p, wa)] ++ ccenv, fcenv, fns, b1) } };
-    _ => cgen(body, ccenv, fns, b) }
+    ELam(p, inner) => match args { [] => cgen(body, ccenv, fns, hbase, hidx, b); [a, ...rest] => match cgen(a, fcenv, fns, hbase, hidx, b) { (wa, h1, b1) => cgen_call(inner, rest, [Pair(p, wa)] ++ ccenv, fcenv, fns, hbase, h1, b1) } };
+    _ => cgen(body, ccenv, fns, hbase, hidx, b) }
 fn in_cenv(inputs: List<Pair<String, Int>>, i: Int) : List<Pair<String, Int>> = match inputs { [] => []; [Pair(nm, v), ...r] => [Pair(nm, i)] ++ in_cenv(r, i + 1) }
 fn in_vals(inputs: List<Pair<String, Int>>) : List<Int> = match inputs { [] => []; [Pair(nm, v), ...r] => [v] ++ in_vals(r) }
 fn plen(xs: List<Pair<String, Int>>) : Int = match xs { [] => 0; [x, ...r] => 1 + plen(r) }
 fn parse_prog(src: String) : Program = match parse_program(src) { Ok(p) => p; Err(m) => Program([], [], EInt(0)) }
-# parse source, lower main to a circuit, assert the output equals the public claim R
+fn hints_of(p: (Int, List<Int>)) : List<Int> = match p { (v, h) => h }
+fn val_of(p: (Int, List<Int>)) : Int = match p { (v, h) => v }
+# parse source, lay inputs then is-zero hints, lower main, assert output == claim R
 fn build_source(src: String, inputs: List<Pair<String, Int>>, claimedR: Int) : Build =
   match parse_prog(src) { Program(types, fns, main) =>
-    match cgen(main, in_cenv(inputs, 0), fns, Build(plen(inputs), [], in_vals(inputs))) { (out, b1) =>
+    let k : Int = plen(inputs) in
+    let hints : List<Int> = hints_of(heval(main, inputs, fns)) in
+    match cgen(main, in_cenv(inputs, 0), fns, k, 0, Build(k + len(hints), [], in_vals(inputs) ++ hints)) { (out, hf, b1) =>
     match mkc(claimedR, b1) { (wR, b2) => asrt(out, wR, b2) } } }
 fn ref_result(src: String, inputs: List<Pair<String, Int>>) : Int =
-  match parse_prog(src) { Program(types, fns, main) => reval(main, inputs, fns) }
+  match parse_prog(src) { Program(types, fns, main) => val_of(heval(main, inputs, fns)) }
 fn prove(src: String, inputs: List<Pair<String, Int>>, claimedR: Int, seed: Int, nv: F2, nw: Int) : Bool =
   match build_source(src, inputs, claimedR) { Build(n, gates, w) => stark_ok(gates, w, seed, nv, nw) }
 
@@ -230,25 +273,32 @@ fn show_a(b: Bool) : String = if b then "ACCEPT" else "REJECT"
 fn show_b(b: Bool) : String = if b then "yes" else "no"
 let bbw : Int = find_nonres_b(2)
 let bbv : F2 = find_v(0, bbw)
-let src : String = "fn sq(n: Int) : Int = n * n\nfn cube(n: Int) : Int = sq(n) * n\nfn f(x: Int) : Int = cube(x) - sq(x) + 7\nf(inp)"
-let secret : Int = 3                                # the PRIVATE input
-let inputs : List<Pair<String, Int>> = [Pair("inp", secret)]
-let res : Int = ref_result(src, inputs)             # public claim R = f(3) = 27 - 9 + 7 = 25
+# (1) arithmetic + function calls
+let src1 : String = "fn sq(n: Int) : Int = n * n\nfn cube(n: Int) : Int = sq(n) * n\nfn f(x: Int) : Int = cube(x) - sq(x) + 7\nf(inp)"
+let in1 : List<Pair<String, Int>> = [Pair("inp", 3)]
+let r1 : Int = ref_result(src1, in1)                # f(3) = 27 - 9 + 7 = 25
+# (2) branching: == and if (the control-flow gadgets, with an is-zero hint wire)
+let src2 : String = "fn classify(x: Int) : Int = if x == 7 then 100 else x * x\nclassify(inp)"
+let in2 : List<Pair<String, Int>> = [Pair("inp", 7)]
+let r2 : Int = ref_result(src2, in2)                # classify(7) = 100 (the == branch)
 
 let _ : String = print("--- prove_source_zk.glass: REAL Glass source -> a succinct, ZERO-KNOWLEDGE proof ---")
-let _ : String = print("program (parsed by prism):  fn sq(n)=n*n;  fn cube(n)=sq(n)*n;  fn f(x)=cube(x)-sq(x)+7;  f(inp)")
-let _ : String = print("the input inp is PRIVATE; public claim R = f(inp) = " ++ int_to_string(res))
+let _ : String = print("real prism-parsed programs -> circuit -> the blinded F_{p^4} FRI STARK.")
 let _ : String = print("")
-let _ : String = print("honest (prover knows inp with f(inp)=R):  " ++ show_a(prove(src, inputs, res, 11111, bbv, bbw)))
-let _ : String = print("lying about the result (R = 999):         " ++ show_a(prove(src, inputs, 999, 11111, bbv, bbw)) ++ "  (output != claim => assert row's l-r != 0 => REJECT)")
+let _ : String = print("(1) arithmetic + calls:  fn sq;  fn cube;  fn f(x)=cube(x)-sq(x)+7;  f(inp)   (inp private)")
+let _ : String = print("    public R = f(inp) = " ++ int_to_string(r1) ++ ";   honest proof: " ++ show_a(prove(src1, in1, r1, 11111, bbv, bbw)))
 let _ : String = print("")
+let _ : String = print("(2) branching (== and if):  fn classify(x) = if x == 7 then 100 else x * x;  classify(inp)")
+let _ : String = print("    public R = classify(inp) = " ++ int_to_string(r2) ++ "   (inp private)")
+let _ : String = print("    honest (prover knows inp with classify(inp)=R):  " ++ show_a(prove(src2, in2, r2, 11111, bbv, bbw)))
+let _ : String = print("    lying (R = 999):                                 " ++ show_a(prove(src2, in2, 999, 11111, bbv, bbw)) ++ "  (output != claim => REJECT)")
 let _ : String =
-  match build_source(src, inputs, res) { Build(n, gates, w) =>
-    print("ZERO-KNOWLEDGE: two blinding seeds both verify: "
+  match build_source(src2, in2, r2) { Build(n, gates, w) =>
+    print("    ZERO-KNOWLEDGE: two seeds verify: "
       ++ show_a(stark_ok(gates, w, 11111, bbv, bbw)) ++ " / " ++ show_a(stark_ok(gates, w, 22222, bbv, bbw))
-      ++ "; quotient opening #5 differs: " ++ show_b(eq4(qopen5(gates, w, 11111), qopen5(gates, w, 22222)) == false)) }
+      ++ "; opening #5 differs: " ++ show_b(eq4(qopen5(gates, w, 11111), qopen5(gates, w, 22222)) == false)) }
 let _ : String = print("")
-let _ : String = print("real Glass source, parsed by Glass's own front end, proven succinct + zero-knowledge.")
+let _ : String = print("real Glass source — arithmetic, calls, ==, if — proven succinct + zero-knowledge.")
 let _ : String = print("the thesis, end to end: write a Glass function, get a proof of its result.")
 
-"prove_source_zk v0.1 — real prism-parsed Glass source proven with the blinded F_{p^4} FRI STARK"
+"prove_source_zk v0.2 — real prism source (arith/calls/==/if) -> blinded F_{p^4} FRI STARK"
