@@ -39,7 +39,7 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Shipped (through v5.12)
+## Shipped (through v5.13)
 
 - **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
 - **Pane** — a query language in Glass.
@@ -269,7 +269,15 @@ three under-invested axes — *realness*, *usability*, and *convergence* — on 
     `fact(5) = 120` over a private input *and* its own refinement, in ZK; lying REJECTs.
     The same transform runs on glass.py and native (byte-identical). Reachable via
     `glass prove` ([`fact_prove.glass`](../examples/prove/fact_prove.glass)).
-    **Next within E1:** depth-bounded `List<Int>` (Nil/Cons) over the same unroll.
+  - **E1-next. ✅ DONE (recursive datatypes).** **Bounded linked lists** — `type IntList
+    = Nil | Cons(Int, IntList)` — proven in ZK *with no new machinery*: the recursive
+    type lays out as a fixed-width buffer (the type-directed `twidth` already bounds a
+    recursive type's width by a depth fuel) and the recursive fold unrolls (E1). The two
+    bounds compose. `fn suml(l) : Int where (result != 99) = match l { Nil => 0;
+    Cons(h,t) => h + suml(t) }` proves `suml [5,2,3] = 10` over a private head *and* its
+    refinement, in ZK; lying REJECTs; byte-identical. Via `glass prove`
+    ([`list_sum_prove.glass`](../examples/prove/list_sum_prove.glass)). Progress by
+    composition — the cleanest kind.
   - **E2.** Higher-order functions via defunctionalization/inlining.
 - **Track U — Usability** (a *feature*, not a library you assemble by hand).
   - **U1. ✅ DONE.** **`glass prove <file.glass> [name=value …]`** — compiles the file's

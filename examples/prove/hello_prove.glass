@@ -6,8 +6,9 @@
 # and emits a succinct, zero-knowledge proof of its result. Any name passed on the
 # command line (here `inp`) is a PRIVATE input — it stays in the witness, and the
 # proof reveals only the result. Supported today: arithmetic, `let`, function
-# calls, `==`/`if`, `match` over (nested) ADTs and patterns, tuples, and bounded
-# recursion (see fact_prove.glass). Refinement types (`where`) are proven in-circuit.
+# calls, `==`/`if`, `match` over (nested) ADTs and patterns, tuples, bounded
+# recursion (fact_prove.glass), and recursive datatypes / linked lists
+# (list_sum_prove.glass). Refinement types (`where`) are proven in-circuit.
 
 fn sq(n: Int) : Int = n * n
 fn f(x: Int) : Int = sq(x) + 5      # f(9) = 81 + 5 = 86

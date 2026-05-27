@@ -1,0 +1,18 @@
+# A program over a RECURSIVE LINKED LIST you can prove. Run:
+#
+#   glass prove examples/prove/list_sum_prove.glass inp=5
+#
+# A recursive datatype `IntList` lays out as a fixed-width buffer (the type's wire
+# width is bounded by a depth fuel), and the recursive fold `suml` is bounded-
+# unrolled into a CALL-FREE circuit — so an entire linked list AND the fold over it
+# compile to one arithmetic circuit and a single zero-knowledge proof. No machinery
+# beyond what bounded recursion (v5.12) and multi-wire ADTs already provided: a
+# recursive function over a recursive datatype, both bounded. The unroll bound is 6,
+# so lists up to depth 5 are exact. `inp` is the PRIVATE head — the proof reveals
+# only the sum, not the list.
+
+type IntList = | Nil | Cons(Int, IntList)
+
+fn suml(l: IntList) : Int = match l { Nil => 0; Cons(h, t) => h + suml(t) }
+
+suml(Cons(inp, Cons(2, Cons(3, Cons(4, Nil)))))      # inp + 2 + 3 + 4 = 14

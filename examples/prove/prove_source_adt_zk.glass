@@ -29,12 +29,15 @@
 # the base case fires first, so the cutoff sits in a discarded branch (the proof
 # is over the depth-bounded function, the way a ZK-VM proves bounded loops).
 #
-# Demo:  fn fact(n) : Int where (result != 0) = if n == 0 then 1 else n*fact(n-1)
-#        fact(inp)   -- inp PRIVATE; proves fact(5) = 120 AND its own refinement
-#        (recursion E1 + refinement C1, fused). A lying `ident` REJECTs.
-# Imports prism (its real Expr/Pattern/TypeDecl + parser); Baby Bear + F_{p^4}.
-# Heavier than the lighter prove demos (ng=128, the interpreter strains) — iterate
-# on examples/selfhost/run_native.sh; dogfoods (byte-identical) given the time.
+# Demo:  type IntList = Nil | Cons(Int, IntList)
+#        fn suml(l) : Int where (result != 99) = match l { Nil => 0; Cons(h,t) => h+suml(t) }
+#        suml(Cons(inp, Cons(2, Cons(3, Nil))))   -- inp PRIVATE; proves [5,2,3] sums
+#        to 10 AND its refinement (recursive DATA + recursive function + C1, fused).
+# A recursive datatype is the culmination: the list lays out as a fixed-width buffer
+# (twidth's fuel) and the fold unrolls (recursion fuel) — no new machinery. A lying
+# `ident` REJECTs. Imports prism; Baby Bear + F_{p^4}. Heavier than the lighter prove
+# demos (ng=256, the interpreter strains) — iterate on examples/selfhost/run_native.sh;
+# dogfoods (byte-identical) given the time.
 # =============================================================================
 
 import "../selfhost/prism.glass"
@@ -448,24 +451,26 @@ fn show_a(b: Bool) : String = if b then "ACCEPT" else "REJECT"
 fn show_b(b: Bool) : String = if b then "yes" else "no"
 let bbw : Int = find_nonres_b(2)
 let bbv : F2 = find_v(0, bbw)
-# RECURSION (E1) + REFINEMENT TYPES (C1), fused: a RECURSIVE function with a
-# `where (P)` clause. The recursion is bounded-unrolled into a call-free circuit;
-# the `where` is extracted from the return type and proven IN-CIRCUIT, so the
-# refinement is a zero-knowledge guarantee about the recursive result. fact holds
-# (fact(n) is never 0); ident LIES about its type and is rejected.
-let src_ok : String = "fn fact(n: Int) : Int where (result != 0) = if n == 0 then 1 else n * fact(n - 1)\nfact(inp)"
+# RECURSIVE DATA (E1) + RECURSION + REFINEMENT (C1), fused: a recursive function
+# `suml` folding a recursive datatype `IntList` (Nil/Cons), with a `where (P)`
+# clause. The recursive TYPE lays out as a fixed-width buffer (twidth's fuel bound)
+# and the recursive FUNCTION is bounded-unrolled into a call-free circuit — so a
+# whole linked list and the fold over it become one arithmetic circuit, and the
+# `where` is proven IN-CIRCUIT. suml's result holds its refinement; ident LIES.
+let src_ok : String = "type IntList = | Nil | Cons(Int, IntList)\nfn suml(l: IntList) : Int where (result != 99) = match l { Nil => 0; Cons(h, t) => h + suml(t) }\nsuml(Cons(inp, Cons(2, Cons(3, Nil))))"
 let src_bad : String = "fn ident(x: Int) : Int where (result == 0 || result == 1) = x\nident(inp)"
-let inputs : List<Pair<String, Int>> = [Pair("inp", 5)]      # secret
-let r_ok : Int = ref_result(src_ok, inputs)                   # fact(5) = 120  (!= 0)
+let inputs : List<Pair<String, Int>> = [Pair("inp", 5)]      # secret head of the list
+let r_ok : Int = ref_result(src_ok, inputs)                   # suml [5,2,3] = 10  (!= 99)
 let r_bad : Int = ref_result(src_bad, inputs)                 # ident(5) = 5   (NOT in {0,1})
 
-let _ : String = print("--- prove_source_adt_zk.glass: proving a RECURSIVE function's REFINEMENT in ZK (E1 + C1) ---")
-let _ : String = print("a self-recursive function is bounded-unrolled into a call-free circuit, and its `where (P)`")
-let _ : String = print("clause is extracted from the return type and proven in-circuit — the refinement becomes a")
-let _ : String = print("cryptographic guarantee about the recursive result, not just a runtime check.")
+let _ : String = print("--- prove_source_adt_zk.glass: proving a fold over a RECURSIVE LIST in ZK (E1 + C1) ---")
+let _ : String = print("a recursive datatype (IntList = Nil | Cons) lays out as a fixed-width buffer, a recursive")
+let _ : String = print("fold (suml) is bounded-unrolled to a call-free circuit, and the function's `where (P)` is")
+let _ : String = print("proven in-circuit — a linked list AND the fold over it, as one zero-knowledge proof.")
 let _ : String = print("")
-let _ : String = print("fn fact(n) : Int where (result != 0) = if n == 0 then 1 else n * fact(n - 1)")
-let _ : String = print("  fact(inp) with inp PRIVATE; result R = " ++ int_to_string(r_ok) ++ " (satisfies result != 0)")
+let _ : String = print("type IntList = Nil | Cons(Int, IntList)")
+let _ : String = print("fn suml(l) : Int where (result != 99) = match l { Nil => 0; Cons(h, t) => h + suml(t) }")
+let _ : String = print("  suml(Cons(inp, Cons(2, Cons(3, Nil)))) with inp PRIVATE; result R = " ++ int_to_string(r_ok) ++ " (satisfies result != 99)")
 let _ : String = print("  proof (result = R AND refinement holds):  " ++ show_a(prove(src_ok, inputs, r_ok, 11111, bbv, bbw)))
 let _ : String = print("")
 let _ : String = print("fn ident(x) : Int where (result == 0 || result == 1) = x   -- a function that LIES about its type")
@@ -473,11 +478,11 @@ let _ : String = print("  ident(inp) = " ++ int_to_string(r_bad) ++ ", which vio
 let _ : String = print("  proof:  " ++ show_a(prove(src_bad, inputs, r_bad, 11111, bbv, bbw)) ++ "  (the in-circuit refinement assertion fails => unprovable)")
 let _ : String =
   match build_source(src_ok, inputs, r_ok) { Build(n, gates, w) =>
-    print("\nZERO-KNOWLEDGE (fact): two seeds verify: "
+    print("\nZERO-KNOWLEDGE (suml): two seeds verify: "
       ++ show_a(stark_ok(gates, w, 11111, bbv, bbw)) ++ " / " ++ show_a(stark_ok(gates, w, 22222, bbv, bbw))
       ++ "; opening #5 differs: " ++ show_b(eq4(qopen5(gates, w, 11111), qopen5(gates, w, 22222)) == false)) }
 let _ : String = print("")
-let _ : String = print("Glass proves a recursive function's own refinement type in zero-knowledge: recursion is")
-let _ : String = print("bounded-unrolled, the type IS the guarantee, and a function that lies cannot be proven.")
+let _ : String = print("Glass proves a fold over a recursive linked list in zero-knowledge: recursive data + recursive")
+let _ : String = print("function, both bounded, the refinement proven in-circuit — a recursive datatype, verifiable.")
 
-"prove_source_adt_zk v0.2 — real prism source: ADTs + bounded recursion (unroll) -> refinement-checked blinded F_{p^4} FRI STARK"
+"prove_source_adt_zk v0.3 — real prism source: recursive ADTs (lists) + bounded recursion -> refinement-checked blinded F_{p^4} FRI STARK"
