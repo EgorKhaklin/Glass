@@ -39,7 +39,7 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Shipped (through v5.11)
+## Shipped (through v5.12)
 
 - **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
 - **Pane** — a query language in Glass.
@@ -260,8 +260,16 @@ three under-invested axes — *realness*, *usability*, and *convergence* — on 
     cryptography, per component, with the path to production-soundness and a clear
     "do not use to protect real value" bottom line.
 - **Track E — Expressiveness** (past first-order).
-  - **E1.** **Bounded recursion / lists** via static unrolling (`List<Int>` as Nil/Cons
-    to a depth bound) — the expressiveness cliff; what real ZK-VMs do.
+  - **E1. ✅ DONE (recursion).** **Bounded recursion** via a source-level **unroll
+    pre-pass** (`unroll`/`inline_fn` in [`prove_source_adt_zk.glass`](../examples/prove/prove_source_adt_zk.glass)):
+    a self-recursive call is inlined to a fixed depth, each call rewritten as
+    `let p = arg in body` (so an argument is evaluated once — no duplicate gates), and
+    the unrolled term is call-free, so the circuit generator never recurses. `fn fact(n)
+    : Int where (result != 0) = if n == 0 then 1 else n * fact(n - 1)` proves
+    `fact(5) = 120` over a private input *and* its own refinement, in ZK; lying REJECTs.
+    The same transform runs on glass.py and native (byte-identical). Reachable via
+    `glass prove` ([`fact_prove.glass`](../examples/prove/fact_prove.glass)).
+    **Next within E1:** depth-bounded `List<Int>` (Nil/Cons) over the same unroll.
   - **E2.** Higher-order functions via defunctionalization/inlining.
 - **Track U — Usability** (a *feature*, not a library you assemble by hand).
   - **U1. ✅ DONE.** **`glass prove <file.glass> [name=value …]`** — compiles the file's

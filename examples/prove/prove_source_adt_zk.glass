@@ -22,11 +22,19 @@
 # nested sub-values by type width. Bounded: non-recursive types (a depth fuel
 # guards width).
 #
-# Demo:  type Shape = Circle(Int) | Rect(Int, Int)
-#        fn area(s: Shape) : Int = match s { Circle(r) => 3*r*r; Rect(w,h) => w*h }
-#        area(Circle(inp))            -- inp PRIVATE; public claim R = area = 3·inp²
-# Imports prism (its real Expr/Pattern/TypeDecl + parser); Baby Bear + F_{p^4};
-# dogfoods.
+# RECURSION (E1). A source-level `unroll` pre-pass inlines self-recursive calls to
+# a fixed depth, each call rewritten as `let p = arg in body` (so an argument is
+# evaluated once — no duplicate gates) — the unrolled term is CALL-FREE, so the
+# circuit generator never recurses. Past the bound a call lowers to 0; within it
+# the base case fires first, so the cutoff sits in a discarded branch (the proof
+# is over the depth-bounded function, the way a ZK-VM proves bounded loops).
+#
+# Demo:  fn fact(n) : Int where (result != 0) = if n == 0 then 1 else n*fact(n-1)
+#        fact(inp)   -- inp PRIVATE; proves fact(5) = 120 AND its own refinement
+#        (recursion E1 + refinement C1, fused). A lying `ident` REJECTs.
+# Imports prism (its real Expr/Pattern/TypeDecl + parser); Baby Bear + F_{p^4}.
+# Heavier than the lighter prove demos (ng=128, the interpreter strains) — iterate
+# on examples/selfhost/run_native.sh; dogfoods (byte-identical) given the time.
 # =============================================================================
 
 import "../selfhost/prism.glass"
@@ -198,6 +206,39 @@ fn unwind_app(e: Expr, acc: List<Expr>) : (Expr, List<Expr>) = match e { EApp(f,
 fn main_fname(main: Expr) : String = match main { EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(nm) => nm; _ => "" } }; _ => "" }
 fn ret_type(ty: Type) : Type = match ty { TyFn(a, r, e) => ret_type(r); _ => ty }
 fn fn_ret(fns: List<FnDecl>, name: String) : Type = match fns { [] => TyInt; [FnDecl(fnm, tps, ty, body), ...rest] => if fnm == name then ret_type(ty) else fn_ret(rest, name) }
+# E1: bounded recursion via a source-level unroll pre-pass. A call is inlined to a
+# fixed depth FUEL, with each call rewritten as `let p = arg in body` — so an
+# argument used many times is still evaluated once (no duplicate gates), and the
+# unrolled term is CALL-FREE, so heval/cgen never recurse on EApp. Past the bound a
+# call lowers to 0; for inputs within the bound the base case fires first and the
+# cutoff sits in a branch the if/match discards. (Same transform on glass.py and
+# native, so it stays byte-identical; ref_result unrolls too, so the claimed result
+# and the circuit agree on the same bounded semantics.)
+fn unroll_args(es: List<Expr>, fns: List<FnDecl>, fuel: Int) : List<Expr> =
+  match es { [] => []; [e, ...r] => [unroll(e, fns, fuel)] ++ unroll_args(r, fns, fuel) }
+fn unroll_arms(arms: List<Pair<Pattern, Expr>>, fns: List<FnDecl>, fuel: Int) : List<Pair<Pattern, Expr>> =
+  match arms { [] => []; [Pair(p, b), ...r] => [Pair(p, unroll(b, fns, fuel))] ++ unroll_arms(r, fns, fuel) }
+fn inline_fn(body: Expr, args: List<Expr>, fns: List<FnDecl>, fuel: Int) : Expr =
+  match body {
+    ELam(p, inner) => match args { [] => unroll(inner, fns, fuel - 1); [a, ...rest] => ELet(p, unroll(a, fns, fuel), inline_fn(inner, rest, fns, fuel)) };
+    _ => unroll(body, fns, fuel - 1) }
+fn unroll(e: Expr, fns: List<FnDecl>, fuel: Int) : Expr =
+  match e {
+    EApp(f, a) => if fuel <= 0 then EInt(0) else match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => inline_fn(fn_body_of(fns, fname), args, fns, fuel); _ => EInt(0) } };
+    EAdd(x, y) => EAdd(unroll(x, fns, fuel), unroll(y, fns, fuel));
+    ESub(x, y) => ESub(unroll(x, fns, fuel), unroll(y, fns, fuel));
+    EMul(x, y) => EMul(unroll(x, fns, fuel), unroll(y, fns, fuel));
+    EEq(x, y) => EEq(unroll(x, fns, fuel), unroll(y, fns, fuel));
+    ENeq(x, y) => ENeq(unroll(x, fns, fuel), unroll(y, fns, fuel));
+    EAnd(x, y) => EAnd(unroll(x, fns, fuel), unroll(y, fns, fuel));
+    EOr(x, y) => EOr(unroll(x, fns, fuel), unroll(y, fns, fuel));
+    EUNot(a) => EUNot(unroll(a, fns, fuel));
+    EIf(c, t, f) => EIf(unroll(c, fns, fuel), unroll(t, fns, fuel), unroll(f, fns, fuel));
+    ELet(nm, v, body) => ELet(nm, unroll(v, fns, fuel), unroll(body, fns, fuel));
+    EMatch(scrut, arms) => EMatch(unroll(scrut, fns, fuel), unroll_arms(arms, fns, fuel));
+    ECtor(name, args) => ECtor(name, unroll_args(args, fns, fuel));
+    ETuple(elems) => ETuple(unroll_args(elems, fns, fuel));
+    _ => e }
 # constructor -> tag = its index within its type's constructor list
 fn ctix(ctors: List<CtorDecl>, name: String, i: Int) : Int = match ctors { [] => 0 - 1; [CtorDecl(cn, ats), ...r] => if cn == name then i else ctix(r, name, i + 1) }
 fn ctag(types: List<TypeDecl>, name: String) : Int = match types { [] => 0; [TypeDecl(tn, tps, ctors), ...r] => let idx : Int = ctix(ctors, name, 0) in if idx >= 0 then idx else ctag(r, name) }
@@ -381,21 +422,24 @@ fn val_of(p: (List<Int>, List<Int>)) : List<Int> = match p { (v, h) => v }
 # The predicate's is-zero hints follow the body's hints in the input section.
 fn build_source(src: String, inputs: List<Pair<String, Int>>, claimedR: Int) : Build =
   match parse_prog(src) { Program(types, fns, main) =>
+    let rty : Type = fn_ret(fns, main_fname(main)) in    # refinement read from the ORIGINAL named call
+    let um : Expr = unroll(main, fns, 6) in              # then bound recursion away into a call-free term
     let k : Int = plen(inputs) in
-    match heval(main, in_env(inputs), fns, types) { (rv, bh) =>
-    match fn_ret(fns, main_fname(main)) {
+    match heval(um, in_env(inputs), fns, types) { (rv, bh) =>
+    match rty {
       TyRefine(base, binder, pred) =>
-        match heval(pred, [Pair(binder, rv)], fns, types) { (pv, ph) =>
+        let up : Expr = unroll(pred, fns, 6) in
+        match heval(up, [Pair(binder, rv)], fns, types) { (pv, ph) =>
         let hints : List<Int> = bh ++ ph in
-        match cgen(main, in_cenv(inputs, 0), fns, types, k, 0, Build(k + len(hints), [], in_vals(inputs) ++ hints)) { (outv, h1, b1) =>
-        match cgen(pred, [Pair(binder, outv)], fns, types, k, h1, b1) { (pw, h2, b2) =>
+        match cgen(um, in_cenv(inputs, 0), fns, types, k, 0, Build(k + len(hints), [], in_vals(inputs) ++ hints)) { (outv, h1, b1) =>
+        match cgen(up, [Pair(binder, outv)], fns, types, k, h1, b1) { (pw, h2, b2) =>
         match mkc(claimedR, b2) { (wR, b3) => let b4 : Build = asrt(vhead(outv), wR, b3) in
         match mkc(1, b4) { (wone, b5) => asrt(vhead(pw), wone, b5) } } } } };
       _ =>
-        match cgen(main, in_cenv(inputs, 0), fns, types, k, 0, Build(k + len(bh), [], in_vals(inputs) ++ bh)) { (outv, h1, b1) =>
+        match cgen(um, in_cenv(inputs, 0), fns, types, k, 0, Build(k + len(bh), [], in_vals(inputs) ++ bh)) { (outv, h1, b1) =>
         match mkc(claimedR, b1) { (wR, b2) => asrt(vhead(outv), wR, b2) } } } } }
 fn ref_result(src: String, inputs: List<Pair<String, Int>>) : Int =
-  match parse_prog(src) { Program(types, fns, main) => vhead(val_of(heval(main, in_env(inputs), fns, types))) }
+  match parse_prog(src) { Program(types, fns, main) => vhead(val_of(heval(unroll(main, fns, 6), in_env(inputs), fns, types))) }
 fn prove(src: String, inputs: List<Pair<String, Int>>, claimedR: Int, seed: Int, nv: F2, nw: Int) : Bool =
   match build_source(src, inputs, claimedR) { Build(n, gates, w) => stark_ok(gates, w, seed, nv, nw) }
 
@@ -404,21 +448,24 @@ fn show_a(b: Bool) : String = if b then "ACCEPT" else "REJECT"
 fn show_b(b: Bool) : String = if b then "yes" else "no"
 let bbw : Int = find_nonres_b(2)
 let bbv : F2 = find_v(0, bbw)
-# REFINEMENT TYPES (C1): a function's `where (P)` clause is extracted from its
-# return type and proven IN-CIRCUIT — the refinement becomes a zero-knowledge
-# guarantee about the result. classify's refinement holds; ident's is VIOLATED.
-let src_ok : String = "fn classify(x: Int) : Int where (result == 0 || result == 1) = if x == 0 then 0 else 1\nclassify(inp)"
+# RECURSION (E1) + REFINEMENT TYPES (C1), fused: a RECURSIVE function with a
+# `where (P)` clause. The recursion is bounded-unrolled into a call-free circuit;
+# the `where` is extracted from the return type and proven IN-CIRCUIT, so the
+# refinement is a zero-knowledge guarantee about the recursive result. fact holds
+# (fact(n) is never 0); ident LIES about its type and is rejected.
+let src_ok : String = "fn fact(n: Int) : Int where (result != 0) = if n == 0 then 1 else n * fact(n - 1)\nfact(inp)"
 let src_bad : String = "fn ident(x: Int) : Int where (result == 0 || result == 1) = x\nident(inp)"
 let inputs : List<Pair<String, Int>> = [Pair("inp", 5)]      # secret
-let r_ok : Int = ref_result(src_ok, inputs)                   # classify(5) = 1  (in {0,1})
-let r_bad : Int = ref_result(src_bad, inputs)                 # ident(5) = 5     (NOT in {0,1})
+let r_ok : Int = ref_result(src_ok, inputs)                   # fact(5) = 120  (!= 0)
+let r_bad : Int = ref_result(src_bad, inputs)                 # ident(5) = 5   (NOT in {0,1})
 
-let _ : String = print("--- prove_source_adt_zk.glass: proving a function's REFINEMENT TYPE in ZK (C1) ---")
-let _ : String = print("a `where (P)` on the return type is extracted and proven in-circuit, so the refinement")
-let _ : String = print("is a cryptographic guarantee about the result — not just a runtime check.")
+let _ : String = print("--- prove_source_adt_zk.glass: proving a RECURSIVE function's REFINEMENT in ZK (E1 + C1) ---")
+let _ : String = print("a self-recursive function is bounded-unrolled into a call-free circuit, and its `where (P)`")
+let _ : String = print("clause is extracted from the return type and proven in-circuit — the refinement becomes a")
+let _ : String = print("cryptographic guarantee about the recursive result, not just a runtime check.")
 let _ : String = print("")
-let _ : String = print("fn classify(x) : Int where (result == 0 || result == 1) = if x == 0 then 0 else 1")
-let _ : String = print("  classify(inp) with inp PRIVATE; result R = " ++ int_to_string(r_ok) ++ " (satisfies result == 0 || result == 1)")
+let _ : String = print("fn fact(n) : Int where (result != 0) = if n == 0 then 1 else n * fact(n - 1)")
+let _ : String = print("  fact(inp) with inp PRIVATE; result R = " ++ int_to_string(r_ok) ++ " (satisfies result != 0)")
 let _ : String = print("  proof (result = R AND refinement holds):  " ++ show_a(prove(src_ok, inputs, r_ok, 11111, bbv, bbw)))
 let _ : String = print("")
 let _ : String = print("fn ident(x) : Int where (result == 0 || result == 1) = x   -- a function that LIES about its type")
@@ -426,11 +473,11 @@ let _ : String = print("  ident(inp) = " ++ int_to_string(r_bad) ++ ", which vio
 let _ : String = print("  proof:  " ++ show_a(prove(src_bad, inputs, r_bad, 11111, bbv, bbw)) ++ "  (the in-circuit refinement assertion fails => unprovable)")
 let _ : String =
   match build_source(src_ok, inputs, r_ok) { Build(n, gates, w) =>
-    print("\nZERO-KNOWLEDGE (classify): two seeds verify: "
+    print("\nZERO-KNOWLEDGE (fact): two seeds verify: "
       ++ show_a(stark_ok(gates, w, 11111, bbv, bbw)) ++ " / " ++ show_a(stark_ok(gates, w, 22222, bbv, bbw))
       ++ "; opening #5 differs: " ++ show_b(eq4(qopen5(gates, w, 11111), qopen5(gates, w, 22222)) == false)) }
 let _ : String = print("")
-let _ : String = print("Glass proves its own refinement types in zero-knowledge: the type IS the guarantee, and")
-let _ : String = print("a function that violates its declared refinement cannot be proven. (types + ZK, fused.)")
+let _ : String = print("Glass proves a recursive function's own refinement type in zero-knowledge: recursion is")
+let _ : String = print("bounded-unrolled, the type IS the guarantee, and a function that lies cannot be proven.")
 
-"prove_source_adt_zk v0.1 — real prism source with ADTs (ECtor/PCtor, multi-wire) -> blinded F_{p^4} FRI STARK"
+"prove_source_adt_zk v0.2 — real prism source: ADTs + bounded recursion (unroll) -> refinement-checked blinded F_{p^4} FRI STARK"
