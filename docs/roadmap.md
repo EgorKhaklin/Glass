@@ -39,7 +39,7 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Shipped (through v5.19)
+## Shipped (through v5.20)
 
 - **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
 - **Pane** — a query language in Glass.
@@ -262,8 +262,14 @@ three under-invested axes — *realness*, *usability*, and *convergence* — on 
       quotient codeword is embedded into F_{p²}, blinded, and each FRI layer Merkle-committed; the
       fold challenge β ∈ F_{p²} ≈ 2¹²⁸ is derived from each root (Fiat-Shamir) and sampled queries
       are opened against the commitment (honest → all verify; tampered → caught; two seeds →
-      different commitments). Committed, F_{p²}-challenged, query-verified, blinded. *Next:* wire
-      it into the full source bridge (`prove_source_*` still computes over Baby Bear).
+      different commitments). Committed, F_{p²}-challenged, query-verified, blinded.
+    - ✅ **R1c — real source through the Goldilocks STARK** ([`prove_source_goldilocks_zk.glass`](../examples/prove/prove_source_goldilocks_zk.glass)):
+      the source front-end wired into the production-field backend — prism parses real Glass,
+      `unroll` inlines calls/HOF, a Goldilocks `cgen` lowers `+`/`-`/`*`/`let` to gates, and the
+      R1b STARK proves it. `fn sq(n)=n*n; fn f(x)=sq(x)+5; f(inp)` proves over Goldilocks (honest
+      ACCEPT / tampered REJECT / ZK); byte-identical. *Write Glass source, get a proof on the real
+      field.* *Next (the full bridge):* comparisons/`match`/ADTs over bignum (is-zero inverse-hint
+      wires in the Goldilocks witness), and the heavier circuits (native-primary).
   - **R2. 🚧 IN PROGRESS.** A real hash + Fiat-Shamir hardening. ✅ **Step 1 — Grain-LFSR
     round constants** ([`frost_grain.glass`](../examples/frost/frost_grain.glass)): Poseidon's
     constants now come from the spec's Grain LFSR (80-bit state, taps
