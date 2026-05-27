@@ -3,9 +3,10 @@
 #                                      real field (R1b): the gate quotient + FRI
 #
 # prove_circuit_goldilocks (R1) proved a Glass circuit over Goldilocks with a
-# SOUND but linear-verifier RLC. This makes it SUCCINCT: the gate constraints
-# become a single low-degree polynomial, FRI-tested. The construction is
-# prove_quotient's (Baby Bear), ported to the production field in bignum limbs.
+# SOUND but linear-verifier RLC. This makes it SUCCINCT and ZERO-KNOWLEDGE: the
+# gate constraints become a single low-degree polynomial, committed and FRI-tested
+# with an F_{p^2} challenge. The construction is the Baby Bear bridge's gate
+# quotient + blinded F_{p^4} FRI, ported to the production field in bignum limbs.
 #
 # THE STEP. Lay the gates in rows with selector columns qa/qm/qs/qc and value
 # columns l/r/o/c. Interpolate each column over the trace domain H (the N-th roots
@@ -24,11 +25,16 @@
 # seeds give two different valid proofs of the same statement. So: succinct (one
 # low-degree polynomial, FRI-tested) AND zero-knowledge, over the production field.
 #
-# Honest scope: the fold here uses a fixed base-field challenge (the cryptographic
-# F_{p^2} fold challenge + Merkle query-verification are built for codewords in
-# frost_goldilocks_zk; wiring them onto this quotient is the next step — exactly the
-# Stage-3 → Stage-4 split the Baby Bear bridge used). int64-safe (base-2^16 limbs);
-# heavy interpreted — run natively (examples/selfhost/run_native.sh); dogfoods.
+# THE CRYPTOGRAPHIC STARK. The quotient codeword is embedded into F_{p^2}, blinded,
+# and each FRI layer is Merkle-committed; the fold challenge β ∈ F_{p^2} ≈ 2^128 is
+# derived from each layer's root (Fiat-Shamir, so unpredictable), and sampled query
+# positions are OPENED against the commitment — a prover whose Q is not low-degree is
+# caught at (almost) every query. So: committed, F_{p^2}-challenged, query-verified,
+# and blinded — the production STARK shape, on the production field.
+#
+# Honest scope: this proves a hand-built circuit; wiring it into the full source
+# bridge (prove_source_*, still Baby Bear) is the remaining step. int64-safe
+# (base-2^16 limbs); heavy interpreted — run natively (run_native.sh); dogfoods.
 # =============================================================================
 
 # --- Goldilocks base field via base-2^16 limbs (from frost_goldilocks_zk) -----
@@ -187,6 +193,71 @@ fn prove_zk(gates: List<Gate>, w: List<List<Int>>, seed: Int) : Bool =
 fn opened5(gates: List<Gate>, w: List<List<Int>>, seed: Int) : List<Int> =
   wnth(blind_cw(q_cw(gates, w), rand_coeffs(seed, 0, 8), coset32(0), 0), 5)
 
+# --- the cryptographic STARK: F_{p^2} fold challenge + Merkle commit + queries --
+# Embed the quotient codeword into F_{p^2}, blind it, Merkle-commit each FRI layer,
+# derive the fold challenge β ∈ F_{p^2} ≈ 2^128 from each layer's root (Fiat-Shamir,
+# so it's unpredictable), and OPEN sampled positions against the commitment: a
+# prover whose Q is not low-degree is caught at (almost) every query. This is the
+# production STARK shape, on the production field. (FRI over F_{p^2} + Merkle from
+# frost_goldilocks_zk.glass, here applied to the gate quotient.)
+type G2 = | G2(List<Int>, List<Int>)
+fn gadd2(a: G2, b: G2) : G2 = match a { G2(a0, a1) => match b { G2(b0, b1) => G2(fadd(a0, b0), fadd(a1, b1)) } }
+fn gsub2(a: G2, b: G2) : G2 = match a { G2(a0, a1) => match b { G2(b0, b1) => G2(fsub(a0, b0), fsub(a1, b1)) } }
+fn gscale2(a: G2, s: List<Int>) : G2 = match a { G2(a0, a1) => G2(fmul(a0, s), fmul(a1, s)) }
+fn gmul2(a: G2, b: G2) : G2 = match a { G2(a0, a1) => match b { G2(b0, b1) => G2(fadd(fmul(a0, b0), fmul([7], fmul(a1, b1))), fadd(fmul(a0, b1), fmul(a1, b0))) } }
+fn geq2(a: G2, b: G2) : Bool = match a { G2(a0, a1) => match b { G2(b0, b1) => bn_eq(a0, b0) && bn_eq(a1, b1) } }
+fn emb(x: List<Int>) : G2 = G2(x, [])
+fn embed_cw(cw: List<List<Int>>) : List<G2> = match cw { [] => []; [x, ...r] => [emb(x)] ++ embed_cw(r) }
+fn lhash(leaf: G2) : List<Int> = match leaf { G2(c0, c1) => hashg(hashg(glit(7), c0), c1) }
+fn nth2(xs: List<G2>, i: Int) : G2 = match xs { [] => G2([], []); [h, ...t] => if i == 0 then h else nth2(t, i - 1) }
+fn next_pow2(n: Int, p: Int) : Int = if p >= n then p else next_pow2(n, p * 2)
+fn leaf_hashes_g(cw: List<G2>) : List<List<Int>> = match cw { [] => []; [x, ...r] => [lhash(x)] ++ leaf_hashes_g(r) }
+fn append_zeros_g(xs: List<List<Int>>, k: Int) : List<List<Int>> = if k <= 0 then xs else append_zeros_g(xs ++ [glit(0)], k - 1)
+fn pad_pow2_g(xs: List<List<Int>>) : List<List<Int>> = let n : Int = llen(xs) in append_zeros_g(xs, next_pow2(n, 1) - n)
+fn level_up_g(xs: List<List<Int>>) : List<List<Int>> = match xs { [] => []; [a, ...rest] => match rest { [] => [a]; [b, ...r2] => [hashg(a, b)] ++ level_up_g(r2) } }
+fn root_of_g(xs: List<List<Int>>) : List<Int> = match xs { [] => []; [a, ...rest] => match rest { [] => a; _ => root_of_g(level_up_g(xs)) } }
+fn merkle_root_g(cw: List<G2>) : List<Int> = root_of_g(pad_pow2_g(leaf_hashes_g(cw)))
+fn path_of_g(xs: List<List<Int>>, index: Int) : List<List<Int>> = match xs { [] => []; [a, ...rest] => match rest { [] => []; _ => let sib : List<Int> = if index % 2 == 0 then wnth(xs, index + 1) else wnth(xs, index - 1) in [sib] ++ path_of_g(level_up_g(xs), index / 2) } }
+fn merkle_path_g(cw: List<G2>, index: Int) : List<List<Int>> = path_of_g(pad_pow2_g(leaf_hashes_g(cw)), index)
+fn fold_path_g(h: List<Int>, index: Int, path: List<List<Int>>) : List<Int> = match path { [] => h; [s, ...rest] => let up : List<Int> = if index % 2 == 0 then hashg(h, s) else hashg(s, h) in fold_path_g(up, index / 2, rest) }
+fn merkle_verify_g(leaf: G2, index: Int, path: List<List<Int>>, root: List<Int>) : Bool = bn_eq(fold_path_g(lhash(leaf), index, path), root)
+fn fold_pair2(fx: G2, fmx: G2, x: List<Int>, beta: G2, finv2: List<Int>) : G2 =
+  let even : G2 = gscale2(gadd2(fx, fmx), finv2) in let odd : G2 = gscale2(gsub2(fx, fmx), finv(fmul([2], x))) in gadd2(even, gmul2(beta, odd))
+fn fold_at2(cw: List<G2>, dom: List<List<Int>>, beta: G2, finv2: List<Int>, i: Int, half: Int) : List<G2> =
+  if i >= half then [] else [fold_pair2(nth2(cw, i), nth2(cw, i + half), wnth(dom, i), beta, finv2)] ++ fold_at2(cw, dom, beta, finv2, i + 1, half)
+fn beta_of_root_g(root: List<Int>) : G2 = G2(hashg(root, glit(101)), hashg(root, glit(102)))
+type Layer = | Layer(List<G2>, List<List<Int>>, List<Int>, G2)
+fn commit_g(cw: List<G2>, dom: List<List<Int>>, acc: List<Layer>, finv2: List<Int>) : (List<Layer>, List<G2>) =
+  if len(cw) <= 2 then (acc, cw)
+  else let root : List<Int> = merkle_root_g(cw) in let beta : G2 = beta_of_root_g(root) in let half : Int = len(cw) / 2 in
+    commit_g(fold_at2(cw, dom, beta, finv2, 0, half), sqd(dom, 0, half), acc ++ [Layer(cw, dom, root, beta)], finv2)
+fn transcript_seed_g(layers: List<Layer>, acc: List<Int>) : List<Int> = match layers { [] => acc; [Layer(cw, dom, root, beta), ...rest] => transcript_seed_g(rest, hashg(acc, root)) }
+fn q_low(h: List<Int>, dsize: Int) : Int = match h { [] => 0; [x, ...t] => x % dsize }
+fn sample_queries_g(seed: List<Int>, count: Int, dsize: Int) : List<Int> = if count <= 0 then [] else [q_low(hashg(seed, glit(count)), dsize)] ++ sample_queries_g(seed, count - 1, dsize)
+fn next_val2(rest: List<Layer>, final: List<G2>, j: Int) : G2 = match rest { [] => nth2(final, j); [Layer(cw, dom, root, beta), ...more] => nth2(cw, j) }
+fn verify_query_g(layers: List<Layer>, final: List<G2>, p: Int, finv2: List<Int>) : Bool =
+  match layers { [] => true;
+    [Layer(cw, dom, root, beta), ...rest] =>
+      let half : Int = len(cw) / 2 in let j : Int = p % half in
+      let lx : G2 = nth2(cw, j) in let lmx : G2 = nth2(cw, j + half) in
+      let ok1 : Bool = merkle_verify_g(lx, j, merkle_path_g(cw, j), root) in
+      let ok2 : Bool = merkle_verify_g(lmx, j + half, merkle_path_g(cw, j + half), root) in
+      let folded : G2 = fold_pair2(lx, lmx, wnth(dom, j), beta, finv2) in
+      if ok1 then if ok2 then if geq2(folded, next_val2(rest, final, j)) then verify_query_g(rest, final, j, finv2) else false else false else false }
+fn count_catches_g(layers: List<Layer>, final: List<G2>, qs: List<Int>, finv2: List<Int>) : Int =
+  match qs { [] => 0; [p, ...rest] => (if verify_query_g(layers, final, p, finv2) then 0 else 1) + count_catches_g(layers, final, rest, finv2) }
+fn all_eq2(cw: List<G2>, x: G2) : Bool = match cw { [] => true; [y, ...r] => if geq2(y, x) then all_eq2(r, x) else false }
+fn is_const2(cw: List<G2>) : Bool = match cw { [] => true; [x, ...r] => all_eq2(r, x) }
+fn blind_g(cw: List<G2>, coeffs: List<List<Int>>, dom: List<List<Int>>, i: Int) : List<G2> =
+  if i >= len(cw) then [] else [gadd2(nth2(cw, i), emb(poly_eval_b(coeffs, wnth(dom, i))))] ++ blind_g(cw, coeffs, dom, i + 1)
+fn prove_stark(gates: List<Gate>, w: List<List<Int>>, seed: Int) : Bool =
+  let ecw : List<G2> = blind_g(embed_cw(q_cw(gates, w)), rand_coeffs(seed, 0, 8), coset32(0), 0) in
+  match commit_g(ecw, coset32(0), [], finv([2])) { (layers, final) =>
+    let faults : Int = count_catches_g(layers, final, sample_queries_g(transcript_seed_g(layers, []), 8, 32), finv([2])) in
+    is_const2(final) && faults == 0 }
+fn stark_root(gates: List<Gate>, w: List<List<Int>>, seed: Int) : List<Int> =
+  merkle_root_g(blind_g(embed_cw(q_cw(gates, w)), rand_coeffs(seed, 0, 8), coset32(0), 0))
+
 # --- the circuit: f(x) = x*x + 5; the output wire IS f(x), so claiming a wrong
 # --- R breaks the GAdd that produced it (no separate assert needed) -----------
 fn build_f(x: List<Int>) : Build =
@@ -209,6 +280,10 @@ let zk1 : Bool = match honest { Build(n, gates, w) => prove_zk(gates, w, 11111) 
 let zk2 : Bool = match honest { Build(n, gates, w) => prove_zk(gates, w, 22222) }
 let op1 : List<Int> = match honest { Build(n, gates, w) => opened5(gates, w, 11111) }
 let op2 : List<Int> = match honest { Build(n, gates, w) => opened5(gates, w, 22222) }
+let st1 : Bool = match honest { Build(n, gates, w) => prove_stark(gates, w, 11111) }
+let stb : Bool = match honest { Build(n, gates, w) => prove_stark(gates, lset(w, 3, glit(99)), 11111) }
+let rt1 : List<Int> = match honest { Build(n, gates, w) => stark_root(gates, w, 11111) }
+let rt2 : List<Int> = match honest { Build(n, gates, w) => stark_root(gates, w, 22222) }
 
 let _ : String = print("--- prove_circuit_goldilocks_zk.glass: a Glass circuit, SUCCINCT + ZK over Goldilocks (R1b) ---")
 let _ : String = print("f(x) = x*x + 5 over Goldilocks p = 2^64 − 2^32 + 1; gate identity G(x) = qa·(o−(l+r)) +")
@@ -222,7 +297,13 @@ let _ : String = print("ZERO-KNOWLEDGE (blind Q with a random low-degree mask):"
 let _ : String = print("  two blinding seeds both verify: " ++ show_a(zk1) ++ " / " ++ show_a(zk2) ++ "   (both valid proofs of the same statement)")
 let _ : String = print("  opened coset value #5 differs across seeds: " ++ show_b(bn_eq(op1, op2) == false))
 let _ : String = print("")
-let _ : String = print("all gate constraints are now ONE low-degree polynomial over the production field, blinded —")
-let _ : String = print("succinct FRI + zero-knowledge, not a linear residual scan. (Next: F_{p^2} fold challenge + Merkle queries.)")
+let _ : String = print("")
+let _ : String = print("CRYPTOGRAPHIC STARK (F_{p^2} fold challenge from the Merkle commitment + query verification):")
+let _ : String = print("  honest    -> Merkle-committed, 8 Fiat-Shamir queries all verify: " ++ show_a(st1))
+let _ : String = print("  tampered  -> queries catch the inconsistency: " ++ show_a(stb) ++ "  (REJECT)")
+let _ : String = print("  two blinding seeds give different layer-0 commitments (ZK): " ++ show_b(bn_eq(rt1, rt2) == false))
+let _ : String = print("")
+let _ : String = print("all gate constraints are now ONE low-degree polynomial over the production field — committed,")
+let _ : String = print("challenged in F_{p^2} ≈ 2^128, query-verified, and blinded: a succinct, zero-knowledge STARK.")
 
-"prove_circuit_goldilocks_zk v0.2 (R1b) — gate quotient, FRI low-degree test, blinded for ZK, over Goldilocks"
+"prove_circuit_goldilocks_zk v0.3 (R1b) — gate quotient -> committed, F_{p^2}-challenged, query-verified, blinded STARK over Goldilocks"

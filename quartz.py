@@ -1,4 +1,4 @@
-"""Quartz: native C compiler back-end for Glass (v5.18).
+"""Quartz: native C compiler back-end for Glass (v5.19).
 
 Takes a parsed + typed Glass program and emits C source. Invokes the
 system C compiler to produce a native binary that, when run, prints

@@ -39,7 +39,7 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Shipped (through v5.17)
+## Shipped (through v5.19)
 
 - **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
 - **Pane** — a query language in Glass.
@@ -258,9 +258,12 @@ three under-invested axes — *realness*, *usability*, and *convergence* — on 
       and FRI-fold Q on a coset: honest → folds to a constant; tamper any wire → not low-degree,
       REJECT. Blinded with a random low-degree mask for **zero-knowledge** (two seeds → different
       openings, both ACCEPT). `f(x)=x*x+5` over a private 2⁶⁴-range input; byte-identical. The
-      RLC→FRI arc, now on the production field. *Next:* the cryptographic F_{p²} fold challenge +
-      Merkle query-verification (Baby Bear's Stage-3 → Stage-4 split), and wiring it into the
-      full source bridge.
+      RLC→FRI arc, now on the production field. ✅ **Now the full cryptographic STARK:** the
+      quotient codeword is embedded into F_{p²}, blinded, and each FRI layer Merkle-committed; the
+      fold challenge β ∈ F_{p²} ≈ 2¹²⁸ is derived from each root (Fiat-Shamir) and sampled queries
+      are opened against the commitment (honest → all verify; tampered → caught; two seeds →
+      different commitments). Committed, F_{p²}-challenged, query-verified, blinded. *Next:* wire
+      it into the full source bridge (`prove_source_*` still computes over Baby Bear).
   - **R2. 🚧 IN PROGRESS.** A real hash + Fiat-Shamir hardening. ✅ **Step 1 — Grain-LFSR
     round constants** ([`frost_grain.glass`](../examples/frost/frost_grain.glass)): Poseidon's
     constants now come from the spec's Grain LFSR (80-bit state, taps

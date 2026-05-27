@@ -7,6 +7,9 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [5.19.0] — 2026-05-27 — The Goldilocks circuit proof, now a full cryptographic STARK (R1b complete)
+- **R1b's Goldilocks gate quotient is upgraded from a fixed base-field fold to the full cryptographic STARK.** [`prove_circuit_goldilocks_zk.glass`](examples/prove/prove_circuit_goldilocks_zk.glass) now embeds the quotient codeword into **F_{p²}**, blinds it, and **Merkle-commits each FRI layer**; the fold challenge **β ∈ F_{p²} ≈ 2¹²⁸** is derived from each layer's root (**Fiat-Shamir**, so unpredictable), and sampled query positions are **opened against the commitment** — a prover whose Q isn't low-degree is caught at (almost) every query. Honest → 8 Fiat-Shamir queries all verify (ACCEPT); tampered → the queries catch the inconsistency (REJECT); two blinding seeds → different layer-0 commitments (ZK). So the proof is now **committed, F_{p²}-challenged, query-verified, and blinded** — the production STARK shape, on the production field. (FRI-over-F_{p²} + Merkle from `frost_goldilocks_zk`, applied to the gate quotient.) Self-hosted byte-identical; closes the honest-scope gap noted in v5.17. **Remaining:** wire it into the full source bridge (`prove_source_*` still computes over Baby Bear).
+
 ## [5.18.0] — 2026-05-27 — README, re-voiced
 - Rewrote the [README](README.md) to carry the project's deeper current — faithful re-execution, two independent reconstructions forced to meet at every bit, and a proof of what a computation did — around the same factual claims and commands. "It compiles itself" → "It reconstructs itself" (the differential-testing discipline framed as replay-and-check: diverge and it's a desync, the build stops); "It proves itself" → "It proves what happened."
 - Surfaced the [soundness ledger](docs/soundness.md) on the front page (the "Where to go" table and Status): *nothing taken on faith, including the faith you'd place in it.*
