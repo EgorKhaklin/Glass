@@ -22,6 +22,7 @@
 
 ### Direction
 - [Roadmap](roadmap.md) — where Glass is headed.
+- [Effects in the proof story](effects-in-proofs.md) — a design: proving effectful (`IO`/`Random`/`Inference`) computations in zero-knowledge.
 
 ### Built in Glass
 - [Frost](../examples/frost/) — a zero-knowledge proof system (zk-STARK) from scratch.

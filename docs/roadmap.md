@@ -39,7 +39,7 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Shipped (through v5.21)
+## Shipped (through v5.22)
 
 - **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
 - **Pane** — a query language in Glass.
@@ -332,7 +332,14 @@ three under-invested axes — *realness*, *usability*, and *convergence* — on 
     ([`prove_source_adt_zk.glass`](../examples/prove/prove_source_adt_zk.glass): `classify`
     with `where (result == 0 || result == 1)` proves; a lying `ident` REJECTs.) The
     frontier no one else can reach — type system + prover in one self-hosting language.
-  - **C2.** Effects in the proof story.
+  - **C2. 🚧 SEEDED.** Effects in the proof story — *reify each effect as a committed
+    trace entry; the effect row is the proof's schema* ([design](effects-in-proofs.md)).
+    ✅ **Step 1 — `Inference` as a committed oracle** ([`prove_inference_zk.glass`](../examples/prove/prove_inference_zk.glass)):
+    `model_call`'s answer is a private witness pinned by `C = hash(prompt, ans, nonce)`;
+    a downstream validator is proven over it, revealing `C` and that it passed — not the
+    answer (a faithful, hiding proof of an LLM-in-the-loop computation; sound RLC, ZK STARK
+    is the follow-on). *Next:* `Random` via the transcript; `State` via a memory-consistency
+    argument (the deep one); and reading the effect row in the bridge to derive the trace.
 - **Substrate — Performance (P).** The interpreter dogfood is now the bottleneck
   (heavy circuits take ~10 min). A faster reference (bytecode/closure compilation) or
   promoting `native_glassc` to a co-equal dogfood oracle unblocks Tracks E and R.

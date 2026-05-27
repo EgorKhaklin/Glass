@@ -1,0 +1,85 @@
+# =============================================================================
+# prove_inference_zk.glass — proving an `Inference`-effectful computation (C2 seed)
+#
+# Glass tracks side-effects in the type: `model_call(prompt) : String !{Inference}`
+# reaches OUTSIDE the program to an LLM. A zero-knowledge proof is about a PURE
+# relation — so how do you prove a computation that *called a model*?
+#
+# THE IDEA (C2). An effect is a place the computation touches the world; to prove
+# it faithfully, make that touch EXPLICIT and BOUND. `model_call`'s answer becomes
+# a COMMITTED ORACLE: the answer is a PRIVATE witness, pinned by a commitment to the
+# interaction, and the proof attests a downstream pure check over it — revealing the
+# commitment and that the check passed, NOT the answer. You don't prove the model is
+# correct (it isn't a function you can arithmetize); you prove the computation used a
+# committed model response FAITHFULLY. The effect row `!{Inference}` is exactly what
+# tells you the proof's shape: one committed oracle entry.
+#
+# THIS DEMO. A model is asked to pick an answer; it returns `ans` (private). We
+#   • commit the interaction:  C = hash(prompt, ans, nonce)   (binding + hiding)
+#   • run a downstream validator: `ans` must be one of the allowed options
+#       valid(ans) = (ans−17)(ans−42)(ans−99)   — 0 iff ans ∈ {17, 42, 99}
+#   • prove, given public (prompt, C), that we know (ans, nonce) with C opening to
+#     `ans` AND valid(ans) = 0 — i.e. *"the model's answer is an allowed option,
+#     committed in C"* — without revealing WHICH option.
+# A sound random-linear-combination ties the two: derive γ from C (Fiat-Shamir) and
+# check  (C − commit) + γ·valid(ans) == 0. A wrong/forged answer makes a residual
+# nonzero, so the check fails except with prob ~1/p.
+#
+# Sound + effect-modeling (the C2 seed). NOT yet succinct/ZK on its own — lowering
+# this circuit to the blinded FRI STARK (as prove.glass → prove_zk did) is the
+# follow-on, and the answer stays a private witness throughout. Baby Bear; dogfoods.
+# =============================================================================
+
+fn fadd(a: Int, b: Int) : Int = (a + b) % 2013265921
+fn fmul(a: Int, b: Int) : Int = (a * b) % 2013265921
+fn fsub(a: Int, b: Int) : Int = ((a - b) % 2013265921 + 2013265921) % 2013265921
+fn fnorm(a: Int) : Int = (a % 2013265921 + 2013265921) % 2013265921
+
+# --- a MiMC hash (x^5 S-box) — the commitment primitive ----------------------
+fn sbox(x: Int) : Int = let x2 : Int = fmul(x, x) in let x4 : Int = fmul(x2, x2) in fmul(x4, x)
+fn rconst(i: Int) : Int = ((i + 1) * (i + 1) * (i + 1) + i * 1009 + 1234567) % 2013265921
+fn mimc(x: Int, k: Int, i: Int) : Int = if i >= 16 then fadd(x, k) else mimc(sbox(fadd(fadd(x, k), rconst(i))), k, i + 1)
+fn hash2(a: Int, b: Int) : Int = fadd(fadd(mimc(a, b, 0), a), b)
+fn hash3(a: Int, b: Int, c: Int) : Int = hash2(hash2(a, b), c)
+
+# --- the inference proof -----------------------------------------------------
+# C = hash(prompt, answer, nonce): binds the answer to this interaction, and the
+# nonce makes it HIDING (C alone reveals nothing about which answer was returned).
+fn commit(prompt: Int, ans: Int, nonce: Int) : Int = hash3(fnorm(prompt), fnorm(ans), fnorm(nonce))
+# the downstream validator: 0 iff ans is one of the allowed options {17, 42, 99}.
+fn valid(ans: Int) : Int = fmul(fmul(fsub(fnorm(ans), 17), fsub(fnorm(ans), 42)), fsub(fnorm(ans), 99))
+# Fiat-Shamir challenge from the public commitment
+fn gamma_of(c: Int) : Int = hash2(c, 777)
+# the sound check: given public (prompt, C), the prover knows (ans, nonce) such that
+# C opens to ans (r_open = 0) AND ans validates (r_valid = 0). RLC over γ from C.
+fn attest(prompt: Int, ans: Int, nonce: Int, c: Int) : Bool =
+  let r_open : Int = fsub(c, commit(prompt, ans, nonce)) in
+  let r_valid : Int = valid(ans) in
+  fadd(r_open, fmul(gamma_of(c), r_valid)) == 0
+
+# --- demo --------------------------------------------------------------------
+fn show_a(b: Bool) : String = if b then "ACCEPT" else "REJECT"
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+let prompt : Int = 101              # public: a problem / prompt id
+let ans : Int = 42                  # PRIVATE: the model's answer (an allowed option)
+let nonce : Int = 424242            # PRIVATE: hiding nonce
+let c : Int = commit(prompt, ans, nonce)              # public: the committed interaction
+let c2 : Int = commit(prompt, ans, 999999)            # same answer, a different nonce
+
+let _ : String = print("--- prove_inference_zk.glass: proving an Inference-effectful computation (C2 seed) ---")
+let _ : String = print("model_call's answer is a COMMITTED ORACLE: private, pinned by C = hash(prompt, ans, nonce);")
+let _ : String = print("prove a downstream validator accepts it, revealing C and `valid` — never the answer.")
+let _ : String = print("")
+let _ : String = print("prompt = " ++ int_to_string(prompt) ++ " (public);  commitment C = " ++ int_to_string(c) ++ " (public)")
+let _ : String = print("the model returned an answer in the allowed set {17, 42, 99} (which one is PRIVATE)")
+let _ : String = print("  honest (know ans, nonce: C opens to ans AND valid(ans)=0):  " ++ show_a(attest(prompt, ans, nonce, c)))
+let _ : String = print("  model returns a disallowed answer (50):                     " ++ show_a(attest(prompt, 50, nonce, c)) ++ "  (fails the validator AND the commitment => REJECT)")
+let _ : String = print("  prover swaps in a different allowed answer (17):            " ++ show_a(attest(prompt, 17, nonce, c)) ++ "  (17 is allowed, but C is bound to 42 => REJECT)")
+let _ : String = print("")
+let _ : String = print("hiding: a different nonce gives a different commitment for the SAME answer: " ++ show_b(c != c2))
+let _ : String = print("so C leaks nothing about which of {17, 42, 99} the model returned.")
+let _ : String = print("")
+let _ : String = print("the Inference effect, proven: a committed model interaction + a checked-in-ZK downstream")
+let _ : String = print("result. (Sound here; the blinded FRI STARK adds succinct + zero-knowledge, as in prove_zk.)")
+
+"prove_inference_zk v0.1 (C2 seed) — an Inference-effectful computation as a committed oracle + a sound validated proof"
