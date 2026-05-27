@@ -18,7 +18,7 @@ Verify the install:
 
 ```bash
 glass --version
-# Glass 5.17.0
+# Glass 5.18.0
 ```
 
 ## Your first program
