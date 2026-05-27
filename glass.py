@@ -1,5 +1,5 @@
 """
-Glass v5.7 — reference implementation.
+Glass v5.8 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -3444,7 +3444,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.7 — interactive REPL")
+    print("Glass v5.8 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3556,7 +3556,50 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.7.0")
+        print("Glass 5.8.0")
+    elif sys.argv[1] == "prove":
+        # `glass prove <file.glass> [name=value ...]` — compile the file's `main`
+        # expression into a circuit and emit a succinct, zero-knowledge proof of
+        # its result. Free variables named on the command line are PRIVATE inputs
+        # (they stay in the witness). The prove pipeline itself is Glass: this
+        # assembles a driver over examples/prove/prove_source_adt_zk.glass.
+        if len(sys.argv) < 3:
+            print("usage: glass prove <file.glass> [name=value ...]")
+            return
+        upath = sys.argv[2]
+        inputs = []
+        for arg in sys.argv[3:]:
+            if "=" in arg:
+                k, v = arg.split("=", 1)
+                inputs.append((k.strip(), int(v.strip())))
+        with open(upath) as f:
+            usrc = f.read()
+        here = os.path.dirname(os.path.abspath(__file__))
+        bridge_dir = os.path.join(here, "examples", "prove")
+        with open(os.path.join(bridge_dir, "prove_source_adt_zk.glass")) as f:
+            bridge = f.read()
+        cut = bridge.find("# --- demo")
+        machinery = bridge[:cut] if cut > 0 else bridge
+        esc = usrc.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+        inp_glass = "[" + ", ".join('Pair("%s", %d)' % (k, v) for k, v in inputs) + "]"
+        driver = machinery + (
+            '\nlet bbw : Int = find_nonres_b(2)\n'
+            'let bbv : F2 = find_v(0, bbw)\n'
+            'let _usrc : String = "%s"\n'
+            'let _inp : List<Pair<String, Int>> = %s\n'
+            'let _r : Int = ref_result(_usrc, _inp)\n'
+            'let _ : String = print("result:  " ++ int_to_string(_r))\n'
+            'let _ : String = print("proof:   " ++ (if prove(_usrc, _inp, _r, 11111, bbv, bbw) then "ACCEPT  (succinct, zero-knowledge)" else "REJECT"))\n'
+            '"glass prove"\n'
+        ) % (esc, inp_glass)
+        print("Glass prove — %s" % upath)
+        if inputs:
+            names = ", ".join(k for k, _ in inputs)
+            print("private inputs: %s  (kept in the witness; the proof reveals only the result)" % names)
+        print("")
+        run_source(driver, verbose=False, base_dir=bridge_dir)
+        print("")
+        print("(blinded F_{p^4} FRI STARK over the gate circuit; `glass prove` proves AND verifies.)")
     else:
         # -q/--quiet: run a file printing only its output (no type-signature
         # echoes) — handy for diffing against the self-hosted compiler.

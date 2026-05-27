@@ -18,7 +18,7 @@ Verify the install:
 
 ```bash
 glass --version
-# Glass 5.7.0
+# Glass 5.8.0
 ```
 
 ## Your first program
@@ -59,6 +59,22 @@ glass examples/features/infer.glass         # Type inference walkthrough
 
 glass examples/selfhost/prism.glass         # Glass-in-Glass (the self-host)
 ```
+
+## Prove a function (zero-knowledge)
+
+Glass can compile a function into an arithmetic circuit and emit a **succinct,
+zero-knowledge proof of its result** — names passed on the command line are
+*private inputs* that stay in the witness:
+
+```bash
+glass prove examples/prove/hello_prove.glass inp=9
+#   result:  86
+#   proof:   ACCEPT  (succinct, zero-knowledge)
+```
+
+The proof reveals only the result (`86`), not `inp`. Supported today: arithmetic,
+`let`, function calls, `==`/`if`, and `match` over (nested) algebraic data types.
+The prover is written in Glass itself — see [the prove bridge](../examples/prove/).
 
 ## The shape of a Glass program
 
