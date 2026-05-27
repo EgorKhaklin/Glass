@@ -14,9 +14,10 @@
 # dispatches on wire 0 (is-zero(tag − ctor_tag), the inverse hint on an input
 # wire) and binds the pattern variables to the field wires.
 #
-# SCOPE (kept dogfoodable): flat ADTs with scalar fields; arithmetic and match
-# bodies produce scalars (so the match-result multiplexer is scalar). Nested-ADT
-# fields and ADT-returning matches are the next layer.
+# SCOPE (kept dogfoodable): flat ADTs with scalar fields. A match may RETURN an
+# ADT (the result multiplexer is element-wise over the body's wires), so an
+# ADT-valued function like `mv(p) = match p { P(x,y) => P(x+1, y+2) }` compiles.
+# Nested-ADT fields (a field that is itself an ADT) are the next layer.
 #
 # Demo:  type Shape = Circle(Int) | Rect(Int, Int)
 #        fn area(s: Shape) : Int = match s { Circle(r) => 3*r*r; Rect(w,h) => w*h }
@@ -258,7 +259,7 @@ fn cgen(e: Expr, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: 
     ELet(nm, v, body) => match cgen(v, cenv, fns, types, hbase, hidx, b) { (vv, h1, b1) => cgen(body, [Pair(nm, vv)] ++ cenv, fns, types, hbase, h1, b1) };
     ECtor(name, args) => match mkc(ctag(types, name), b) { (wtag, b1) => match cgen_args(args, cenv, fns, types, hbase, hidx, b1) { (fws, h1, b2) => ([wtag] ++ fws, h1, b2) } };
     EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => cgen_call(fn_body_of(fns, fname), args, [], cenv, fns, types, hbase, hidx, b); _ => match mkc(0, b) { (w, b1) => ([w], hidx, b1) } } };
-    EMatch(scrut, arms) => match cgen(scrut, cenv, fns, types, hbase, hidx, b) { (sv, h1, b1) => match mkc(0, b1) { (zm, b2) => match mkc(0, b2) { (zr, b3) => cgen_match(arms, sv, cenv, fns, types, hbase, h1, zm, zr, b3) } } };
+    EMatch(scrut, arms) => match cgen(scrut, cenv, fns, types, hbase, hidx, b) { (sv, h1, b1) => match mkc(0, b1) { (zm, b2) => cgen_match(arms, sv, cenv, fns, types, hbase, h1, zm, [], b2) } };
     _ => match mkc(0, b) { (w, b1) => ([w], hidx, b1) } }
 fn cgen_args(args: List<Expr>, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: List<TypeDecl>, hbase: Int, hidx: Int, b: Build) : (List<Int>, Int, Build) =
   match args { [] => ([], hidx, b); [a, ...rest] => match cgen(a, cenv, fns, types, hbase, hidx, b) { (va, h1, b1) => match cgen_args(rest, cenv, fns, types, hbase, h1, b1) { (vr, h2, b2) => ([vhead(va)] ++ vr, h2, b2) } } }
@@ -282,17 +283,24 @@ fn cbinds(ps: List<Pattern>, sv: List<Int>, i: Int, cenv: List<Pair<String, List
   match ps { [] => cenv; [p, ...rest] => match p { PVar(x) => cbinds(rest, sv, i + 1, [Pair(x, vfield(sv, i))] ++ cenv); _ => cbinds(rest, sv, i + 1, cenv) } }
 fn cbind(p: Pattern, sv: List<Int>, cenv: List<Pair<String, List<Int>>>) : List<Pair<String, List<Int>>> =
   match p { PVar(x) => [Pair(x, sv)] ++ cenv; PCtor(nm, ps) => cbinds(ps, sv, 0, cenv); PWild => cenv; PInt(n) => cenv; PBool(bb) => cenv; PTuple(ps) => cenv; PStr(s) => cenv; PRecord(nm, fs) => cenv }
-# first-match selector-mux; bodies are scalar -> a scalar result wire
-fn cgen_match(arms: List<Pair<Pattern, Expr>>, sv: List<Int>, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: List<TypeDecl>, hbase: Int, hidx: Int, matched: Int, result: Int, b: Build) : (List<Int>, Int, Build) =
-  match arms { [] => ([result], hidx, b);
+# element-wise accumulate: result_i += eff·body_i (result starts [] on the first arm,
+# establishing the body's width — so a match may RETURN an ADT, not just a scalar)
+fn accw(result: List<Int>, eff: Int, body: List<Int>, b: Build) : (List<Int>, Build) =
+  match body { [] => ([], b);
+    [bi, ...br] => match mkm(eff, bi, b) { (contrib, b1) =>
+      match result {
+        [] => match accw([], eff, br, b1) { (rest, b2) => ([contrib] ++ rest, b2) };
+        [ri, ...rr] => match mka(ri, contrib, b1) { (nri, b2) => match accw(rr, eff, br, b2) { (rest, b3) => ([nri] ++ rest, b3) } } } } }
+# first-match selector-mux; result is a wire LIST (scalar [w] or ADT [tag, …])
+fn cgen_match(arms: List<Pair<Pattern, Expr>>, sv: List<Int>, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: List<TypeDecl>, hbase: Int, hidx: Int, matched: Int, result: List<Int>, b: Build) : (List<Int>, Int, Build) =
+  match arms { [] => (result, hidx, b);
     [Pair(p, body), ...rest] =>
       match psel(p, sv, types, hbase, hidx, b) { (sel, h1, b1) =>
       match mkc(1, b1) { (one, b2) => match mks(one, matched, b2) { (notm, b3) =>
       match mkm(sel, notm, b3) { (eff, b4) =>
       match cgen(body, cbind(p, sv, cenv), fns, types, hbase, h1, b4) { (vb, h2, b5) =>
-      match mkm(eff, vhead(vb), b5) { (contrib, b6) =>
-      match mka(result, contrib, b6) { (nres, b7) =>
-      match mka(matched, eff, b7) { (nm, b8) => cgen_match(rest, sv, cenv, fns, types, hbase, h2, nm, nres, b8) } } } } } } } } }
+      match accw(result, eff, vb, b5) { (nres, b6) =>
+      match mka(matched, eff, b6) { (nm, b7) => cgen_match(rest, sv, cenv, fns, types, hbase, h2, nm, nres, b7) } } } } } } } }
 
 # --- assemble: inputs on low wires, is-zero hints next, assert output == R ----
 fn in_cenv(inputs: List<Pair<String, Int>>, i: Int) : List<Pair<String, List<Int>>> = match inputs { [] => []; [Pair(nm, v), ...r] => [Pair(nm, [i])] ++ in_cenv(r, i + 1) }
@@ -318,24 +326,27 @@ fn show_a(b: Bool) : String = if b then "ACCEPT" else "REJECT"
 fn show_b(b: Bool) : String = if b then "yes" else "no"
 let bbw : Int = find_nonres_b(2)
 let bbv : F2 = find_v(0, bbw)
-let src : String = "type Shape = | Circle(Int) | Rect(Int, Int)\nfn area(s: Shape) : Int = match s { Circle(r) => 3 * r * r; Rect(w, h) => w * h }\narea(Circle(inp))"
-let inputs : List<Pair<String, Int>> = [Pair("inp", 3)]      # secret radius
-let res : Int = ref_result(src, inputs)                       # area(Circle(3)) = 3·9 = 27
+# mv RETURNS an ADT (Point) — its match body builds P(...), so the match result is
+# multi-wire; sm then destructures it to a scalar. Exercises ECtor + ADT-returning
+# match + scalar match + nested calls, end to end.
+let src : String = "type Point = | P(Int, Int)\nfn mv(p: Point) : Point = match p { P(x, y) => P(x + 1, y + 2) }\nfn sm(p: Point) : Int = match p { P(x, y) => x + y }\nsm(mv(P(inp, inp)))"
+let inputs : List<Pair<String, Int>> = [Pair("inp", 5)]      # secret
+let res : Int = ref_result(src, inputs)                       # mv(P(5,5))=P(6,7); sm=6+7 = 13
 
 let _ : String = print("--- prove_source_adt_zk.glass: REAL Glass source WITH ADTs -> a ZK proof ---")
-let _ : String = print("type Shape = Circle(Int) | Rect(Int, Int);  fn area(s) = match s { Circle(r)=>3*r*r; Rect(w,h)=>w*h }")
-let _ : String = print("a circuit value is multi-wire [tag, fields...]; ECtor builds it, PCtor dispatches on the tag.")
+let _ : String = print("type Point = P(Int, Int);  fn mv(p) = match p { P(x,y) => P(x+1, y+2) };  fn sm(p) = match p { P(x,y) => x+y }")
+let _ : String = print("a circuit value is multi-wire [tag, fields...]; ECtor builds it, PCtor dispatches, a match may RETURN an ADT.")
 let _ : String = print("")
-let _ : String = print("prove area(Circle(inp)) with inp PRIVATE; public R = " ++ int_to_string(res))
-let _ : String = print("honest (prover knows inp with area(Circle(inp))=R):  " ++ show_a(prove(src, inputs, res, 11111, bbv, bbw)))
-let _ : String = print("lying about the result (R = 99):                     " ++ show_a(prove(src, inputs, 99, 11111, bbv, bbw)) ++ "  (output != claim => REJECT)")
+let _ : String = print("prove sm(mv(P(inp, inp))) with inp PRIVATE; public R = " ++ int_to_string(res))
+let _ : String = print("honest (prover knows inp with the result = R):  " ++ show_a(prove(src, inputs, res, 11111, bbv, bbw)))
+let _ : String = print("lying about the result (R = 99):                " ++ show_a(prove(src, inputs, 99, 11111, bbv, bbw)) ++ "  (output != claim => REJECT)")
 let _ : String =
   match build_source(src, inputs, res) { Build(n, gates, w) =>
     print("ZERO-KNOWLEDGE: two blinding seeds both verify: "
       ++ show_a(stark_ok(gates, w, 11111, bbv, bbw)) ++ " / " ++ show_a(stark_ok(gates, w, 22222, bbv, bbw))
       ++ "; quotient opening #5 differs: " ++ show_b(eq4(qopen5(gates, w, 11111), qopen5(gates, w, 22222)) == false)) }
 let _ : String = print("")
-let _ : String = print("real Glass source with ADTs — ECtor + PCtor, multi-wire values — proven succinct + ZK.")
-let _ : String = print("the source bridge now covers algebraic data types, not just scalars.")
+let _ : String = print("real Glass source with ADTs — construction, pattern matching, AND a match that returns an ADT —")
+let _ : String = print("proven succinct + zero-knowledge. the source bridge handles multi-wire values throughout.")
 
 "prove_source_adt_zk v0.1 — real prism source with ADTs (ECtor/PCtor, multi-wire) -> blinded F_{p^4} FRI STARK"
