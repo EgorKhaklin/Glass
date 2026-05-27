@@ -22,22 +22,26 @@
 # nested sub-values by type width. Bounded: non-recursive types (a depth fuel
 # guards width).
 #
-# RECURSION (E1). A source-level `unroll` pre-pass inlines self-recursive calls to
-# a fixed depth, each call rewritten as `let p = arg in body` (so an argument is
-# evaluated once — no duplicate gates) — the unrolled term is CALL-FREE, so the
-# circuit generator never recurses. Past the bound a call lowers to 0; within it
-# the base case fires first, so the cutoff sits in a discarded branch (the proof
-# is over the depth-bounded function, the way a ZK-VM proves bounded loops).
+# RECURSION (E1) + HIGHER-ORDER (E2). A source-level `unroll` pre-pass inlines calls
+# to a fixed depth, each rewritten as `let p = arg in body` (an argument evaluated
+# once — no duplicate gates) — the unrolled term is CALL-FREE, so the circuit
+# generator never recurses. Self-recursion (E1): past the bound a call lowers to 0
+# and within it the base case fires first, so the cutoff sits in a discarded branch
+# (the proof is over the depth-bounded function, the way a ZK-VM proves bounded
+# loops). Higher-order (E2): `unroll` carries `fenv`, mapping a function-valued
+# parameter to the top-level fn it was passed, so a call through such a parameter
+# inlines that fn — the higher-order program is beta-reduced to a first-order,
+# call-free term (top-level fn names as arguments; not capturing lambdas). Recursive
+# datatypes (`type IntList = Nil | Cons(Int, IntList)`) work for free: a recursive
+# type lays out as a fixed-width buffer (twidth's fuel) and the fold unrolls.
 #
-# Demo:  type IntList = Nil | Cons(Int, IntList)
-#        fn suml(l) : Int where (result != 99) = match l { Nil => 0; Cons(h,t) => h+suml(t) }
-#        suml(Cons(inp, Cons(2, Cons(3, Nil))))   -- inp PRIVATE; proves [5,2,3] sums
-#        to 10 AND its refinement (recursive DATA + recursive function + C1, fused).
-# A recursive datatype is the culmination: the list lays out as a fixed-width buffer
-# (twidth's fuel) and the fold unrolls (recursion fuel) — no new machinery. A lying
-# `ident` REJECTs. Imports prism; Baby Bear + F_{p^4}. Heavier than the lighter prove
-# demos (ng=256, the interpreter strains) — iterate on examples/selfhost/run_native.sh;
-# dogfoods (byte-identical) given the time.
+# Demo:  fn twice(f: (Int) -> Int, x) : Int where (result != 0) = f(f(x))
+#        fn inc(n) = n + 1
+#        twice(inc, inp)   -- inp PRIVATE; proves twice(inc, 5) = 7 AND its refinement
+#        (higher-order E2 + C1, fused). A lying `ident` REJECTs. See list_sum_prove.glass
+#        for recursive lists, fact_prove.glass for recursion, map_prove.glass for HOF+lists.
+# Imports prism; Baby Bear + F_{p^4}; dogfoods byte-identical. (Recursive-data demos
+# are heavier — ng up to 256, the interpreter strains; iterate on run_native.sh.)
 # =============================================================================
 
 import "../selfhost/prism.glass"
@@ -217,30 +221,51 @@ fn fn_ret(fns: List<FnDecl>, name: String) : Type = match fns { [] => TyInt; [Fn
 # cutoff sits in a branch the if/match discards. (Same transform on glass.py and
 # native, so it stays byte-identical; ref_result unrolls too, so the claimed result
 # and the circuit agree on the same bounded semantics.)
-fn unroll_args(es: List<Expr>, fns: List<FnDecl>, fuel: Int) : List<Expr> =
-  match es { [] => []; [e, ...r] => [unroll(e, fns, fuel)] ++ unroll_args(r, fns, fuel) }
-fn unroll_arms(arms: List<Pair<Pattern, Expr>>, fns: List<FnDecl>, fuel: Int) : List<Pair<Pattern, Expr>> =
-  match arms { [] => []; [Pair(p, b), ...r] => [Pair(p, unroll(b, fns, fuel))] ++ unroll_arms(r, fns, fuel) }
-fn inline_fn(body: Expr, args: List<Expr>, fns: List<FnDecl>, fuel: Int) : Expr =
+# E2: higher-order functions. `unroll` carries `fenv`, mapping a function-valued
+# PARAMETER to the top-level function it was passed (`fn twice(f,x)=f(f(x));
+# twice(inc, 5)` binds f->inc). When a call's head resolves through fenv to a
+# top-level fn, it inlines that fn — so the higher-order program is beta-reduced to
+# a first-order, call-free term and heval/cgen need no changes. Threads through the
+# recursion, so a recursive HOF (`map`/`fold` taking a fn) keeps its fn binding.
+# Scope: top-level function names as arguments (the canonical HOF case), not
+# capturing lambda literals.
+fn fn_exists(fns: List<FnDecl>, name: String) : Bool = match fns { [] => false; [FnDecl(fnm, tps, ty, body), ...rest] => if fnm == name then true else fn_exists(rest, name) }
+fn fenv_get(fenv: List<Pair<String, String>>, name: String) : String = match fenv { [] => ""; [Pair(k, v), ...r] => if k == name then v else fenv_get(r, name) }
+# the top-level fn `name` ultimately denotes (following higher-order bindings), "" if none
+fn resolve_fn(name: String, fns: List<FnDecl>, fenv: List<Pair<String, String>>) : String =
+  let bound : String = fenv_get(fenv, name) in if bound == "" then (if fn_exists(fns, name) then name else "") else bound
+fn is_fn_arg(a: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>) : Bool = match a { EVar(n) => resolve_fn(n, fns, fenv) != ""; _ => false }
+fn arg_fn_name(a: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>) : String = match a { EVar(n) => resolve_fn(n, fns, fenv); _ => "" }
+fn unroll_args(es: List<Expr>, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: Int) : List<Expr> =
+  match es { [] => []; [e, ...r] => [unroll(e, fns, fenv, fuel)] ++ unroll_args(r, fns, fenv, fuel) }
+fn unroll_arms(arms: List<Pair<Pattern, Expr>>, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: Int) : List<Pair<Pattern, Expr>> =
+  match arms { [] => []; [Pair(p, b), ...r] => [Pair(p, unroll(b, fns, fenv, fuel))] ++ unroll_arms(r, fns, fenv, fuel) }
+fn inline_fn(body: Expr, args: List<Expr>, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: Int) : Expr =
   match body {
-    ELam(p, inner) => match args { [] => unroll(inner, fns, fuel - 1); [a, ...rest] => ELet(p, unroll(a, fns, fuel), inline_fn(inner, rest, fns, fuel)) };
-    _ => unroll(body, fns, fuel - 1) }
-fn unroll(e: Expr, fns: List<FnDecl>, fuel: Int) : Expr =
+    ELam(p, inner) => match args {
+      [] => unroll(inner, fns, fenv, fuel - 1);
+      [a, ...rest] => if is_fn_arg(a, fns, fenv)
+        then inline_fn(inner, rest, fns, [Pair(p, arg_fn_name(a, fns, fenv))] ++ fenv, fuel)
+        else ELet(p, unroll(a, fns, fenv, fuel), inline_fn(inner, rest, fns, fenv, fuel)) };
+    _ => unroll(body, fns, fenv, fuel - 1) }
+fn unroll(e: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: Int) : Expr =
   match e {
-    EApp(f, a) => if fuel <= 0 then EInt(0) else match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => inline_fn(fn_body_of(fns, fname), args, fns, fuel); _ => EInt(0) } };
-    EAdd(x, y) => EAdd(unroll(x, fns, fuel), unroll(y, fns, fuel));
-    ESub(x, y) => ESub(unroll(x, fns, fuel), unroll(y, fns, fuel));
-    EMul(x, y) => EMul(unroll(x, fns, fuel), unroll(y, fns, fuel));
-    EEq(x, y) => EEq(unroll(x, fns, fuel), unroll(y, fns, fuel));
-    ENeq(x, y) => ENeq(unroll(x, fns, fuel), unroll(y, fns, fuel));
-    EAnd(x, y) => EAnd(unroll(x, fns, fuel), unroll(y, fns, fuel));
-    EOr(x, y) => EOr(unroll(x, fns, fuel), unroll(y, fns, fuel));
-    EUNot(a) => EUNot(unroll(a, fns, fuel));
-    EIf(c, t, f) => EIf(unroll(c, fns, fuel), unroll(t, fns, fuel), unroll(f, fns, fuel));
-    ELet(nm, v, body) => ELet(nm, unroll(v, fns, fuel), unroll(body, fns, fuel));
-    EMatch(scrut, arms) => EMatch(unroll(scrut, fns, fuel), unroll_arms(arms, fns, fuel));
-    ECtor(name, args) => ECtor(name, unroll_args(args, fns, fuel));
-    ETuple(elems) => ETuple(unroll_args(elems, fns, fuel));
+    EApp(f, a) => if fuel <= 0 then EInt(0) else match unwind_app(EApp(f, a), []) { (hd, args) => match hd {
+      EVar(fname) => let tgt : String = resolve_fn(fname, fns, fenv) in if tgt == "" then EInt(0) else inline_fn(fn_body_of(fns, tgt), args, fns, fenv, fuel);
+      _ => EInt(0) } };
+    EAdd(x, y) => EAdd(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
+    ESub(x, y) => ESub(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
+    EMul(x, y) => EMul(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
+    EEq(x, y) => EEq(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
+    ENeq(x, y) => ENeq(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
+    EAnd(x, y) => EAnd(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
+    EOr(x, y) => EOr(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
+    EUNot(a) => EUNot(unroll(a, fns, fenv, fuel));
+    EIf(c, t, f) => EIf(unroll(c, fns, fenv, fuel), unroll(t, fns, fenv, fuel), unroll(f, fns, fenv, fuel));
+    ELet(nm, v, body) => ELet(nm, unroll(v, fns, fenv, fuel), unroll(body, fns, fenv, fuel));
+    EMatch(scrut, arms) => EMatch(unroll(scrut, fns, fenv, fuel), unroll_arms(arms, fns, fenv, fuel));
+    ECtor(name, args) => ECtor(name, unroll_args(args, fns, fenv, fuel));
+    ETuple(elems) => ETuple(unroll_args(elems, fns, fenv, fuel));
     _ => e }
 # constructor -> tag = its index within its type's constructor list
 fn ctix(ctors: List<CtorDecl>, name: String, i: Int) : Int = match ctors { [] => 0 - 1; [CtorDecl(cn, ats), ...r] => if cn == name then i else ctix(r, name, i + 1) }
@@ -426,12 +451,12 @@ fn val_of(p: (List<Int>, List<Int>)) : List<Int> = match p { (v, h) => v }
 fn build_source(src: String, inputs: List<Pair<String, Int>>, claimedR: Int) : Build =
   match parse_prog(src) { Program(types, fns, main) =>
     let rty : Type = fn_ret(fns, main_fname(main)) in    # refinement read from the ORIGINAL named call
-    let um : Expr = unroll(main, fns, 6) in              # then bound recursion away into a call-free term
+    let um : Expr = unroll(main, fns, [], 6) in              # then bound recursion away into a call-free term
     let k : Int = plen(inputs) in
     match heval(um, in_env(inputs), fns, types) { (rv, bh) =>
     match rty {
       TyRefine(base, binder, pred) =>
-        let up : Expr = unroll(pred, fns, 6) in
+        let up : Expr = unroll(pred, fns, [], 6) in
         match heval(up, [Pair(binder, rv)], fns, types) { (pv, ph) =>
         let hints : List<Int> = bh ++ ph in
         match cgen(um, in_cenv(inputs, 0), fns, types, k, 0, Build(k + len(hints), [], in_vals(inputs) ++ hints)) { (outv, h1, b1) =>
@@ -442,7 +467,7 @@ fn build_source(src: String, inputs: List<Pair<String, Int>>, claimedR: Int) : B
         match cgen(um, in_cenv(inputs, 0), fns, types, k, 0, Build(k + len(bh), [], in_vals(inputs) ++ bh)) { (outv, h1, b1) =>
         match mkc(claimedR, b1) { (wR, b2) => asrt(vhead(outv), wR, b2) } } } } }
 fn ref_result(src: String, inputs: List<Pair<String, Int>>) : Int =
-  match parse_prog(src) { Program(types, fns, main) => vhead(val_of(heval(unroll(main, fns, 6), in_env(inputs), fns, types))) }
+  match parse_prog(src) { Program(types, fns, main) => vhead(val_of(heval(unroll(main, fns, [], 6), in_env(inputs), fns, types))) }
 fn prove(src: String, inputs: List<Pair<String, Int>>, claimedR: Int, seed: Int, nv: F2, nw: Int) : Bool =
   match build_source(src, inputs, claimedR) { Build(n, gates, w) => stark_ok(gates, w, seed, nv, nw) }
 
@@ -451,26 +476,26 @@ fn show_a(b: Bool) : String = if b then "ACCEPT" else "REJECT"
 fn show_b(b: Bool) : String = if b then "yes" else "no"
 let bbw : Int = find_nonres_b(2)
 let bbv : F2 = find_v(0, bbw)
-# RECURSIVE DATA (E1) + RECURSION + REFINEMENT (C1), fused: a recursive function
-# `suml` folding a recursive datatype `IntList` (Nil/Cons), with a `where (P)`
-# clause. The recursive TYPE lays out as a fixed-width buffer (twidth's fuel bound)
-# and the recursive FUNCTION is bounded-unrolled into a call-free circuit — so a
-# whole linked list and the fold over it become one arithmetic circuit, and the
-# `where` is proven IN-CIRCUIT. suml's result holds its refinement; ident LIES.
-let src_ok : String = "type IntList = | Nil | Cons(Int, IntList)\nfn suml(l: IntList) : Int where (result != 99) = match l { Nil => 0; Cons(h, t) => h + suml(t) }\nsuml(Cons(inp, Cons(2, Cons(3, Nil))))"
+# HIGHER-ORDER FUNCTIONS (E2) + REFINEMENT (C1), fused: a function that takes
+# another FUNCTION as an argument. `twice` applies its function parameter `f` twice;
+# passing the top-level `inc` resolves f->inc and beta-reduces the whole program to a
+# first-order, CALL-FREE circuit (no closures in the proof) — higher-order source,
+# first-order proof. The `where (P)` is proven IN-CIRCUIT. twice's result holds its
+# refinement; ident LIES about its type and is rejected.
+let src_ok : String = "fn twice(f: (Int) -> Int, x: Int) : Int where (result != 0) = f(f(x))\nfn inc(n: Int) : Int = n + 1\ntwice(inc, inp)"
 let src_bad : String = "fn ident(x: Int) : Int where (result == 0 || result == 1) = x\nident(inp)"
-let inputs : List<Pair<String, Int>> = [Pair("inp", 5)]      # secret head of the list
-let r_ok : Int = ref_result(src_ok, inputs)                   # suml [5,2,3] = 10  (!= 99)
+let inputs : List<Pair<String, Int>> = [Pair("inp", 5)]      # secret argument
+let r_ok : Int = ref_result(src_ok, inputs)                   # twice(inc, 5) = inc(inc(5)) = 7  (!= 0)
 let r_bad : Int = ref_result(src_bad, inputs)                 # ident(5) = 5   (NOT in {0,1})
 
-let _ : String = print("--- prove_source_adt_zk.glass: proving a fold over a RECURSIVE LIST in ZK (E1 + C1) ---")
-let _ : String = print("a recursive datatype (IntList = Nil | Cons) lays out as a fixed-width buffer, a recursive")
-let _ : String = print("fold (suml) is bounded-unrolled to a call-free circuit, and the function's `where (P)` is")
-let _ : String = print("proven in-circuit — a linked list AND the fold over it, as one zero-knowledge proof.")
+let _ : String = print("--- prove_source_adt_zk.glass: proving a HIGHER-ORDER function in ZK (E2 + C1) ---")
+let _ : String = print("a function takes another FUNCTION as an argument: twice(f, x) = f(f(x)). Passing the")
+let _ : String = print("top-level `inc` resolves f and beta-reduces the program to a first-order, call-free")
+let _ : String = print("circuit — higher-order source, first-order proof. The `where (P)` is proven in-circuit.")
 let _ : String = print("")
-let _ : String = print("type IntList = Nil | Cons(Int, IntList)")
-let _ : String = print("fn suml(l) : Int where (result != 99) = match l { Nil => 0; Cons(h, t) => h + suml(t) }")
-let _ : String = print("  suml(Cons(inp, Cons(2, Cons(3, Nil)))) with inp PRIVATE; result R = " ++ int_to_string(r_ok) ++ " (satisfies result != 99)")
+let _ : String = print("fn twice(f: (Int) -> Int, x) : Int where (result != 0) = f(f(x))")
+let _ : String = print("fn inc(n) = n + 1")
+let _ : String = print("  twice(inc, inp) with inp PRIVATE; result R = " ++ int_to_string(r_ok) ++ " (satisfies result != 0)")
 let _ : String = print("  proof (result = R AND refinement holds):  " ++ show_a(prove(src_ok, inputs, r_ok, 11111, bbv, bbw)))
 let _ : String = print("")
 let _ : String = print("fn ident(x) : Int where (result == 0 || result == 1) = x   -- a function that LIES about its type")
@@ -478,11 +503,11 @@ let _ : String = print("  ident(inp) = " ++ int_to_string(r_bad) ++ ", which vio
 let _ : String = print("  proof:  " ++ show_a(prove(src_bad, inputs, r_bad, 11111, bbv, bbw)) ++ "  (the in-circuit refinement assertion fails => unprovable)")
 let _ : String =
   match build_source(src_ok, inputs, r_ok) { Build(n, gates, w) =>
-    print("\nZERO-KNOWLEDGE (suml): two seeds verify: "
+    print("\nZERO-KNOWLEDGE (twice): two seeds verify: "
       ++ show_a(stark_ok(gates, w, 11111, bbv, bbw)) ++ " / " ++ show_a(stark_ok(gates, w, 22222, bbv, bbw))
       ++ "; opening #5 differs: " ++ show_b(eq4(qopen5(gates, w, 11111), qopen5(gates, w, 22222)) == false)) }
 let _ : String = print("")
-let _ : String = print("Glass proves a fold over a recursive linked list in zero-knowledge: recursive data + recursive")
-let _ : String = print("function, both bounded, the refinement proven in-circuit — a recursive datatype, verifiable.")
+let _ : String = print("Glass proves a higher-order function in zero-knowledge: a function passed as a value is")
+let _ : String = print("beta-reduced away, the refinement proven in-circuit — higher-order source, first-order proof.")
 
-"prove_source_adt_zk v0.3 — real prism source: recursive ADTs (lists) + bounded recursion -> refinement-checked blinded F_{p^4} FRI STARK"
+"prove_source_adt_zk v0.4 — real prism source: ADTs + recursion + higher-order fns -> refinement-checked blinded F_{p^4} FRI STARK"
