@@ -39,7 +39,7 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Shipped (through v5.20)
+## Shipped (through v5.21)
 
 - **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
 - **Pane** — a query language in Glass.
@@ -312,8 +312,10 @@ three under-invested axes — *realness*, *usability*, and *convergence* — on 
     works: `suml(map(inc, [5,2,3])) = 13` proves correctly. The demo proves
     `twice(inc, inp) = 7` over a private input + its refinement, in ZK; lying REJECTs;
     byte-identical. Via `glass prove` ([`map_prove.glass`](../examples/prove/map_prove.glass)).
-    (Scope: top-level fn names as arguments — the canonical case; capturing lambda
-    literals are future work.)
+    ✅ **Now also lambda literals** (v5.21): `fenv` maps a parameter to a function *value*
+    — a top-level fn or an `ELam` — so `twice(fn(n) -> n + 1, inp)` inlines the lambda
+    too (a lambda's captures resolve via the enclosing `let`s). Top-level-fn HOF,
+    recursion, and list folds all regression-checked with the generalized `fenv`.
 - **Track U — Usability** (a *feature*, not a library you assemble by hand).
   - **U1. ✅ DONE.** **`glass prove <file.glass> [name=value …]`** — compiles the file's
     `main` into a circuit and emits a succinct, zero-knowledge proof of its result;
