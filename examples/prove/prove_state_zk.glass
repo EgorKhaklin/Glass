@@ -1,0 +1,117 @@
+# =============================================================================
+# prove_state_zk.glass — proving a `State`-effectful computation (C2, step 3)
+#
+# The deep one. A computation with mutable State reads and writes memory; to prove
+# it, the verifier must be convinced every READ returned the value of the most
+# recent WRITE to that address — without re-running the program. This is the
+# memory-consistency argument at the heart of every zkVM, and it is exactly how a
+# `State` effect becomes a committed, checkable trace.
+#
+# THE CONSTRUCTION. The State effect emits an ACCESS TRACE in program (time) order:
+# each entry is Acc(addr, time, val, op), op 0 = read, 1 = write. The prover also
+# supplies the SAME trace re-sorted by (addr, then time). Three checks make the log
+# undeniable:
+#   1. PERMUTATION — the sorted trace is a permutation of the original (no entry
+#      fabricated, dropped, or altered). Proven by multiset equality: a grand product
+#      ∏ (γ − encode(accessᵢ)) must agree across both orderings, with γ, δ drawn by
+#      Fiat-Shamir from a commitment to the original — Schwartz–Zippel makes a
+#      mismatch vanish with prob ~|trace|/p.
+#   2. SORTEDNESS — the sorted trace really is ordered by (addr, time), so "the
+#      previous entry at this address" is well defined.
+#   3. CONSISTENCY — walking the sorted trace, a read at an address returns the value
+#      of the entry just before it (the last write); a first/new-address read sees 0.
+# Together: every read is pinned to the last write, and the prover can't cook the log.
+#
+# Sound prover-side check here (the permutation is a field grand product; sortedness
+# and consistency are predicates). Lowering to the FRI STARK — with the permutation
+# as a FRI'd z-accumulator (prove_zperm) and the order checks as range gadgets — adds
+# succinct + zero-knowledge; that's the follow-on. Baby Bear; dogfoods.
+# =============================================================================
+
+fn fadd(a: Int, b: Int) : Int = (a + b) % 2013265921
+fn fmul(a: Int, b: Int) : Int = (a * b) % 2013265921
+fn fsub(a: Int, b: Int) : Int = ((a - b) % 2013265921 + 2013265921) % 2013265921
+fn fnorm(a: Int) : Int = (a % 2013265921 + 2013265921) % 2013265921
+
+# --- a MiMC hash for the Fiat-Shamir challenges ------------------------------
+fn sbox(x: Int) : Int = let x2 : Int = fmul(x, x) in let x4 : Int = fmul(x2, x2) in fmul(x4, x)
+fn rconst(i: Int) : Int = ((i + 1) * (i + 1) * (i + 1) + i * 1009 + 1234567) % 2013265921
+fn mimc(x: Int, k: Int, i: Int) : Int = if i >= 16 then fadd(x, k) else mimc(sbox(fadd(fadd(x, k), rconst(i))), k, i + 1)
+fn hash2(a: Int, b: Int) : Int = fadd(fadd(mimc(a, b, 0), a), b)
+
+# --- the access trace --------------------------------------------------------
+type Acc = | Acc(Int, Int, Int, Int)        # addr, time, val, op  (op: 0 = read, 1 = write)
+
+# encode an access as one field element via powers of a challenge δ
+fn enc(a: Acc, delta: Int) : Int = match a { Acc(addr, time, val, op) =>
+  let d2 : Int = fmul(delta, delta) in let d3 : Int = fmul(d2, delta) in
+  fadd(fnorm(addr), fadd(fmul(delta, fnorm(time)), fadd(fmul(d2, fnorm(val)), fmul(d3, fnorm(op))))) }
+# grand product  ∏ (γ − enc(accessᵢ))  — a multiset fingerprint of the trace
+fn gprod(tr: List<Acc>, gamma: Int, delta: Int) : Int =
+  match tr { [] => 1; [a, ...rest] => fmul(fsub(gamma, enc(a, delta)), gprod(rest, gamma, delta)) }
+# PERMUTATION: the two orderings are the same multiset iff their fingerprints agree
+fn is_perm(orig: List<Acc>, sorted: List<Acc>, gamma: Int, delta: Int) : Bool =
+  gprod(orig, gamma, delta) == gprod(sorted, gamma, delta)
+
+# SORTEDNESS: addr non-decreasing, and time strictly increasing within an address
+fn sorted_go(prev: Acc, rest: List<Acc>) : Bool =
+  match rest { [] => true; [cur, ...more] =>
+    match prev { Acc(pa, pt, pv, po) => match cur { Acc(a, t, v, o) =>
+      if (a > pa) || (a == pa && t > pt) then sorted_go(cur, more) else false } } }
+fn sorted_ok(tr: List<Acc>) : Bool = match tr { [] => true; [x, ...rest] => sorted_go(x, rest) }
+
+# CONSISTENCY: a same-address read returns the previous entry's value (the last
+# write); a first or new-address read returns 0 (memory is zero-initialized).
+fn cons_go(prev: Acc, rest: List<Acc>) : Bool =
+  match rest { [] => true; [cur, ...more] =>
+    match prev { Acc(pa, pt, pv, po) => match cur { Acc(a, t, v, o) =>
+      let ok : Bool = if a == pa then (if o == 0 then v == pv else true)
+                      else (if o == 0 then v == 0 else true) in
+      if ok then cons_go(cur, more) else false } } }
+fn consistent(tr: List<Acc>) : Bool =
+  match tr { [] => true; [first, ...rest] =>
+    match first { Acc(a, t, v, o) => if o == 0 && v != 0 then false else cons_go(first, rest) } }
+
+# --- the full memory-consistency check (γ, δ via Fiat-Shamir from the trace) ---
+fn hash_tr(tr: List<Acc>, acc: Int) : Int =
+  match tr { [] => acc; [a, ...rest] => match a { Acc(ad, tm, vl, op) => hash_tr(rest, hash2(hash2(hash2(hash2(acc, ad), tm), vl), op)) } }
+fn memory_ok(orig: List<Acc>, sorted: List<Acc>) : Bool =
+  let seed : Int = hash_tr(orig, 0) in
+  let gamma : Int = hash2(seed, 1) in let delta : Int = hash2(seed, 2) in
+  is_perm(orig, sorted, gamma, delta) && sorted_ok(sorted) && consistent(sorted)
+
+# --- demo --------------------------------------------------------------------
+fn show_a(b: Bool) : String = if b then "ACCEPT" else "REJECT"
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+# a program: write m[0]=42; write m[1]=7; read m[0]->42; write m[0]=99; read m[0]->99; read m[1]->7
+let orig : List<Acc> = [Acc(0, 0, 42, 1), Acc(1, 1, 7, 1), Acc(0, 2, 42, 0), Acc(0, 3, 99, 1), Acc(0, 4, 99, 0), Acc(1, 5, 7, 0)]
+let sorted : List<Acc> = [Acc(0, 0, 42, 1), Acc(0, 2, 42, 0), Acc(0, 3, 99, 1), Acc(0, 4, 99, 0), Acc(1, 1, 7, 1), Acc(1, 5, 7, 0)]
+# a LYING trace: claim read m[0]@t4 returned 50 (the last write was 99) — changed in BOTH orderings,
+# so the permutation still holds, but consistency must catch the bad read.
+let orig_b : List<Acc> = [Acc(0, 0, 42, 1), Acc(1, 1, 7, 1), Acc(0, 2, 42, 0), Acc(0, 3, 99, 1), Acc(0, 4, 50, 0), Acc(1, 5, 7, 0)]
+let sorted_b : List<Acc> = [Acc(0, 0, 42, 1), Acc(0, 2, 42, 0), Acc(0, 3, 99, 1), Acc(0, 4, 50, 0), Acc(1, 1, 7, 1), Acc(1, 5, 7, 0)]
+# a FABRICATED sorted trace: one entry's value altered only here (not a permutation of orig).
+let sorted_f : List<Acc> = [Acc(0, 0, 42, 1), Acc(0, 2, 42, 0), Acc(0, 3, 99, 1), Acc(0, 4, 99, 0), Acc(1, 1, 7, 1), Acc(1, 5, 8, 0)]
+let s0 : Int = hash_tr(orig, 0)
+let g0 : Int = hash2(s0, 1)
+let d0 : Int = hash2(s0, 2)
+
+let _ : String = print("--- prove_state_zk.glass: proving a State-effectful computation (C2, step 3) ---")
+let _ : String = print("memory consistency: a permutation argument binds the program-order trace to the")
+let _ : String = print("address-sorted trace, and every read is pinned to the last write at its address.")
+let _ : String = print("")
+let _ : String = print("program: write m[0]=42; write m[1]=7; read m[0]; write m[0]=99; read m[0]; read m[1]")
+let _ : String = print("honest trace -> permutation + sortedness + consistency all hold: " ++ show_a(memory_ok(orig, sorted)))
+let _ : String = print("")
+let _ : String = print("a read that LIES about its value (m[0]@t4 = 50, but the last write was 99):")
+let _ : String = print("  still a valid permutation (changed in both orderings): " ++ show_b(is_perm(orig_b, sorted_b, hash2(hash_tr(orig_b, 0), 1), hash2(hash_tr(orig_b, 0), 2))))
+let _ : String = print("  but read-after-write consistency catches it:           " ++ show_a(memory_ok(orig_b, sorted_b)) ++ "  (50 != last write 99 => REJECT)")
+let _ : String = print("")
+let _ : String = print("a FABRICATED sorted trace (an entry altered only there, not a permutation of the real log):")
+let _ : String = print("  permutation fingerprint mismatches: " ++ show_b(is_perm(orig, sorted_f, g0, d0) == false))
+let _ : String = print("  so the forged log is rejected:      " ++ show_a(memory_ok(orig, sorted_f)) ++ "  (REJECT)")
+let _ : String = print("")
+let _ : String = print("the State effect, proven: a memory trace where every read is bound to the last write,")
+let _ : String = print("and the log can't be faked. (Sound; lower the permutation to a FRI'd z-accumulator for ZK.)")
+
+"prove_state_zk v0.1 (C2 step 3) — memory consistency: permutation argument + read-after-write, the State effect as a checkable trace"

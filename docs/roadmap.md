@@ -39,7 +39,7 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Shipped (through v5.23)
+## Shipped (through v5.24)
 
 - **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
 - **Pane** — a query language in Glass.
@@ -341,8 +341,11 @@ three under-invested axes — *realness*, *usability*, and *convergence* — on 
     is the follow-on). ✅ **Step 2 — `Random` via the transcript** ([`prove_random_zk.glass`](../examples/prove/prove_random_zk.glass)):
     `random_int` is a draw pinned to the Fiat-Shamir transcript (commit first, then the randomness
     falls out) — a provably-fair, un-grindable dice roll, verifiable from public `(C, beacon)` while
-    the seed stays private. *Next:* `State` via a memory-consistency argument (the deep one); and
-    reading the effect row in the bridge to derive the trace.
+    the seed stays private. ✅ **Step 3 — `State` via memory consistency** ([`prove_state_zk.glass`](../examples/prove/prove_state_zk.glass)):
+    an access trace bound program-order-to-address-sorted by a permutation argument (grand product),
+    sorted, and read-after-write checked — every read pinned to the last write, the log un-fakeable
+    (the zkVM memory argument, from scratch). *Next:* reading the effect row in the bridge to derive
+    the trace layout automatically, and lowering these sound checks to the FRI STARK for full ZK.
 - **Substrate — Performance (P).** The interpreter dogfood is now the bottleneck
   (heavy circuits take ~10 min). A faster reference (bytecode/closure compilation) or
   promoting `native_glassc` to a co-equal dogfood oracle unblocks Tracks E and R.

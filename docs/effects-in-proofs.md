@@ -1,8 +1,9 @@
 # Effects in the proof story (C2) — a design
 
-*A design note / proposal. The first two steps are prototyped
+*A design note / proposal. The first three steps are prototyped
 ([`prove_inference_zk.glass`](../examples/prove/prove_inference_zk.glass),
-[`prove_random_zk.glass`](../examples/prove/prove_random_zk.glass)); the rest is a
+[`prove_random_zk.glass`](../examples/prove/prove_random_zk.glass),
+[`prove_state_zk.glass`](../examples/prove/prove_state_zk.glass)); the rest is a
 plan, not a claim.*
 
 ## The tension
@@ -63,8 +64,10 @@ parses into `EffRow`.
 2. ✅ **`Random` via the transcript** ([`prove_random_zk.glass`](../examples/prove/prove_random_zk.glass)) —
    `random_int` draws are pinned to the Fiat-Shamir transcript (commit first, then the
    randomness falls out): a provably-fair, un-grindable roll, verifiable from public data.
-3. **`State` / general memory-consistency** — the deep one (the sorting + permutation
-   argument); deferred.
+3. ✅ **`State` / memory-consistency** ([`prove_state_zk.glass`](../examples/prove/prove_state_zk.glass)) —
+   an access trace, bound program-order-to-address-sorted by a permutation argument (grand
+   product), sorted, and read-after-write checked: every read pinned to the last write, the
+   log un-fakeable (sound prover-side; FRI z-accumulator + range gadgets add ZK).
 4. **Read the effect row in the bridge** — dispatch the trace layout on `EffRow`, so
    the proof's interface is *derived from the type*.
 
