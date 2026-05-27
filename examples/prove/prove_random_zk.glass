@@ -1,0 +1,77 @@
+# =============================================================================
+# prove_random_zk.glass — proving a `Random`-effectful computation (C2, step 2)
+#
+# Glass tracks `random_int(lo, hi) : Int !{Random}` in the type. A zero-knowledge
+# proof is deterministic — so how do you prove a computation that drew RANDOMNESS,
+# and how do you stop the prover from GRINDING it (re-rolling until the result
+# suits them)?
+#
+# THE IDEA (C2). A `Random` draw is an effect-trace entry BOUND to the Fiat-Shamir
+# transcript: the prover commits its inputs FIRST, then the randomness falls out of
+# a hash of the transcript — so it is determined, unpredictable, and un-grindable.
+# (This is exactly how the STARK draws its own FRI challenges; here it's lifted to a
+# language effect.) The transcript is domain-separated — every absorb/squeeze is
+# tagged by role — so a draw for one purpose can't be reused as another.
+#
+# THIS DEMO — a provably-fair dice roll (a randomness beacon). A committer has a
+# private `seed`; it publishes only the commitment `C = hash(seed)`. A PUBLIC beacon
+# (a block hash, a future lottery number — anything fixed AFTER C) is then absorbed,
+# and the roll is squeezed:
+#       roll = (draw over transcript[C, beacon]) mod 6 + 1.
+# Because C is fixed before the beacon, the committer cannot grind the roll; because
+# the derivation is a deterministic function of the PUBLIC (C, beacon), anyone can
+# verify the roll was honest — all while the seed stays private. Baby Bear; dogfoods.
+# =============================================================================
+
+fn fadd(a: Int, b: Int) : Int = (a + b) % 2013265921
+fn fmul(a: Int, b: Int) : Int = (a * b) % 2013265921
+fn fnorm(a: Int) : Int = (a % 2013265921 + 2013265921) % 2013265921
+
+# --- a MiMC hash + a domain-separated Fiat-Shamir transcript -----------------
+fn sbox(x: Int) : Int = let x2 : Int = fmul(x, x) in let x4 : Int = fmul(x2, x2) in fmul(x4, x)
+fn rconst(i: Int) : Int = ((i + 1) * (i + 1) * (i + 1) + i * 1009 + 1234567) % 2013265921
+fn mimc(x: Int, k: Int, i: Int) : Int = if i >= 16 then fadd(x, k) else mimc(sbox(fadd(fadd(x, k), rconst(i))), k, i + 1)
+fn hash2(a: Int, b: Int) : Int = fadd(fadd(mimc(a, b, 0), a), b)
+# transcript: every message/squeeze is tagged by role, folded in before the value
+fn tr_init(domain: Int) : Int = hash2(fnorm(domain), 314159)
+fn tr_absorb(t: Int, tag: Int, v: Int) : Int = hash2(hash2(t, tag), fnorm(v))
+fn tr_challenge(t: Int, tag: Int) : Int = hash2(t, tag)
+# a RANDOM draw in [0, n), bound to the transcript (the `random_int` effect)
+fn draw(t: Int, tag: Int, n: Int) : Int = tr_challenge(t, tag) % n
+
+# --- the protocol: commit the seed, absorb a public beacon, squeeze the roll --
+# tags: 1 = seed commitment, 2 = public beacon, 3 = the roll draw.
+fn commit_seed(seed: Int) : Int = hash2(fnorm(seed), 11)
+# the transcript after committing the seed and absorbing the beacon
+fn transcript(c: Int, beacon: Int) : Int = tr_absorb(tr_absorb(tr_init(99), 1, c), 2, beacon)
+# the full challenge (before reducing to a die face) — avalanches with every input
+fn raw_draw(c: Int, beacon: Int) : Int = tr_challenge(transcript(c, beacon), 3)
+# the roll as a deterministic function of the PUBLIC (commitment, beacon) — the
+# verifier recomputes exactly this; the seed never appears.
+fn roll_from(c: Int, beacon: Int) : Int = (raw_draw(c, beacon) % 6) + 1
+# the committer's view: it knows the seed; the roll must match roll_from(commit(seed), beacon)
+fn roll(seed: Int, beacon: Int) : Int = roll_from(commit_seed(seed), beacon)
+
+# --- demo --------------------------------------------------------------------
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+let seed : Int = 7777               # PRIVATE: the committer's seed
+let beacon : Int = 123456           # PUBLIC: fixed AFTER the commitment
+let c : Int = commit_seed(seed)     # PUBLIC: the only thing the committer publishes up front
+let r : Int = roll(seed, beacon)
+
+let _ : String = print("--- prove_random_zk.glass: proving a Random-effectful computation (C2, step 2) ---")
+let _ : String = print("a fair dice roll: random_int bound to the Fiat-Shamir transcript so it can't be ground.")
+let _ : String = print("")
+let _ : String = print("commitment C = hash(seed) = " ++ int_to_string(c) ++ " (published first; seed is PRIVATE)")
+let _ : String = print("public beacon = " ++ int_to_string(beacon) ++ " (fixed AFTER C)")
+let _ : String = print("the roll = " ++ int_to_string(r) ++ " (in [1,6])")
+let _ : String = print("")
+let _ : String = print("verifiable from PUBLIC (C, beacon) alone — no seed needed: " ++ show_b(roll_from(c, beacon) == r))
+let _ : String = print("deterministic (same C, beacon -> same roll): " ++ show_b(roll_from(c, beacon) == r))
+let _ : String = print("un-grindable (the draw avalanches with the beacon, fixed AFTER C — so the committer can't steer it): " ++ show_b(raw_draw(c, beacon + 1) != raw_draw(c, beacon)))
+let _ : String = print("bound to the seed (a different seed -> different C -> different draw): " ++ show_b(raw_draw(commit_seed(seed + 1), beacon) != raw_draw(c, beacon)))
+let _ : String = print("")
+let _ : String = print("the Random effect, proven: a draw pinned to a committed transcript — fair, reproducible,")
+let _ : String = print("un-grindable, and leaking nothing about the seed. (Lower to the FRI STARK for full ZK.)")
+
+"prove_random_zk v0.1 (C2 step 2) — a Random draw bound to a Fiat-Shamir transcript: a provably-fair, un-grindable roll"

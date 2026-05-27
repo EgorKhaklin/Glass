@@ -1,8 +1,9 @@
 # Effects in the proof story (C2) — a design
 
-*A design note / proposal. The first step is prototyped
-([`prove_inference_zk.glass`](../examples/prove/prove_inference_zk.glass)); the
-rest is a plan, not a claim.*
+*A design note / proposal. The first two steps are prototyped
+([`prove_inference_zk.glass`](../examples/prove/prove_inference_zk.glass),
+[`prove_random_zk.glass`](../examples/prove/prove_random_zk.glass)); the rest is a
+plan, not a claim.*
 
 ## The tension
 
@@ -59,8 +60,9 @@ parses into `EffRow`.
    the model answer is private, pinned by a hiding commitment, and a downstream
    validator is proven over it (sound RLC; ZK STARK is the follow-on). *Headline: a
    proof that an LLM-in-the-loop computation ran faithfully over a pinned answer.*
-2. **`Random` via the transcript** — bind `random_int` draws to the Fiat-Shamir
-   transcript; reuses `frost_grain`.
+2. ✅ **`Random` via the transcript** ([`prove_random_zk.glass`](../examples/prove/prove_random_zk.glass)) —
+   `random_int` draws are pinned to the Fiat-Shamir transcript (commit first, then the
+   randomness falls out): a provably-fair, un-grindable roll, verifiable from public data.
 3. **`State` / general memory-consistency** — the deep one (the sorting + permutation
    argument); deferred.
 4. **Read the effect row in the bridge** — dispatch the trace layout on `EffRow`, so
