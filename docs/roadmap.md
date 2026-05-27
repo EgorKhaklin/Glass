@@ -231,8 +231,47 @@ proves the things the project was for."
   closure/bytecode compilation of the AST (a larger, riskier rewrite) — or simply
   leaning on the native path, which already is the fast workhorse.
 
-The recommended next step is **H1** — it's concrete, demonstrable, uses pieces
-that already exist, and is the literal payoff of the whole project.
+## The next era (post-v5.6) — from *demonstrated* to *real, usable, unified*
+
+By v5.6 the founding thesis is **realized for first-order pure Glass**: the prove
+bridge ([`prove_source_zk`](../examples/prove/prove_source_zk.glass),
+[`prove_source_adt_zk`](../examples/prove/prove_source_adt_zk.glass)) compiles real
+prism-parsed source — arithmetic, `let`, calls, comparisons/booleans, `if`, and
+`match` over (nested) ADTs with (nested) patterns — into a succinct, zero-knowledge
+proof of its result. Frost grew a from-scratch zk-STARK over both Baby Bear and the
+production **Goldilocks** field (field → FRI → F_{p²} challenge → committed →
+zero-knowledge).
+
+The work so far went **deep on expressiveness**. The next era rebalances toward the
+three under-invested axes — *realness*, *usability*, and *convergence* — on four tracks:
+
+- **Track R — Realness** (make the proof *mean* something).
+  - **R1.** Wire the **Goldilocks** stack *through the bridge* — `prove_source_*` still
+    proves over toy Baby Bear F_{p⁴}; the Goldilocks STARK exists but isn't connected.
+    Connecting them makes every source proof run on the production field. *(highest leverage — all pieces exist)*
+  - **R2.** A real hash (Poseidon over Goldilocks) + Fiat-Shamir hardening in the proven path.
+  - **R3.** An honest **soundness ledger** — exactly what is/isn't sound, per artifact.
+- **Track E — Expressiveness** (past first-order).
+  - **E1.** **Bounded recursion / lists** via static unrolling (`List<Int>` as Nil/Cons
+    to a depth bound) — the expressiveness cliff; what real ZK-VMs do.
+  - **E2.** Higher-order functions via defunctionalization/inlining.
+- **Track U — Usability** (a *feature*, not a library you assemble by hand).
+  - **U1.** **`glass prove <file>` / `glass verify`** — the capability as a CLI command.
+  - **U2.** A refreshed end-to-end story (the-story/README) from type signature → proof.
+- **Track C — Convergence** (the distinctive bet — Glass has types + refinements +
+  effects + ZK in one self-hosting language; unify them).
+  - **C1.** **Prove refinement types** — discharge `Int where (x > 0)` as in-circuit
+    assertions, so a refinement *is* a ZK-checkable claim. The frontier no one else can
+    reach, because no one else has all the pieces in one language.
+  - **C2.** Effects in the proof story.
+- **Substrate — Performance (P).** The interpreter dogfood is now the bottleneck
+  (heavy circuits take ~10 min). A faster reference (bytecode/closure compilation) or
+  promoting `native_glassc` to a co-equal dogfood oracle unblocks Tracks E and R.
+
+**Recommended sequence:** R1 (Goldilocks through the bridge) → U1 (`glass prove`) →
+then the fork C1 (prove refinements — most distinctive) or E1 (bounded recursion —
+most expressive), with P whenever the dogfood pain bites. Start at **R1**: concrete,
+all components built, and it retires the biggest credibility gap (the toy field).
 
 ## Success criteria (the Glass discipline)
 
