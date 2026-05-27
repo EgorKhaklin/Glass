@@ -1,5 +1,5 @@
 # =============================================================================
-# frost_grain.glass — Poseidon round constants from the Grain LFSR (the spec way)
+# frost_grain.glass — Grain-LFSR Poseidon constants + a domain-separated transcript
 #
 # frost_poseidon.glass built a real Poseidon permutation (x^7 S-box, full/partial
 # rounds, MDS) but drew its round constants from an ad-hoc polynomial schedule —
@@ -23,6 +23,14 @@
 # so treat it as "Grain-LFSR-structured" not "certified spec-identical" until that
 # check is done. It is a real upgrade over a hand-picked polynomial, not a final
 # word. Baby Bear field (p = 2^31 range); self-contained; dogfoods byte-identical.
+#
+# FIAT-SHAMIR (R2). On top of this Poseidon, a transcript with DOMAIN SEPARATION:
+# tr_init / tr_absorb / tr_challenge tag every message and squeeze by an integer
+# role, folded in before the value, so a challenge meant for one role (a fold
+# challenge) can never coincide with another (a query index) — and every challenge
+# depends on all prior absorbs (commit first, then the challenge falls out). The
+# demo shows determinism, domain separation, no (tag,value) collision, and binding
+# to history. (A formal FS-separation argument is still future work.)
 # =============================================================================
 
 fn fadd(a: Int, b: Int) : Int = (a + b) % 2013265921
@@ -86,6 +94,24 @@ fn perm(rcs: List<Int>, s0: Int, s1: Int, s2: Int) : (Int, Int, Int) =
   match full_rounds(rcs, s0, s1, s2, 0, 4) { (a0, a1, a2) => match partial_rounds(rcs, a0, a1, a2, 4, 22) { (b0, b1, b2) => full_rounds(rcs, b0, b1, b2, 26, 4) } }
 fn poseidon2(rcs: List<Int>, a: Int, b: Int) : Int = match perm(rcs, a, b, 0) { (o0, o1, o2) => o0 }
 
+# --- a Fiat-Shamir transcript with DOMAIN SEPARATION, over this Poseidon -------
+# A non-interactive proof derives its challenges by hashing the transcript of
+# prover messages (Fiat-Shamir). Soundness needs DOMAIN SEPARATION: a challenge
+# meant for "fold round 2" must never coincide with one meant for "query index",
+# even at the same transcript state — otherwise a prover could reuse one role's
+# value in another. Here every absorb and squeeze is tagged with an integer role,
+# folded in BEFORE the value, so (tag, v) for different tags can't collide.
+#   tr_init      seed from a protocol/domain label
+#   tr_absorb    mix a tagged message into the running state (state' = H(H(s,tag),v))
+#   tr_challenge squeeze a challenge bound to a role tag (does not consume a message)
+# A challenge depends on EVERY prior absorb (the prover commits first, then the
+# challenge falls out), so it cannot be predicted or gamed.
+fn tr_init(rcs: List<Int>, domain: Int) : Int = poseidon2(rcs, domain, 314159)
+fn tr_absorb(rcs: List<Int>, t: Int, tag: Int, v: Int) : Int = poseidon2(rcs, poseidon2(rcs, t, tag), v)
+fn tr_challenge(rcs: List<Int>, t: Int, tag: Int) : Int = poseidon2(rcs, t, tag)
+# a challenge as an index into a domain of size n (the query-sampling use)
+fn tr_index(rcs: List<Int>, t: Int, tag: Int, n: Int) : Int = tr_challenge(rcs, t, tag) % n
+
 # --- demo --------------------------------------------------------------------
 fn show_b(b: Bool) : String = if b then "yes" else "no"
 fn lt_all(xs: List<Int>, p: Int) : Bool = match xs { [] => true; [x, ...r] => if x >= 0 && x < p then lt_all(r, p) else false }
@@ -99,6 +125,21 @@ let h21 : Int = poseidon2(rcs, 2, 1)
 let h13 : Int = poseidon2(rcs, 1, 3)
 let av0 : Int = poseidon2(rcs, 1000000, 2000000)
 let av1 : Int = poseidon2(rcs, 1000001, 2000000)
+
+# a scripted FRI-like Fiat-Shamir protocol: commit, squeeze fold challenge, bind
+# it back, commit the next layer, squeeze a query index. tags: 10/11 = layer
+# commitments, 20 = fold challenge, 30 = query index.
+let comm1 : Int = 111111
+let comm2 : Int = 222222
+let t0 : Int = tr_init(rcs, 1)
+let t1 : Int = tr_absorb(rcs, t0, 10, comm1)
+let beta : Int = tr_challenge(rcs, t1, 20)
+let t2 : Int = tr_absorb(rcs, t1, 20, beta)
+let t3 : Int = tr_absorb(rcs, t2, 11, comm2)
+let qidx : Int = tr_index(rcs, t3, 30, 64)
+# re-run with a TAMPERED first commitment: every later challenge must change
+let t1b : Int = tr_absorb(rcs, t0, 10, comm1 + 1)
+let beta_b : Int = tr_challenge(rcs, t1b, 20)
 
 let _ : String = print("--- frost_grain.glass: Poseidon round constants from the Grain LFSR (spec) ---")
 let _ : String = print("80-bit LFSR, taps b0^b13^b23^b38^b51^b62, 160-round warm-up, rejection sampling.")
@@ -114,7 +155,15 @@ let _ : String = print("  poseidon2(1,2) = " ++ int_to_string(h12))
 let _ : String = print("  order-sensitive (12 != 21): " ++ show_b(h12 != h21) ++ "; collision-free on samples (12 != 13): " ++ show_b(h12 != h13))
 let _ : String = print("  avalanche (1-bit flip -> different): " ++ show_b(av0 != av1))
 let _ : String = print("")
-let _ : String = print("the constants now come from the spec's Grain LFSR, not a hand-picked schedule —")
-let _ : String = print("reproducible and nothing-up-my-sleeve. (Cross-check vs official vectors still pending.)")
+let _ : String = print("Fiat-Shamir transcript with domain separation (built on this Poseidon):")
+let _ : String = print("  scripted protocol -> fold challenge beta = " ++ int_to_string(beta) ++ ", query index = " ++ int_to_string(qidx) ++ " (in [0,64))")
+let _ : String = print("  deterministic (same script -> same beta): " ++ show_b(tr_challenge(rcs, tr_absorb(rcs, tr_init(rcs, 1), 10, comm1), 20) == beta))
+let _ : String = print("  domain separation (tag 20 != tag 30 at same state): " ++ show_b(tr_challenge(rcs, t1, 20) != tr_challenge(rcs, t1, 30)))
+let _ : String = print("  no (tag,v) collision (absorb tag1 v2 != absorb tag2 v1): " ++ show_b(tr_absorb(rcs, t0, 1, 2) != tr_absorb(rcs, t0, 2, 1)))
+let _ : String = print("  binds to history (tamper 1st commitment -> beta changes): " ++ show_b(beta != beta_b))
+let _ : String = print("")
+let _ : String = print("the constants now come from the spec's Grain LFSR, not a hand-picked schedule, and")
+let _ : String = print("the transcript is domain-separated — reproducible, nothing-up-my-sleeve, role-bound.")
+let _ : String = print("(Cross-check vs official Poseidon vectors + a formal FS separation argument still pending.)")
 
-"frost_grain v0.1 — Poseidon round constants via the spec's Grain LFSR (80-bit, taps b0^b13^b23^b38^b51^b62, 160 warm-up, rejection sampling)"
+"frost_grain v0.2 — Grain-LFSR Poseidon constants + a domain-separated Fiat-Shamir transcript built on it"
