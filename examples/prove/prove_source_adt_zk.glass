@@ -17,8 +17,10 @@
 # SCOPE: ADTs whose fields are scalars OR other ADTs (NESTED), laid out by a
 # type-directed width (a sum type padded to its widest constructor). A match may
 # RETURN an ADT (the result multiplexer is element-wise over the body's wires).
-# Bounded: non-recursive types (a depth fuel guards width); field patterns are
-# `PVar`/`PWild` (nested PCtor *inside* a field pattern is the next layer).
+# Patterns nest to arbitrary depth: `match l { L(P(x, y), b) => … }` works — the
+# arm selector is the PRODUCT of is-zeros down the pattern tree, and binders slice
+# nested sub-values by type width. Bounded: non-recursive types (a depth fuel
+# guards width).
 #
 # Demo:  type Shape = Circle(Int) | Rect(Int, Int)
 #        fn area(s: Shape) : Int = match s { Circle(r) => 3*r*r; Rect(w,h) => w*h }
@@ -237,18 +239,26 @@ fn heval_call(body: Expr, args: List<Expr>, ccenv: List<Pair<String, List<Int>>>
     _ => heval(body, ccenv, fns, types) }
 # does a pattern match the scrutinee value sv? (tag in sv[0])
 fn pmatch(p: Pattern, sv: List<Int>, types: List<TypeDecl>) : Bool =
-  match p { PWild => true; PVar(x) => true; PInt(n) => vhead(sv) == fnorm(n); PBool(bb) => vhead(sv) == bconst(bb); PCtor(nm, ps) => vhead(sv) == fnorm(ctag(types, nm)); PTuple(ps) => false; PStr(s) => false; PRecord(nm, fs) => false }
+  match p { PWild => true; PVar(x) => true; PInt(n) => vhead(sv) == fnorm(n); PBool(bb) => vhead(sv) == bconst(bb); PCtor(nm, ps) => if vhead(sv) == fnorm(ctag(types, nm)) then pmatch_fields(ps, ctor_argtypes(types, nm), sv, 1, types) else false; PTuple(ps) => false; PStr(s) => false; PRecord(nm, fs) => false }
+fn pmatch_fields(ps: List<Pattern>, tys: List<Type>, sv: List<Int>, off: Int, types: List<TypeDecl>) : Bool =
+  match ps { [] => true; [p, ...prest] => match tys { [] => true; [t, ...trest] =>
+    let wt : Int = twidth(t, types, 12) in
+    if pmatch(p, slicew(sv, off, wt), types) then pmatch_fields(prest, trest, sv, off + wt, types) else false } }
 # bind pattern vars to scrutinee components (PVar -> whole value; PCtor -> field i)
 fn pbind_fields(ps: List<Pattern>, tys: List<Type>, sv: List<Int>, off: Int, types: List<TypeDecl>, env: List<Pair<String, List<Int>>>) : List<Pair<String, List<Int>>> =
   match ps { [] => env; [p, ...prest] => match tys { [] => env; [t, ...trest] =>
     let wt : Int = twidth(t, types, 12) in
-    let env2 : List<Pair<String, List<Int>>> = match p { PVar(x) => [Pair(x, slicew(sv, off, wt))] ++ env; _ => env } in
+    let env2 : List<Pair<String, List<Int>>> = pbind(p, slicew(sv, off, wt), types, env) in
     pbind_fields(prest, trest, sv, off + wt, types, env2) } }
 fn pbind(p: Pattern, sv: List<Int>, types: List<TypeDecl>, env: List<Pair<String, List<Int>>>) : List<Pair<String, List<Int>>> =
   match p { PVar(x) => [Pair(x, sv)] ++ env; PCtor(nm, ps) => pbind_fields(ps, ctor_argtypes(types, nm), sv, 1, types, env); PWild => env; PInt(n) => env; PBool(bb) => env; PTuple(ps) => env; PStr(s) => env; PRecord(nm, fs) => env }
 # selector inverse hint for the dispatch is-zero (PCtor on tag, PInt/PBool on scalar)
 fn psel_hint(p: Pattern, sv: List<Int>, types: List<TypeDecl>) : List<Int> =
-  match p { PInt(n) => let d : Int = fsub(vhead(sv), fnorm(n)) in [if d == 0 then 0 else finv(d)]; PBool(bb) => let d : Int = fsub(vhead(sv), bconst(bb)) in [if d == 0 then 0 else finv(d)]; PCtor(nm, ps) => let d : Int = fsub(vhead(sv), fnorm(ctag(types, nm))) in [if d == 0 then 0 else finv(d)]; PWild => []; PVar(x) => []; PTuple(ps) => []; PStr(s) => []; PRecord(nm, fs) => [] }
+  match p { PInt(n) => let d : Int = fsub(vhead(sv), fnorm(n)) in [if d == 0 then 0 else finv(d)]; PBool(bb) => let d : Int = fsub(vhead(sv), bconst(bb)) in [if d == 0 then 0 else finv(d)]; PCtor(nm, ps) => let d : Int = fsub(vhead(sv), fnorm(ctag(types, nm))) in [if d == 0 then 0 else finv(d)] ++ psel_hint_fields(ps, ctor_argtypes(types, nm), sv, 1, types); PWild => []; PVar(x) => []; PTuple(ps) => []; PStr(s) => []; PRecord(nm, fs) => [] }
+fn psel_hint_fields(ps: List<Pattern>, tys: List<Type>, sv: List<Int>, off: Int, types: List<TypeDecl>) : List<Int> =
+  match ps { [] => []; [p, ...prest] => match tys { [] => []; [t, ...trest] =>
+    let wt : Int = twidth(t, types, 12) in
+    psel_hint(p, slicew(sv, off, wt), types) ++ psel_hint_fields(prest, trest, sv, off + wt, types) } }
 fn heval_match(sv: List<Int>, arms: List<Pair<Pattern, Expr>>, env: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: List<TypeDecl>) : (List<Int>, List<Int>) =
   match arms { [] => ([0], []);
     [Pair(p, body), ...rest] =>
@@ -299,15 +309,21 @@ fn psel(p: Pattern, sv: List<Int>, types: List<TypeDecl>, hbase: Int, hidx: Int,
     PVar(x) => match mkc(1, b) { (w, b1) => (w, hidx, b1) };
     PInt(n) => match mkc(n, b) { (wn, b1) => mk_eq(vhead(sv), wn, hbase, hidx, b1) };
     PBool(bb) => match mkc(bconst(bb), b) { (wn, b1) => mk_eq(vhead(sv), wn, hbase, hidx, b1) };
-    PCtor(nm, ps) => match mkc(ctag(types, nm), b) { (wn, b1) => mk_eq(vhead(sv), wn, hbase, hidx, b1) };
+    PCtor(nm, ps) => match mkc(ctag(types, nm), b) { (wn, b1) => match mk_eq(vhead(sv), wn, hbase, hidx, b1) { (s0, h1, b2) => psel_fields(ps, ctor_argtypes(types, nm), sv, 1, types, hbase, h1, s0, b2) } };
     PTuple(ps) => match mkc(0, b) { (w, b1) => (w, hidx, b1) };
     PStr(s) => match mkc(0, b) { (w, b1) => (w, hidx, b1) };
     PRecord(nm, fs) => match mkc(0, b) { (w, b1) => (w, hidx, b1) } }
-# circuit binder: PCtor binds vars to scrutinee field WIRES; PVar binds whole value
+# selector for a constructor's nested field-patterns: acc · ∏ psel(field_i)
+fn psel_fields(ps: List<Pattern>, tys: List<Type>, sv: List<Int>, off: Int, types: List<TypeDecl>, hbase: Int, hidx: Int, acc: Int, b: Build) : (Int, Int, Build) =
+  match ps { [] => (acc, hidx, b); [p, ...prest] => match tys { [] => (acc, hidx, b); [t, ...trest] =>
+    let wt : Int = twidth(t, types, 12) in
+    match psel(p, slicew(sv, off, wt), types, hbase, hidx, b) { (s, h1, b1) =>
+    match mkm(acc, s, b1) { (acc2, b2) => psel_fields(prest, trest, sv, off + wt, types, hbase, h1, acc2, b2) } } } }
+# circuit binder: recurses into nested PCtor field patterns; PVar binds its slice
 fn cbind_fields(ps: List<Pattern>, tys: List<Type>, sv: List<Int>, off: Int, types: List<TypeDecl>, cenv: List<Pair<String, List<Int>>>) : List<Pair<String, List<Int>>> =
   match ps { [] => cenv; [p, ...prest] => match tys { [] => cenv; [t, ...trest] =>
     let wt : Int = twidth(t, types, 12) in
-    let cenv2 : List<Pair<String, List<Int>>> = match p { PVar(x) => [Pair(x, slicew(sv, off, wt))] ++ cenv; _ => cenv } in
+    let cenv2 : List<Pair<String, List<Int>>> = cbind(p, slicew(sv, off, wt), types, cenv) in
     cbind_fields(prest, trest, sv, off + wt, types, cenv2) } }
 fn cbind(p: Pattern, sv: List<Int>, types: List<TypeDecl>, cenv: List<Pair<String, List<Int>>>) : List<Pair<String, List<Int>>> =
   match p { PVar(x) => [Pair(x, sv)] ++ cenv; PCtor(nm, ps) => cbind_fields(ps, ctor_argtypes(types, nm), sv, 1, types, cenv); PWild => cenv; PInt(n) => cenv; PBool(bb) => cenv; PTuple(ps) => cenv; PStr(s) => cenv; PRecord(nm, fs) => cenv }
@@ -354,18 +370,18 @@ fn show_a(b: Bool) : String = if b then "ACCEPT" else "REJECT"
 fn show_b(b: Bool) : String = if b then "yes" else "no"
 let bbw : Int = find_nonres_b(2)
 let bbv : F2 = find_v(0, bbw)
-# NESTED ADTs: Line's fields are themselves Points. The value of L(P(..), P(..))
-# is one flat wire list [tagL, (tagP,x,y), (tagP,x,y)], laid out by type width;
-# `fst` slices out the first Point sub-value (itself an ADT), `sm` destructures it.
-let src : String = "type Point = | P(Int, Int)\ntype Line = | L(Point, Point)\nfn fst(l: Line) : Point = match l { L(a, b) => a }\nfn sm(p: Point) : Int = match p { P(x, y) => x + y }\nsm(fst(L(P(inp, 1), P(2, 3))))"
+# NESTED PATTERN: the arm `L(P(x, y), b)` destructures the inner Point directly —
+# the selector is a PRODUCT of is-zeros (tag = L AND field0's tag = P), and x, y
+# are bound from the nested Point's wires, all sliced by type-directed layout.
+let src : String = "type Point = | P(Int, Int)\ntype Line = | L(Point, Point)\nfn endx(l: Line) : Int = match l { L(P(x, y), b) => x + y }\nendx(L(P(inp, 7), P(2, 3)))"
 let inputs : List<Pair<String, Int>> = [Pair("inp", 5)]      # secret
-let res : Int = ref_result(src, inputs)                       # fst(L(P(5,1),P(2,3)))=P(5,1); sm=5+1 = 6
+let res : Int = ref_result(src, inputs)                       # L(P(5,7),P(2,3)); arm binds x=5,y=7; x+y = 12
 
-let _ : String = print("--- prove_source_adt_zk.glass: REAL Glass source WITH (nested) ADTs -> a ZK proof ---")
-let _ : String = print("type Point = P(Int,Int);  type Line = L(Point, Point);  fn fst(l)=match l{L(a,b)=>a};  fn sm(p)=match p{P(x,y)=>x+y}")
-let _ : String = print("a value is multi-wire [tag, fields...], laid out by TYPE WIDTH so a field can itself be an ADT (a Point inside a Line).")
+let _ : String = print("--- prove_source_adt_zk.glass: REAL Glass source, NESTED ADT PATTERNS -> a ZK proof ---")
+let _ : String = print("type Point = P(Int,Int);  type Line = L(Point, Point);  fn endx(l) = match l { L(P(x, y), b) => x + y }")
+let _ : String = print("the arm L(P(x,y), b) destructures a nested ADT: selector = product of is-zeros (tag L AND inner tag P), x/y bound from the inner Point.")
 let _ : String = print("")
-let _ : String = print("prove sm(fst(L(P(inp,1), P(2,3)))) with inp PRIVATE; public R = " ++ int_to_string(res))
+let _ : String = print("prove endx(L(P(inp,7), P(2,3))) with inp PRIVATE; public R = " ++ int_to_string(res))
 let _ : String = print("honest (prover knows inp with the result = R):  " ++ show_a(prove(src, inputs, res, 11111, bbv, bbw)))
 let _ : String = print("lying about the result (R = 99):                " ++ show_a(prove(src, inputs, 99, 11111, bbv, bbw)) ++ "  (output != claim => REJECT)")
 let _ : String =
@@ -374,7 +390,7 @@ let _ : String =
       ++ show_a(stark_ok(gates, w, 11111, bbv, bbw)) ++ " / " ++ show_a(stark_ok(gates, w, 22222, bbv, bbw))
       ++ "; quotient opening #5 differs: " ++ show_b(eq4(qopen5(gates, w, 11111), qopen5(gates, w, 22222)) == false)) }
 let _ : String = print("")
-let _ : String = print("real Glass source with NESTED ADTs — a Point inside a Line, sliced out by type-directed layout —")
-let _ : String = print("proven succinct + zero-knowledge. the source bridge handles arbitrarily-shaped (flat-field) ADTs.")
+let _ : String = print("real Glass source with NESTED PATTERNS — destructure a Point inside a Line in one match —")
+let _ : String = print("proven succinct + zero-knowledge. structured pattern matching, complete to arbitrary (flat-field) depth.")
 
 "prove_source_adt_zk v0.1 — real prism source with ADTs (ECtor/PCtor, multi-wire) -> blinded F_{p^4} FRI STARK"
