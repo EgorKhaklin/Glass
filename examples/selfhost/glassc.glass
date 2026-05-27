@@ -971,6 +971,8 @@ let result : String =
         Ok(prog) =>
           let c : String = gen_program(prog) in
           let _w : Result<Int, String> = write_file("/tmp/glassc_out.c", c) in
+          # -fbracket-depth raises Clang's expression-nesting limit (deep erasure-heavy
+          # output); it is Clang-only, so if cc rejects it (e.g. GCC), retry without it.
           match run_command("cc",
                  ["/tmp/glassc_out.c", "-o", "/tmp/glassc_bin",
                   "-O2", "-Wno-int-conversion", "-fbracket-depth=100000"]) {
@@ -978,7 +980,18 @@ let result : String =
               match ccres {
                 (code, so, se) =>
                   if code == 0 then print("glassc: compiled /tmp/glassc_bin")
-                  else print("glassc: cc failed: " ++ se)
+                  else
+                    match run_command("cc",
+                           ["/tmp/glassc_out.c", "-o", "/tmp/glassc_bin",
+                            "-O2", "-Wno-int-conversion"]) {
+                      Ok(ccres2) =>
+                        match ccres2 {
+                          (code2, so2, se2) =>
+                            if code2 == 0 then print("glassc: compiled /tmp/glassc_bin")
+                            else print("glassc: cc failed: " ++ se2)
+                        };
+                      Err(m2) => print("glassc: cc invoke failed: " ++ m2)
+                    }
               };
             Err(m) => print("glassc: cc invoke failed: " ++ m)
           };

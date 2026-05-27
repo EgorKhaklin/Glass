@@ -24,10 +24,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install clang and route cc through it
-        # Quartz / glassc invoke `cc` with -fbracket-depth=100000, a Clang-only
-        # flag needed for the deeply-nested expressions Quartz emits. macOS's
-        # default `cc` is Apple Clang (works); Ubuntu's default `cc` is GCC
-        # (rejects the flag). Install clang and make /usr/bin/cc resolve to it.
+        # Quartz / glassc try `cc` with -fbracket-depth=100000 (a Clang-only flag
+        # that raises the nesting limit for the deeply-nested C they emit) and
+        # FALL BACK without it when cc rejects it — so GCC works too (its default
+        # nesting limit is higher). Clang is installed here only to also exercise
+        # the with-flag path; it is no longer required (GCC is supported).
         run: |
           sudo apt-get update
           sudo apt-get install -y clang

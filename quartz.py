@@ -2705,11 +2705,14 @@ def build(source_file: str, output_binary: str,
         # as errors by default; -Wno-int-conversion tells it these are
         # deliberate (the same rationale as the intptr_t casts). This is
         # what lets large erasure-heavy programs (prism) link.
-        result = subprocess.run(
-            [cc, c_file, "-o", output_binary, "-O2", "-Wno-int-conversion",
-             "-fbracket-depth=100000"],
-            capture_output=True, text=True
-        )
+        base = [cc, c_file, "-o", output_binary, "-O2", "-Wno-int-conversion"]
+        # -fbracket-depth raises Clang's expression-nesting limit (the erasure-heavy
+        # output nests deep). It is Clang-only — GCC rejects it — so try with the flag,
+        # then fall back without it (GCC's default nesting limit is higher).
+        result = subprocess.run(base + ["-fbracket-depth=100000"],
+                                capture_output=True, text=True)
+        if result.returncode != 0:
+            result = subprocess.run(base, capture_output=True, text=True)
         if result.returncode != 0:
             raise RuntimeError(
                 f"cc failed (exit {result.returncode}):\n{result.stderr}"
