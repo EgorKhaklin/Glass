@@ -1,10 +1,11 @@
 # Effects in the proof story (C2) — a design
 
-*A design note / proposal. The first three steps are prototyped
+*A design note / proposal. All four steps are prototyped
 ([`prove_inference_zk.glass`](../examples/prove/prove_inference_zk.glass),
 [`prove_random_zk.glass`](../examples/prove/prove_random_zk.glass),
-[`prove_state_zk.glass`](../examples/prove/prove_state_zk.glass)); the rest is a
-plan, not a claim.*
+[`prove_state_zk.glass`](../examples/prove/prove_state_zk.glass),
+[`prove_effects_zk.glass`](../examples/prove/prove_effects_zk.glass)); the remaining work is
+lowering the sound gadgets to the FRI STARK (full ZK).*
 
 ## The tension
 
@@ -68,8 +69,9 @@ parses into `EffRow`.
    an access trace, bound program-order-to-address-sorted by a permutation argument (grand
    product), sorted, and read-after-write checked: every read pinned to the last write, the
    log un-fakeable (sound prover-side; FRI z-accumulator + range gadgets add ZK).
-4. **Read the effect row in the bridge** — dispatch the trace layout on `EffRow`, so
-   the proof's interface is *derived from the type*.
+4. ✅ **The effect row generates the proof** ([`prove_effects_zk.glass`](../examples/prove/prove_effects_zk.glass)) —
+   prism parses a signature, the bridge reads the `!{…}` row off the type, and each label
+   becomes an obligation discharged by its gadget. Change the row, the schema changes.
 
 ## Why it's the right shape for Glass
 

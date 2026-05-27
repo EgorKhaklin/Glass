@@ -39,7 +39,7 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Shipped (through v5.24)
+## Shipped (through v5.25)
 
 - **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
 - **Pane** — a query language in Glass.
@@ -344,8 +344,10 @@ three under-invested axes — *realness*, *usability*, and *convergence* — on 
     the seed stays private. ✅ **Step 3 — `State` via memory consistency** ([`prove_state_zk.glass`](../examples/prove/prove_state_zk.glass)):
     an access trace bound program-order-to-address-sorted by a permutation argument (grand product),
     sorted, and read-after-write checked — every read pinned to the last write, the log un-fakeable
-    (the zkVM memory argument, from scratch). *Next:* reading the effect row in the bridge to derive
-    the trace layout automatically, and lowering these sound checks to the FRI STARK for full ZK.
+    (the zkVM memory argument, from scratch). ✅ **Step 4 — the effect row generates the proof** ([`prove_effects_zk.glass`](../examples/prove/prove_effects_zk.glass)):
+    prism parses a signature, the bridge reads the `!{…}` row off the function type, and each effect
+    label becomes a proof obligation discharged by its gadget — *change the row, the schema changes.*
+    The effect row IS the proof's statement. *Next:* lower the sound gadgets to the FRI STARK for ZK.
 - **Substrate — Performance (P).** The interpreter dogfood is now the bottleneck
   (heavy circuits take ~10 min). A faster reference (bytecode/closure compilation) or
   promoting `native_glassc` to a co-equal dogfood oracle unblocks Tracks E and R.
