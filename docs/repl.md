@@ -4,7 +4,7 @@ Glass ships with an interactive read-eval-print loop. Run `glass` with no argume
 
 ```
 $ glass
-Glass v5.8 — interactive REPL
+Glass v5.9 — interactive REPL
 Type :help for commands, :quit to exit.
 
 glass>

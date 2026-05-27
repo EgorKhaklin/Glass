@@ -7,6 +7,9 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [5.9.0] — 2026-05-26 — Tuples in the prove bridge
+- **The source→ZK bridge now handles tuples.** [`prove_source_adt_zk.glass`](examples/prove/prove_source_adt_zk.glass) supports `ETuple`/`PTuple`/`TyTuple`: a tuple `(a, b)` is a **tagless** multi-wire value (just the concatenation of its elements — no constructor tag), `(x, y)` patterns always match and bind positionally, and a function may **return** a tuple (the result mux is element-wise over its wires). Demo: `fn swap(p: (Int, Int)) : (Int, Int) = match p { (x, y) => (y, x) }; fn first(p) = match p { (a, b) => a }; first(swap((inp, 7)))` over a *private* `inp` proves the result = 7 — honest ACCEPT, lying REJECT, ZK. Self-hosted byte-identical. (Scope: tuples of scalar elements — the common case; reuses the type-directed layout via a synthetic width-1-per-element type list. Also reachable through `glass prove`.)
+
 ## [5.8.0] — 2026-05-26 — `glass prove` — the zero-knowledge prover as a command (U1)
 - **The prove bridge is now a tool, not a pile of demo files.** `glass prove <file.glass> [name=value …]` compiles the file's `main` expression into an arithmetic circuit and emits a succinct, zero-knowledge proof of its result. Names passed on the command line are **private inputs** — they stay in the witness; the proof reveals only the result. The prove logic stays in Glass (the command assembles a driver over `prove_source_adt_zk.glass`, the most complete bridge — arithmetic, `let`, calls, `==`/`if`, and `match` over nested ADTs), so there's no second implementation to keep honest. Example: `glass prove examples/prove/hello_prove.glass inp=9` → `result: 86`, `proof: ACCEPT (succinct, zero-knowledge)`. This is the roadmap's **U1** — "a feature, not a library you assemble by hand." (`glass prove` both proves and verifies; the heavy STARK runs interpreted, so keep inputs small or use the native path for scale.)
 

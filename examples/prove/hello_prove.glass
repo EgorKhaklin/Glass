@@ -6,7 +6,7 @@
 # and emits a succinct, zero-knowledge proof of its result. Any name passed on the
 # command line (here `inp`) is a PRIVATE input — it stays in the witness, and the
 # proof reveals only the result. Supported today: arithmetic, `let`, function
-# calls, `==`/`if`, and `match` over (nested) algebraic data types.
+# calls, `==`/`if`, `match` over (nested) ADTs and patterns, and tuples.
 
 fn sq(n: Int) : Int = n * n
 fn f(x: Int) : Int = sq(x) + 5      # f(9) = 81 + 5 = 86
