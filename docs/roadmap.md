@@ -39,7 +39,7 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Shipped (through v5.9)
+## Shipped (through v5.10)
 
 - **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
 - **Pane** — a query language in Glass.
@@ -269,9 +269,13 @@ three under-invested axes — *realness*, *usability*, and *convergence* — on 
   - **U2.** A refreshed end-to-end story (the-story/README) from type signature → proof.
 - **Track C — Convergence** (the distinctive bet — Glass has types + refinements +
   effects + ZK in one self-hosting language; unify them).
-  - **C1.** **Prove refinement types** — discharge `Int where (x > 0)` as in-circuit
-    assertions, so a refinement *is* a ZK-checkable claim. The frontier no one else can
-    reach, because no one else has all the pieces in one language.
+  - **C1. ✅ DONE.** **Prove refinement types** — a function's return `where (P)` is
+    extracted (`TyRefine(_, "result", P)`), `result` is bound to the circuit output, and
+    `P` is asserted in-circuit, so the refinement *is* a ZK-checkable guarantee, and a
+    function that violates its declared refinement is unprovable.
+    ([`prove_source_adt_zk.glass`](../examples/prove/prove_source_adt_zk.glass): `classify`
+    with `where (result == 0 || result == 1)` proves; a lying `ident` REJECTs.) The
+    frontier no one else can reach — type system + prover in one self-hosting language.
   - **C2.** Effects in the proof story.
 - **Substrate — Performance (P).** The interpreter dogfood is now the bottleneck
   (heavy circuits take ~10 min). A faster reference (bytecode/closure compilation) or

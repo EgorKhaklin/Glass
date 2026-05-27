@@ -192,6 +192,12 @@ fn cenv_get(cenv: List<Pair<String, List<Int>>>, name: String) : List<Int> = mat
 fn env_get(env: List<Pair<String, List<Int>>>, name: String) : List<Int> = match env { [] => []; [Pair(k, vv), ...r] => if k == name then vv else env_get(r, name) }
 fn fn_body_of(fns: List<FnDecl>, name: String) : Expr = match fns { [] => EInt(0); [FnDecl(fnm, tps, ty, body), ...rest] => if fnm == name then body else fn_body_of(rest, name) }
 fn unwind_app(e: Expr, acc: List<Expr>) : (Expr, List<Expr>) = match e { EApp(f, a) => unwind_app(f, [a] ++ acc); _ => (e, acc) }
+# C1: a function's RETURN refinement. `fn f(..) : T where (P) = ..` parses to a
+# return type TyRefine(T, "result", P) sitting at the end of the TyFn chain — so
+# the `where` clause becomes a proof obligation about the result.
+fn main_fname(main: Expr) : String = match main { EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(nm) => nm; _ => "" } }; _ => "" }
+fn ret_type(ty: Type) : Type = match ty { TyFn(a, r, e) => ret_type(r); _ => ty }
+fn fn_ret(fns: List<FnDecl>, name: String) : Type = match fns { [] => TyInt; [FnDecl(fnm, tps, ty, body), ...rest] => if fnm == name then ret_type(ty) else fn_ret(rest, name) }
 # constructor -> tag = its index within its type's constructor list
 fn ctix(ctors: List<CtorDecl>, name: String, i: Int) : Int = match ctors { [] => 0 - 1; [CtorDecl(cn, ats), ...r] => if cn == name then i else ctix(r, name, i + 1) }
 fn ctag(types: List<TypeDecl>, name: String) : Int = match types { [] => 0; [TypeDecl(tn, tps, ctors), ...r] => let idx : Int = ctix(ctors, name, 0) in if idx >= 0 then idx else ctag(r, name) }
@@ -228,6 +234,11 @@ fn heval(e: Expr, env: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: 
     EMul(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) => ([fmul(vhead(va), vhead(vb))], ha ++ hb) } };
     EEq(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) =>
       let d : Int = fsub(vhead(va), vhead(vb)) in ([if d == 0 then 1 else 0], ha ++ hb ++ [if d == 0 then 0 else finv(d)]) } };
+    ENeq(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) =>
+      let d : Int = fsub(vhead(va), vhead(vb)) in ([if d == 0 then 0 else 1], ha ++ hb ++ [if d == 0 then 0 else finv(d)]) } };
+    EAnd(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) => ([fmul(vhead(va), vhead(vb))], ha ++ hb) } };
+    EOr(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) => ([fsub(fadd(vhead(va), vhead(vb)), fmul(vhead(va), vhead(vb)))], ha ++ hb) } };
+    EUNot(a) => match heval(a, env, fns, types) { (va, ha) => ([fsub(1, vhead(va))], ha) };
     EIf(c, t, f) => match heval(c, env, fns, types) { (vc, hc) => match heval(t, env, fns, types) { (vt, ht) => match heval(f, env, fns, types) { (vf, hf) => (if vhead(vc) == 1 then vt else vf, hc ++ ht ++ hf) } } };
     ELet(nm, v, body) => match heval(v, env, fns, types) { (vv, hv) => match heval(body, [Pair(nm, vv)] ++ env, fns, types) { (vb, hb) => (vb, hv ++ hb) } };
     ECtor(name, args) => match heval_fields(args, ctor_argtypes(types, name), env, fns, types) { (vals, hs) => ([fnorm(ctag(types, name))] ++ vals, hs) };
@@ -293,6 +304,10 @@ fn cgen(e: Expr, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: 
     ESub(x, y) => match cgen(x, cenv, fns, types, hbase, hidx, b) { (vx, h1, b1) => match cgen(y, cenv, fns, types, hbase, h1, b1) { (vy, h2, b2) => match mks(vhead(vx), vhead(vy), b2) { (wo, b3) => ([wo], h2, b3) } } };
     EMul(x, y) => match cgen(x, cenv, fns, types, hbase, hidx, b) { (vx, h1, b1) => match cgen(y, cenv, fns, types, hbase, h1, b1) { (vy, h2, b2) => match mkm(vhead(vx), vhead(vy), b2) { (wo, b3) => ([wo], h2, b3) } } };
     EEq(x, y) => match cgen(x, cenv, fns, types, hbase, hidx, b) { (vx, h1, b1) => match cgen(y, cenv, fns, types, hbase, h1, b1) { (vy, h2, b2) => match mk_eq(vhead(vx), vhead(vy), hbase, h2, b2) { (wo, h3, b3) => ([wo], h3, b3) } } };
+    ENeq(x, y) => match cgen(x, cenv, fns, types, hbase, hidx, b) { (vx, h1, b1) => match cgen(y, cenv, fns, types, hbase, h1, b1) { (vy, h2, b2) => match mk_eq(vhead(vx), vhead(vy), hbase, h2, b2) { (weq, h3, b3) => match mkc(1, b3) { (wone, b4) => match mks(wone, weq, b4) { (wo, b5) => ([wo], h3, b5) } } } } };
+    EAnd(x, y) => match cgen(x, cenv, fns, types, hbase, hidx, b) { (vx, h1, b1) => match cgen(y, cenv, fns, types, hbase, h1, b1) { (vy, h2, b2) => match mkm(vhead(vx), vhead(vy), b2) { (wo, b3) => ([wo], h2, b3) } } };
+    EOr(x, y) => match cgen(x, cenv, fns, types, hbase, hidx, b) { (vx, h1, b1) => match cgen(y, cenv, fns, types, hbase, h1, b1) { (vy, h2, b2) => match mka(vhead(vx), vhead(vy), b2) { (ws, b3) => match mkm(vhead(vx), vhead(vy), b3) { (wp, b4) => match mks(ws, wp, b4) { (wo, b5) => ([wo], h2, b5) } } } } };
+    EUNot(x) => match cgen(x, cenv, fns, types, hbase, hidx, b) { (vx, h1, b1) => match mkc(1, b1) { (wone, b2) => match mks(wone, vhead(vx), b2) { (wo, b3) => ([wo], h1, b3) } } };
     EIf(c, t, f) => match cgen(c, cenv, fns, types, hbase, hidx, b) { (vc, h1, b1) => match cgen(t, cenv, fns, types, hbase, h1, b1) { (vt, h2, b2) => match cgen(f, cenv, fns, types, hbase, h2, b2) { (vf, h3, b3) => match muxw(vhead(vc), vt, vf, b3) { (vo, b4) => (vo, h3, b4) } } } };
     ELet(nm, v, body) => match cgen(v, cenv, fns, types, hbase, hidx, b) { (vv, h1, b1) => cgen(body, [Pair(nm, vv)] ++ cenv, fns, types, hbase, h1, b1) };
     ECtor(name, args) => match mkc(ctag(types, name), b) { (wtag, b1) => match cgen_fields(args, ctor_argtypes(types, name), cenv, fns, types, hbase, hidx, b1) { (fws, h1, b2) => ([wtag] ++ fws, h1, b2) } };
@@ -361,12 +376,24 @@ fn plen(xs: List<Pair<String, Int>>) : Int = match xs { [] => 0; [x, ...r] => 1 
 fn parse_prog(src: String) : Program = match parse_program(src) { Ok(p) => p; Err(m) => Program([], [], EInt(0)) }
 fn hints_of(p: (List<Int>, List<Int>)) : List<Int> = match p { (v, h) => h }
 fn val_of(p: (List<Int>, List<Int>)) : List<Int> = match p { (v, h) => v }
+# build the circuit; assert output == claimed R, AND — if main's function has a
+# return refinement `where (P)` — bind `result` to the output and assert P holds.
+# The predicate's is-zero hints follow the body's hints in the input section.
 fn build_source(src: String, inputs: List<Pair<String, Int>>, claimedR: Int) : Build =
   match parse_prog(src) { Program(types, fns, main) =>
     let k : Int = plen(inputs) in
-    let hints : List<Int> = hints_of(heval(main, in_env(inputs), fns, types)) in
-    match cgen(main, in_cenv(inputs, 0), fns, types, k, 0, Build(k + len(hints), [], in_vals(inputs) ++ hints)) { (outv, hf, b1) =>
-    match mkc(claimedR, b1) { (wR, b2) => asrt(vhead(outv), wR, b2) } } }
+    match heval(main, in_env(inputs), fns, types) { (rv, bh) =>
+    match fn_ret(fns, main_fname(main)) {
+      TyRefine(base, binder, pred) =>
+        match heval(pred, [Pair(binder, rv)], fns, types) { (pv, ph) =>
+        let hints : List<Int> = bh ++ ph in
+        match cgen(main, in_cenv(inputs, 0), fns, types, k, 0, Build(k + len(hints), [], in_vals(inputs) ++ hints)) { (outv, h1, b1) =>
+        match cgen(pred, [Pair(binder, outv)], fns, types, k, h1, b1) { (pw, h2, b2) =>
+        match mkc(claimedR, b2) { (wR, b3) => let b4 : Build = asrt(vhead(outv), wR, b3) in
+        match mkc(1, b4) { (wone, b5) => asrt(vhead(pw), wone, b5) } } } } };
+      _ =>
+        match cgen(main, in_cenv(inputs, 0), fns, types, k, 0, Build(k + len(bh), [], in_vals(inputs) ++ bh)) { (outv, h1, b1) =>
+        match mkc(claimedR, b1) { (wR, b2) => asrt(vhead(outv), wR, b2) } } } } }
 fn ref_result(src: String, inputs: List<Pair<String, Int>>) : Int =
   match parse_prog(src) { Program(types, fns, main) => vhead(val_of(heval(main, in_env(inputs), fns, types))) }
 fn prove(src: String, inputs: List<Pair<String, Int>>, claimedR: Int, seed: Int, nv: F2, nw: Int) : Bool =
@@ -377,26 +404,33 @@ fn show_a(b: Bool) : String = if b then "ACCEPT" else "REJECT"
 fn show_b(b: Bool) : String = if b then "yes" else "no"
 let bbw : Int = find_nonres_b(2)
 let bbv : F2 = find_v(0, bbw)
-# TUPLES: `(a, b)` is a tagless multi-wire value; `swap` returns one (an
-# element-wise mux over the tuple's wires), and `(x, y)` patterns bind positionally.
-let src : String = "fn swap(p: (Int, Int)) : (Int, Int) = match p { (x, y) => (y, x) }\nfn first(p: (Int, Int)) : Int = match p { (a, b) => a }\nfirst(swap((inp, 7)))"
+# REFINEMENT TYPES (C1): a function's `where (P)` clause is extracted from its
+# return type and proven IN-CIRCUIT — the refinement becomes a zero-knowledge
+# guarantee about the result. classify's refinement holds; ident's is VIOLATED.
+let src_ok : String = "fn classify(x: Int) : Int where (result == 0 || result == 1) = if x == 0 then 0 else 1\nclassify(inp)"
+let src_bad : String = "fn ident(x: Int) : Int where (result == 0 || result == 1) = x\nident(inp)"
 let inputs : List<Pair<String, Int>> = [Pair("inp", 5)]      # secret
-let res : Int = ref_result(src, inputs)                       # swap((5,7))=(7,5); first = 7
+let r_ok : Int = ref_result(src_ok, inputs)                   # classify(5) = 1  (in {0,1})
+let r_bad : Int = ref_result(src_bad, inputs)                 # ident(5) = 5     (NOT in {0,1})
 
-let _ : String = print("--- prove_source_adt_zk.glass: REAL Glass source with TUPLES + ADTs -> a ZK proof ---")
-let _ : String = print("fn swap(p) = match p { (x, y) => (y, x) };  fn first(p) = match p { (a, b) => a };  first(swap((inp, 7)))")
-let _ : String = print("a tuple (a, b) is a tagless multi-wire value; swap RETURNS one; (x, y) patterns bind positionally.")
+let _ : String = print("--- prove_source_adt_zk.glass: proving a function's REFINEMENT TYPE in ZK (C1) ---")
+let _ : String = print("a `where (P)` on the return type is extracted and proven in-circuit, so the refinement")
+let _ : String = print("is a cryptographic guarantee about the result — not just a runtime check.")
 let _ : String = print("")
-let _ : String = print("prove first(swap((inp, 7))) with inp PRIVATE; public R = " ++ int_to_string(res))
-let _ : String = print("honest (prover knows inp with the result = R):  " ++ show_a(prove(src, inputs, res, 11111, bbv, bbw)))
-let _ : String = print("lying about the result (R = 99):                " ++ show_a(prove(src, inputs, 99, 11111, bbv, bbw)) ++ "  (output != claim => REJECT)")
+let _ : String = print("fn classify(x) : Int where (result == 0 || result == 1) = if x == 0 then 0 else 1")
+let _ : String = print("  classify(inp) with inp PRIVATE; result R = " ++ int_to_string(r_ok) ++ " (satisfies result == 0 || result == 1)")
+let _ : String = print("  proof (result = R AND refinement holds):  " ++ show_a(prove(src_ok, inputs, r_ok, 11111, bbv, bbw)))
+let _ : String = print("")
+let _ : String = print("fn ident(x) : Int where (result == 0 || result == 1) = x   -- a function that LIES about its type")
+let _ : String = print("  ident(inp) = " ++ int_to_string(r_bad) ++ ", which violates the refinement")
+let _ : String = print("  proof:  " ++ show_a(prove(src_bad, inputs, r_bad, 11111, bbv, bbw)) ++ "  (the in-circuit refinement assertion fails => unprovable)")
 let _ : String =
-  match build_source(src, inputs, res) { Build(n, gates, w) =>
-    print("ZERO-KNOWLEDGE: two blinding seeds both verify: "
+  match build_source(src_ok, inputs, r_ok) { Build(n, gates, w) =>
+    print("\nZERO-KNOWLEDGE (classify): two seeds verify: "
       ++ show_a(stark_ok(gates, w, 11111, bbv, bbw)) ++ " / " ++ show_a(stark_ok(gates, w, 22222, bbv, bbw))
-      ++ "; quotient opening #5 differs: " ++ show_b(eq4(qopen5(gates, w, 11111), qopen5(gates, w, 22222)) == false)) }
+      ++ "; opening #5 differs: " ++ show_b(eq4(qopen5(gates, w, 11111), qopen5(gates, w, 22222)) == false)) }
 let _ : String = print("")
-let _ : String = print("real Glass source with TUPLES — construct, return, and positionally destructure —")
-let _ : String = print("proven succinct + zero-knowledge, alongside (nested) ADTs and (nested) patterns.")
+let _ : String = print("Glass proves its own refinement types in zero-knowledge: the type IS the guarantee, and")
+let _ : String = print("a function that violates its declared refinement cannot be proven. (types + ZK, fused.)")
 
 "prove_source_adt_zk v0.1 — real prism source with ADTs (ECtor/PCtor, multi-wire) -> blinded F_{p^4} FRI STARK"
