@@ -39,7 +39,7 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Shipped (through v5.16)
+## Shipped (through v5.17)
 
 - **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
 - **Pane** — a query language in Glass.
@@ -252,8 +252,15 @@ three under-invested axes — *realness*, *usability*, and *convergence* — on 
     - ✅ **First step (sound, real-field)** ([`prove_circuit_goldilocks.glass`](../examples/prove/prove_circuit_goldilocks.glass)):
       a Glass arithmetic circuit proven over Goldilocks (2⁶⁴ values, no 2³¹ wrap) via
       the sound RLC with an F_{p²} ≈ 2¹²⁸ Fiat-Shamir challenge. Dogfoods byte-identical.
-    - **Next:** succinct + zero-knowledge over Goldilocks — the FRI quotient over the
-      bignum field (heavy interpreted → native-primary), mirroring Baby Bear's RLC→FRI arc.
+    - ✅ **R1b — succinct + zero-knowledge over Goldilocks** ([`prove_circuit_goldilocks_zk.glass`](../examples/prove/prove_circuit_goldilocks_zk.glass)):
+      the gate-constraint quotient (`prove_quotient`'s construction ported to bignum limbs) —
+      interpolate the 8 trace columns over H by inverse NTT, lift to `G(x)`, form `Q = G/Z_H`,
+      and FRI-fold Q on a coset: honest → folds to a constant; tamper any wire → not low-degree,
+      REJECT. Blinded with a random low-degree mask for **zero-knowledge** (two seeds → different
+      openings, both ACCEPT). `f(x)=x*x+5` over a private 2⁶⁴-range input; byte-identical. The
+      RLC→FRI arc, now on the production field. *Next:* the cryptographic F_{p²} fold challenge +
+      Merkle query-verification (Baby Bear's Stage-3 → Stage-4 split), and wiring it into the
+      full source bridge.
   - **R2. 🚧 IN PROGRESS.** A real hash + Fiat-Shamir hardening. ✅ **Step 1 — Grain-LFSR
     round constants** ([`frost_grain.glass`](../examples/frost/frost_grain.glass)): Poseidon's
     constants now come from the spec's Grain LFSR (80-bit state, taps

@@ -1,0 +1,228 @@
+# =============================================================================
+# prove_circuit_goldilocks_zk.glass — a Glass circuit proven SUCCINCTLY over the
+#                                      real field (R1b): the gate quotient + FRI
+#
+# prove_circuit_goldilocks (R1) proved a Glass circuit over Goldilocks with a
+# SOUND but linear-verifier RLC. This makes it SUCCINCT: the gate constraints
+# become a single low-degree polynomial, FRI-tested. The construction is
+# prove_quotient's (Baby Bear), ported to the production field in bignum limbs.
+#
+# THE STEP. Lay the gates in rows with selector columns qa/qm/qs/qc and value
+# columns l/r/o/c. Interpolate each column over the trace domain H (the N-th roots
+# of unity, N=8) by an inverse NTT. The gate identity lifts to a polynomial
+#   G(x) = qa(x)·(o−(l+r)) + qm(x)·(o−l·r) + qs(x)·(o−(l−r)) + qc(x)·(o−c)
+# that VANISHES on all of H  ⟺  every gate holds. A polynomial vanishing on H is
+# divisible by Z_H(x) = x^N − 1, so Q = G / Z_H is a genuine LOW-DEGREE polynomial
+# iff the constraints hold. Evaluate Q on a COSET (where Z_H ≠ 0) and FRI-fold it:
+# honest → folds to a constant; tamper any wire → G stops vanishing, Q isn't a
+# polynomial, the fold does NOT reach a constant. The output binds the claim
+# automatically — claiming a wrong f(x) breaks the gate that produced it.
+#
+# ZERO-KNOWLEDGE. Q is blinded with a random low-degree mask R: since deg R is
+# below the fold-to-constant bound, Q+R stays low-degree (FRI fold is linear, so it
+# still folds to a constant and ACCEPTs) but every opened value is randomized — two
+# seeds give two different valid proofs of the same statement. So: succinct (one
+# low-degree polynomial, FRI-tested) AND zero-knowledge, over the production field.
+#
+# Honest scope: the fold here uses a fixed base-field challenge (the cryptographic
+# F_{p^2} fold challenge + Merkle query-verification are built for codewords in
+# frost_goldilocks_zk; wiring them onto this quotient is the next step — exactly the
+# Stage-3 → Stage-4 split the Baby Bear bridge used). int64-safe (base-2^16 limbs);
+# heavy interpreted — run natively (examples/selfhost/run_native.sh); dogfoods.
+# =============================================================================
+
+# --- Goldilocks base field via base-2^16 limbs (from frost_goldilocks_zk) -----
+fn lmod(x: Int) : Int = x % 65536
+fn ldiv(x: Int) : Int = x / 65536
+fn rev_go(xs: List<Int>, acc: List<Int>) : List<Int> = match xs { [] => acc; [h, ...t] => rev_go(t, [h] ++ acc) }
+fn rev(xs: List<Int>) : List<Int> = rev_go(xs, [])
+fn drop_zeros(xs: List<Int>) : List<Int> = match xs { [] => []; [h, ...t] => if h == 0 then drop_zeros(t) else xs }
+fn trim(xs: List<Int>) : List<Int> = rev(drop_zeros(rev(xs)))
+fn addc(a: List<Int>, b: List<Int>, carry: Int) : List<Int> =
+  match a {
+    [] => match b { [] => if carry == 0 then [] else [carry]; [hb, ...tb] => let s : Int = hb + carry in [lmod(s)] ++ addc([], tb, ldiv(s)) };
+    [ha, ...ta] => match b { [] => let s : Int = ha + carry in [lmod(s)] ++ addc(ta, [], ldiv(s)); [hb, ...tb] => let s : Int = ha + hb + carry in [lmod(s)] ++ addc(ta, tb, ldiv(s)) }
+  }
+fn bn_add(a: List<Int>, b: List<Int>) : List<Int> = trim(addc(a, b, 0))
+fn smul(xs: List<Int>, k: Int, carry: Int) : List<Int> =
+  match xs { [] => if carry == 0 then [] else [carry]; [h, ...t] => let p : Int = h * k + carry in [lmod(p)] ++ smul(t, k, ldiv(p)) }
+fn shift(xs: List<Int>, n: Int) : List<Int> = if n <= 0 then xs else [0] ++ shift(xs, n - 1)
+fn mul_go(a: List<Int>, b: List<Int>, i: Int) : List<Int> =
+  match b { [] => []; [hb, ...tb] => bn_add(shift(smul(a, hb, 0), i), mul_go(a, tb, i + 1)) }
+fn bn_mul(a: List<Int>, b: List<Int>) : List<Int> = trim(mul_go(a, b, 0))
+fn cmp_hi(a: List<Int>, b: List<Int>) : Int = match a { [] => 0; [ha, ...ta] => match b { [] => 0; [hb, ...tb] => if ha == hb then cmp_hi(ta, tb) else (if ha < hb then 0 - 1 else 1) } }
+fn bn_cmp(a: List<Int>, b: List<Int>) : Int =
+  let ta : List<Int> = trim(a) in let tb : List<Int> = trim(b) in
+  if len(ta) == len(tb) then cmp_hi(rev(ta), rev(tb)) else (if len(ta) < len(tb) then 0 - 1 else 1)
+fn subb(a: List<Int>, b: List<Int>, borrow: Int) : List<Int> =
+  match a { [] => [];
+    [ha, ...ta] => match b {
+      [] => let d : Int = ha - borrow in if d < 0 then [d + 65536] ++ subb(ta, [], 1) else [d] ++ subb(ta, [], 0);
+      [hb, ...tb] => let d : Int = ha - hb - borrow in if d < 0 then [d + 65536] ++ subb(ta, tb, 1) else [d] ++ subb(ta, tb, 0) } }
+fn bn_sub(a: List<Int>, b: List<Int>) : List<Int> = trim(subb(a, b, 0))
+fn take(xs: List<Int>, n: Int) : List<Int> = if n <= 0 then [] else match xs { [] => []; [h, ...t] => [h] ++ take(t, n - 1) }
+fn drop(xs: List<Int>, n: Int) : List<Int> = if n <= 0 then xs else match xs { [] => []; [h, ...t] => drop(t, n - 1) }
+fn pg(d: Int) : List<Int> = [1, 0, 65535, 65535]
+fn fold_hi(d: Int) : List<Int> = [65535, 65535]
+fn bn_mod_p(a: List<Int>) : List<Int> =
+  let t : List<Int> = trim(a) in
+  if len(t) > 4 then bn_mod_p(bn_add(take(t, 4), bn_mul(drop(t, 4), fold_hi(0))))
+  else if bn_cmp(t, pg(0)) >= 0 then bn_sub(t, pg(0)) else t
+fn fadd(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_add(a, b))
+fn fsub(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_add(a, bn_sub(pg(0), bn_mod_p(b))))
+fn fmul(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_mul(a, b))
+fn bn_eq(a: List<Int>, b: List<Int>) : Bool = bn_cmp(a, b) == 0
+fn bn_is_zero(e: List<Int>) : Bool = match trim(e) { [] => true; _ => false }
+fn bn_is_odd(e: List<Int>) : Bool = match e { [] => false; [h, ...t] => h % 2 == 1 }
+fn half_hl(xs: List<Int>, rem: Int) : List<Int> = match xs { [] => []; [h, ...t] => let cur : Int = rem * 65536 + h in [cur / 2] ++ half_hl(t, cur % 2) }
+fn bn_half(e: List<Int>) : List<Int> = trim(rev(half_hl(rev(trim(e)), 0)))
+fn fpow_bn(base: List<Int>, e: List<Int>) : List<Int> =
+  if bn_is_zero(e) then [1]
+  else let h : List<Int> = fpow_bn(fmul(base, base), bn_half(e)) in
+       if bn_is_odd(e) then fmul(base, h) else h
+fn finv(a: List<Int>) : List<Int> = fpow_bn(a, bn_sub(pg(0), [2]))
+fn halve_k(e: List<Int>, k: Int) : List<Int> = if k <= 0 then e else halve_k(bn_half(e), k - 1)
+fn root_pow2(k: Int) : List<Int> = fpow_bn([7], halve_k(bn_sub(pg(0), [1]), k))
+fn glit(c: Int) : List<Int> = trim([c % 65536, (c / 65536) % 65536, c / 4294967296])
+
+# --- list-of-bignum helpers ---------------------------------------------------
+fn wnth(xs: List<List<Int>>, i: Int) : List<Int> = match xs { [] => []; [x, ...r] => if i == 0 then x else wnth(r, i - 1) }
+fn lset(xs: List<List<Int>>, i: Int, v: List<Int>) : List<List<Int>> = match xs { [] => []; [x, ...r] => if i == 0 then [v] ++ r else [x] ++ lset(r, i - 1, v) }
+fn llen(xs: List<List<Int>>) : Int = match xs { [] => 0; [x, ...r] => 1 + llen(r) }
+fn lpad(xs: List<List<Int>>, n: Int) : List<List<Int>> = if llen(xs) >= n then xs else lpad(xs ++ [glit(0)], n)
+
+# --- circuit: gates over Goldilocks (witness = list of field elements) --------
+type Gate = | GConst(Int, List<Int>) | GAdd(Int, Int, Int) | GSub(Int, Int, Int) | GMul(Int, Int, Int)
+type Build = | Build(Int, List<Gate>, List<List<Int>>)
+fn mkc(c: List<Int>, b: Build) : (Int, Build) = match b { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GConst(n, c)], w ++ [c])) }
+fn mka(x: Int, y: Int, b: Build) : (Int, Build) = match b { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GAdd(n, x, y)], w ++ [fadd(wnth(w, x), wnth(w, y))])) }
+fn mks(x: Int, y: Int, b: Build) : (Int, Build) = match b { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GSub(n, x, y)], w ++ [fsub(wnth(w, x), wnth(w, y))])) }
+fn mkm(x: Int, y: Int, b: Build) : (Int, Build) = match b { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GMul(n, x, y)], w ++ [fmul(wnth(w, x), wnth(w, y))])) }
+
+# the eight trace columns (length = #gates, padded to N)
+fn sel_add(g: Gate) : List<Int> = match g { GAdd(o, a, b) => [1]; GConst(o, c) => []; GSub(o, a, b) => []; GMul(o, a, b) => [] }
+fn sel_mul(g: Gate) : List<Int> = match g { GMul(o, a, b) => [1]; GConst(o, c) => []; GAdd(o, a, b) => []; GSub(o, a, b) => [] }
+fn sel_sub(g: Gate) : List<Int> = match g { GSub(o, a, b) => [1]; GConst(o, c) => []; GAdd(o, a, b) => []; GMul(o, a, b) => [] }
+fn sel_con(g: Gate) : List<Int> = match g { GConst(o, c) => [1]; GAdd(o, a, b) => []; GSub(o, a, b) => []; GMul(o, a, b) => [] }
+fn cv(g: Gate) : List<Int> = match g { GConst(o, c) => c; GAdd(o, a, b) => []; GSub(o, a, b) => []; GMul(o, a, b) => [] }
+fn lv(g: Gate, w: List<List<Int>>) : List<Int> = match g { GConst(o, c) => []; GAdd(o, a, b) => wnth(w, a); GSub(o, a, b) => wnth(w, a); GMul(o, a, b) => wnth(w, a) }
+fn rv(g: Gate, w: List<List<Int>>) : List<Int> = match g { GConst(o, c) => []; GAdd(o, a, b) => wnth(w, b); GSub(o, a, b) => wnth(w, b); GMul(o, a, b) => wnth(w, b) }
+fn ov(g: Gate, w: List<List<Int>>) : List<Int> = match g { GConst(o, c) => wnth(w, o); GAdd(o, a, b) => wnth(w, o); GSub(o, a, b) => wnth(w, o); GMul(o, a, b) => wnth(w, o) }
+fn c_qa(gs: List<Gate>) : List<List<Int>> = match gs { [] => []; [g, ...r] => [sel_add(g)] ++ c_qa(r) }
+fn c_qm(gs: List<Gate>) : List<List<Int>> = match gs { [] => []; [g, ...r] => [sel_mul(g)] ++ c_qm(r) }
+fn c_qs(gs: List<Gate>) : List<List<Int>> = match gs { [] => []; [g, ...r] => [sel_sub(g)] ++ c_qs(r) }
+fn c_qc(gs: List<Gate>) : List<List<Int>> = match gs { [] => []; [g, ...r] => [sel_con(g)] ++ c_qc(r) }
+fn c_c(gs: List<Gate>) : List<List<Int>> = match gs { [] => []; [g, ...r] => [cv(g)] ++ c_c(r) }
+fn c_l(gs: List<Gate>, w: List<List<Int>>) : List<List<Int>> = match gs { [] => []; [g, ...r] => [lv(g, w)] ++ c_l(r, w) }
+fn c_r(gs: List<Gate>, w: List<List<Int>>) : List<List<Int>> = match gs { [] => []; [g, ...r] => [rv(g, w)] ++ c_r(r, w) }
+fn c_o(gs: List<Gate>, w: List<List<Int>>) : List<List<Int>> = match gs { [] => []; [g, ...r] => [ov(g, w)] ++ c_o(r, w) }
+
+# --- interpolation (inverse NTT) over the size-8 trace domain -----------------
+fn poly_eval_b(coeffs: List<List<Int>>, x: List<Int>) : List<Int> = match coeffs { [] => []; [c, ...r] => fadd(c, fmul(x, poly_eval_b(r, x))) }
+fn intt_sum(ev: List<List<Int>>, k: Int, j: Int, n: Int, wi: List<Int>) : List<Int> =
+  if j >= n then [] else fadd(fmul(wnth(ev, j), fpow_bn(wi, glit((j * k) % n))), intt_sum(ev, k, j + 1, n, wi))
+fn interp_go(ev: List<List<Int>>, k: Int, n: Int, wi: List<Int>, ni: List<Int>) : List<List<Int>> =
+  if k >= n then [] else [fmul(ni, intt_sum(ev, k, 0, n, wi))] ++ interp_go(ev, k + 1, n, wi, ni)
+fn interpolate8(ev: List<List<Int>>) : List<List<Int>> = interp_go(ev, 0, 8, finv(root_pow2(3)), finv(glit(8)))
+
+# --- domains ------------------------------------------------------------------
+fn dom_powers(cur: List<Int>, g: List<Int>, k: Int) : List<List<Int>> = if k <= 0 then [] else [cur] ++ dom_powers(fmul(cur, g), g, k - 1)
+
+# --- the gate-constraint polynomial G(x) and its quotient Q = G / Z_H ---------
+fn gate_G_at(qa: List<List<Int>>, qm: List<List<Int>>, qs: List<List<Int>>, qc: List<List<Int>>, l: List<List<Int>>, r: List<List<Int>>, o: List<List<Int>>, c: List<List<Int>>, x: List<Int>) : List<Int> =
+  let va : List<Int> = poly_eval_b(qa, x) in let vm : List<Int> = poly_eval_b(qm, x) in let vs : List<Int> = poly_eval_b(qs, x) in let vc : List<Int> = poly_eval_b(qc, x) in
+  let vl : List<Int> = poly_eval_b(l, x) in let vr : List<Int> = poly_eval_b(r, x) in let vo : List<Int> = poly_eval_b(o, x) in let vk : List<Int> = poly_eval_b(c, x) in
+  fadd(fmul(va, fsub(vo, fadd(vl, vr))),
+  fadd(fmul(vm, fsub(vo, fmul(vl, vr))),
+  fadd(fmul(vs, fsub(vo, fsub(vl, vr))),
+       fmul(vc, fsub(vo, vk)))))
+fn quotient_cw(qa: List<List<Int>>, qm: List<List<Int>>, qs: List<List<Int>>, qc: List<List<Int>>, l: List<List<Int>>, r: List<List<Int>>, o: List<List<Int>>, c: List<List<Int>>, coset: List<List<Int>>) : List<List<Int>> =
+  match coset { [] => []; [x, ...rest] =>
+    let g : List<Int> = gate_G_at(qa, qm, qs, qc, l, r, o, c, x) in
+    let zh : List<Int> = fsub(fpow_bn(x, glit(8)), [1]) in
+    [fmul(g, finv(zh))] ++ quotient_cw(qa, qm, qs, qc, l, r, o, c, rest) }
+
+# --- FRI low-degree test (base-field fold; Stage B lifts to F_{p^2}) ----------
+fn fold_at_b(cw: List<List<Int>>, dom: List<List<Int>>, beta: List<Int>, finv2: List<Int>, i: Int, half: Int) : List<List<Int>> =
+  if i >= half then []
+  else let fx : List<Int> = wnth(cw, i) in let fmx : List<Int> = wnth(cw, i + half) in let x : List<Int> = wnth(dom, i) in
+    let fe : List<Int> = fmul(fadd(fx, fmx), finv2) in let fo : List<Int> = fmul(fsub(fx, fmx), finv(fmul([2], x))) in
+    [fadd(fe, fmul(beta, fo))] ++ fold_at_b(cw, dom, beta, finv2, i + 1, half)
+fn sqd(dom: List<List<Int>>, i: Int, half: Int) : List<List<Int>> =
+  if i >= half then [] else [fmul(wnth(dom, i), wnth(dom, i))] ++ sqd(dom, i + 1, half)
+fn fold_all_b(cw: List<List<Int>>, dom: List<List<Int>>, finv2: List<Int>, round: Int) : List<List<Int>> =
+  if llen(cw) <= 2 then cw
+  else let half : Int = llen(cw) / 2 in fold_all_b(fold_at_b(cw, dom, glit(round * 7919 + 12345), finv2, 0, half), sqd(dom, 0, half), finv2, round + 1)
+fn all_eqb(cw: List<List<Int>>, x: List<Int>) : Bool = match cw { [] => true; [y, ...r] => if bn_eq(y, x) then all_eqb(r, x) else false }
+fn is_constb(cw: List<List<Int>>) : Bool = match cw { [] => true; [x, ...r] => all_eqb(r, x) }
+
+# build all 8 column polynomials and form the quotient codeword Q on the coset.
+fn coset32(d: Int) : List<List<Int>> = dom_powers([7], root_pow2(5), 32)
+fn q_cw(gates: List<Gate>, w: List<List<Int>>) : List<List<Int>> =
+  let qa : List<List<Int>> = interpolate8(lpad(c_qa(gates), 8)) in let qm : List<List<Int>> = interpolate8(lpad(c_qm(gates), 8)) in
+  let qs : List<List<Int>> = interpolate8(lpad(c_qs(gates), 8)) in let qc : List<List<Int>> = interpolate8(lpad(c_qc(gates), 8)) in
+  let cc : List<List<Int>> = interpolate8(lpad(c_c(gates), 8)) in
+  let ll : List<List<Int>> = interpolate8(lpad(c_l(gates, w), 8)) in let rr : List<List<Int>> = interpolate8(lpad(c_r(gates, w), 8)) in let oo : List<List<Int>> = interpolate8(lpad(c_o(gates, w), 8)) in
+  quotient_cw(qa, qm, qs, qc, ll, rr, oo, cc, coset32(0))
+fn low_degree_quotient(gates: List<Gate>, w: List<List<Int>>) : Bool =
+  is_constb(fold_all_b(q_cw(gates, w), coset32(0), finv([2]), 0))
+
+# --- ZERO-KNOWLEDGE: blind Q with a random low-degree mask (Stage B) ----------
+# A degree-<8 polynomial R, evaluated on the coset, is added to Q. Since deg R is
+# below the fold-to-constant bound, Q+R stays low-degree (FRI fold is linear, so it
+# still folds to the same kind of constant and ACCEPTs) — but every opened value is
+# randomized by R. Two seeds give two different valid proofs of the same statement:
+# the verifier learns "Q is low-degree", nothing about the witness. (MiMC over
+# Goldilocks supplies the mask coefficients.)
+fn g_sbox(x: List<Int>) : List<Int> = let x2 : List<Int> = fmul(x, x) in let x4 : List<Int> = fmul(x2, x2) in let x6 : List<Int> = fmul(x4, x2) in fmul(x6, x)
+fn rcg(i: Int) : List<Int> = glit((i + 1) * (i + 1) * 7919 + i * 1009 + 1234567)
+fn mimcg(x: List<Int>, k: List<Int>, i: Int) : List<Int> = if i >= 4 then fadd(x, k) else mimcg(g_sbox(fadd(fadd(x, k), rcg(i))), k, i + 1)
+fn hashg(a: List<Int>, b: List<Int>) : List<Int> = fadd(fadd(mimcg(a, b, 0), a), b)
+fn rand_coeffs(seed: Int, i: Int, k: Int) : List<List<Int>> = if i >= k then [] else [hashg(glit(seed), glit(i + 1))] ++ rand_coeffs(seed, i + 1, k)
+fn blind_cw(cw: List<List<Int>>, coeffs: List<List<Int>>, dom: List<List<Int>>, i: Int) : List<List<Int>> =
+  if i >= llen(cw) then [] else [fadd(wnth(cw, i), poly_eval_b(coeffs, wnth(dom, i)))] ++ blind_cw(cw, coeffs, dom, i + 1)
+fn prove_zk(gates: List<Gate>, w: List<List<Int>>, seed: Int) : Bool =
+  let bcw : List<List<Int>> = blind_cw(q_cw(gates, w), rand_coeffs(seed, 0, 8), coset32(0), 0) in
+  is_constb(fold_all_b(bcw, coset32(0), finv([2]), 0))
+fn opened5(gates: List<Gate>, w: List<List<Int>>, seed: Int) : List<Int> =
+  wnth(blind_cw(q_cw(gates, w), rand_coeffs(seed, 0, 8), coset32(0), 0), 5)
+
+# --- the circuit: f(x) = x*x + 5; the output wire IS f(x), so claiming a wrong
+# --- R breaks the GAdd that produced it (no separate assert needed) -----------
+fn build_f(x: List<Int>) : Build =
+  let b0 : Build = Build(1, [], [x]) in
+  match mkm(0, 0, b0) { (wsq, b1) =>
+  match mkc(glit(5), b1) { (wc, b2) =>
+  match mka(wsq, wc, b2) { (wout, b3) => b3 } } }
+fn ref_f(xv: Int) : List<Int> = fadd(fmul(glit(xv), glit(xv)), glit(5))
+
+# --- demo --------------------------------------------------------------------
+fn show_a(b: Bool) : String = if b then "ACCEPT" else "REJECT"
+fn show(xs: List<Int>) : String = match trim(xs) { [] => "0"; [h, ...t] => match t { [] => int_to_string(h); _ => int_to_string(h) ++ "+…(" ++ int_to_string(len(trim(xs))) ++ " limbs)" } }
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+let secret : Int = 305419896
+let res : List<Int> = ref_f(secret)
+let honest : Build = build_f(glit(secret))
+let okq : Bool = match honest { Build(n, gates, w) => low_degree_quotient(gates, w) }
+let badq : Bool = match honest { Build(n, gates, w) => low_degree_quotient(gates, lset(w, 3, glit(99))) }
+let zk1 : Bool = match honest { Build(n, gates, w) => prove_zk(gates, w, 11111) }
+let zk2 : Bool = match honest { Build(n, gates, w) => prove_zk(gates, w, 22222) }
+let op1 : List<Int> = match honest { Build(n, gates, w) => opened5(gates, w, 11111) }
+let op2 : List<Int> = match honest { Build(n, gates, w) => opened5(gates, w, 22222) }
+
+let _ : String = print("--- prove_circuit_goldilocks_zk.glass: a Glass circuit, SUCCINCT + ZK over Goldilocks (R1b) ---")
+let _ : String = print("f(x) = x*x + 5 over Goldilocks p = 2^64 − 2^32 + 1; gate identity G(x) = qa·(o−(l+r)) +")
+let _ : String = print("qm·(o−l·r) + qs·(o−(l−r)) + qc·(o−c), interpolated over H (N=8); Q = G/Z_H on a 32-coset.")
+let _ : String = print("")
+let _ : String = print("x is PRIVATE; public claim R = f(x) = " ++ show(res) ++ " (no 2^31 wrap)")
+let _ : String = print("honest witness    -> Q = G/Z_H folds to a constant (low-degree, succinct): " ++ show_a(okq))
+let _ : String = print("tampered (out=99) -> folds to a constant: " ++ show_a(badq) ++ "  (G stops vanishing on H => Q not low-degree => REJECT)")
+let _ : String = print("")
+let _ : String = print("ZERO-KNOWLEDGE (blind Q with a random low-degree mask):")
+let _ : String = print("  two blinding seeds both verify: " ++ show_a(zk1) ++ " / " ++ show_a(zk2) ++ "   (both valid proofs of the same statement)")
+let _ : String = print("  opened coset value #5 differs across seeds: " ++ show_b(bn_eq(op1, op2) == false))
+let _ : String = print("")
+let _ : String = print("all gate constraints are now ONE low-degree polynomial over the production field, blinded —")
+let _ : String = print("succinct FRI + zero-knowledge, not a linear residual scan. (Next: F_{p^2} fold challenge + Merkle queries.)")
+
+"prove_circuit_goldilocks_zk v0.2 (R1b) — gate quotient, FRI low-degree test, blinded for ZK, over Goldilocks"
