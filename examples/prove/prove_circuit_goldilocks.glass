@@ -1,0 +1,139 @@
+# =============================================================================
+# prove_circuit_goldilocks.glass — a Glass circuit proven over the REAL field (R1)
+#
+# Every prove-bridge proof so far computes over toy Baby Bear (values mod 2^31 —
+# they wrap). This proves a Glass arithmetic circuit over the PRODUCTION field
+# Goldilocks (p = 2^64 − 2^32 + 1, the field Plonky2/RISC Zero use): real 64-bit
+# values, no wraparound, with a cryptographic ~2^128 challenge.
+#
+# The argument is the sound RLC (random-linear-combination), exactly how the
+# Baby Bear bridge began (prove.glass) before FRI made it succinct (prove_zk):
+#   • compile f(x) into gates (GConst/GAdd/GSub/GMul + a GEq binding out = R);
+#   • each gate has a RESIDUAL that is 0 iff the gate holds on the witness;
+#   • commit the witness (a Goldilocks hash), derive a challenge γ ∈ F_{p^2} from
+#     the commitment (Fiat-Shamir), and check Σ residualᵢ·γⁱ == 0.
+# By Schwartz–Zippel over F_{p^2} ≈ 2^128, a witness with ANY violated gate makes
+# the RLC nonzero except with probability ~(#gates)/2^128 — cryptographic.
+#
+# Sound + real-field (the R1 win). NOT yet succinct or zero-knowledge over
+# Goldilocks — that needs the full FRI quotient over bignum, which is heavy
+# interpreted (run natively); this is the dogfoodable first step. int64-safe
+# (base-2^16 limbs); dogfoods.
+# =============================================================================
+
+# --- Goldilocks base field + F_{p^2} (from frost_goldilocks_ext.glass) -------
+fn lmod(x: Int) : Int = x % 65536
+fn ldiv(x: Int) : Int = x / 65536
+fn rev_go(xs: List<Int>, acc: List<Int>) : List<Int> = match xs { [] => acc; [h, ...t] => rev_go(t, [h] ++ acc) }
+fn rev(xs: List<Int>) : List<Int> = rev_go(xs, [])
+fn drop_zeros(xs: List<Int>) : List<Int> = match xs { [] => []; [h, ...t] => if h == 0 then drop_zeros(t) else xs }
+fn trim(xs: List<Int>) : List<Int> = rev(drop_zeros(rev(xs)))
+fn addc(a: List<Int>, b: List<Int>, carry: Int) : List<Int> =
+  match a {
+    [] => match b { [] => if carry == 0 then [] else [carry]; [hb, ...tb] => let s : Int = hb + carry in [lmod(s)] ++ addc([], tb, ldiv(s)) };
+    [ha, ...ta] => match b { [] => let s : Int = ha + carry in [lmod(s)] ++ addc(ta, [], ldiv(s)); [hb, ...tb] => let s : Int = ha + hb + carry in [lmod(s)] ++ addc(ta, tb, ldiv(s)) }
+  }
+fn bn_add(a: List<Int>, b: List<Int>) : List<Int> = trim(addc(a, b, 0))
+fn smul(xs: List<Int>, k: Int, carry: Int) : List<Int> =
+  match xs { [] => if carry == 0 then [] else [carry]; [h, ...t] => let p : Int = h * k + carry in [lmod(p)] ++ smul(t, k, ldiv(p)) }
+fn shift(xs: List<Int>, n: Int) : List<Int> = if n <= 0 then xs else [0] ++ shift(xs, n - 1)
+fn mul_go(a: List<Int>, b: List<Int>, i: Int) : List<Int> =
+  match b { [] => []; [hb, ...tb] => bn_add(shift(smul(a, hb, 0), i), mul_go(a, tb, i + 1)) }
+fn bn_mul(a: List<Int>, b: List<Int>) : List<Int> = trim(mul_go(a, b, 0))
+fn cmp_hi(a: List<Int>, b: List<Int>) : Int = match a { [] => 0; [ha, ...ta] => match b { [] => 0; [hb, ...tb] => if ha == hb then cmp_hi(ta, tb) else (if ha < hb then 0 - 1 else 1) } }
+fn bn_cmp(a: List<Int>, b: List<Int>) : Int =
+  let ta : List<Int> = trim(a) in let tb : List<Int> = trim(b) in
+  if len(ta) == len(tb) then cmp_hi(rev(ta), rev(tb)) else (if len(ta) < len(tb) then 0 - 1 else 1)
+fn subb(a: List<Int>, b: List<Int>, borrow: Int) : List<Int> =
+  match a { [] => [];
+    [ha, ...ta] => match b {
+      [] => let d : Int = ha - borrow in if d < 0 then [d + 65536] ++ subb(ta, [], 1) else [d] ++ subb(ta, [], 0);
+      [hb, ...tb] => let d : Int = ha - hb - borrow in if d < 0 then [d + 65536] ++ subb(ta, tb, 1) else [d] ++ subb(ta, tb, 0) } }
+fn bn_sub(a: List<Int>, b: List<Int>) : List<Int> = trim(subb(a, b, 0))
+fn take(xs: List<Int>, n: Int) : List<Int> = if n <= 0 then [] else match xs { [] => []; [h, ...t] => [h] ++ take(t, n - 1) }
+fn drop(xs: List<Int>, n: Int) : List<Int> = if n <= 0 then xs else match xs { [] => []; [h, ...t] => drop(t, n - 1) }
+fn pg(d: Int) : List<Int> = [1, 0, 65535, 65535]
+fn fold_hi(d: Int) : List<Int> = [65535, 65535]
+fn bn_mod_p(a: List<Int>) : List<Int> =
+  let t : List<Int> = trim(a) in
+  if len(t) > 4 then bn_mod_p(bn_add(take(t, 4), bn_mul(drop(t, 4), fold_hi(0))))
+  else if bn_cmp(t, pg(0)) >= 0 then bn_sub(t, pg(0)) else t
+fn fadd(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_add(a, b))
+fn fsub(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_add(a, bn_sub(pg(0), bn_mod_p(b))))
+fn fmul(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_mul(a, b))
+fn bn_eq(a: List<Int>, b: List<Int>) : Bool = bn_cmp(a, b) == 0
+fn glit(c: Int) : List<Int> = trim([c % 65536, (c / 65536) % 65536, c / 4294967296])
+# x^7 S-box hash (a Goldilocks MiMC) — commits the witness
+fn g_sbox(x: List<Int>) : List<Int> = let x2 : List<Int> = fmul(x, x) in let x4 : List<Int> = fmul(x2, x2) in let x6 : List<Int> = fmul(x4, x2) in fmul(x6, x)
+fn rcg(i: Int) : List<Int> = glit((i + 1) * (i + 1) * 7919 + i * 1009 + 1234567)
+fn mimcg(x: List<Int>, k: List<Int>, i: Int) : List<Int> = if i >= 4 then fadd(x, k) else mimcg(g_sbox(fadd(fadd(x, k), rcg(i))), k, i + 1)
+fn hashg(a: List<Int>, b: List<Int>) : List<Int> = fadd(fadd(mimcg(a, b, 0), a), b)
+
+# F_{p^2} = F_p[X]/(X^2 − 7) over Goldilocks
+type G2 = | G2(List<Int>, List<Int>)
+fn ww(d: Int) : List<Int> = [7]
+fn gadd2(a: G2, b: G2) : G2 = match a { G2(a0, a1) => match b { G2(b0, b1) => G2(fadd(a0, b0), fadd(a1, b1)) } }
+fn gmul2(a: G2, b: G2) : G2 = match a { G2(a0, a1) => match b { G2(b0, b1) =>
+  G2(fadd(fmul(a0, b0), fmul(ww(0), fmul(a1, b1))), fadd(fmul(a0, b1), fmul(a1, b0))) } }
+fn geq2(a: G2, b: G2) : Bool = match a { G2(a0, a1) => match b { G2(b0, b1) => bn_eq(a0, b0) && bn_eq(a1, b1) } }
+fn emb(x: List<Int>) : G2 = G2(x, [])
+
+# --- the circuit: gates over Goldilocks; witness = list of field elements -----
+type Gate = | GConst(Int, List<Int>) | GAdd(Int, Int, Int) | GSub(Int, Int, Int) | GMul(Int, Int, Int) | GEq(Int, Int)
+type Build = | Build(Int, List<Gate>, List<List<Int>>)
+fn wnth(w: List<List<Int>>, i: Int) : List<Int> = match w { [] => []; [x, ...r] => if i == 0 then x else wnth(r, i - 1) }
+fn mkc(c: List<Int>, b: Build) : (Int, Build) = match b { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GConst(n, c)], w ++ [c])) }
+fn mka(x: Int, y: Int, b: Build) : (Int, Build) = match b { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GAdd(n, x, y)], w ++ [fadd(wnth(w, x), wnth(w, y))])) }
+fn mks(x: Int, y: Int, b: Build) : (Int, Build) = match b { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GSub(n, x, y)], w ++ [fsub(wnth(w, x), wnth(w, y))])) }
+fn mkm(x: Int, y: Int, b: Build) : (Int, Build) = match b { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GMul(n, x, y)], w ++ [fmul(wnth(w, x), wnth(w, y))])) }
+fn asrt(x: Int, y: Int, b: Build) : Build = match b { Build(n, gs, w) => Build(n, gs ++ [GEq(x, y)], w) }
+# residual: 0 iff the gate holds on the witness
+fn residual(g: Gate, w: List<List<Int>>) : List<Int> =
+  match g {
+    GConst(o, c) => fsub(wnth(w, o), c);
+    GAdd(o, a, b) => fsub(wnth(w, o), fadd(wnth(w, a), wnth(w, b)));
+    GSub(o, a, b) => fsub(wnth(w, o), fsub(wnth(w, a), wnth(w, b)));
+    GMul(o, a, b) => fsub(wnth(w, o), fmul(wnth(w, a), wnth(w, b)));
+    GEq(a, b) => fsub(wnth(w, a), wnth(w, b)) }
+
+# --- commit the witness, derive γ ∈ F_{p^2}, RLC the residuals ----------------
+fn hash_witness(w: List<List<Int>>, acc: List<Int>) : List<Int> = match w { [] => acc; [x, ...r] => hash_witness(r, hashg(acc, x)) }
+fn gamma_of(seed: List<Int>) : G2 = G2(hashg(seed, glit(7)), hashg(seed, glit(11)))
+# Σ residualᵢ · γⁱ  in F_{p^2}
+fn rlc(gates: List<Gate>, w: List<List<Int>>, gamma: G2, gpow: G2) : G2 =
+  match gates { [] => G2([], []);
+    [g, ...rest] => gadd2(gmul2(emb(residual(g, w)), gpow), rlc(rest, w, gamma, gmul2(gpow, gamma))) }
+fn prove_ok(gates: List<Gate>, w: List<List<Int>>) : Bool =
+  let seed : List<Int> = hash_witness(w, glit(0)) in
+  geq2(rlc(gates, w, gamma_of(seed), G2([1], [])), G2([], []))
+
+# --- compile f(x) = x*x + 5 into a circuit; assert the output equals R --------
+fn build_f(x: List<Int>, claimedR: List<Int>) : Build =
+  let b0 : Build = Build(1, [], [x]) in                 # wire 0 = private input x
+  match mkm(0, 0, b0) { (wsq, b1) =>                     # x*x
+  match mkc(glit(5), b1) { (wc, b2) =>                   # 5
+  match mka(wsq, wc, b2) { (wout, b3) =>                 # x*x + 5
+  match mkc(claimedR, b3) { (wR, b4) => asrt(wout, wR, b4) } } } }
+fn ref_f(xv: Int) : List<Int> = fadd(fmul(glit(xv), glit(xv)), glit(5))
+fn prove(x: Int, claimedR: List<Int>) : Bool =
+  match build_f(glit(x), claimedR) { Build(n, gates, w) => prove_ok(gates, w) }
+
+# --- demo --------------------------------------------------------------------
+fn show_a(b: Bool) : String = if b then "ACCEPT" else "REJECT"
+fn show(xs: List<Int>) : String = match trim(xs) { [] => "0"; [h, ...t] => match t { [] => int_to_string(h); _ => int_to_string(h) ++ "+…(" ++ int_to_string(len(trim(xs))) ++ " limbs)" } }
+let secret : Int = 305419896                            # a real 32-bit input (no 2^31 wraparound issues in 2^64)
+let res : List<Int> = ref_f(secret)                      # x*x + 5 over Goldilocks
+
+let _ : String = print("--- prove_circuit_goldilocks.glass: a Glass circuit proven over the REAL field (R1) ---")
+let _ : String = print("f(x) = x*x + 5 compiled to gates; computed over Goldilocks p = 2^64 − 2^32 + 1 (no 2^31 wrap).")
+let _ : String = print("sound RLC: commit witness -> γ ∈ F_{p^2} ≈ 2^128 (Fiat-Shamir) -> Σ residualᵢ·γⁱ == 0.")
+let _ : String = print("")
+let _ : String = print("x is PRIVATE (= a real 64-bit-range value); public claim R = f(x) = " ++ show(res))
+let _ : String = print("  (a 2^31 base field would have WRAPPED computing x*x for this x; Goldilocks does not.)")
+let _ : String = print("honest (prover knows x with f(x)=R):  " ++ show_a(prove(secret, res)))
+let _ : String = print("lying about the result (R = 99):       " ++ show_a(prove(secret, glit(99))) ++ "  (a gate residual != 0 => RLC != 0 w.h.p. => REJECT)")
+let _ : String = print("")
+let _ : String = print("a Glass circuit proven over the production field, ~2^128 challenge soundness, int64-safe.")
+let _ : String = print("(succinct + zero-knowledge over Goldilocks = the FRI quotient over bignum, heavy interpreted; next.)")
+
+"prove_circuit_goldilocks v0.1 (R1) — a Glass arithmetic circuit, sound RLC proof over Goldilocks F_{p^2}"

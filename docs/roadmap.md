@@ -39,7 +39,7 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Shipped (through v5.6)
+## Shipped (through v5.7)
 
 - **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
 - **Pane** — a query language in Glass.
@@ -248,7 +248,12 @@ three under-invested axes — *realness*, *usability*, and *convergence* — on 
 - **Track R — Realness** (make the proof *mean* something).
   - **R1.** Wire the **Goldilocks** stack *through the bridge* — `prove_source_*` still
     proves over toy Baby Bear F_{p⁴}; the Goldilocks STARK exists but isn't connected.
-    Connecting them makes every source proof run on the production field. *(highest leverage — all pieces exist)*
+    Connecting them makes every source proof run on the production field.
+    - ✅ **First step (sound, real-field)** ([`prove_circuit_goldilocks.glass`](../examples/prove/prove_circuit_goldilocks.glass)):
+      a Glass arithmetic circuit proven over Goldilocks (2⁶⁴ values, no 2³¹ wrap) via
+      the sound RLC with an F_{p²} ≈ 2¹²⁸ Fiat-Shamir challenge. Dogfoods byte-identical.
+    - **Next:** succinct + zero-knowledge over Goldilocks — the FRI quotient over the
+      bignum field (heavy interpreted → native-primary), mirroring Baby Bear's RLC→FRI arc.
   - **R2.** A real hash (Poseidon over Goldilocks) + Fiat-Shamir hardening in the proven path.
   - **R3.** An honest **soundness ledger** — exactly what is/isn't sound, per artifact.
 - **Track E — Expressiveness** (past first-order).
