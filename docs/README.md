@@ -17,6 +17,9 @@
 - [Migration](migration.md) — the road from a Python host to self-hosting *(historical record)*.
 - [Design notes](design-notes.md) — release-by-release engineering diary (how features were built and verified).
 
+### Honesty
+- [Soundness](soundness.md) — what Glass's proofs *actually* guarantee: the strong differential-testing guarantee vs. the educational-grade cryptography, per component. Read this before trusting any "zero-knowledge" claim.
+
 ### Direction
 - [Roadmap](roadmap.md) — where Glass is headed.
 

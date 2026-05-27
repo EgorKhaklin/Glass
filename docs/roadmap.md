@@ -39,7 +39,7 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Shipped (through v5.10)
+## Shipped (through v5.11)
 
 - **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
 - **Pane** — a query language in Glass.
@@ -255,7 +255,10 @@ three under-invested axes — *realness*, *usability*, and *convergence* — on 
     - **Next:** succinct + zero-knowledge over Goldilocks — the FRI quotient over the
       bignum field (heavy interpreted → native-primary), mirroring Baby Bear's RLC→FRI arc.
   - **R2.** A real hash (Poseidon over Goldilocks) + Fiat-Shamir hardening in the proven path.
-  - **R3.** An honest **soundness ledger** — exactly what is/isn't sound, per artifact.
+  - **R3. ✅ DONE.** An honest **soundness ledger** ([`soundness.md`](soundness.md)) —
+    separates the strong differential-testing guarantee from the educational-grade
+    cryptography, per component, with the path to production-soundness and a clear
+    "do not use to protect real value" bottom line.
 - **Track E — Expressiveness** (past first-order).
   - **E1.** **Bounded recursion / lists** via static unrolling (`List<Int>` as Nil/Cons
     to a depth bound) — the expressiveness cliff; what real ZK-VMs do.
