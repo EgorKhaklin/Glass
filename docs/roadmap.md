@@ -39,7 +39,7 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Shipped (through v5.14)
+## Shipped (through v5.15)
 
 - **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
 - **Pane** — a query language in Glass.
@@ -254,7 +254,13 @@ three under-invested axes — *realness*, *usability*, and *convergence* — on 
       the sound RLC with an F_{p²} ≈ 2¹²⁸ Fiat-Shamir challenge. Dogfoods byte-identical.
     - **Next:** succinct + zero-knowledge over Goldilocks — the FRI quotient over the
       bignum field (heavy interpreted → native-primary), mirroring Baby Bear's RLC→FRI arc.
-  - **R2.** A real hash (Poseidon over Goldilocks) + Fiat-Shamir hardening in the proven path.
+  - **R2. 🚧 IN PROGRESS.** A real hash + Fiat-Shamir hardening. ✅ **Step 1 — Grain-LFSR
+    round constants** ([`frost_grain.glass`](../examples/frost/frost_grain.glass)): Poseidon's
+    constants now come from the spec's Grain LFSR (80-bit state, taps
+    b₀⊕b₁₃⊕b₂₃⊕b₃₈⊕b₅₁⊕b₆₂, 160-round warm-up, rejection sampling) — reproducible and
+    nothing-up-my-sleeve, not hand-picked; byte-identical. *Next:* cross-check against the
+    official reference test vectors, analyze the MDS/round counts, wire it into the bridge,
+    and harden Fiat-Shamir (transcript domain separation).
   - **R3. ✅ DONE.** An honest **soundness ledger** ([`soundness.md`](soundness.md)) —
     separates the strong differential-testing guarantee from the educational-grade
     cryptography, per component, with the path to production-soundness and a clear

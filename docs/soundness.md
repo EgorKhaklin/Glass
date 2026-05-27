@@ -56,7 +56,7 @@ What is **not** production-grade is the **primitives and parameters**:
 |---|---|---|
 | **Base field** | Baby Bear (2³¹−2²⁷+1) is a genuine NTT-friendly prime | The prove bridge computes over it, so **values are capped near 2³¹** — real-world integers wrap. (Goldilocks, 2⁶⁴, is built — `frost_goldilocks*` — and demonstrated through FRI, but the bridge still defaults to Baby Bear.) |
 | **Challenge space** | FRI challenges live in **F_{p⁴} ≈ 2¹²⁴** | This part *is* cryptographic-width: a cheating prover guesses a fold challenge with prob ~2⁻¹²⁴. The "toy" is the value range, not the challenge space. |
-| **Hash** | MiMC (x⁵/x⁷ S-box) and a real-shaped **Poseidon** (x⁷, full/partial rounds, MDS) | **Educational round constants** (a fixed schedule, not the Grain-LFSR the spec mandates) and **unaudited** — not a vetted collision-resistant ZK hash. |
+| **Hash** | MiMC (x⁵/x⁷ S-box) and a real-shaped **Poseidon** (x⁷, full/partial rounds, MDS); round constants now from a **Grain LFSR** following the spec's structure (`frost_grain.glass` — init layout, taps b₀⊕b₁₃⊕b₂₃⊕b₃₈⊕b₅₁⊕b₆₂, 160-round warm-up, rejection sampling) | Constants are reproducible/nothing-up-my-sleeve, **not** hand-picked — a real upgrade. But the LFSR is **not yet cross-checked against the official reference test vectors**, the MDS/round-counts are not analyzed, and the hash is **unaudited**. Most frost files still hash with MiMC; the Grain Poseidon is not yet wired into the prove bridge. |
 | **Fiat-Shamir** | Transcript-bound challenges + query amplification (soundness ~2⁻ᴷ) | The transcript is hashed with the educational hash above; no formal transcript-separation analysis. |
 | **Goldilocks stack** | A complete sound + committed + zero-knowledge FRI over Goldilocks (`frost_goldilocks_zk`), int64-safe via limbs | A degree-2 extension F_{p²} ≈ 2¹²⁸ challenge space, but reduced rounds in the hash and **not wired into the source→ZK bridge** (that's roadmap R1b). |
 | **ZK / blinding** | Trace/codeword blinding genuinely randomizes openings; two seeds → different openings | Demonstrates the *zero-knowledge property mechanism*; not a formal simulator-based proof of ZK. |
@@ -88,6 +88,9 @@ Roughly, in order:
    integration is the work).
 2. **A vetted hash** — Poseidon with the standard Grain-LFSR constants (or a
    reviewed alternative), with the MDS and round counts analyzed (roadmap **R2**).
+   *Partly underway:* `frost_grain.glass` generates the constants from a Grain LFSR
+   following the spec's structure. Still to do: cross-check against the official
+   reference vectors, analyze the MDS/round counts, and wire it into the bridge.
 3. **Fiat-Shamir rigor** — transcript domain separation and a soundness argument.
 4. **Parameter analysis** — concrete soundness/ZK bounds for the chosen field,
    extension, query count, and blinding degree.
