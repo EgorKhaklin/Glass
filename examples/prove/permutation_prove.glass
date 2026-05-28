@@ -1,0 +1,33 @@
+# A permutation argument in zero-knowledge — run:
+#
+#   glass prove examples/prove/permutation_prove.glass b0=30 b1=10 b2=40 b3=20
+#
+# *Prove a private sequence B is a permutation of the public set A = [10,20,30,40],
+# without revealing the ordering.* This is the grand-product permutation argument —
+# the anti-fabrication core of every memory-consistency proof (the prover-chosen
+# sorted order in general `State` must be a genuine reordering of the access trace).
+#
+# THE ARGUMENT. Two sequences are the same multiset iff their "fingerprint"
+# polynomials agree: ∏(γ − aᵢ) == ∏(γ − bᵢ). The challenge γ is derived by
+# Fiat-Shamir from a hash of B (the witness), so the prover cannot pick a
+# non-permutation B *after* seeing γ — by Schwartz–Zippel a mismatched multiset
+# fails except with probability ~(len)/p. All of it (`*`, `-`, `==`, the hash) is
+# bridge arithmetic, proven by the blinded F_{p^4} FRI STARK; B is PRIVATE.
+#
+# honest (B a reordering of A) -> R = 1; a B that isn't a permutation (e.g. a 99 not
+# in A) -> the products diverge -> R = 0. Together with the range check (age_prove,
+# sortedness) and read-after-write equality (state_prove, consistency), this is the
+# third and last component of a full general-`State` memory-consistency proof.
+# (Educational-grade γ: a small base field — same construction as prove_state_zk.)
+
+fn mix(a: Int, b: Int) : Int = let s : Int = a + b in s * s * s + a * 7 + b * 13
+fn gamma(b0: Int, b1: Int, b2: Int, b3: Int) : Int = mix(mix(mix(mix(7, b0), b1), b2), b3)
+fn gprod(g: Int, x0: Int, x1: Int, x2: Int, x3: Int) : Int =
+  (g - x0) * (g - x1) * (g - x2) * (g - x3)
+
+fn check(b0: Int, b1: Int, b2: Int, b3: Int) : Int =
+  let g : Int = gamma(b0, b1, b2, b3) in                  # Fiat-Shamir: γ from the witness
+  if gprod(g, 10, 20, 30, 40) == gprod(g, b0, b1, b2, b3)  # same multiset iff equal at γ
+  then 1 else 0
+
+check(b0, b1, b2, b3)   # = 1 iff (b0,b1,b2,b3) is a permutation of [10,20,30,40]; claim R = 1
