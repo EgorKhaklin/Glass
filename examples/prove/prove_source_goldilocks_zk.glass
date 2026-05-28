@@ -13,11 +13,12 @@
 # The output wire IS the function's result, so claiming a wrong value breaks the
 # gate that produced it.
 #
-# SCOPE: the hint-free arithmetic subset — `+`, `-`, `*`, `let`, function calls
-# (inlined). This is exactly the subset `prove_source_zk` began with, now on the
-# REAL field instead of toy Baby Bear. Comparisons / `match` / ADTs need is-zero
-# inverse-hint wires in the Goldilocks witness; wiring those (and the heavier
-# circuits) is the remaining step — the full bridge over bignum is native-primary.
+# SCOPE: `+`, `-`, `*`, `let`, function calls (inlined), and now `==` / `if`. The
+# comparison lowers to a real circuit gadget over the production field: a free
+# inverse-hint wire (GHint) plus an assert (GEqZero) realise is-zero — d = a - b,
+# inv = d^-1 (or 0), di = d*inv, z = 1 - di, assert z*d == 0, so z = (a==b), a 0/1
+# wire; `if` is the mux f + c*(t - f). The trace domain is N=16 (the gadget pushes
+# the gate count past 8). `match` / ADTs over bignum remain the next step.
 # Imports prism. int64-safe (base-2^16 limbs); heavy interpreted -> run natively
 # (examples/selfhost/run_native.sh); dogfoods byte-identical.
 # =============================================================================
@@ -84,26 +85,36 @@ fn llen(xs: List<List<Int>>) : Int = match xs { [] => 0; [x, ...r] => 1 + llen(r
 fn lpad(xs: List<List<Int>>, n: Int) : List<List<Int>> = if llen(xs) >= n then xs else lpad(xs ++ [glit(0)], n)
 
 # --- circuit: gates over Goldilocks (witness = list of field elements) --------
-type Gate = | GConst(Int, List<Int>) | GAdd(Int, Int, Int) | GSub(Int, Int, Int) | GMul(Int, Int, Int)
+# GHint(o)   — a FREE witness wire (no gate constrains it); the prover supplies its
+#              value. Soundness comes from the gates that CONSUME it.
+# GEqZero(a) — assert w[a] == 0 (the `qe · l` constraint term). The is-zero gadget
+#              (for `==`) and the `if` mux are built from these two.
+type Gate = | GConst(Int, List<Int>) | GAdd(Int, Int, Int) | GSub(Int, Int, Int) | GMul(Int, Int, Int) | GHint(Int) | GEqZero(Int)
 type Build = | Build(Int, List<Gate>, List<List<Int>>)
 fn mkc(c: List<Int>, b: Build) : (Int, Build) = match b { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GConst(n, c)], w ++ [c])) }
 fn mka(x: Int, y: Int, b: Build) : (Int, Build) = match b { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GAdd(n, x, y)], w ++ [fadd(wnth(w, x), wnth(w, y))])) }
 fn mks(x: Int, y: Int, b: Build) : (Int, Build) = match b { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GSub(n, x, y)], w ++ [fsub(wnth(w, x), wnth(w, y))])) }
 fn mkm(x: Int, y: Int, b: Build) : (Int, Build) = match b { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GMul(n, x, y)], w ++ [fmul(wnth(w, x), wnth(w, y))])) }
+fn mkh(v: List<Int>, b: Build) : (Int, Build) = match b { Build(n, gs, w) => (n, Build(n + 1, gs ++ [GHint(n)], w ++ [v])) }
+fn mke(a: Int, b: Build) : Build = match b { Build(n, gs, w) => Build(n, gs ++ [GEqZero(a)], w) }
+fn bwire(b: Build, i: Int) : List<Int> = match b { Build(n, gs, w) => wnth(w, i) }
 
-# the eight trace columns (length = #gates, padded to N)
-fn sel_add(g: Gate) : List<Int> = match g { GAdd(o, a, b) => [1]; GConst(o, c) => []; GSub(o, a, b) => []; GMul(o, a, b) => [] }
-fn sel_mul(g: Gate) : List<Int> = match g { GMul(o, a, b) => [1]; GConst(o, c) => []; GAdd(o, a, b) => []; GSub(o, a, b) => [] }
-fn sel_sub(g: Gate) : List<Int> = match g { GSub(o, a, b) => [1]; GConst(o, c) => []; GAdd(o, a, b) => []; GMul(o, a, b) => [] }
-fn sel_con(g: Gate) : List<Int> = match g { GConst(o, c) => [1]; GAdd(o, a, b) => []; GSub(o, a, b) => []; GMul(o, a, b) => [] }
-fn cv(g: Gate) : List<Int> = match g { GConst(o, c) => c; GAdd(o, a, b) => []; GSub(o, a, b) => []; GMul(o, a, b) => [] }
-fn lv(g: Gate, w: List<List<Int>>) : List<Int> = match g { GConst(o, c) => []; GAdd(o, a, b) => wnth(w, a); GSub(o, a, b) => wnth(w, a); GMul(o, a, b) => wnth(w, a) }
-fn rv(g: Gate, w: List<List<Int>>) : List<Int> = match g { GConst(o, c) => []; GAdd(o, a, b) => wnth(w, b); GSub(o, a, b) => wnth(w, b); GMul(o, a, b) => wnth(w, b) }
-fn ov(g: Gate, w: List<List<Int>>) : List<Int> = match g { GConst(o, c) => wnth(w, o); GAdd(o, a, b) => wnth(w, o); GSub(o, a, b) => wnth(w, o); GMul(o, a, b) => wnth(w, o) }
+# the nine trace columns (length = #gates, padded to N). A GHint row is unconstrained
+# (all selectors 0); a GEqZero row fires the qe selector (its constraint is qe·l = 0).
+fn sel_add(g: Gate) : List<Int> = match g { GAdd(o, a, b) => [1]; GConst(o, c) => []; GSub(o, a, b) => []; GMul(o, a, b) => []; GHint(o) => []; GEqZero(a) => [] }
+fn sel_mul(g: Gate) : List<Int> = match g { GMul(o, a, b) => [1]; GConst(o, c) => []; GAdd(o, a, b) => []; GSub(o, a, b) => []; GHint(o) => []; GEqZero(a) => [] }
+fn sel_sub(g: Gate) : List<Int> = match g { GSub(o, a, b) => [1]; GConst(o, c) => []; GAdd(o, a, b) => []; GMul(o, a, b) => []; GHint(o) => []; GEqZero(a) => [] }
+fn sel_con(g: Gate) : List<Int> = match g { GConst(o, c) => [1]; GAdd(o, a, b) => []; GSub(o, a, b) => []; GMul(o, a, b) => []; GHint(o) => []; GEqZero(a) => [] }
+fn sel_eq(g: Gate) : List<Int> = match g { GEqZero(a) => [1]; GConst(o, c) => []; GAdd(o, a, b) => []; GSub(o, a, b) => []; GMul(o, a, b) => []; GHint(o) => [] }
+fn cv(g: Gate) : List<Int> = match g { GConst(o, c) => c; GAdd(o, a, b) => []; GSub(o, a, b) => []; GMul(o, a, b) => []; GHint(o) => []; GEqZero(a) => [] }
+fn lv(g: Gate, w: List<List<Int>>) : List<Int> = match g { GConst(o, c) => []; GAdd(o, a, b) => wnth(w, a); GSub(o, a, b) => wnth(w, a); GMul(o, a, b) => wnth(w, a); GHint(o) => []; GEqZero(a) => wnth(w, a) }
+fn rv(g: Gate, w: List<List<Int>>) : List<Int> = match g { GConst(o, c) => []; GAdd(o, a, b) => wnth(w, b); GSub(o, a, b) => wnth(w, b); GMul(o, a, b) => wnth(w, b); GHint(o) => []; GEqZero(a) => [] }
+fn ov(g: Gate, w: List<List<Int>>) : List<Int> = match g { GConst(o, c) => wnth(w, o); GAdd(o, a, b) => wnth(w, o); GSub(o, a, b) => wnth(w, o); GMul(o, a, b) => wnth(w, o); GHint(o) => wnth(w, o); GEqZero(a) => [] }
 fn c_qa(gs: List<Gate>) : List<List<Int>> = match gs { [] => []; [g, ...r] => [sel_add(g)] ++ c_qa(r) }
 fn c_qm(gs: List<Gate>) : List<List<Int>> = match gs { [] => []; [g, ...r] => [sel_mul(g)] ++ c_qm(r) }
 fn c_qs(gs: List<Gate>) : List<List<Int>> = match gs { [] => []; [g, ...r] => [sel_sub(g)] ++ c_qs(r) }
 fn c_qc(gs: List<Gate>) : List<List<Int>> = match gs { [] => []; [g, ...r] => [sel_con(g)] ++ c_qc(r) }
+fn c_qe(gs: List<Gate>) : List<List<Int>> = match gs { [] => []; [g, ...r] => [sel_eq(g)] ++ c_qe(r) }
 fn c_c(gs: List<Gate>) : List<List<Int>> = match gs { [] => []; [g, ...r] => [cv(g)] ++ c_c(r) }
 fn c_l(gs: List<Gate>, w: List<List<Int>>) : List<List<Int>> = match gs { [] => []; [g, ...r] => [lv(g, w)] ++ c_l(r, w) }
 fn c_r(gs: List<Gate>, w: List<List<Int>>) : List<List<Int>> = match gs { [] => []; [g, ...r] => [rv(g, w)] ++ c_r(r, w) }
@@ -115,24 +126,25 @@ fn intt_sum(ev: List<List<Int>>, k: Int, j: Int, n: Int, wi: List<Int>) : List<I
   if j >= n then [] else fadd(fmul(wnth(ev, j), fpow_bn(wi, glit((j * k) % n))), intt_sum(ev, k, j + 1, n, wi))
 fn interp_go(ev: List<List<Int>>, k: Int, n: Int, wi: List<Int>, ni: List<Int>) : List<List<Int>> =
   if k >= n then [] else [fmul(ni, intt_sum(ev, k, 0, n, wi))] ++ interp_go(ev, k + 1, n, wi, ni)
-fn interpolate8(ev: List<List<Int>>) : List<List<Int>> = interp_go(ev, 0, 8, finv(root_pow2(3)), finv(glit(8)))
+fn interp16(ev: List<List<Int>>) : List<List<Int>> = interp_go(ev, 0, 16, finv(root_pow2(4)), finv(glit(16)))
 
 # --- domains ------------------------------------------------------------------
 fn dom_powers(cur: List<Int>, g: List<Int>, k: Int) : List<List<Int>> = if k <= 0 then [] else [cur] ++ dom_powers(fmul(cur, g), g, k - 1)
 
 # --- the gate-constraint polynomial G(x) and its quotient Q = G / Z_H ---------
-fn gate_G_at(qa: List<List<Int>>, qm: List<List<Int>>, qs: List<List<Int>>, qc: List<List<Int>>, l: List<List<Int>>, r: List<List<Int>>, o: List<List<Int>>, c: List<List<Int>>, x: List<Int>) : List<Int> =
-  let va : List<Int> = poly_eval_b(qa, x) in let vm : List<Int> = poly_eval_b(qm, x) in let vs : List<Int> = poly_eval_b(qs, x) in let vc : List<Int> = poly_eval_b(qc, x) in
+fn gate_G_at(qa: List<List<Int>>, qm: List<List<Int>>, qs: List<List<Int>>, qc: List<List<Int>>, qe: List<List<Int>>, l: List<List<Int>>, r: List<List<Int>>, o: List<List<Int>>, c: List<List<Int>>, x: List<Int>) : List<Int> =
+  let va : List<Int> = poly_eval_b(qa, x) in let vm : List<Int> = poly_eval_b(qm, x) in let vs : List<Int> = poly_eval_b(qs, x) in let vc : List<Int> = poly_eval_b(qc, x) in let vq : List<Int> = poly_eval_b(qe, x) in
   let vl : List<Int> = poly_eval_b(l, x) in let vr : List<Int> = poly_eval_b(r, x) in let vo : List<Int> = poly_eval_b(o, x) in let vk : List<Int> = poly_eval_b(c, x) in
   fadd(fmul(va, fsub(vo, fadd(vl, vr))),
   fadd(fmul(vm, fsub(vo, fmul(vl, vr))),
   fadd(fmul(vs, fsub(vo, fsub(vl, vr))),
-       fmul(vc, fsub(vo, vk)))))
-fn quotient_cw(qa: List<List<Int>>, qm: List<List<Int>>, qs: List<List<Int>>, qc: List<List<Int>>, l: List<List<Int>>, r: List<List<Int>>, o: List<List<Int>>, c: List<List<Int>>, coset: List<List<Int>>) : List<List<Int>> =
+  fadd(fmul(vc, fsub(vo, vk)),
+       fmul(vq, vl)))))
+fn quotient_cw(qa: List<List<Int>>, qm: List<List<Int>>, qs: List<List<Int>>, qc: List<List<Int>>, qe: List<List<Int>>, l: List<List<Int>>, r: List<List<Int>>, o: List<List<Int>>, c: List<List<Int>>, coset: List<List<Int>>) : List<List<Int>> =
   match coset { [] => []; [x, ...rest] =>
-    let g : List<Int> = gate_G_at(qa, qm, qs, qc, l, r, o, c, x) in
-    let zh : List<Int> = fsub(fpow_bn(x, glit(8)), [1]) in
-    [fmul(g, finv(zh))] ++ quotient_cw(qa, qm, qs, qc, l, r, o, c, rest) }
+    let g : List<Int> = gate_G_at(qa, qm, qs, qc, qe, l, r, o, c, x) in
+    let zh : List<Int> = fsub(fpow_bn(x, glit(16)), [1]) in
+    [fmul(g, finv(zh))] ++ quotient_cw(qa, qm, qs, qc, qe, l, r, o, c, rest) }
 
 # --- FRI low-degree test (base-field fold; Stage B lifts to F_{p^2}) ----------
 fn fold_at_b(cw: List<List<Int>>, dom: List<List<Int>>, beta: List<Int>, finv2: List<Int>, i: Int, half: Int) : List<List<Int>> =
@@ -148,16 +160,19 @@ fn fold_all_b(cw: List<List<Int>>, dom: List<List<Int>>, finv2: List<Int>, round
 fn all_eqb(cw: List<List<Int>>, x: List<Int>) : Bool = match cw { [] => true; [y, ...r] => if bn_eq(y, x) then all_eqb(r, x) else false }
 fn is_constb(cw: List<List<Int>>) : Bool = match cw { [] => true; [x, ...r] => all_eqb(r, x) }
 
-# build all 8 column polynomials and form the quotient codeword Q on the coset.
-fn coset32(d: Int) : List<List<Int>> = dom_powers([7], root_pow2(5), 32)
+# build all 9 column polynomials and form the quotient codeword Q on the coset.
+# Trace domain N = 16 (the is-zero gadget + if-mux push the gate count past 8); the
+# coset is a 4x blowup (64 = 16th-roots subgroup shifted by the generator 7).
+fn coset64(d: Int) : List<List<Int>> = dom_powers([7], root_pow2(6), 64)
 fn q_cw(gates: List<Gate>, w: List<List<Int>>) : List<List<Int>> =
-  let qa : List<List<Int>> = interpolate8(lpad(c_qa(gates), 8)) in let qm : List<List<Int>> = interpolate8(lpad(c_qm(gates), 8)) in
-  let qs : List<List<Int>> = interpolate8(lpad(c_qs(gates), 8)) in let qc : List<List<Int>> = interpolate8(lpad(c_qc(gates), 8)) in
-  let cc : List<List<Int>> = interpolate8(lpad(c_c(gates), 8)) in
-  let ll : List<List<Int>> = interpolate8(lpad(c_l(gates, w), 8)) in let rr : List<List<Int>> = interpolate8(lpad(c_r(gates, w), 8)) in let oo : List<List<Int>> = interpolate8(lpad(c_o(gates, w), 8)) in
-  quotient_cw(qa, qm, qs, qc, ll, rr, oo, cc, coset32(0))
+  let qa : List<List<Int>> = interp16(lpad(c_qa(gates), 16)) in let qm : List<List<Int>> = interp16(lpad(c_qm(gates), 16)) in
+  let qs : List<List<Int>> = interp16(lpad(c_qs(gates), 16)) in let qc : List<List<Int>> = interp16(lpad(c_qc(gates), 16)) in
+  let qe : List<List<Int>> = interp16(lpad(c_qe(gates), 16)) in
+  let cc : List<List<Int>> = interp16(lpad(c_c(gates), 16)) in
+  let ll : List<List<Int>> = interp16(lpad(c_l(gates, w), 16)) in let rr : List<List<Int>> = interp16(lpad(c_r(gates, w), 16)) in let oo : List<List<Int>> = interp16(lpad(c_o(gates, w), 16)) in
+  quotient_cw(qa, qm, qs, qc, qe, ll, rr, oo, cc, coset64(0))
 fn low_degree_quotient(gates: List<Gate>, w: List<List<Int>>) : Bool =
-  is_constb(fold_all_b(q_cw(gates, w), coset32(0), finv([2]), 0))
+  is_constb(fold_all_b(q_cw(gates, w), coset64(0), finv([2]), 0))
 
 # --- ZERO-KNOWLEDGE: blind Q with a random low-degree mask (Stage B) ----------
 # A degree-<8 polynomial R, evaluated on the coset, is added to Q. Since deg R is
@@ -174,10 +189,10 @@ fn rand_coeffs(seed: Int, i: Int, k: Int) : List<List<Int>> = if i >= k then [] 
 fn blind_cw(cw: List<List<Int>>, coeffs: List<List<Int>>, dom: List<List<Int>>, i: Int) : List<List<Int>> =
   if i >= llen(cw) then [] else [fadd(wnth(cw, i), poly_eval_b(coeffs, wnth(dom, i)))] ++ blind_cw(cw, coeffs, dom, i + 1)
 fn prove_zk(gates: List<Gate>, w: List<List<Int>>, seed: Int) : Bool =
-  let bcw : List<List<Int>> = blind_cw(q_cw(gates, w), rand_coeffs(seed, 0, 8), coset32(0), 0) in
-  is_constb(fold_all_b(bcw, coset32(0), finv([2]), 0))
+  let bcw : List<List<Int>> = blind_cw(q_cw(gates, w), rand_coeffs(seed, 0, 16), coset64(0), 0) in
+  is_constb(fold_all_b(bcw, coset64(0), finv([2]), 0))
 fn opened5(gates: List<Gate>, w: List<List<Int>>, seed: Int) : List<Int> =
-  wnth(blind_cw(q_cw(gates, w), rand_coeffs(seed, 0, 8), coset32(0), 0), 5)
+  wnth(blind_cw(q_cw(gates, w), rand_coeffs(seed, 0, 16), coset64(0), 0), 5)
 
 # --- the cryptographic STARK: F_{p^2} fold challenge + Merkle commit + queries --
 # Embed the quotient codeword into F_{p^2}, blind it, Merkle-commit each FRI layer,
@@ -237,12 +252,12 @@ fn is_const2(cw: List<G2>) : Bool = match cw { [] => true; [x, ...r] => all_eq2(
 fn blind_g(cw: List<G2>, coeffs: List<List<Int>>, dom: List<List<Int>>, i: Int) : List<G2> =
   if i >= len(cw) then [] else [gadd2(nth2(cw, i), emb(poly_eval_b(coeffs, wnth(dom, i))))] ++ blind_g(cw, coeffs, dom, i + 1)
 fn prove_stark(gates: List<Gate>, w: List<List<Int>>, seed: Int) : Bool =
-  let ecw : List<G2> = blind_g(embed_cw(q_cw(gates, w)), rand_coeffs(seed, 0, 8), coset32(0), 0) in
-  match commit_g(ecw, coset32(0), [], finv([2])) { (layers, final) =>
-    let faults : Int = count_catches_g(layers, final, sample_queries_g(transcript_seed_g(layers, []), 8, 32), finv([2])) in
+  let ecw : List<G2> = blind_g(embed_cw(q_cw(gates, w)), rand_coeffs(seed, 0, 16), coset64(0), 0) in
+  match commit_g(ecw, coset64(0), [], finv([2])) { (layers, final) =>
+    let faults : Int = count_catches_g(layers, final, sample_queries_g(transcript_seed_g(layers, []), 8, 64), finv([2])) in
     is_const2(final) && faults == 0 }
 fn stark_root(gates: List<Gate>, w: List<List<Int>>, seed: Int) : List<Int> =
-  merkle_root_g(blind_g(embed_cw(q_cw(gates, w)), rand_coeffs(seed, 0, 8), coset32(0), 0))
+  merkle_root_g(blind_g(embed_cw(q_cw(gates, w)), rand_coeffs(seed, 0, 16), coset64(0), 0))
 
 # --- bridge: parse, inline calls, lower the arithmetic subset to gates -------
 fn fn_body_of(fns: List<FnDecl>, name: String) : Expr = match fns { [] => EInt(0); [FnDecl(fnm, tps, ty, body), ...rest] => if fnm == name then body else fn_body_of(rest, name) }
@@ -273,6 +288,8 @@ fn unroll(e: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: In
     EAdd(x, y) => EAdd(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
     ESub(x, y) => ESub(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
     EMul(x, y) => EMul(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
+    EEq(x, y) => EEq(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
+    EIf(c, t, f) => EIf(unroll(c, fns, fenv, fuel), unroll(t, fns, fenv, fuel), unroll(f, fns, fenv, fuel));
     ELet(nm, v, body) => ELet(nm, unroll(v, fns, fenv, fuel), unroll(body, fns, fenv, fuel));
     _ => e }
 
@@ -285,6 +302,20 @@ fn cg(e: Expr, env: List<Pair<String, Int>>, b: Build) : (Int, Build) =
     EAdd(x, y) => match cg(x, env, b) { (wx, b1) => match cg(y, env, b1) { (wy, b2) => mka(wx, wy, b2) } };
     ESub(x, y) => match cg(x, env, b) { (wx, b1) => match cg(y, env, b1) { (wy, b2) => mks(wx, wy, b2) } };
     EMul(x, y) => match cg(x, env, b) { (wx, b1) => match cg(y, env, b1) { (wy, b2) => mkm(wx, wy, b2) } };
+    # a == b  ->  is-zero gadget on d = a - b. inv is a free hint (d^-1, or 0 when d=0);
+    # then di = d*inv, z = 1 - di, and the assert z*d == 0 forces z = (d==0). z is 0/1.
+    EEq(x, y) => match cg(x, env, b) { (wx, b1) => match cg(y, env, b1) { (wy, b2) =>
+      match mks(wx, wy, b2) { (wd, b3) =>
+        let dv : List<Int> = bwire(b3, wd) in
+        let iv : List<Int> = if bn_is_zero(dv) then glit(0) else finv(dv) in
+        match mkh(iv, b3) { (winv, b4) =>
+          match mkm(wd, winv, b4) { (wdi, b5) =>
+            match mkc(glit(1), b5) { (wone, b6) =>
+              match mks(wone, wdi, b6) { (wz, b7) =>
+                match mkm(wz, wd, b7) { (wzd, b8) => (wz, mke(wzd, b8)) } } } } } } } };
+    # if c then t else f  ->  f + c*(t - f), with c a 0/1 wire (from a comparison)
+    EIf(c, t, f) => match cg(c, env, b) { (wc, b1) => match cg(t, env, b1) { (wt, b2) => match cg(f, env, b2) { (wf, b3) =>
+      match mks(wt, wf, b3) { (wtf, b4) => match mkm(wc, wtf, b4) { (wctf, b5) => mka(wf, wctf, b5) } } } } };
     ELet(nm, v, body) => match cg(v, env, b) { (wv, b1) => cg(body, [Pair(nm, wv)] ++ env, b1) };
     _ => mkc(glit(0), b) }
 # parse, inline calls, lower; wire 0 = the private input `inp`
@@ -299,10 +330,12 @@ fn src_result(src: String, inpv: List<Int>) : List<Int> =
 fn show_a(b: Bool) : String = if b then "ACCEPT" else "REJECT"
 fn show_b(b: Bool) : String = if b then "yes" else "no"
 fn show(xs: List<Int>) : String = match trim(xs) { [] => "0"; [h, ...t] => match t { [] => int_to_string(h); _ => int_to_string(h) ++ " (low limb of " ++ int_to_string(len(trim(xs))) ++ ")" } }
-let src : String = "fn sq(n: Int) : Int = n * n\nfn f(x: Int) : Int = sq(x) + 5\nf(inp)"
-let secret : List<Int> = glit(305419896)
-let res : List<Int> = src_result(src, secret)
-let built : (Int, Build) = build_src(src, secret)
+let src : String = "fn f(x: Int) : Int = if x == 7 then 100 else 200\nf(inp)"
+let in_hit : List<Int> = glit(7)
+let in_miss : List<Int> = glit(305419896)
+let res_hit : List<Int> = src_result(src, in_hit)
+let res_miss : List<Int> = src_result(src, in_miss)
+let built : (Int, Build) = build_src(src, in_hit)
 let outw : Int = match built { (o, b) => o }
 let okq : Bool = match built { (o, b) => match b { Build(n, gs, w) => prove_stark(gs, w, 11111) } }
 let badq : Bool = match built { (o, b) => match b { Build(n, gs, w) => prove_stark(gs, lset(w, o, glit(99)), 11111) } }
@@ -310,15 +343,16 @@ let rt1 : List<Int> = match built { (o, b) => match b { Build(n, gs, w) => stark
 let rt2 : List<Int> = match built { (o, b) => match b { Build(n, gs, w) => stark_root(gs, w, 22222) } }
 
 let _ : String = print("--- prove_source_goldilocks_zk.glass: real Glass SOURCE -> a ZK proof over Goldilocks ---")
-let _ : String = print("source (prism-parsed) -> cgen -> committed, F_{p^2}-challenged, query-verified, blinded STARK.")
+let _ : String = print("source (prism-parsed) -> cgen (now with == and if) -> committed, F_{p^2}-challenged, query-verified, blinded STARK.")
 let _ : String = print("")
-let _ : String = print("  fn sq(n) = n * n;  fn f(x) = sq(x) + 5;  f(inp)        -- inp PRIVATE, over Goldilocks")
-let _ : String = print("  result R = f(inp) = " ++ show(res) ++ " (no 2^31 wrap; 2^64 field)")
+let _ : String = print("  fn f(x) = if x == 7 then 100 else 200;  f(inp)     -- inp PRIVATE, over Goldilocks")
+let _ : String = print("  f(7)          = " ++ show(res_hit) ++ "    (== lowered to an inverse-hint is-zero; branch via a mux)")
+let _ : String = print("  f(305419896)  = " ++ show(res_miss) ++ "    (other branch; same circuit, private input)")
 let _ : String = print("  honest    -> Merkle-committed, Fiat-Shamir queries verify: " ++ show_a(okq))
 let _ : String = print("  tampered  -> queries catch the inconsistency: " ++ show_a(badq) ++ "  (REJECT)")
 let _ : String = print("  two blinding seeds give different commitments (ZK): " ++ show_b(bn_eq(rt1, rt2) == false))
 let _ : String = print("")
-let _ : String = print("write Glass source; get a succinct, zero-knowledge proof over the production field.")
-let _ : String = print("(arithmetic + let + calls today; comparisons/match/ADTs over bignum are the next step.)")
+let _ : String = print("write Glass source -- now with comparisons and branches -- get a ZK proof over the production field.")
+let _ : String = print("(arithmetic + let + calls + == + if today; < / match / ADTs over bignum are the next step.)")
 
-"prove_source_goldilocks_zk v0.1 — real prism-parsed Glass source -> Goldilocks cryptographic STARK (arithmetic subset)"
+"prove_source_goldilocks_zk v0.2 — real prism-parsed Glass source -> Goldilocks cryptographic STARK (== and if)"
