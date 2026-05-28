@@ -1,0 +1,26 @@
+# A range / comparison proof in zero-knowledge — run:
+#
+#   glass prove examples/prove/age_prove.glass a=25 d0=0 d1=0 d2=1 d3=0 d4=0 d5=0 d6=0 d7=0
+#
+# The canonical ZK statement: *prove you are at least 21 without revealing your age.*
+# A field has no native `<`, so a comparison is a RANGE proof: `a >= 21` iff
+# `a - 21` is a non-negative number that fits in n bits, i.e. it decomposes into n
+# booleans. Here n = 8, so the proof attests `a - 21 = Σ dᵢ·2ⁱ` with each `dᵢ ∈ {0,1}`
+# (`dᵢ·(dᵢ-1) == 0`) — exactly the bit-decomposition range check every zkVM uses,
+# expressed in the bridge's arithmetic (`*`, `+`, `==`, `&&`) and proven by the
+# blinded F_{p^4} FRI STARK.
+#
+# `a` and the bit-witness `d0..d7` are PRIVATE; the proof reveals only that the
+# bound holds. honest (a >= 21, correct bits of a-21) -> R = 1; an underage a (e.g.
+# 18) makes `a - 21` negative, with no 8-bit decomposition -> the prover cannot
+# satisfy the equality -> R = 0. This is the range/comparison primitive the general
+# `State` sortedness check (prover-chosen order) is built on.
+
+fn bit(d: Int) : Int = d * (d - 1)                 # 0 iff d is a bit
+fn check(a: Int, d0: Int, d1: Int, d2: Int, d3: Int, d4: Int, d5: Int, d6: Int, d7: Int) : Int =
+  if (bit(d0) == 0) && (bit(d1) == 0) && (bit(d2) == 0) && (bit(d3) == 0)
+     && (bit(d4) == 0) && (bit(d5) == 0) && (bit(d6) == 0) && (bit(d7) == 0)
+     && (a - 21 == d0 + 2 * d1 + 4 * d2 + 8 * d3 + 16 * d4 + 32 * d5 + 64 * d6 + 128 * d7)
+  then 1 else 0
+
+check(a, d0, d1, d2, d3, d4, d5, d6, d7)   # = 1 iff a >= 21 (and within 21+255); claim R = 1
