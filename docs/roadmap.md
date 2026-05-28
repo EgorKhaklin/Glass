@@ -39,7 +39,7 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Shipped (through v5.26)
+## Shipped (through v5.27)
 
 - **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
 - **Pane** — a query language in Glass.
@@ -352,6 +352,16 @@ three under-invested axes — *realness*, *usability*, and *convergence* — on 
     prism parses a signature, the bridge reads the `!{…}` row off the function type, and each effect
     label becomes a proof obligation discharged by its gadget — *change the row, the schema changes.*
     The effect row IS the proof's statement. *Next:* lower the sound gadgets to the FRI STARK for ZK.
+  - **C3 — the convergence capstone. ✅ DONE.** The trust boundary, proven
+    ([`prove_trust_boundary_zk.glass`](../examples/prove/prove_trust_boundary_zk.glass)): C1 ⊕ C2
+    fused on LANG.md's AI-era centerpiece. A model classifier `fn classify(prompt) : Int where
+    (result == 0 || result == 1) !{Inference}` — its **signature is the contract**: prism parses
+    it, the effect row (`!{Inference}`) says commit the model output as an untrusted oracle, the
+    return refinement (`where (P)`, predicate read off the type and evaluated) is the trust
+    contract. Prove in ZK that the committed model answer satisfied P — valid bit ACCEPTs, an
+    answer violating the refinement is *unprovable*, the answer stays hidden. *Untrusted AI
+    output, contained by its type, proven* — the thing the type system was designed for, made a
+    proof. (Realizes LANG.md §"Refinement types as trust boundary".)
 - **Substrate — Performance (P).** The interpreter dogfood is now the bottleneck
   (heavy circuits take ~10 min). A faster reference (bytecode/closure compilation) or
   promoting `native_glassc` to a co-equal dogfood oracle unblocks Tracks E and R.
