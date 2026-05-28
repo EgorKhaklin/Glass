@@ -54,7 +54,7 @@ What is **not** production-grade is the **primitives and parameters**:
 
 | Component | What's real | The honest caveat |
 |---|---|---|
-| **Base field** | Baby Bear (2³¹−2²⁷+1) is a genuine NTT-friendly prime; **real prism-parsed Glass source** is now proven over **Goldilocks (2⁶⁴)** by a full cryptographic STARK — gate quotient `Q=G/Z_H`, embedded in F_{p²}, blinded, Merkle-committed, F_{p²}-challenged (Fiat-Shamir), query-verified (`prove_source_goldilocks_zk.glass`, the arithmetic subset; `prove_circuit_goldilocks_zk.glass` for hand-built circuits) | The Goldilocks source path covers the **arithmetic subset** (`+`/`-`/`*`/`let`/calls); the *general* bridge (`prove_source_adt_zk`, with `==`/`match`/ADTs) still computes over Baby Bear (values capped near 2³¹). Extending the Goldilocks path to those (is-zero inverse-hint wires) + the heavier circuits is the remaining step. |
+| **Base field** | **`glass prove --goldilocks`** proves real prism-parsed source over **Goldilocks (2⁶⁴)** — a full cryptographic STARK (gate quotient `Q=G/Z_H`, embedded in F_{p²}, blinded, Merkle-committed, F_{p²}-challenged Fiat-Shamir, query-verified), with **multiple named private inputs** and **claim-binding** (asserts `output == result`). Covers `+ - * let calls == if` (`prove_source_goldilocks_zk.glass`; `prove_circuit_goldilocks_zk.glass` for hand-built circuits). | The Goldilocks path covers the **arithmetic/comparison subset** and is **heavier on the interpreter** (bignum). The **default `glass prove` still uses Baby Bear** (`prove_source_adt_zk`) for the full `match`/ADT/refinement feature set — there values are capped near 2³¹. Extending the Goldilocks path to `match`/ADTs is the remaining step. |
 | **Challenge space** | FRI challenges live in **F_{p⁴} ≈ 2¹²⁴** | This part *is* cryptographic-width: a cheating prover guesses a fold challenge with prob ~2⁻¹²⁴. The "toy" is the value range, not the challenge space. |
 | **Hash** | **Poseidon over Goldilocks, byte-identical to Plonky2** — the de-facto standard Goldilocks ZK hash — verified against **Plonky2's own published test vectors** (all four pass): t=12, R_F=8, R_P=22, S-box x⁷, Plonky2's exact MDS and all 360 round constants (the Poseidon reference's "hadeshash" Grain-LFSR constants), reproduced in `frost_goldilocks_poseidon.glass` and dogfooded byte-identical. It is also **load-bearing**: `frost_goldilocks_merkle.glass` builds a real Merkle commitment on it (Plonky2's exact `two_to_one` + `hash_no_pad`, inclusion proofs, tamper-rejection). (Also `frost_grain.glass`: a from-scratch Grain-LFSR generator + domain-separated transcript over Baby Bear.) | This settles "is it the standard hash" for the **primitive**: it matches a production reference exactly, and now drives a commitment. **But it is not yet integrated into the STARKs** — their Merkle + Fiat-Shamir still use the educational MiMC (Poseidon is ~300× heavier per call, so the full FRI integration is the heavier follow-on). And matching a reference is **not an audit**: the hash itself is unaudited here. |
 | **Fiat-Shamir** | Transcript-bound challenges + query amplification (soundness ~2⁻ᴷ); a **domain-separated transcript over the vector-verified Goldilocks Poseidon** (`frost_goldilocks_fiat.glass` — `tr_init`/`tr_absorb`/`tr_challenge` tag every message/squeeze by role; demonstrated determinism, role separation, history-binding) | The transcript now runs on the **standard, vector-verified hash** (not the toy MiMC) — a real upgrade. Still: **no formal transcript-separation proof**, and it isn't yet wired into the actual proving STARK's challenges (those still use MiMC). |
@@ -72,10 +72,19 @@ full-strength versions run the same way, just heavier.
 `glass prove <file>` emits a succinct, zero-knowledge proof that a Glass function
 produced its result. The **arithmetization is faithful** (the circuit computes what
 the function means — checked because the reference evaluator and the circuit agree),
-the **proof structure is a real blinded F_{p⁴} FRI STARK**, and a wrong claim or a
-violated refinement is **rejected**. But the **base field is Baby Bear** and the
-**hash is educational**, so the *cryptographic* strength is demonstration-grade. It
-proves the *idea* end to end; it is not a tool for protecting secrets in production.
+the **proof structure is a real blinded FRI STARK**, and a wrong claim or a violated
+refinement is **rejected**. Two fields are available:
+
+- **default (Baby Bear, 2³¹):** the full feature set — `match`/ADTs/refinements — over
+  an F_{p⁴} ≈ 2¹²⁴ challenge extension. The *value range* is toy (a secret < 2³¹ is
+  brute-forceable; results wrap above ~2.1·10⁹).
+- **`--goldilocks` (2⁶⁴):** the production field for the arithmetic/comparison subset
+  with multiple private inputs (F_{p²} ≈ 2¹²⁸ challenge). Heavier on the interpreter.
+
+The **hash is still educational** (MiMC inside the proving STARK; the vector-verified
+Poseidon is built and load-bearing in a Merkle commitment + transcript, but not yet
+wired into the prove bridge). So the *cryptographic* strength is demonstration-grade.
+It proves the *idea* end to end; it is not a tool for protecting secrets in production.
 
 ---
 
@@ -84,8 +93,10 @@ proves the *idea* end to end; it is not a tool for protecting secrets in product
 Roughly, in order:
 
 1. **Real field through the bridge** — swap Baby Bear for Goldilocks end-to-end so
-   values aren't capped at 2³¹ (roadmap **R1b**; the field and FRI exist, the
-   integration is the work).
+   values aren't capped at 2³¹ (roadmap **R1b**). *Underway:* `glass prove --goldilocks`
+   already proves the arithmetic/comparison subset (multi-input, claim-bound) over
+   Goldilocks; remaining is `match`/ADTs/refinements over the bignum field so the
+   **default** path can move off Baby Bear.
 2. **A vetted hash** — Poseidon with standard constants, MDS, and round counts
    (roadmap **R2**). *Largely done at the primitive level:* `frost_goldilocks_poseidon.glass`
    is **byte-identical to Plonky2's Goldilocks Poseidon** and verified against its

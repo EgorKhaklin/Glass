@@ -3556,19 +3556,26 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.37.0")
+        print("Glass 5.38.0")
     elif sys.argv[1] == "prove":
         # `glass prove <file.glass> [name=value ...]` — compile the file's `main`
         # expression into a circuit and emit a succinct, zero-knowledge proof of
         # its result. Free variables named on the command line are PRIVATE inputs
         # (they stay in the witness). The prove pipeline itself is Glass: this
         # assembles a driver over examples/prove/prove_source_adt_zk.glass.
-        if len(sys.argv) < 3:
-            print("usage: glass prove <file.glass> [name=value ...]")
+        # --goldilocks: prove over the production Goldilocks field (p = 2^64-2^32+1)
+        # instead of toy Baby Bear (2^31). Covers the arithmetic/comparison subset
+        # (+,-,*,let,calls,==,if) with multiple private inputs; the bignum field makes
+        # it heavier on the interpreter. The default keeps Baby Bear for the full ADT
+        # feature set. See docs/soundness.md.
+        args = [a for a in sys.argv[2:] if a != "--goldilocks"]
+        goldilocks = "--goldilocks" in sys.argv[2:]
+        if len(args) < 1:
+            print("usage: glass prove [--goldilocks] <file.glass> [name=value ...]")
             return
-        upath = sys.argv[2]
+        upath = args[0]
         inputs = []
-        for arg in sys.argv[3:]:
+        for arg in args[1:]:
             if "=" in arg:
                 k, v = arg.split("=", 1)
                 inputs.append((k.strip(), int(v.strip())))
@@ -3576,30 +3583,43 @@ def main() -> None:
             usrc = f.read()
         here = os.path.dirname(os.path.abspath(__file__))
         bridge_dir = os.path.join(here, "examples", "prove")
-        with open(os.path.join(bridge_dir, "prove_source_adt_zk.glass")) as f:
+        esc = usrc.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+        inp_glass = "[" + ", ".join('Pair("%s", %d)' % (k, v) for k, v in inputs) + "]"
+        bridge_file = "prove_source_goldilocks_zk.glass" if goldilocks else "prove_source_adt_zk.glass"
+        with open(os.path.join(bridge_dir, bridge_file)) as f:
             bridge = f.read()
         cut = bridge.find("# --- demo")
         machinery = bridge[:cut] if cut > 0 else bridge
-        esc = usrc.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-        inp_glass = "[" + ", ".join('Pair("%s", %d)' % (k, v) for k, v in inputs) + "]"
-        driver = machinery + (
-            '\nlet bbw : Int = find_nonres_b(2)\n'
-            'let bbv : F2 = find_v(0, bbw)\n'
-            'let _usrc : String = "%s"\n'
-            'let _inp : List<Pair<String, Int>> = %s\n'
-            'let _r : Int = ref_result(_usrc, _inp)\n'
-            'let _ : String = print("result:  " ++ int_to_string(_r))\n'
-            'let _ : String = print("proof:   " ++ (if prove(_usrc, _inp, _r, 11111, bbv, bbw) then "ACCEPT  (succinct, zero-knowledge)" else "REJECT"))\n'
-            '"glass prove"\n'
-        ) % (esc, inp_glass)
-        print("Glass prove — %s" % upath)
+        if goldilocks:
+            driver = machinery + (
+                '\nlet _usrc : String = "%s"\n'
+                'let _inp : List<Pair<String, Int>> = %s\n'
+                'let _r : List<Int> = gref(_usrc, _inp)\n'
+                'let _ : String = print("result:  " ++ bn_dec(_r) ++ "  (over Goldilocks, p = 2^64-2^32+1)")\n'
+                'let _ : String = print("proof:   " ++ (if gprove(_usrc, _inp, _r, 11111) then "ACCEPT  (succinct, zero-knowledge)" else "REJECT"))\n'
+                '"glass prove --goldilocks"\n'
+            ) % (esc, inp_glass)
+        else:
+            driver = machinery + (
+                '\nlet bbw : Int = find_nonres_b(2)\n'
+                'let bbv : F2 = find_v(0, bbw)\n'
+                'let _usrc : String = "%s"\n'
+                'let _inp : List<Pair<String, Int>> = %s\n'
+                'let _r : Int = ref_result(_usrc, _inp)\n'
+                'let _ : String = print("result:  " ++ int_to_string(_r))\n'
+                'let _ : String = print("proof:   " ++ (if prove(_usrc, _inp, _r, 11111, bbv, bbw) then "ACCEPT  (succinct, zero-knowledge)" else "REJECT"))\n'
+                '"glass prove"\n'
+            ) % (esc, inp_glass)
+        field = "Goldilocks (2^64)" if goldilocks else "Baby Bear (2^31)"
+        print("Glass prove — %s  [field: %s]" % (upath, field))
         if inputs:
             names = ", ".join(k for k, _ in inputs)
             print("private inputs: %s  (kept in the witness; the proof reveals only the result)" % names)
         print("")
         run_source(driver, verbose=False, base_dir=bridge_dir)
         print("")
-        print("(blinded F_{p^4} FRI STARK over the gate circuit; `glass prove` proves AND verifies.)")
+        ext = "F_{p^2}" if goldilocks else "F_{p^4}"
+        print("(blinded %s FRI STARK over the gate circuit; `glass prove` proves AND verifies.)" % ext)
     else:
         # -q/--quiet: run a file printing only its output (no type-signature
         # echoes) — handy for diffing against the self-hosted compiler.

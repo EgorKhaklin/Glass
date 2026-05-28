@@ -77,6 +77,14 @@ fn finv(a: List<Int>) : List<Int> = fpow_bn(a, bn_sub(pg(0), [2]))
 fn halve_k(e: List<Int>, k: Int) : List<Int> = if k <= 0 then e else halve_k(bn_half(e), k - 1)
 fn root_pow2(k: Int) : List<Int> = fpow_bn([7], halve_k(bn_sub(pg(0), [1]), k))
 fn glit(c: Int) : List<Int> = trim([c % 65536, (c / 65536) % 65536, c / 4294967296])
+# full-width literal: correct base-2^16 limbs for any c < 2^64 (glit caps near 2^48)
+fn glit4(c: Int) : List<Int> = trim([c % 65536, (c / 65536) % 65536, (c / 4294967296) % 65536, (c / 281474976710656) % 65536])
+# bignum -> decimal string (long division by 10), for displaying results > 2^31
+fn bn_dm10_go(hi: List<Int>, q: List<Int>, rem: Int) : (List<Int>, Int) =
+  match hi { [] => (q, rem); [h, ...t] => let cur : Int = rem * 65536 + h in bn_dm10_go(t, q ++ [cur / 10], cur % 10) }
+fn bn_dm10(x: List<Int>) : (List<Int>, Int) = match bn_dm10_go(rev(trim(x)), [], 0) { (qhi, r) => (trim(rev(qhi)), r) }
+fn bn_dec_go(x: List<Int>, acc: String) : String = match trim(x) { [] => acc; _ => match bn_dm10(x) { (q, r) => bn_dec_go(q, int_to_string(r) ++ acc) } }
+fn bn_dec(x: List<Int>) : String = match trim(x) { [] => "0"; _ => bn_dec_go(x, "") }
 
 # --- list-of-bignum helpers ---------------------------------------------------
 fn wnth(xs: List<List<Int>>, i: Int) : List<Int> = match xs { [] => []; [x, ...r] => if i == 0 then x else wnth(r, i - 1) }
@@ -326,33 +334,50 @@ fn build_src(src: String, inpv: List<Int>) : (Int, Build) =
 fn src_result(src: String, inpv: List<Int>) : List<Int> =
   match build_src(src, inpv) { (out, b) => match b { Build(n, gs, w) => wnth(w, out) } }
 
+# --- multi-input: each named private input on its own low wire (0..k-1) -------
+# This is what `glass prove --goldilocks <file> a=.. b=..` lowers to: the inputs
+# are PRIVATE (kept in the witness), the output wire is the function's result, and
+# (for proving) we assert output == the claimed result so a wrong claim is rejected.
+fn in_cenv_g(inputs: List<Pair<String, Int>>, i: Int) : List<Pair<String, Int>> =
+  match inputs { [] => []; [Pair(nm, v), ...r] => [Pair(nm, i)] ++ in_cenv_g(r, i + 1) }
+fn in_vals_g(inputs: List<Pair<String, Int>>) : List<List<Int>> =
+  match inputs { [] => []; [Pair(nm, v), ...r] => [glit4(v)] ++ in_vals_g(r) }
+fn iplen(xs: List<Pair<String, Int>>) : Int = match xs { [] => 0; [x, ...r] => 1 + iplen(r) }
+fn build_multi(src: String, inputs: List<Pair<String, Int>>) : (Int, Build) =
+  match parse_prog(src) { Program(types, fns, main) =>
+    cg(unroll(main, fns, [], 8), in_cenv_g(inputs, 0), Build(iplen(inputs), [], in_vals_g(inputs))) }
+fn gref(src: String, inputs: List<Pair<String, Int>>) : List<Int> =
+  match build_multi(src, inputs) { (out, b) => match b { Build(n, gs, w) => wnth(w, out) } }
+# bind the claimed result: assert (output - claimedR) == 0 via the is-zero assert gate
+fn build_claim(src: String, inputs: List<Pair<String, Int>>, claimedR: List<Int>) : Build =
+  match build_multi(src, inputs) { (out, b) =>
+    match mkc(claimedR, b) { (wR, b1) => match mks(out, wR, b1) { (wd, b2) => mke(wd, b2) } } }
+fn gprove(src: String, inputs: List<Pair<String, Int>>, claimedR: List<Int>, seed: Int) : Bool =
+  match build_claim(src, inputs, claimedR) { Build(n, gs, w) => prove_stark(gs, w, seed) }
+
 # --- demo --------------------------------------------------------------------
 fn show_a(b: Bool) : String = if b then "ACCEPT" else "REJECT"
 fn show_b(b: Bool) : String = if b then "yes" else "no"
 fn show(xs: List<Int>) : String = match trim(xs) { [] => "0"; [h, ...t] => match t { [] => int_to_string(h); _ => int_to_string(h) ++ " (low limb of " ++ int_to_string(len(trim(xs))) ++ ")" } }
-let src : String = "fn f(x: Int) : Int = if x == 7 then 100 else 200\nf(inp)"
-let in_hit : List<Int> = glit(7)
-let in_miss : List<Int> = glit(305419896)
-let res_hit : List<Int> = src_result(src, in_hit)
-let res_miss : List<Int> = src_result(src, in_miss)
-let built : (Int, Build) = build_src(src, in_hit)
-let outw : Int = match built { (o, b) => o }
-let okq : Bool = match built { (o, b) => match b { Build(n, gs, w) => prove_stark(gs, w, 11111) } }
-let badq : Bool = match built { (o, b) => match b { Build(n, gs, w) => prove_stark(gs, lset(w, o, glit(99)), 11111) } }
-let rt1 : List<Int> = match built { (o, b) => match b { Build(n, gs, w) => stark_root(gs, w, 11111) } }
-let rt2 : List<Int> = match built { (o, b) => match b { Build(n, gs, w) => stark_root(gs, w, 22222) } }
+let msrc : String = "fn f(a: Int, b: Int, c: Int) : Int = a * b + c\nf(a, b, c)"
+let mins : List<Pair<String, Int>> = [Pair("a", 100000), Pair("b", 100000), Pair("c", 99)]
+let mres : List<Int> = gref(msrc, mins)                       # the true result, over Goldilocks
+let okm : Bool = gprove(msrc, mins, mres, 11111)              # honest claim -> ACCEPT
+let badm : Bool = gprove(msrc, mins, glit(12345), 11111)     # wrong claim -> REJECT
+let claimb : Build = build_claim(msrc, mins, mres)
+let rt1 : List<Int> = match claimb { Build(n, gs, w) => stark_root(gs, w, 11111) }
+let rt2 : List<Int> = match claimb { Build(n, gs, w) => stark_root(gs, w, 22222) }
 
 let _ : String = print("--- prove_source_goldilocks_zk.glass: real Glass SOURCE -> a ZK proof over Goldilocks ---")
-let _ : String = print("source (prism-parsed) -> cgen (now with == and if) -> committed, F_{p^2}-challenged, query-verified, blinded STARK.")
+let _ : String = print("source (prism-parsed) -> cgen (multi-input, ==, if) -> committed, F_{p^2}-challenged, query-verified, blinded STARK.")
 let _ : String = print("")
-let _ : String = print("  fn f(x) = if x == 7 then 100 else 200;  f(inp)     -- inp PRIVATE, over Goldilocks")
-let _ : String = print("  f(7)          = " ++ show(res_hit) ++ "    (== lowered to an inverse-hint is-zero; branch via a mux)")
-let _ : String = print("  f(305419896)  = " ++ show(res_miss) ++ "    (other branch; same circuit, private input)")
-let _ : String = print("  honest    -> Merkle-committed, Fiat-Shamir queries verify: " ++ show_a(okq))
-let _ : String = print("  tampered  -> queries catch the inconsistency: " ++ show_a(badq) ++ "  (REJECT)")
+let _ : String = print("  fn f(a, b, c) = a * b + c;  f(a, b, c)   -- a, b, c PRIVATE, over Goldilocks (p = 2^64-2^32+1)")
+let _ : String = print("  a=100000, b=100000, c=99  ->  result = " ++ bn_dec(mres) ++ "  (= 10^10 + 99; Baby Bear's 2^31 can't hold this)")
+let _ : String = print("  honest claim         -> Merkle-committed, Fiat-Shamir queries verify: " ++ show_a(okm))
+let _ : String = print("  wrong claim (R=12345) -> rejected (the output==claim assert breaks): " ++ show_a(badm))
 let _ : String = print("  two blinding seeds give different commitments (ZK): " ++ show_b(bn_eq(rt1, rt2) == false))
 let _ : String = print("")
-let _ : String = print("write Glass source -- now with comparisons and branches -- get a ZK proof over the production field.")
-let _ : String = print("(arithmetic + let + calls + == + if today; < / match / ADTs over bignum are the next step.)")
+let _ : String = print("multi-input: each named argument lowers to a PRIVATE wire; the proof is over 2^64, not toy 2^31.")
+let _ : String = print("(arithmetic + let + calls + == + if + multi-input today; match / ADTs over bignum are the next step.)")
 
-"prove_source_goldilocks_zk v0.2 — real prism-parsed Glass source -> Goldilocks cryptographic STARK (== and if)"
+"prove_source_goldilocks_zk v0.3 — real prism-parsed Glass source -> Goldilocks STARK (multi-input, ==, if)"
