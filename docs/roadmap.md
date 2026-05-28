@@ -39,7 +39,7 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Shipped (through v5.29)
+## Shipped (through v5.30)
 
 - **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
 - **Pane** — a query language in Glass.
@@ -351,7 +351,7 @@ three under-invested axes — *realness*, *usability*, and *convergence* — on 
     (the zkVM memory argument, from scratch). ✅ **Step 4 — the effect row generates the proof** ([`prove_effects_zk.glass`](../examples/prove/prove_effects_zk.glass)):
     prism parses a signature, the bridge reads the `!{…}` row off the function type, and each effect
     label becomes a proof obligation discharged by its gadget — *change the row, the schema changes.*
-    The effect row IS the proof's statement. ✅ **Lowered to full ZK** (Phase 3): the `Inference`/trust-boundary ([`trust_prove.glass`](../examples/prove/trust_prove.glass)) and `Random` ([`random_prove.glass`](../examples/prove/random_prove.glass)) gadgets are now proven through the blinded F_{p⁴} FRI STARK via the bridge, not just sound RLC. *Remaining:* `State` (its in-circuit memory-permutation + range arguments aren't reachable from the source bridge — the heavy follow-on).
+    The effect row IS the proof's statement. ✅ **Lowered to full ZK** (Phase 3): the `Inference`/trust-boundary ([`trust_prove.glass`](../examples/prove/trust_prove.glass)) and `Random` ([`random_prove.glass`](../examples/prove/random_prove.glass)) gadgets are now proven through the blinded F_{p⁴} FRI STARK via the bridge, not just sound RLC. ✅ `State` *read-after-write consistency* ([`state_prove.glass`](../examples/prove/state_prove.glass)) too — a committed fixed-order trace proven consistent in full ZK. *Remaining:* the general `State` case (prover-chosen order guarded by the in-circuit permutation argument) is the heavy follow-on.
   - **C3 — the convergence capstone. ✅ DONE.** The trust boundary, proven
     ([`prove_trust_boundary_zk.glass`](../examples/prove/prove_trust_boundary_zk.glass)): C1 ⊕ C2
     fused on LANG.md's AI-era centerpiece. A model classifier `fn classify(prompt) : Int where

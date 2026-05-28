@@ -1,0 +1,33 @@
+# Memory read-after-write consistency, in FULL zero-knowledge — run:
+#
+#   glass prove examples/prove/state_prove.glass v0=42 r1=42 v2=99 r3=99
+#
+# The C2 `State` effect — every read returns the last write to its address —
+# lowered to the *succinct + zero-knowledge* blinded F_{p^4} FRI STARK via the
+# bridge (the real prover, not the standalone sound-RLC prove_state_zk). A fixed
+# memory trace (program order):
+#       write m[0] = v0   (t0)
+#       read  m[0]  -> r1  (t1)
+#       write m[0] = v2   (t2)
+#       read  m[0]  -> r3  (t3)
+# The VALUES (v0, r1, v2, r3) are PRIVATE — the memory contents — pinned by a public
+# commitment C (baked below). The proof attests, in zero knowledge, that the trace is
+# READ-AFTER-WRITE CONSISTENT (r1 == v0, the last write before t1; r3 == v2, the last
+# write before t3) and opens to C — revealing the trace's shape and "consistent",
+# never the values.
+#
+# The trace ORDER is fixed and public, so consistency is direct equality (no sorting).
+# The general case — a prover-chosen order, guarded by a permutation argument against
+# fabrication — is the standalone prove_state_zk (sound) and the heavier in-circuit
+# follow-on. honest values -> R = 1; any inconsistency or wrong commitment -> R = 0.
+
+fn mix(a: Int, b: Int) : Int = let s : Int = a + b in s * s * s + a * 7 + b * 13
+fn commit4(a: Int, b: Int, c: Int, d: Int) : Int = mix(mix(mix(a, b), c), d)
+
+fn check(v0: Int, r1: Int, v2: Int, r3: Int) : Int =
+  if (commit4(v0, r1, v2, r3) == 1173565920)     # the values open to the public commitment
+     && (r1 == v0)                               # read@t1 returns the last write (v0)
+     && (r3 == v2)                               # read@t3 returns the last write (v2)
+  then 1 else 0
+
+check(v0, r1, v2, r3)      # = 1 for an honest, consistent trace; claim R = 1
