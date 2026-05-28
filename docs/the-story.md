@@ -1,7 +1,8 @@
 # Glass, end to end
 
 *One principle — that you should never have to take the code's word for it —
-carried from a type signature all the way to a zero-knowledge proof over data
+carried from a type signature all the way to a zero-knowledge proof: of what a
+program computed, the types it promised, and the effects it touched — over data
 you never reveal.*
 
 This is the whole arc in one read. Every claim below is a command you can run.
@@ -98,6 +99,70 @@ ZERO-KNOWLEDGE: two blinding seeds both verify: ACCEPT / ACCEPT; quotient openin
 
 Revealed: the commitment, the query, the answer. Hidden: every row.
 
+## 5 — It proves what you *wrote* — and what you *promised*
+
+The prove bridge is not limited to a hand-picked expression. It takes **real Glass
+source** — parsed by `prism`, the Glass-in-Glass front end — and lowers it to a
+proof: arithmetic, `let`, function calls, `match`, **bounded recursion**, **linked
+lists** (`type IntList = Nil | Cons(Int, IntList)`), and **higher-order functions**
+(passing a function — or a lambda — as an argument). Recursion is unrolled and the
+higher-order program is beta-reduced to a first-order, call-free circuit; you write
+ordinary Glass, you get a proof of its result.
+
+```bash
+glass prove examples/prove/hello_prove.glass inp=9     # f(x)=sq(x)+5 -> result 86, proof ACCEPT
+# and (see examples/prove/): fact_prove (recursion), list_sum_prove (a fold over a
+# list), map_prove (higher-order map), all lowered to the same blinded FRI STARK.
+```
+
+And the type system's own promises become part of the proof. A function's
+refinement — the `where (P)` on its return — is extracted and **asserted inside the
+circuit**, so the type is not merely *checked* at compile time; it becomes a
+*cryptographic guarantee* about the result. A function that lies about its declared
+type is **unprovable**:
+
+```text
+fn fact(n) : Int where (result != 0) = if n == 0 then 1 else n * fact(n - 1)
+  fact(5) = 120, refinement (result != 0) proven in-circuit -> ACCEPT
+fn ident(x) : Int where (result == 0 || result == 1) = x
+  ident(5) = 5, violates the refinement -> REJECT  (the in-circuit assertion fails)
+```
+
+The `where`-clause is the contract; the proof is the enforcement. *(Now also over the
+production **Goldilocks** field — `prove_source_goldilocks_zk` proves real source on
+the 2⁶⁴ field real provers use, no toy-field wraparound.)*
+
+## 6 — It proves what your code *touches*
+
+A Glass signature already declares its effects — `!{Inference}`, `!{Random}`,
+`!{State}`. The frontier closes the loop: **the effect row generates the proof.**
+Each effect becomes a committed, checkable trace entry — an LLM call pinned to a
+committed answer, a random draw bound so it can't be ground, a memory trace where
+every read is forced to equal the last write — and the proof's obligations are *read
+straight off the signature*.
+
+```text
+$ glass examples/prove/prove_effects_zk.glass
+
+fn analyze(x) : Int !{Inference, Random, State}
+  declared effect row -> 3 obligations: committed-oracle; transcript-bound draw; memory-consistency
+  discharge every obligation with its gadget: ACCEPT
+  change the row, the schema changes  (pure fn -> no obligations; !{Random} -> one)
+```
+
+Read the signature, and you know what the proof proves. The most striking case is
+the AI one: `prove_inference_zk` proves a computation **used a committed model answer
+faithfully** — *"the model's answer is one of the allowed options, committed in C"* —
+while revealing nothing about which. You don't prove the model is correct; you prove
+your program used its output honestly. The untrusted-AI-output problem, answered with
+a proof.
+
+```bash
+glass examples/prove/prove_inference_zk.glass   # LLM-in-the-loop, in zero-knowledge
+glass examples/prove/prove_random_zk.glass      # a provably-fair, un-grindable draw
+glass examples/prove/prove_state_zk.glass       # mutable state, read-after-write consistency
+```
+
 ---
 
 ## The discipline that makes it true
@@ -115,5 +180,11 @@ bash examples/selfhost/dogfood.sh examples/prove/prove_pane.glass
 Nothing here is "done" until the interpreter and the self-hosted compiler give
 the *same answer*. That is the whole point: **you never have to take the code's
 word for it.**
+
+And the same honesty applies to the proofs themselves: the differential-testing
+guarantee is rigorous, but the cryptography is *educational-grade* — a real,
+from-scratch zk-STARK, not an audited one. What is real and what is a
+demonstration is written down, per component, in the **[soundness ledger](soundness.md)**.
+You should never have to take *that* on the code's word either.
 
 — Continue at the [roadmap](roadmap.md), or read the [language tour](language-tour.md).

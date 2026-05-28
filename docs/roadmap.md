@@ -39,7 +39,7 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Shipped (through v5.25)
+## Shipped (through v5.26)
 
 - **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
 - **Pane** — a query language in Glass.
@@ -322,7 +322,11 @@ three under-invested axes — *realness*, *usability*, and *convergence* — on 
     command-line names are private inputs (kept in the witness). The prove logic stays
     in Glass (a driver over `prove_source_adt_zk`). `glass prove examples/prove/hello_prove.glass inp=9`
     → `result: 86`, `proof: ACCEPT`. The capability is now a command, not a demo file.
-  - **U2.** A refreshed end-to-end story (the-story/README) from type signature → proof.
+  - **U2. ✅ DONE.** A refreshed end-to-end story ([`the-story.md`](the-story.md)) from type
+    signature → proof: extended past "private queries" to cover proving real programs
+    (recursion/lists/higher-order) and the type's own `where`-clause in-circuit (§5), and the
+    effect row generating the proof (§6) — every shown command runs, the close links the
+    soundness ledger. Read the whole arc in one sitting.
 - **Track C — Convergence** (the distinctive bet — Glass has types + refinements +
   effects + ZK in one self-hosting language; unify them).
   - **C1. ✅ DONE.** **Prove refinement types** — a function's return `where (P)` is
