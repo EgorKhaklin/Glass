@@ -6,8 +6,9 @@
 [`prove_state_zk.glass`](../examples/prove/prove_state_zk.glass),
 [`prove_effects_zk.glass`](../examples/prove/prove_effects_zk.glass)). The Inference/trust-boundary
 gadget is also lowered to the **full** blinded F_{p⁴} FRI STARK via the bridge
-([`trust_prove.glass`](../examples/prove/trust_prove.glass), succinct + ZK); lowering the `Random`/`State`
-gadgets the same way is the remaining work.*
+([`trust_prove.glass`](../examples/prove/trust_prove.glass)) and so is `Random`
+([`random_prove.glass`](../examples/prove/random_prove.glass)) — both succinct + ZK via the bridge; lowering
+`State` the same way (its in-circuit permutation + range arguments) is the remaining work.*
 
 ## The tension
 

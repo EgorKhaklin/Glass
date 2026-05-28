@@ -1,0 +1,26 @@
+# Provably-fair randomness, in FULL zero-knowledge — run:
+#
+#   glass prove examples/prove/random_prove.glass seed=7777
+#
+# The C2 `Random` effect (a draw bound so it can't be ground) lowered to the
+# *succinct + zero-knowledge* blinded F_{p^4} FRI STARK — the real prover (via the
+# bridge), not the standalone sound-RLC demo (prove_random_zk). The committer holds
+# a private `seed`; it publishes only the commitment C (baked below). A PUBLIC
+# beacon (also baked — fixed AFTER C) then determines the fair draw D = derive(seed,
+# beacon). The proof attests, in zero knowledge, that the SAME committed seed
+# produced the public draw D — revealing C, the beacon, and D, never the seed.
+#
+# Un-grindable: because C is fixed before the beacon, the committer cannot steer D.
+# Binding: a different seed gives a different C *and* a different D, so the prover
+# can't swap seeds. honest seed -> R = 1 (the draw is certified honest); any other
+# seed yields R = 0 and cannot be forged to 1.
+
+fn mix(a: Int, b: Int) : Int = let s : Int = a + b in s * s * s + a * 7 + b * 13
+fn commit_seed(seed: Int) : Int = mix(seed, 99)
+fn draw(seed: Int, beacon: Int) : Int = mix(seed, beacon)
+
+# the certificate: the committed seed (C) produced the public draw (D) at the beacon
+fn check(seed: Int) : Int =
+  if (commit_seed(seed) == 1348820220) && (draw(seed, 123456) == 1473109657) then 1 else 0
+
+check(seed)               # = 1 for the honest seed (7777); claim R = 1
