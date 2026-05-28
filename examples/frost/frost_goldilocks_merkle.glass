@@ -1,0 +1,170 @@
+# =============================================================================
+# frost_goldilocks_merkle.glass — a Poseidon Merkle commitment over Goldilocks
+#
+# v5.35 established the hash PRIMITIVE: a Poseidon over Goldilocks byte-identical
+# to Plonky2, verified against its published test vectors. This makes it
+# LOAD-BEARING — the verified permutation now drives a real Merkle commitment:
+# Plonky2's two_to_one compression (permute [x;y;0,0,0,0], take 4 of 12) and
+# hash_no_pad leaves, a tree, inclusion proofs, and verification. Honest inputs
+# verify; a leaf not in the tree or a tampered root is rejected.
+#
+# This is the first piece of WIRING the standard hash into the proof system's
+# commitments (the STARKs still use MiMC; the heavy FRI integration follows).
+# Reuses the int64-safe Goldilocks field + the vector-verified permutation +
+# Plonky2's exact constants/MDS; dogfoods byte-identical (glass.py == native).
+# =============================================================================
+
+fn lmod(x: Int) : Int = x % 65536
+fn ldiv(x: Int) : Int = x / 65536
+fn rev_go(xs: List<Int>, acc: List<Int>) : List<Int> = match xs { [] => acc; [h, ...t] => rev_go(t, [h] ++ acc) }
+fn rev(xs: List<Int>) : List<Int> = rev_go(xs, [])
+fn drop_zeros(xs: List<Int>) : List<Int> = match xs { [] => []; [h, ...t] => if h == 0 then drop_zeros(t) else xs }
+fn trim(xs: List<Int>) : List<Int> = rev(drop_zeros(rev(xs)))
+fn addc(a: List<Int>, b: List<Int>, carry: Int) : List<Int> =
+  match a {
+    [] => match b { [] => if carry == 0 then [] else [carry]; [hb, ...tb] => let s : Int = hb + carry in [lmod(s)] ++ addc([], tb, ldiv(s)) };
+    [ha, ...ta] => match b { [] => let s : Int = ha + carry in [lmod(s)] ++ addc(ta, [], ldiv(s)); [hb, ...tb] => let s : Int = ha + hb + carry in [lmod(s)] ++ addc(ta, tb, ldiv(s)) }
+  }
+fn bn_add(a: List<Int>, b: List<Int>) : List<Int> = trim(addc(a, b, 0))
+fn smul(xs: List<Int>, k: Int, carry: Int) : List<Int> =
+  match xs { [] => if carry == 0 then [] else [carry]; [h, ...t] => let p : Int = h * k + carry in [lmod(p)] ++ smul(t, k, ldiv(p)) }
+fn shift(xs: List<Int>, n: Int) : List<Int> = if n <= 0 then xs else [0] ++ shift(xs, n - 1)
+fn mul_go(a: List<Int>, b: List<Int>, i: Int) : List<Int> =
+  match b { [] => []; [hb, ...tb] => bn_add(shift(smul(a, hb, 0), i), mul_go(a, tb, i + 1)) }
+fn bn_mul(a: List<Int>, b: List<Int>) : List<Int> = trim(mul_go(a, b, 0))
+fn cmp_hi(a: List<Int>, b: List<Int>) : Int = match a { [] => 0; [ha, ...ta] => match b { [] => 0; [hb, ...tb] => if ha == hb then cmp_hi(ta, tb) else (if ha < hb then 0 - 1 else 1) } }
+fn bn_cmp(a: List<Int>, b: List<Int>) : Int =
+  let ta : List<Int> = trim(a) in let tb : List<Int> = trim(b) in
+  if len(ta) == len(tb) then cmp_hi(rev(ta), rev(tb)) else (if len(ta) < len(tb) then 0 - 1 else 1)
+fn subb(a: List<Int>, b: List<Int>, borrow: Int) : List<Int> =
+  match a { [] => [];
+    [ha, ...ta] => match b {
+      [] => let d : Int = ha - borrow in if d < 0 then [d + 65536] ++ subb(ta, [], 1) else [d] ++ subb(ta, [], 0);
+      [hb, ...tb] => let d : Int = ha - hb - borrow in if d < 0 then [d + 65536] ++ subb(ta, tb, 1) else [d] ++ subb(ta, tb, 0) } }
+fn bn_sub(a: List<Int>, b: List<Int>) : List<Int> = trim(subb(a, b, 0))
+fn take(xs: List<Int>, n: Int) : List<Int> = if n <= 0 then [] else match xs { [] => []; [h, ...t] => [h] ++ take(t, n - 1) }
+fn drop(xs: List<Int>, n: Int) : List<Int> = if n <= 0 then xs else match xs { [] => []; [h, ...t] => drop(t, n - 1) }
+fn pg(d: Int) : List<Int> = [1, 0, 65535, 65535]
+fn fold_hi(d: Int) : List<Int> = [65535, 65535]
+fn bn_mod_p(a: List<Int>) : List<Int> =
+  let t : List<Int> = trim(a) in
+  if len(t) > 4 then bn_mod_p(bn_add(take(t, 4), bn_mul(drop(t, 4), fold_hi(0))))
+  else if bn_cmp(t, pg(0)) >= 0 then bn_sub(t, pg(0)) else t
+fn fadd(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_add(a, b))
+fn fsub(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_add(a, bn_sub(pg(0), bn_mod_p(b))))
+fn fmul(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_mul(a, b))
+fn bn_eq(a: List<Int>, b: List<Int>) : Bool = bn_cmp(a, b) == 0
+fn bn_is_zero(e: List<Int>) : Bool = match trim(e) { [] => true; _ => false }
+fn bn_is_odd(e: List<Int>) : Bool = match e { [] => false; [h, ...t] => h % 2 == 1 }
+fn half_hl(xs: List<Int>, rem: Int) : List<Int> = match xs { [] => []; [h, ...t] => let cur : Int = rem * 65536 + h in [cur / 2] ++ half_hl(t, cur % 2) }
+fn bn_half(e: List<Int>) : List<Int> = trim(rev(half_hl(rev(trim(e)), 0)))
+fn fpow_bn(base: List<Int>, e: List<Int>) : List<Int> =
+  if bn_is_zero(e) then [1]
+  else let h : List<Int> = fpow_bn(fmul(base, base), bn_half(e)) in
+       if bn_is_odd(e) then fmul(base, h) else h
+fn finv(a: List<Int>) : List<Int> = fpow_bn(a, bn_sub(pg(0), [2]))
+fn halve_k(e: List<Int>, k: Int) : List<Int> = if k <= 0 then e else halve_k(bn_half(e), k - 1)
+fn root_pow2(k: Int) : List<Int> = fpow_bn([7], halve_k(bn_sub(pg(0), [1]), k))
+fn glit(c: Int) : List<Int> = trim([c % 65536, (c / 65536) % 65536, c / 4294967296])
+
+# --- list-of-bignum helpers ---------------------------------------------------
+fn wnth(xs: List<List<Int>>, i: Int) : List<Int> = match xs { [] => []; [x, ...r] => if i == 0 then x else wnth(r, i - 1) }
+fn lset(xs: List<List<Int>>, i: Int, v: List<Int>) : List<List<Int>> = match xs { [] => []; [x, ...r] => if i == 0 then [v] ++ r else [x] ++ lset(r, i - 1, v) }
+fn llen(xs: List<List<Int>>) : Int = match xs { [] => 0; [x, ...r] => 1 + llen(r) }
+
+# --- index helpers ------------------------------------------------------------
+fn inth(xs: List<Int>, i: Int) : Int = match xs { [] => 0; [h, ...t] => if i == 0 then h else inth(t, i - 1) }
+fn pdrop1(st: List<List<Int>>) : List<List<Int>> = match st { [] => []; [h, ...t] => t }
+
+# --- Poseidon over Goldilocks — byte-exact to Plonky2 (t=12, R_F=8, R_P=22) ----
+# S-box x^7 (gcd(7, p-1)=1 over Goldilocks, so it is a permutation). Computed as
+# Plonky2 does: x2=x^2, x4=x^4, x3=x^3, return x3*x4 = x^7.
+fn sbox(x: List<Int>) : List<Int> = let x2 : List<Int> = fmul(x, x) in let x4 : List<Int> = fmul(x2, x2) in let x3 : List<Int> = fmul(x, x2) in fmul(x3, x4)
+
+# constant_layer: lane i += ALL_ROUND_CONSTANTS[12*rc + i]
+fn clayer(arc: List<List<Int>>, st: List<List<Int>>, rc: Int, i: Int) : List<List<Int>> =
+  if i >= 12 then [] else [fadd(wnth(st, i), wnth(arc, rc * 12 + i))] ++ clayer(arc, st, rc, i + 1)
+# S-box on all 12 lanes (full round) / on lane 0 only (partial round)
+fn sbox_all(st: List<List<Int>>, i: Int) : List<List<Int>> = if i >= 12 then [] else [sbox(wnth(st, i))] ++ sbox_all(st, i + 1)
+fn sbox_lane0(st: List<List<Int>>) : List<List<Int>> = [sbox(wnth(st, 0))] ++ pdrop1(st)
+# MDS: out[r] = sum_i st[(i+r) mod 12] * CIRC[i]  (+ st[0]*8 for r=0, since DIAG=[8,0..])
+fn mds_row(st: List<List<Int>>, circ: List<Int>, r: Int, i: Int, acc: List<Int>) : List<Int> =
+  if i >= 12 then acc else mds_row(st, circ, r, i + 1, fadd(acc, fmul(wnth(st, (i + r) % 12), glit(inth(circ, i)))))
+fn mds_one(st: List<List<Int>>, circ: List<Int>, r: Int) : List<Int> =
+  let base : List<Int> = mds_row(st, circ, r, 0, []) in if r == 0 then fadd(base, fmul(wnth(st, 0), [8])) else base
+fn mds_layer(st: List<List<Int>>, circ: List<Int>, r: Int) : List<List<Int>> =
+  if r >= 12 then [] else [mds_one(st, circ, r)] ++ mds_layer(st, circ, r + 1)
+
+fn full_round(arc: List<List<Int>>, circ: List<Int>, st: List<List<Int>>, rc: Int) : List<List<Int>> =
+  mds_layer(sbox_all(clayer(arc, st, rc, 0), 0), circ, 0)
+fn partial_round(arc: List<List<Int>>, circ: List<Int>, st: List<List<Int>>, rc: Int) : List<List<Int>> =
+  mds_layer(sbox_lane0(clayer(arc, st, rc, 0)), circ, 0)
+fn do_full(arc: List<List<Int>>, circ: List<Int>, st: List<List<Int>>, rc: Int, stop: Int) : List<List<Int>> =
+  if rc >= stop then st else do_full(arc, circ, full_round(arc, circ, st, rc), rc + 1, stop)
+fn do_partial(arc: List<List<Int>>, circ: List<Int>, st: List<List<Int>>, rc: Int, stop: Int) : List<List<Int>> =
+  if rc >= stop then st else do_partial(arc, circ, partial_round(arc, circ, st, rc), rc + 1, stop)
+# the permutation: 4 full (rc 0..3), 22 partial (rc 4..25), 4 full (rc 26..29)
+fn perm(arc: List<List<Int>>, circ: List<Int>, st: List<List<Int>>) : List<List<Int>> =
+  do_full(arc, circ, do_partial(arc, circ, do_full(arc, circ, st, 0, 4), 4, 26), 26, 30)
+
+# --- compression hash + verification ------------------------------------------
+fn vec_eq(a: List<List<Int>>, b: List<List<Int>>) : Bool =
+  match a { [] => match b { [] => true; _ => false };
+            [x, ...xr] => match b { [] => false; [y, ...yr] => if bn_eq(x, y) then vec_eq(xr, yr) else false } }
+fn check(arc: List<List<Int>>, circ: List<Int>, inp: List<List<Int>>, out: List<List<Int>>) : Bool =
+  vec_eq(perm(arc, circ, inp), out)
+fn show1(xs: List<Int>) : String = match trim(xs) { [] => "0"; [h, ...t] => int_to_string(h) }
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+
+# --- Plonky2-faithful Poseidon hashing: compress (two_to_one) + hash_no_pad ----
+# A digest is 4 Goldilocks elements (NUM_HASH_OUT_ELTS=4; [] is the field zero).
+fn take4(st: List<List<Int>>) : List<List<Int>> = [wnth(st, 0), wnth(st, 1), wnth(st, 2), wnth(st, 3)]
+# two_to_one: state = [x0..x3, y0..y3, 0,0,0,0], permute, take first 4
+fn compress(arc: List<List<Int>>, circ: List<Int>, x: List<List<Int>>, y: List<List<Int>>) : List<List<Int>> =
+  take4(perm(arc, circ, [wnth(x,0), wnth(x,1), wnth(x,2), wnth(x,3), wnth(y,0), wnth(y,1), wnth(y,2), wnth(y,3), [], [], [], []]))
+# hash_no_pad of a single field element: state = [v,0..0] (overwrite mode), permute, take 4
+fn hash1(arc: List<List<Int>>, circ: List<Int>, v: List<Int>) : List<List<Int>> =
+  take4(perm(arc, circ, [v, [], [], [], [], [], [], [], [], [], [], []]))
+
+# --- a Merkle tree over Poseidon (commit / open / verify) ---------------------
+# fold a leaf up to the root along an inclusion path (idx bit 0 = is-left at each level)
+fn fold_path(arc: List<List<Int>>, circ: List<Int>, h: List<List<Int>>, idx: Int, path: List<List<List<Int>>>) : List<List<Int>> =
+  match path { [] => h;
+    [s, ...rest] => let up : List<List<Int>> = if idx % 2 == 0 then compress(arc, circ, h, s) else compress(arc, circ, s, h) in
+                    fold_path(arc, circ, up, idx / 2, rest) }
+fn mverify(arc: List<List<Int>>, circ: List<Int>, leaf: List<List<Int>>, idx: Int, path: List<List<List<Int>>>, root: List<List<Int>>) : Bool =
+  vec_eq(fold_path(arc, circ, leaf, idx, path), root)
+
+# --- Plonky2's exact round constants + MDS first row (generated) --------------
+let arc : List<List<Int>> = [[17413, 61972, 63334, 46469], [6871, 17298, 42335, 30534], [39348, 52967, 3377, 45819], [10199, 32820, 24740, 3943], [57362, 20724, 26214, 57613], [39921, 2000, 5323, 36014], [16031, 38390, 21404, 54328], [19517, 58203, 7292, 61304], [17446, 45252, 41529, 52676], [31743, 48947, 41480, 10111], [30881, 40357, 21410, 57718], [11382, 9691, 754, 50499], [51329, 63266, 30753, 34344], [36437, 16833, 6794, 22989], [50548, 18781, 6573, 50105], [1921, 61290, 50373, 42116], [5836, 56404, 48419, 12427], [49308, 36656, 16577, 28234], [36090, 3471, 60855, 39470], [28472, 44616, 50912, 58208], [18427, 49094, 29071, 54727], [65291, 6403, 44551, 50014], [19431, 38556, 9814, 33948], [48045, 2251, 11404, 49239], [130, 8670, 25418, 59898], [24589, 38298, 27976, 62831], [4453, 1593, 5096, 63447], [23983, 12930, 4907, 33431], [11402, 58123, 1504, 44392], [21342, 64760, 55797, 44113], [44423, 6338, 55260, 20522], [12353, 4363, 21772, 22433], [58755, 27872, 54030, 26299], [25678, 22685, 44015, 3490], [3425, 56085, 10063, 61537], [38451, 59842, 60474, 10424], [37907, 32299, 22246, 37543], [25990, 65257, 16875, 28903], [60444, 44930, 24290, 413], [25426, 29254, 11991, 28527], [19617, 59361, 5839, 31988], [25657, 34468, 20859, 25055], [31605, 4567, 18843, 34268], [1843, 47553, 39752, 19349], [15959, 43012, 15965, 59582], [34457, 59098, 48157, 62912], [29887, 2543, 11455, 16561], [54833, 52010, 2366, 42551], [62472, 6221, 63634, 15555], [12731, 22463, 40385, 11847], [17222, 42531, 56839, 28489], [36219, 56887, 59326, 8508], [60035, 23885, 12596, 23300], [54945, 836, 17784, 41694], [62216, 19067, 43769, 28931], [37633, 38695, 64525, 21286], [18247, 60418, 46927, 43470], [45475, 47905, 60552, 10232], [2195, 7661, 20442, 64747], [5749, 18084, 65299, 64198], [32140, 9869, 43589, 28977], [3999, 38243, 864, 37713], [27643, 44994, 23332, 44371], [17598, 39230, 62918, 17959], [52312, 47345, 63380, 25692], [5655, 2806, 28909, 9244], [1521, 25721, 57462, 44216], [18253, 19535, 59867, 14135], [65462, 59231, 24115, 59370], [49722, 51647, 58527, 37086], [40082, 27584, 60919, 53681], [50690, 42565, 18459, 2917], [10299, 2068, 6827, 39341], [51789, 54294, 31889, 17290], [29980, 50666, 58300, 46605], [22716, 61295, 43882, 51612], [58623, 42798, 60818, 27045], [44401, 7892, 12956, 24187], [18565, 20, 44040, 24512], [20170, 14711, 33426, 13019], [62224, 22576, 27036, 2782], [24353, 4161, 22587, 31941], [54863, 57702, 40658, 34271], [48305, 60978, 57167, 26116], [61256, 55894, 62984, 60292], [24637, 50190, 34868, 55904], [61827, 32865, 65088, 36759], [31625, 38643, 18524, 43327], [54627, 36632, 59630, 26372], [8473, 7687, 59820, 52963], [28865, 58036, 3685, 20749], [14576, 27536, 16200, 63026], [52975, 65445, 36062, 2896], [15549, 58619, 28809, 62017], [22320, 37073, 23592, 24807], [62108, 63072, 32139, 42529], [4494, 50092, 52528, 29017], [54592, 45034, 20111, 33691], [2780, 33426, 15966, 3391], [48040, 57063, 33725, 36733], [7430, 59911, 8771, 30735], [5684, 62430, 22597, 60305], [62342, 9910, 4621, 53662], [60614, 32351, 58682, 366], [58487, 31027, 54606, 52063], [17567, 31229, 16760, 44216], [18226, 59383, 6411, 39970], [13857, 41914, 15387, 23913], [40647, 49846, 1943, 56559], [31507, 55938, 37475, 15715], [53479, 7112, 64919, 57971], [32469, 11554, 624, 16783], [908, 46339, 64931, 35877], [49276, 44744, 60749, 11450], [56770, 52694, 59055, 24408], [3770, 24091, 20652, 10310], [55989, 59417, 13182, 25435], [54431, 54514, 878, 40858], [5902, 44636, 9740, 47422], [46957, 31197, 60136, 45223], [22284, 36006, 11452, 53366], [19445, 4784, 61368, 13510], [49426, 64020, 2741, 16575], [16595, 31831, 28924, 46773], [13396, 11747, 47360, 23079], [45778, 46802, 45413, 45477], [48674, 59857, 57516, 34594], [33019, 32342, 58291, 30862], [57988, 5457, 9830, 5287], [46105, 40691, 26415, 39095], [3642, 27571, 44663, 48019], [63568, 25472, 15108, 10493], [33671, 37669, 26629, 12452], [40161, 25021, 49164, 13181], [65309, 51108, 41540, 54764], [31165, 25810, 25474, 30562], [55143, 57071, 13502, 49636], [60450, 21432, 13594, 665], [7040, 44325, 22244, 45780], [59915, 42140, 53757, 16030], [48856, 42064, 43307, 10610], [37854, 31716, 28119, 8225], [40646, 10308, 59599, 44543], [53827, 19495, 47900, 7245], [54360, 33570, 27274, 5537], [42505, 32729, 4747, 14474], [61691, 47853, 58838, 8960], [20740, 18401, 43654, 12131], [49769, 28366, 27880, 61891], [28873, 6201, 4389, 10008], [43373, 28892, 659, 58756], [53170, 753, 48190, 19867], [63224, 26922, 48169, 59957], [16695, 60091, 6987, 6370], [21748, 9653, 40902, 7739], [10493, 27000, 17250, 9686], [38469, 50490, 7089, 23103], [36152, 27131, 568, 56191], [57852, 4564, 1625, 46178], [32816, 17277, 19172, 18882], [1382, 4395, 34348, 55187], [36843, 29453, 4358, 43741], [54632, 38832, 28174, 50235], [64674, 36582, 9409, 58000], [35942, 13752, 49781, 24144], [39559, 42239, 16160, 4152], [23288, 29092, 61085, 14568], [43449, 23537, 6199, 56657], [55287, 11636, 1432, 30544], [51376, 56806, 39348, 34475], [49280, 16209, 20320, 45344], [3791, 28709, 44164, 61281], [24639, 4908, 55567, 7100], [46423, 38477, 55997, 3281], [7881, 60317, 44635, 4515], [53533, 42373, 49134, 63317], [42199, 9870, 12880, 41912], [37807, 37500, 1780, 20835], [41434, 51695, 44105, 56756], [17432, 13981, 28140, 25787], [8140, 11084, 38338, 63948], [59894, 24394, 32629, 2259], [26459, 13432, 39777, 61124], [57520, 60709, 37690, 61763], [50722, 21983, 56706, 58565], [6542, 61843, 30550, 59309], [63947, 34815, 12683, 37570], [22893, 64883, 9720, 29596], [65232, 61805, 51913, 22070], [370, 37774, 37018, 56719], [16219, 5382, 8161, 50752], [5205, 61868, 31539, 35545], [34067, 45662, 13931, 3145], [33545, 61801, 54226, 1924], [39553, 41344, 46718, 21263], [8009, 39856, 37417, 16644], [47532, 29732, 16948, 5013], [4446, 41377, 48478, 40112], [18849, 50063, 62997, 739], [37359, 40018, 20298, 39005], [9959, 64973, 40938, 30555], [3885, 14415, 26022, 12354], [300, 38771, 25795, 22838], [62158, 45096, 11871, 20234], [29762, 193, 7952, 56673], [20432, 57322, 24474, 55320], [43806, 43427, 5020, 61319], [57651, 49998, 4918, 15271], [568, 22199, 17757, 32058], [9860, 12312, 13025, 26125], [8003, 18637, 34367, 10618], [60343, 42833, 42806, 37088], [20435, 21772, 32974, 21663], [48484, 12088, 45714, 3955], [39999, 64378, 8051, 5823], [60439, 91, 23129, 27935], [38852, 42479, 34671, 767], [22960, 42257, 29346, 50635], [36878, 11612, 62365, 33904], [52086, 54175, 46065, 9643], [17455, 45938, 36041, 9195], [25444, 50767, 47701, 54919], [61784, 64911, 40592, 55949], [24231, 12260, 56445, 58315], [8855, 44773, 51635, 47528], [3027, 4246, 35420, 49362], [6708, 26871, 44187, 17879], [59396, 28777, 28217, 61111], [58073, 5396, 51389, 15622], [1895, 31921, 38944, 40092], [46575, 44767, 2897, 25968], [37896, 14726, 17685, 37151], [3782, 48186, 33951, 31462], [65150, 41066, 16619, 15283], [42590, 26670, 40331, 46190], [17238, 41907, 8953, 36303], [22439, 22626, 44762, 30653], [53773, 20740, 16394, 61854], [38159, 58477, 41800, 50024], [62084, 59001, 52576, 40689], [7475, 54736, 55380, 59548], [33442, 35768, 30684, 23763], [59488, 33774, 64376, 42928], [38157, 50066, 16446, 30340], [15186, 20461, 61551, 24483], [18481, 7104, 31425, 36341], [6295, 7710, 7930, 11696], [40098, 43739, 28132, 21636], [51076, 22675, 17720, 47719], [51035, 17618, 18787, 21533], [34814, 29926, 26500, 59657], [49919, 63177, 39203, 57320], [56437, 3326, 42782, 60645], [58896, 54559, 36821, 24569], [17941, 6294, 37913, 33768], [20673, 18417, 1035, 22818], [17697, 15833, 29966, 63869], [22231, 47215, 54466, 20608], [36208, 22215, 4443, 42974], [33172, 34643, 17068, 27282], [15940, 63767, 28407, 63365], [56329, 65200, 64658, 8805], [35415, 63418, 51428, 6111], [7608, 2546, 42562, 36865], [37829, 29112, 19475, 36864], [21829, 29998, 47055, 47410], [23036, 46846, 57217, 41137], [62146, 30474, 56614, 36593], [60725, 53182, 42233, 1345], [50480, 30911, 4193, 40545], [35570, 37725, 32384, 45942], [44806, 8293, 54648, 152], [26311, 23572, 37325, 12753], [44189, 41753, 61359, 16655], [50347, 58134, 62018, 48632], [32464, 22371, 54619, 40588], [37736, 59811, 11243, 56850], [9510, 36608, 8149, 19712], [43512, 3764, 14080, 51814], [8056, 9465, 14806, 12067], [62744, 51213, 31000, 27930], [2281, 13347, 18745, 57242], [14732, 59080, 5406, 60354], [25877, 41233, 11176, 972], [53123, 59456, 53303, 54081], [45004, 23284, 46546, 14460], [40583, 8848, 20831, 48034], [36423, 1523, 65143, 29256], [8794, 21085, 58730, 19809], [23869, 36256, 38460, 9774], [3778, 19746, 39689, 23016], [40030, 46987, 23378, 1373], [61337, 13588, 32435, 33458], [52859, 38583, 38090, 54016], [5429, 52490, 45953, 53084], [23164, 37278, 19894, 65261], [58783, 30011, 16211, 16752], [35695, 64734, 43328, 24302], [518, 29968, 61873, 19665], [20160, 29765, 13701, 18976], [40876, 56255, 54113, 5240], [34652, 53569, 56327, 28418], [22178, 55525, 8238, 10602], [12005, 39923, 26521, 11005], [18717, 64149, 55662, 31439], [11373, 2747, 47628, 26520], [8482, 9929, 62843, 13510], [46558, 53766, 57786, 22326], [21019, 86, 32042, 8197], [35799, 53335, 23509, 15850], [13484, 32070, 3465, 5861], [42723, 47543, 62444, 10687], [56542, 23099, 54048, 18268], [32392, 49947, 8453, 6308], [12392, 44902, 29716, 574], [26583, 4633, 28936, 5396], [65273, 55254, 57329, 58531], [22327, 34824, 53669, 424], [48879, 55906, 51022, 4532], [13126, 27047, 52237, 58759], [10862, 6058, 12912, 8183], [53355, 9331, 10692, 22862], [4821, 35227, 7601, 63219], [54218, 29458, 50660, 49194], [30904, 24779, 489, 59138], [61704, 27237, 65339, 28560], [64132, 17895, 31346, 17012], [18866, 15031, 2020, 53749], [20685, 61783, 53861, 7302], [11292, 56707, 52851, 14742], [9405, 38962, 47618, 36479], [24020, 805, 60529, 47629], [64603, 5672, 48504, 40604], [54949, 38637, 25689, 56040], [54136, 45473, 2131, 57022], [17219, 19713, 10706, 42130], [24092, 55952, 47615, 31717], [43568, 49732, 24238, 41929], [1348, 62687, 48296, 560], [18630, 49121, 49854, 16693], [15474, 17290, 49356, 5743], [16122, 35560, 46490, 14178], [18256, 35089, 35404, 59538], [24293, 42132, 2897, 10820], [65411, 32153, 64811, 32974], [54826, 58911, 31174, 48024], [20532, 33830, 36634, 28284], [56776, 7102, 45790, 5707], [25915, 19804, 12261, 62401], [29154, 60823, 59682, 16569], [6208, 48763, 23311, 21791], [6161, 50379, 10919, 9475], [17222, 19222, 13319, 43757], [51229, 63945, 38587, 36861], [2140, 22839, 37355, 28924], [21568, 24465, 24106, 32633], [54219, 21622, 55775, 17731], [51469, 79, 55102, 61810], [4664, 48328, 50430, 57297], [22780, 32741, 64354, 48269]]
+let circ : List<Int> = [17, 15, 41, 16, 2, 28, 13, 13, 39, 18, 34, 20]
+
+# --- demo: commit four leaves, open leaf 2, verify, then tamper --------------
+let l0 : List<List<Int>> = hash1(arc, circ, glit(10))
+let l1 : List<List<Int>> = hash1(arc, circ, glit(20))
+let l2 : List<List<Int>> = hash1(arc, circ, glit(30))
+let l3 : List<List<Int>> = hash1(arc, circ, glit(40))
+let n01 : List<List<Int>> = compress(arc, circ, l0, l1)
+let n23 : List<List<Int>> = compress(arc, circ, l2, l3)
+let root : List<List<Int>> = compress(arc, circ, n01, n23)
+
+# inclusion proof for leaf 2 (index 2): siblings are l3 (level 0), then n01 (level 1)
+let path2 : List<List<List<Int>>> = [l3, n01]
+let ok : Bool = mverify(arc, circ, l2, 2, path2, root)
+# a leaf NOT in the tree (hash of 99) must fail against the same path/root
+let bad_leaf : Bool = mverify(arc, circ, hash1(arc, circ, glit(99)), 2, path2, root)
+# a tampered root must fail
+let bad_root : Bool = mverify(arc, circ, l2, 2, path2, n01)
+
+let _ : String = print("--- frost_goldilocks_merkle.glass: a Poseidon Merkle commitment over Goldilocks ---")
+let _ : String = print("compression = Plonky2's two_to_one (permute [x0..3, y0..3, 0,0,0,0], take 4); leaves =")
+let _ : String = print("hash_no_pad of a field element — both built on the vector-verified Poseidon permutation.")
+let _ : String = print("")
+let _ : String = print("  committed 4 leaves -> root (low limb) = " ++ show1(wnth(root, 0)))
+let _ : String = print("  inclusion proof for leaf 2 verifies:        " ++ show_b(ok))
+let _ : String = print("  a leaf not in the tree is rejected:         " ++ show_b(bad_leaf == false))
+let _ : String = print("  a tampered root is rejected:                " ++ show_b(bad_root == false))
+let _ : String = print("")
+let _ : String = print("the verified hash is now load-bearing: a real commitment with sound inclusion proofs.")
+
+"frost_goldilocks_merkle v0.1 — a Poseidon (Plonky2-exact) Merkle commitment over Goldilocks, with inclusion proofs"
