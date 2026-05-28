@@ -56,7 +56,7 @@ What is **not** production-grade is the **primitives and parameters**:
 |---|---|---|
 | **Base field** | Baby Bear (2³¹−2²⁷+1) is a genuine NTT-friendly prime; **real prism-parsed Glass source** is now proven over **Goldilocks (2⁶⁴)** by a full cryptographic STARK — gate quotient `Q=G/Z_H`, embedded in F_{p²}, blinded, Merkle-committed, F_{p²}-challenged (Fiat-Shamir), query-verified (`prove_source_goldilocks_zk.glass`, the arithmetic subset; `prove_circuit_goldilocks_zk.glass` for hand-built circuits) | The Goldilocks source path covers the **arithmetic subset** (`+`/`-`/`*`/`let`/calls); the *general* bridge (`prove_source_adt_zk`, with `==`/`match`/ADTs) still computes over Baby Bear (values capped near 2³¹). Extending the Goldilocks path to those (is-zero inverse-hint wires) + the heavier circuits is the remaining step. |
 | **Challenge space** | FRI challenges live in **F_{p⁴} ≈ 2¹²⁴** | This part *is* cryptographic-width: a cheating prover guesses a fold challenge with prob ~2⁻¹²⁴. The "toy" is the value range, not the challenge space. |
-| **Hash** | MiMC (x⁵/x⁷ S-box) and a real-shaped **Poseidon** (x⁷, full/partial rounds, MDS); round constants now from a **Grain LFSR** following the spec's structure (`frost_grain.glass` — init layout, taps b₀⊕b₁₃⊕b₂₃⊕b₃₈⊕b₅₁⊕b₆₂, 160-round warm-up, rejection sampling) | Constants are reproducible/nothing-up-my-sleeve, **not** hand-picked — a real upgrade. But the LFSR is **not yet cross-checked against the official reference test vectors**, the MDS/round-counts are not analyzed, and the hash is **unaudited**. Most frost files still hash with MiMC; the Grain Poseidon is not yet wired into the prove bridge. |
+| **Hash** | **Poseidon over Goldilocks, byte-identical to Plonky2** — the de-facto standard Goldilocks ZK hash — verified against **Plonky2's own published test vectors** (all four pass): t=12, R_F=8, R_P=22, S-box x⁷, Plonky2's exact MDS and all 360 round constants (the Poseidon reference's "hadeshash" Grain-LFSR constants), reproduced in `frost_goldilocks_poseidon.glass` and dogfooded byte-identical. (Also `frost_grain.glass`: a from-scratch Grain-LFSR generator + domain-separated transcript over Baby Bear.) | This settles "is it the standard hash" for the **primitive**: it matches a production reference exactly. **But it is not yet *integrated*** — the frost/prove STARKs still hash with the educational MiMC for Merkle + Fiat-Shamir; wiring this Poseidon in is the next step. And matching a reference is **not an audit**: the hash itself is unaudited here. |
 | **Fiat-Shamir** | Transcript-bound challenges + query amplification (soundness ~2⁻ᴷ); a **domain-separated transcript** (`frost_grain.glass` — `tr_absorb`/`tr_challenge` tag every message/squeeze by role) | The transcript is hashed with the educational hash above; domain separation is implemented and demonstrated (determinism, role separation, history-binding) but there is **no formal transcript-separation proof**, and it isn't yet wired into the prove bridge's challenges. |
 | **Goldilocks stack** | A complete sound + committed + zero-knowledge FRI over Goldilocks (`frost_goldilocks_zk`), int64-safe via limbs | A degree-2 extension F_{p²} ≈ 2¹²⁸ challenge space, but reduced rounds in the hash and **not wired into the source→ZK bridge** (that's roadmap R1b). |
 | **ZK / blinding** | Trace/codeword blinding genuinely randomizes openings; two seeds → different openings | Demonstrates the *zero-knowledge property mechanism*; not a formal simulator-based proof of ZK. |
@@ -86,11 +86,12 @@ Roughly, in order:
 1. **Real field through the bridge** — swap Baby Bear for Goldilocks end-to-end so
    values aren't capped at 2³¹ (roadmap **R1b**; the field and FRI exist, the
    integration is the work).
-2. **A vetted hash** — Poseidon with the standard Grain-LFSR constants (or a
-   reviewed alternative), with the MDS and round counts analyzed (roadmap **R2**).
-   *Partly underway:* `frost_grain.glass` generates the constants from a Grain LFSR
-   following the spec's structure. Still to do: cross-check against the official
-   reference vectors, analyze the MDS/round counts, and wire it into the bridge.
+2. **A vetted hash** — Poseidon with standard constants, MDS, and round counts
+   (roadmap **R2**). *Largely done at the primitive level:* `frost_goldilocks_poseidon.glass`
+   is **byte-identical to Plonky2's Goldilocks Poseidon** and verified against its
+   published test vectors — a real, standard instance, not a hand-rolled one. Still
+   to do: **wire it into the prove/frost STARKs** (they still hash with MiMC), and
+   note that matching a reference is not a substitute for an audit.
 3. **Fiat-Shamir rigor** — transcript domain separation and a soundness argument.
 4. **Parameter analysis** — concrete soundness/ZK bounds for the chosen field,
    extension, query count, and blinding degree.
