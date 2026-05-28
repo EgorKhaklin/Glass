@@ -243,6 +243,18 @@ fn commit_g(cw: List<G2>, dom: List<List<Int>>, acc: List<Layer>, finv2: List<In
 fn transcript_seed_g(layers: List<Layer>, acc: List<Int>) : List<Int> = match layers { [] => acc; [Layer(cw, dom, root, beta), ...rest] => transcript_seed_g(rest, hashg(acc, root)) }
 fn q_low(h: List<Int>, dsize: Int) : Int = match h { [] => 0; [x, ...t] => x % dsize }
 fn sample_queries_g(seed: List<Int>, count: Int, dsize: Int) : List<Int> = if count <= 0 then [] else [q_low(hashg(seed, glit(count)), dsize)] ++ sample_queries_g(seed, count - 1, dsize)
+# --- grinding (proof-of-work on the Fiat-Shamir query seed) -------------------
+# The prover must find a nonce whose hash with the transcript seed clears the low
+# G_BITS bits (here 12). An adversary trying to grind a favorable set of query
+# positions must therefore redo 2^12 hashing per attempt — adding 12 bits to the
+# query-phase soundness (the standard STARK trick; production uses 20-30 bits).
+# Two-level search keeps recursion depth bounded (~chunk + #chunks), so neither the
+# interpreter's limit nor the native C stack is at risk.
+fn pow_ok(h: List<Int>) : Bool = match trim(h) { [] => true; [x, ...t] => x % 4096 == 0 }
+fn grind_in(seed: List<Int>, base: Int, i: Int) : Int =
+  if i >= 64 then 0 - 1 else (if pow_ok(hashg(seed, glit(base * 64 + i))) then base * 64 + i else grind_in(seed, base, i + 1))
+fn grind_out(seed: List<Int>, base: Int) : Int = let r : Int = grind_in(seed, base, 0) in if r >= 0 then r else grind_out(seed, base + 1)
+fn grind(seed: List<Int>) : Int = grind_out(seed, 0)
 fn next_val2(rest: List<Layer>, final: List<G2>, j: Int) : G2 = match rest { [] => nth2(final, j); [Layer(cw, dom, root, beta), ...more] => nth2(cw, j) }
 fn verify_query_g(layers: List<Layer>, final: List<G2>, p: Int, finv2: List<Int>) : Bool =
   match layers { [] => true;
@@ -262,8 +274,11 @@ fn blind_g(cw: List<G2>, coeffs: List<List<Int>>, dom: List<List<Int>>, i: Int) 
 fn prove_stark(gates: List<Gate>, w: List<List<Int>>, seed: Int) : Bool =
   let ecw : List<G2> = blind_g(embed_cw(q_cw(gates, w)), rand_coeffs(seed, 0, 16), coset64(0), 0) in
   match commit_g(ecw, coset64(0), [], finv([2])) { (layers, final) =>
-    let faults : Int = count_catches_g(layers, final, sample_queries_g(transcript_seed_g(layers, []), 8, 64), finv([2])) in
-    is_const2(final) && faults == 0 }
+    let base_seed : List<Int> = transcript_seed_g(layers, []) in
+    let nz : Int = grind(base_seed) in                                   # proof-of-work: 12 bits
+    let ground : List<Int> = hashg(base_seed, glit(nz)) in               # the PoW-cleared query seed
+    let faults : Int = count_catches_g(layers, final, sample_queries_g(ground, 8, 64), finv([2])) in
+    is_const2(final) && faults == 0 && pow_ok(ground) }
 fn stark_root(gates: List<Gate>, w: List<List<Int>>, seed: Int) : List<Int> =
   merkle_root_g(blind_g(embed_cw(q_cw(gates, w)), rand_coeffs(seed, 0, 16), coset64(0), 0))
 
@@ -367,6 +382,7 @@ let badm : Bool = gprove(msrc, mins, glit(12345), 11111)     # wrong claim -> RE
 let claimb : Build = build_claim(msrc, mins, mres)
 let rt1 : List<Int> = match claimb { Build(n, gs, w) => stark_root(gs, w, 11111) }
 let rt2 : List<Int> = match claimb { Build(n, gs, w) => stark_root(gs, w, 22222) }
+let gnonce : Int = grind(glit(123456))   # a sample 12-bit proof-of-work nonce
 
 let _ : String = print("--- prove_source_goldilocks_zk.glass: real Glass SOURCE -> a ZK proof over Goldilocks ---")
 let _ : String = print("source (prism-parsed) -> cgen (multi-input, ==, if) -> committed, F_{p^2}-challenged, query-verified, blinded STARK.")
@@ -376,8 +392,10 @@ let _ : String = print("  a=100000, b=100000, c=99  ->  result = " ++ bn_dec(mre
 let _ : String = print("  honest claim         -> Merkle-committed, Fiat-Shamir queries verify: " ++ show_a(okm))
 let _ : String = print("  wrong claim (R=12345) -> rejected (the output==claim assert breaks): " ++ show_a(badm))
 let _ : String = print("  two blinding seeds give different commitments (ZK): " ++ show_b(bn_eq(rt1, rt2) == false))
+let _ : String = print("  FRI: 8 queries + 12-bit grinding (sample PoW nonce for seed 123456 = " ++ int_to_string(gnonce) ++ ")")
+let _ : String = print("       -> ~15-16 bit query soundness, up from ~4; 80-bit needs more queries + bigger blowup (docs/parameters.md)")
 let _ : String = print("")
 let _ : String = print("multi-input: each named argument lowers to a PRIVATE wire; the proof is over 2^64, not toy 2^31.")
 let _ : String = print("(arithmetic + let + calls + == + if + multi-input today; match / ADTs over bignum are the next step.)")
 
-"prove_source_goldilocks_zk v0.3 — real prism-parsed Glass source -> Goldilocks STARK (multi-input, ==, if)"
+"prove_source_goldilocks_zk v0.4 — Goldilocks STARK (multi-input, ==, if; 8 queries + 12-bit grinding)"

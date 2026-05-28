@@ -64,8 +64,9 @@ What is **not** production-grade is the **primitives and parameters**:
 **The parameters are now analyzed** — see [`parameters.md`](parameters.md) for the
 concrete bit-security of both paths (the short version: the challenge space is
 cryptographic-width ≈2¹²⁴–2¹²⁸, but the FRI *query phase* is demonstration-grade —
-**~16 bits** for Baby Bear, **~3–4 bits** for Goldilocks — and §4 there gives the
-recipe to 80/128-bit). Still **no external audit and no constant-time guarantees.**
+**~16 bits** for Baby Bear, and **~15–16 bits** for Goldilocks (8 queries + a
+12-bit grinding/proof-of-work, up from ~4) — and §4 there gives the recipe to
+80/128-bit). Still **no external audit and no constant-time guarantees.**
 Several demos run *reduced rounds/queries* explicitly so they dogfood on the
 interpreter; the full-strength versions run the same way, just heavier.
 
