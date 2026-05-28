@@ -39,7 +39,7 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Shipped (through v5.27)
+## Shipped (through v5.28)
 
 - **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
 - **Pane** — a query language in Glass.
@@ -361,7 +361,11 @@ three under-invested axes — *realness*, *usability*, and *convergence* — on 
     contract. Prove in ZK that the committed model answer satisfied P — valid bit ACCEPTs, an
     answer violating the refinement is *unprovable*, the answer stays hidden. *Untrusted AI
     output, contained by its type, proven* — the thing the type system was designed for, made a
-    proof. (Realizes LANG.md §"Refinement types as trust boundary".)
+    proof. (Realizes LANG.md §"Refinement types as trust boundary".) ✅ **Now in *full* ZK**
+    ([`trust_prove.glass`](../examples/prove/trust_prove.glass)): the same check expressed as source and
+    proven through the blinded F_{p⁴} FRI STARK (`glass prove`, succinct + zero-knowledge), not just
+    sound RLC — `answer=1` → R=1 ACCEPT, the answer stays a private witness. Phase-3 lowering done for
+    the Inference/trust-boundary gadget; `Random`/`State` remain standalone sound-RLC.
 - **Substrate — Performance (P).** The interpreter dogfood is now the bottleneck
   (heavy circuits take ~10 min). A faster reference (bytecode/closure compilation) or
   promoting `native_glassc` to a co-equal dogfood oracle unblocks Tracks E and R.

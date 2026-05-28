@@ -4,8 +4,10 @@
 ([`prove_inference_zk.glass`](../examples/prove/prove_inference_zk.glass),
 [`prove_random_zk.glass`](../examples/prove/prove_random_zk.glass),
 [`prove_state_zk.glass`](../examples/prove/prove_state_zk.glass),
-[`prove_effects_zk.glass`](../examples/prove/prove_effects_zk.glass)); the remaining work is
-lowering the sound gadgets to the FRI STARK (full ZK).*
+[`prove_effects_zk.glass`](../examples/prove/prove_effects_zk.glass)). The Inference/trust-boundary
+gadget is also lowered to the **full** blinded F_{p⁴} FRI STARK via the bridge
+([`trust_prove.glass`](../examples/prove/trust_prove.glass), succinct + ZK); lowering the `Random`/`State`
+gadgets the same way is the remaining work.*
 
 ## The tension
 

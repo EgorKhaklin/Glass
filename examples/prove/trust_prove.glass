@@ -1,0 +1,28 @@
+# The trust boundary, in FULL zero-knowledge — run:
+#
+#   glass prove examples/prove/trust_prove.glass answer=1 nonce=42
+#
+# This is the C3 trust-boundary check (a model output, contained by its
+# refinement) lowered to the *succinct + zero-knowledge* blinded F_{p^4} FRI STARK
+# — the real prover, not the standalone sound-RLC demo (prove_trust_boundary_zk).
+# `answer` is the model's output (a PRIVATE oracle); `nonce` hides it. The public
+# commitment C (baked below) pins the model interaction. The proof attests, in zero
+# knowledge, that the committed answer (1) opens to C and (2) is a bit
+# (`answer * (answer - 1) == 0`, the refinement `result == 0 || result == 1`) —
+# revealing C and "the contract held", never the answer.
+#
+# The proof reports R *honestly* and bound to the computation, so R = 1 is a
+# zero-knowledge certificate that the model's committed answer met the contract.
+# A non-conforming answer yields R = 0 (and the prover cannot forge R = 1): 5 fails
+# the bit check; even another bit (0) fails because C binds the *specific* answer.
+#   answer=1 -> R = 1 (contract held);  answer=5 -> R = 0;  answer=0 -> R = 0.
+
+# a tiny arithmetic commitment (binding; the bridge proves it gate-for-gate in ZK)
+fn mix(a: Int, b: Int) : Int = let s : Int = a + b in s * s * s + a * 7 + b * 13
+fn commit(prompt: Int, answer: Int, nonce: Int) : Int = mix(mix(prompt, answer), nonce)
+
+# the trust boundary: the committed model answer must open to C AND be a bit
+fn check(answer: Int, nonce: Int) : Int =
+  if (commit(7, answer, nonce) == 233749460) && (answer * (answer - 1) == 0) then 1 else 0
+
+check(answer, nonce)      # = 1 for the honest (answer=1, nonce=42); claim R = 1
