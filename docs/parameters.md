@@ -27,7 +27,7 @@ answer is "weak," it says so.
 | FRI domain (coset) | 4·n | 64 |
 | Tested degree | < n | < 32 |
 | **Rate ρ = deg/domain** | **≈ 1/4** | **= 1/2** |
-| **FRI queries ℓ** | **24** | **8** |
+| **FRI queries ℓ** | **24** | **32** |
 | Fold challenge (Fiat-Shamir) | F_{p⁴} ≈ 2¹²⁴ | F_{p²} ≈ 2¹²⁸ |
 | Hash | MiMC, 16 rounds (x⁵) | MiMC, 4 rounds (x⁷) |
 | ZK blinding | random low-degree mask | degree-16 mask |
@@ -82,17 +82,16 @@ Total: **ε ≈ ε_commit + (1 − δ)^ℓ ≈ (1 − δ)^ℓ.**
   input can simply be enumerated, independent of the proof. That is the dominant
   weakness of this path.
 
-**Goldilocks path — ρ = 1/2, ℓ = 8, + 12-bit grinding.**
-- Unique decoding: survival (1+ρ)/2 = 3/4 → (3/4)⁸ ≈ 2⁻³·³; **+12 grind → ~2⁻¹⁵**.
-- List decoding: survival √ρ ≈ 0.707 → 0.707⁸ = 2⁻⁴; **+12 grind → ~2⁻¹⁶**.
-- → **~15–16 bits** of query soundness (8 queries + a 12-bit proof-of-work on the
+**Goldilocks path — ρ = 1/2, ℓ = 32, + 12-bit grinding.**
+- Unique decoding: survival (1+ρ)/2 = 3/4 → (3/4)³² ≈ 2⁻¹³·³; **+12 grind → ~2⁻²⁵**.
+- List decoding: survival √ρ ≈ 0.707 → 0.707³² = 2⁻¹⁶; **+12 grind → ~2⁻²⁸**.
+- → **~25–28 bits** of query soundness (32 queries + a 12-bit proof-of-work on the
   Fiat-Shamir query seed, the standard STARK trick — an adversary must redo 2¹²
-  hashing per attempt to grind favorable query positions). Up from ~4 bits with no
-  grind. Grinding is the *cheap* lever — it adds bits for a flat 2¹² prover hashes.
-  Raising the query count is the other lever, but on the **interpreter** it is
-  expensive: query verification re-derives each Merkle path from scratch
-  (`merkle_path_g` rebuilds the layer tree per call), so it scales poorly with ℓ
-  until that is memoized (a noted perf item). Hence grinding carries this step.
+  hashing per attempt to grind favorable query positions). Up from ~4 bits with 8
+  queries / no grind. Both levers are now in play: grinding (a flat 2¹² prover
+  hashes) and the higher query count — the latter is cheap because the FRI layer
+  Merkle trees are now **memoized** (built once in `commit_g`, paths read from the
+  stored levels), so raising ℓ no longer rebuilds a tree per query.
 
 Neither path is cryptographically sound today (80+ bits). The honest one-line
 summary: **the challenge space is real; the query phase is hardened with grinding
@@ -121,12 +120,13 @@ why the demos ship at low parameters: the reference interpreter would otherwise
 take hours per proof. The levers, in priority order:
 
 1. **Lower the rate** (bigger blowup) — the most efficient bits-per-query.
-2. **More queries** — linear in soundness, but currently *expensive on the
-   interpreter* because `merkle_path_g` rebuilds each layer's tree per query; a
-   one-time perf item (memoize the committed trees) unlocks raising ℓ cheaply.
+2. **More queries** — linear in soundness. Now cheap on the Goldilocks path: the
+   committed Merkle trees are **memoized** (built once in `commit_g`, paths read
+   from stored levels), so raising ℓ no longer rebuilds a tree per query. **Applied
+   today: 8 → 32 queries.**
 3. **Grinding** — a flat `+g` bits for `2^g` prover hashes (standard in
-   production STARKs); cheap on proof size and verification. **Applied today (g=12)
-   on the Goldilocks path** — the lever that doesn't wait on the perf item above.
+   production STARKs); cheap on proof size and verification. **Applied (g=12) on the
+   Goldilocks path.**
 4. **A vetted hash** (the verified Goldilocks Poseidon, already built — see
    `frost_goldilocks_poseidon.glass`) wired into the Merkle/transcript, so the
    commitments rest on a standard permutation rather than the educational MiMC.

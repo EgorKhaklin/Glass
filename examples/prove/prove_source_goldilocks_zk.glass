@@ -235,12 +235,31 @@ fn fold_pair2(fx: G2, fmx: G2, x: List<Int>, beta: G2, finv2: List<Int>) : G2 =
 fn fold_at2(cw: List<G2>, dom: List<List<Int>>, beta: G2, finv2: List<Int>, i: Int, half: Int) : List<G2> =
   if i >= half then [] else [fold_pair2(nth2(cw, i), nth2(cw, i + half), wnth(dom, i), beta, finv2)] ++ fold_at2(cw, dom, beta, finv2, i + 1, half)
 fn beta_of_root_g(root: List<Int>) : G2 = G2(hashg(root, glit(101)), hashg(root, glit(102)))
-type Layer = | Layer(List<G2>, List<List<Int>>, List<Int>, G2)
+# --- memoized Merkle tree: build every level ONCE, read roots/paths from it ----
+# Query verification used to recompute pad_pow2_g(leaf_hashes_g(cw)) and rebuild
+# every level per query (merkle_path_g) — O(queries · tree). Instead build the full
+# tree (list of levels, level 0 = padded leaf hashes, last = [root]) once per FRI
+# layer, store it in the Layer, and pull sibling paths straight out. Byte-identical
+# (same hashes), just not recomputed. This unblocks raising the FRI query count.
+fn wnth3(xs: List<List<List<Int>>>, i: Int) : List<List<Int>> = match xs { [] => []; [x, ...r] => if i == 0 then x else wnth3(r, i - 1) }
+fn l3len(xs: List<List<List<Int>>>) : Int = match xs { [] => 0; [x, ...r] => 1 + l3len(r) }
+fn build_levels_g(level: List<List<Int>>, acc: List<List<List<Int>>>) : List<List<List<Int>>> =
+  if llen(level) <= 1 then acc ++ [level] else build_levels_g(level_up_g(level), acc ++ [level])
+fn merkle_levels_g(cw: List<G2>) : List<List<List<Int>>> = build_levels_g(pad_pow2_g(leaf_hashes_g(cw)), [])
+fn root_of_levels(levels: List<List<List<Int>>>) : List<Int> = match wnth3(levels, l3len(levels) - 1) { [] => []; [r, ...t] => r }
+fn path_of_levels(levels: List<List<List<Int>>>, li: Int, index: Int) : List<List<Int>> =
+  if li >= l3len(levels) - 1 then []
+  else let level : List<List<Int>> = wnth3(levels, li) in
+       let sib : List<Int> = if index % 2 == 0 then wnth(level, index + 1) else wnth(level, index - 1) in
+       [sib] ++ path_of_levels(levels, li + 1, index / 2)
+fn merkle_path_levels(levels: List<List<List<Int>>>, index: Int) : List<List<Int>> = path_of_levels(levels, 0, index)
+type Layer = | Layer(List<G2>, List<List<Int>>, List<Int>, G2, List<List<List<Int>>>)
 fn commit_g(cw: List<G2>, dom: List<List<Int>>, acc: List<Layer>, finv2: List<Int>) : (List<Layer>, List<G2>) =
   if len(cw) <= 2 then (acc, cw)
-  else let root : List<Int> = merkle_root_g(cw) in let beta : G2 = beta_of_root_g(root) in let half : Int = len(cw) / 2 in
-    commit_g(fold_at2(cw, dom, beta, finv2, 0, half), sqd(dom, 0, half), acc ++ [Layer(cw, dom, root, beta)], finv2)
-fn transcript_seed_g(layers: List<Layer>, acc: List<Int>) : List<Int> = match layers { [] => acc; [Layer(cw, dom, root, beta), ...rest] => transcript_seed_g(rest, hashg(acc, root)) }
+  else let levels : List<List<List<Int>>> = merkle_levels_g(cw) in let root : List<Int> = root_of_levels(levels) in
+    let beta : G2 = beta_of_root_g(root) in let half : Int = len(cw) / 2 in
+    commit_g(fold_at2(cw, dom, beta, finv2, 0, half), sqd(dom, 0, half), acc ++ [Layer(cw, dom, root, beta, levels)], finv2)
+fn transcript_seed_g(layers: List<Layer>, acc: List<Int>) : List<Int> = match layers { [] => acc; [Layer(cw, dom, root, beta, levels), ...rest] => transcript_seed_g(rest, hashg(acc, root)) }
 fn q_low(h: List<Int>, dsize: Int) : Int = match h { [] => 0; [x, ...t] => x % dsize }
 fn sample_queries_g(seed: List<Int>, count: Int, dsize: Int) : List<Int> = if count <= 0 then [] else [q_low(hashg(seed, glit(count)), dsize)] ++ sample_queries_g(seed, count - 1, dsize)
 # --- grinding (proof-of-work on the Fiat-Shamir query seed) -------------------
@@ -255,14 +274,14 @@ fn grind_in(seed: List<Int>, base: Int, i: Int) : Int =
   if i >= 64 then 0 - 1 else (if pow_ok(hashg(seed, glit(base * 64 + i))) then base * 64 + i else grind_in(seed, base, i + 1))
 fn grind_out(seed: List<Int>, base: Int) : Int = let r : Int = grind_in(seed, base, 0) in if r >= 0 then r else grind_out(seed, base + 1)
 fn grind(seed: List<Int>) : Int = grind_out(seed, 0)
-fn next_val2(rest: List<Layer>, final: List<G2>, j: Int) : G2 = match rest { [] => nth2(final, j); [Layer(cw, dom, root, beta), ...more] => nth2(cw, j) }
+fn next_val2(rest: List<Layer>, final: List<G2>, j: Int) : G2 = match rest { [] => nth2(final, j); [Layer(cw, dom, root, beta, levels), ...more] => nth2(cw, j) }
 fn verify_query_g(layers: List<Layer>, final: List<G2>, p: Int, finv2: List<Int>) : Bool =
   match layers { [] => true;
-    [Layer(cw, dom, root, beta), ...rest] =>
+    [Layer(cw, dom, root, beta, levels), ...rest] =>
       let half : Int = len(cw) / 2 in let j : Int = p % half in
       let lx : G2 = nth2(cw, j) in let lmx : G2 = nth2(cw, j + half) in
-      let ok1 : Bool = merkle_verify_g(lx, j, merkle_path_g(cw, j), root) in
-      let ok2 : Bool = merkle_verify_g(lmx, j + half, merkle_path_g(cw, j + half), root) in
+      let ok1 : Bool = merkle_verify_g(lx, j, merkle_path_levels(levels, j), root) in
+      let ok2 : Bool = merkle_verify_g(lmx, j + half, merkle_path_levels(levels, j + half), root) in
       let folded : G2 = fold_pair2(lx, lmx, wnth(dom, j), beta, finv2) in
       if ok1 then if ok2 then if geq2(folded, next_val2(rest, final, j)) then verify_query_g(rest, final, j, finv2) else false else false else false }
 fn count_catches_g(layers: List<Layer>, final: List<G2>, qs: List<Int>, finv2: List<Int>) : Int =
@@ -277,7 +296,7 @@ fn prove_stark(gates: List<Gate>, w: List<List<Int>>, seed: Int) : Bool =
     let base_seed : List<Int> = transcript_seed_g(layers, []) in
     let nz : Int = grind(base_seed) in                                   # proof-of-work: 12 bits
     let ground : List<Int> = hashg(base_seed, glit(nz)) in               # the PoW-cleared query seed
-    let faults : Int = count_catches_g(layers, final, sample_queries_g(ground, 8, 64), finv([2])) in
+    let faults : Int = count_catches_g(layers, final, sample_queries_g(ground, 32, 64), finv([2])) in
     is_const2(final) && faults == 0 && pow_ok(ground) }
 fn stark_root(gates: List<Gate>, w: List<List<Int>>, seed: Int) : List<Int> =
   merkle_root_g(blind_g(embed_cw(q_cw(gates, w)), rand_coeffs(seed, 0, 16), coset64(0), 0))
@@ -392,10 +411,10 @@ let _ : String = print("  a=100000, b=100000, c=99  ->  result = " ++ bn_dec(mre
 let _ : String = print("  honest claim         -> Merkle-committed, Fiat-Shamir queries verify: " ++ show_a(okm))
 let _ : String = print("  wrong claim (R=12345) -> rejected (the output==claim assert breaks): " ++ show_a(badm))
 let _ : String = print("  two blinding seeds give different commitments (ZK): " ++ show_b(bn_eq(rt1, rt2) == false))
-let _ : String = print("  FRI: 8 queries + 12-bit grinding (sample PoW nonce for seed 123456 = " ++ int_to_string(gnonce) ++ ")")
-let _ : String = print("       -> ~15-16 bit query soundness, up from ~4; 80-bit needs more queries + bigger blowup (docs/parameters.md)")
+let _ : String = print("  FRI: 32 queries + 12-bit grinding (sample PoW nonce for seed 123456 = " ++ int_to_string(gnonce) ++ ")")
+let _ : String = print("       -> ~25-28 bit query soundness, up from ~4 (memoized Merkle trees make 32 queries cheap); 80-bit needs a bigger blowup (docs/parameters.md)")
 let _ : String = print("")
 let _ : String = print("multi-input: each named argument lowers to a PRIVATE wire; the proof is over 2^64, not toy 2^31.")
 let _ : String = print("(arithmetic + let + calls + == + if + multi-input today; match / ADTs over bignum are the next step.)")
 
-"prove_source_goldilocks_zk v0.4 — Goldilocks STARK (multi-input, ==, if; 8 queries + 12-bit grinding)"
+"prove_source_goldilocks_zk v0.5 — Goldilocks STARK (multi-input, ==, if; memoized Merkle, 32 queries + 12-bit grinding)"
