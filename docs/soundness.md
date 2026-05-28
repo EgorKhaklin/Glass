@@ -61,9 +61,13 @@ What is **not** production-grade is the **primitives and parameters**:
 | **Goldilocks stack** | A complete sound + committed + zero-knowledge FRI over Goldilocks (`frost_goldilocks_zk`), int64-safe via limbs | A degree-2 extension F_{p²} ≈ 2¹²⁸ challenge space, but reduced rounds in the hash and **not wired into the source→ZK bridge** (that's roadmap R1b). |
 | **ZK / blinding** | Trace/codeword blinding genuinely randomizes openings; two seeds → different openings | Demonstrates the *zero-knowledge property mechanism*; not a formal simulator-based proof of ZK. |
 
-**No parameter analysis, no external audit, no constant-time guarantees.** Several
-demos run *reduced rounds* explicitly so they dogfood on the interpreter; the
-full-strength versions run the same way, just heavier.
+**The parameters are now analyzed** — see [`parameters.md`](parameters.md) for the
+concrete bit-security of both paths (the short version: the challenge space is
+cryptographic-width ≈2¹²⁴–2¹²⁸, but the FRI *query phase* is demonstration-grade —
+**~16 bits** for Baby Bear, **~3–4 bits** for Goldilocks — and §4 there gives the
+recipe to 80/128-bit). Still **no external audit and no constant-time guarantees.**
+Several demos run *reduced rounds/queries* explicitly so they dogfood on the
+interpreter; the full-strength versions run the same way, just heavier.
 
 ---
 
@@ -103,9 +107,11 @@ Roughly, in order:
    published test vectors — a real, standard instance, not a hand-rolled one. Still
    to do: **wire it into the prove/frost STARKs** (they still hash with MiMC), and
    note that matching a reference is not a substitute for an audit.
-3. **Fiat-Shamir rigor** — transcript domain separation and a soundness argument.
-4. **Parameter analysis** — concrete soundness/ZK bounds for the chosen field,
-   extension, query count, and blinding degree.
+3. **Fiat-Shamir rigor** — transcript domain separation (done: `frost_goldilocks_fiat.glass`)
+   and a formal soundness argument (still to do).
+4. **Parameter analysis** — ✅ *done:* [`parameters.md`](parameters.md) gives the
+   concrete bit-security and the recipe to 80/128-bit (lower rate + more queries +
+   grinding). What remains is *applying* those parameters (which costs prover time).
 5. **An external audit.** None of the above replaces this.
 
 ---
