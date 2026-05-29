@@ -18,8 +18,27 @@ Verify the install:
 
 ```bash
 glass --version
-# Glass 5.44.0
+# Glass 5.45.0
 ```
+
+### Native compiler (optional)
+
+Everything above — the interpreter, every bundled example, `glass prove`, the
+REPL — needs only Python. The **self-hosted native compiler**
+(`examples/selfhost/run_native.sh`, `bootstrap_fixpoint.sh`) additionally needs a
+C compiler and the Boehm garbage collector, because it emits C and links `libgc`:
+
+```bash
+# macOS
+brew install bdw-gc
+
+# Linux (Debian/Ubuntu)
+sudo apt-get install libgc-dev
+```
+
+Clang and GCC both work — the build retries without the Clang-only
+`-fbracket-depth` flag when `cc` is GCC. You only need this for the native path;
+the interpreter has no dependency beyond Python.
 
 ## Your first program
 

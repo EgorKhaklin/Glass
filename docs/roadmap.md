@@ -291,8 +291,12 @@ three under-invested axes — *realness*, *usability*, and *convergence* — on 
     `glassc.glass`'s codegen), and the **bootstrap fixpoint still holds byte-identical**
     (the emitted-C self-reproduction is unchanged; only the allocator differs) with the
     suite at 381/381. That same Poseidon prover now runs at **~10 MB instead of OOMing at
-    16 GB**. Poseidon-in-the-prover is **unblocked**; wiring it in as the in-STARK hash
-    (retiring MiMC) is the immediate next step (v5.45). See [`soundness.md`](soundness.md).
+    16 GB**. ✅ **And v5.45 wired it in:** the Goldilocks prover's Merkle + Fiat-Shamir
+    now hash with the vetted Poseidon — **MiMC retired from that prover** (honest ACCEPT /
+    wrong-claim REJECT, dogfooded byte-identical). The shipped demo is reduced (64-pt coset,
+    grind off) for a tolerable interpreter dogfood; full-strength + ZK run native under the
+    GC runtime. The default Baby Bear prover's hash remains separate/educational. See
+    [`soundness.md`](soundness.md).
   - **R3. ✅ DONE.** An honest **soundness ledger** ([`soundness.md`](soundness.md)) —
     separates the strong differential-testing guarantee from the educational-grade
     cryptography, per component, with the path to production-soundness and a clear
