@@ -18,7 +18,7 @@ Verify the install:
 
 ```bash
 glass --version
-# Glass 5.46.1
+# Glass 5.47.0
 ```
 
 ### Native compiler (optional)

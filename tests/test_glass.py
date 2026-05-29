@@ -1097,8 +1097,22 @@ def main() -> int:
             print(f"        stdout: {p.stdout.strip()[-200:]}")
             failures += 1
 
+    print("== statement-binding guard ==")
+    # The FS transcript digest MUST depend on the statement (a different claimed
+    # R or reordered gates -> a different seed). Pin it so the binding can never
+    # silently regress to a no-op — the exact failure mode of the v5.46.1
+    # grinding bug, which lived in an untested path. Digest-only, interpreter, ~secs.
+    rc, out, err = run_file(os.path.join(EX, "prove", "prove_source_goldilocks_bind_test.glass"))
+    bind_ok = (rc == 0) and ("BIND-GUARD PASS" in out)
+    print(f"  {'OK ' if bind_ok else 'FAIL'}  FS digest binds circuit + claimed R")
+    if not bind_ok:
+        print(f"        rc={rc}; expected 'BIND-GUARD PASS' in stdout")
+        if err.strip():
+            print(f"        stderr: {err.strip()[-200:]}")
+        failures += 1
+
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases))
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 1)  # +1: statement-binding guard
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures
