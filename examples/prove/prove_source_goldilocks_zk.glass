@@ -338,7 +338,7 @@ fn sample_queries_g(seed: List<Int>, count: Int, dsize: Int) : List<Int> = if co
 # query-phase soundness (the standard STARK trick; production uses 20-30 bits).
 # Two-level search keeps recursion depth bounded (~chunk + #chunks), so neither the
 # interpreter's limit nor the native C stack is at risk.
-fn pow_ok(h: List<Int>) : Bool = match trim(h) { [] => true; [x, ...t] => x % 1 == 0 }
+fn pow_ok(h: List<Int>) : Bool = match trim(h) { [] => true; [x, ...t] => x % 4096 == 0 }   # 12-bit proof-of-work (2^12=4096): the FS query seed's low 12 bits must be 0
 fn grind_in(seed: List<Int>, base: Int, i: Int) : Int =
   if i >= 64 then 0 - 1 else (if pow_ok(hashg(seed, glit(base * 64 + i))) then base * 64 + i else grind_in(seed, base, i + 1))
 fn grind_out(seed: List<Int>, base: Int) : Int = let r : Int = grind_in(seed, base, 0) in if r >= 0 then r else grind_out(seed, base + 1)
