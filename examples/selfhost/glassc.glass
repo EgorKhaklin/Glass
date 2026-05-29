@@ -38,17 +38,18 @@ fn c_prelude_of(unused: Int) : String =
   "#include <stdint.h>\n" ++
   "#include <string.h>\n" ++
   "#include <stdlib.h>\n" ++
+  "#include <gc.h>\n" ++
   "static char* q_str_concat(char* a, char* b) {\n" ++
   "  long long la = (long long)strlen(a); long long lb = (long long)strlen(b);\n" ++
-  "  char* r = (char*)malloc(la + lb + 1);\n" ++
+  "  char* r = (char*)GC_malloc(la + lb + 1);\n" ++
   "  memcpy(r, a, la); memcpy(r + la, b, lb); r[la + lb] = 0; return r;\n" ++
   "}\n" ++
   "typedef struct q_value { long long magic; char* ctor; long long nf; long long* fields; char** fnames; } q_value_t;\n" ++
   "static q_value_t* q_alloc(char* ctor, long long nf) {\n" ++
-  "  q_value_t* v = (q_value_t*)malloc(sizeof(q_value_t));\n" ++
+  "  q_value_t* v = (q_value_t*)GC_malloc(sizeof(q_value_t));\n" ++
   "  v->magic = 0x5147CAFE5147CAFELL;\n" ++
   "  v->ctor = ctor; v->nf = nf; v->fnames = (char**)0;\n" ++
-  "  v->fields = nf ? (long long*)malloc(nf * sizeof(long long)) : (long long*)0;\n" ++
+  "  v->fields = nf ? (long long*)GC_malloc(nf * sizeof(long long)) : (long long*)0;\n" ++
   "  return v;\n" ++
   "}\n" ++
   "static long long q_field(long long rec, char* name) {\n" ++
@@ -70,14 +71,14 @@ fn c_prelude_of(unused: Int) : String =
   "  return 0;\n" ++
   "}\n" ++
   "static char* q_itos(long long n) {\n" ++
-  "  char* r = (char*)malloc(24); snprintf(r, 24, \"%lld\", n); return r;\n" ++
+  "  char* r = (char*)GC_malloc(24); snprintf(r, 24, \"%lld\", n); return r;\n" ++
   "}\n" ++
   "static char* q_substring(char* s, long long a, long long b) {\n" ++
   "  if (a < 0 || b < 0) { fprintf(stderr, \"glassc: substring: negative index" ++ ("\\" ++ "n") ++ "\"); exit(1); }\n" ++
   "  if (a > b) { fprintf(stderr, \"glassc: substring: start > end" ++ ("\\" ++ "n") ++ "\"); exit(1); }\n" ++
   "  long long n = (long long)strlen(s);\n" ++
   "  if (a > n) a = n; if (b > n) b = n;\n" ++
-  "  long long len = b - a; char* r = (char*)malloc(len + 1);\n" ++
+  "  long long len = b - a; char* r = (char*)GC_malloc(len + 1);\n" ++
   "  memcpy(r, s + a, len); r[len] = 0; return r;\n" ++
   "}\n" ++
   "static long long q_print(char* s) { printf(\"%s" ++ ("\\" ++ "n") ++ "\", s); return (long long)(intptr_t)s; }\n" ++
@@ -108,7 +109,7 @@ fn c_prelude_of(unused: Int) : String =
   "  FILE* f = fopen(path, \"rb\");\n" ++
   "  if (!f) { q_value_t* e = q_alloc(\"Err\", 1); e->fields[0] = (long long)(intptr_t)\"read error: cannot open file\"; return (long long)(intptr_t)e; }\n" ++
   "  fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET); if (sz < 0) sz = 0;\n" ++
-  "  char* buf = (char*)malloc((size_t)sz + 1); size_t got = fread(buf, 1, (size_t)sz, f); buf[got] = 0; fclose(f);\n" ++
+  "  char* buf = (char*)GC_malloc((size_t)sz + 1); size_t got = fread(buf, 1, (size_t)sz, f); buf[got] = 0; fclose(f);\n" ++
   "  q_value_t* ok = q_alloc(\"Ok\", 1); ok->fields[0] = (long long)(intptr_t)buf; return (long long)(intptr_t)ok;\n" ++
   "}\n" ++
   "static long long q_apply1(long long clo, long long arg) {\n" ++
@@ -174,9 +175,9 @@ fn c_prelude_of(unused: Int) : String =
   "  return 0;\n" ++
   "}\n" ++
   "static char* q_slurp(char* path) {\n" ++
-  "  FILE* f = fopen(path, \"rb\"); if (!f) { char* e=(char*)malloc(1); e[0]=0; return e; }\n" ++
+  "  FILE* f = fopen(path, \"rb\"); if (!f) { char* e=(char*)GC_malloc(1); e[0]=0; return e; }\n" ++
   "  fseek(f,0,SEEK_END); long sz=ftell(f); fseek(f,0,SEEK_SET); if (sz<0) sz=0;\n" ++
-  "  char* b=(char*)malloc((size_t)sz+1); size_t g=fread(b,1,(size_t)sz,f); b[g]=0; fclose(f); return b;\n" ++
+  "  char* b=(char*)GC_malloc((size_t)sz+1); size_t g=fread(b,1,(size_t)sz,f); b[g]=0; fclose(f); return b;\n" ++
   "}\n" ++
   "static long long q_write_file(char* path, char* content) {\n" ++
   "  FILE* f = fopen(path, \"wb\");\n" ++
@@ -949,7 +950,7 @@ fn gen_program(p: Program) : String =
               gen_protos(fns) ++
               lm ++ deflifted ++
               defs ++
-              "int main(void) {\n  " ++
+              "int main(void) {\n  GC_INIT();\n  " ++
               sm ++
               "\n  long long _r = (long long)(" ++ rm ++ ");\n" ++
               print_stmt_for(rty) ++
@@ -975,7 +976,8 @@ let result : String =
           # output); it is Clang-only, so if cc rejects it (e.g. GCC), retry without it.
           match run_command("cc",
                  ["/tmp/glassc_out.c", "-o", "/tmp/glassc_bin",
-                  "-O2", "-Wno-int-conversion", "-fbracket-depth=100000"]) {
+                  "-O2", "-Wno-int-conversion", "-fbracket-depth=100000",
+                  "-I/opt/homebrew/include", "-L/opt/homebrew/lib", "-lgc"]) {
             Ok(ccres) =>
               match ccres {
                 (code, so, se) =>
@@ -983,7 +985,8 @@ let result : String =
                   else
                     match run_command("cc",
                            ["/tmp/glassc_out.c", "-o", "/tmp/glassc_bin",
-                            "-O2", "-Wno-int-conversion"]) {
+                            "-O2", "-Wno-int-conversion",
+                            "-I/opt/homebrew/include", "-L/opt/homebrew/lib", "-lgc"]) {
                       Ok(ccres2) =>
                         match ccres2 {
                           (code2, so2, se2) =>

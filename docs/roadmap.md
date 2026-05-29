@@ -283,16 +283,16 @@ three under-invested axes — *realness*, *usability*, and *convergence* — on 
     history-binding. *Next:* cross-check the constants against the official reference test
     vectors, analyze the MDS/round counts, wire the transcript into the bridge's challenges,
     and give a formal FS-separation argument.
-    ⚠️ **Investigated — the native runtime is the wall, not the structure.** The
-    vetted Poseidon was wired into the prover (a one-function `hashg` swap to the 2-to-1
-    sponge `perm([a,b,0…])[0]`, validated + dogfooded as a primitive). But the full FRI
-    prover **OOMs the native runtime**: even *one* minimal proof (64-pt coset, ~190
-    permutations) exceeds 16 GB, because the native Glass runtime is **no-free** (it never
-    calls `free()`/GCs) and one Poseidon permutation allocates ~300× a MiMC round, so the
-    allocations accumulate past memory. The *same* prover with MiMC completes (2h07m). So
-    Poseidon-in-the-prover is **gated on a freeing/GC runtime** (Python GCs, but the dogfood
-    needs the native binary too) or the int64-erased perf backend — reverted to MiMC for now.
-    A precise, honest boundary (see [`soundness.md`](soundness.md)).
+    ✅ **Resolved (v5.44) — the native runtime got a GC.** Wiring the vetted Poseidon into
+    the prover first hit a wall: the full FRI prover **OOM'd the native runtime** (even one
+    minimal proof exceeded 16 GB, because the native backend was **no-free** — never called
+    `free()`/GC'd — and one Poseidon permutation allocates ~300× a MiMC round). v5.44 gave
+    the emitted C a **conservative GC** (Boehm `GC_malloc` + `GC_INIT` + `-lgc`, in
+    `glassc.glass`'s codegen), and the **bootstrap fixpoint still holds byte-identical**
+    (the emitted-C self-reproduction is unchanged; only the allocator differs) with the
+    suite at 381/381. That same Poseidon prover now runs at **~10 MB instead of OOMing at
+    16 GB**. Poseidon-in-the-prover is **unblocked**; wiring it in as the in-STARK hash
+    (retiring MiMC) is the immediate next step (v5.45). See [`soundness.md`](soundness.md).
   - **R3. ✅ DONE.** An honest **soundness ledger** ([`soundness.md`](soundness.md)) —
     separates the strong differential-testing guarantee from the educational-grade
     cryptography, per component, with the path to production-soundness and a clear
