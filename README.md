@@ -14,47 +14,75 @@
 
 <br/>
 
-A functional language where every signature tells the **whole truth**: what it
-takes, what it returns, what it touches, how it can fail. Read one function and
-you know exactly what it does. Nothing hidden. Nothing implicit. Like glass.
+Now a machine writes the code.
 
-Transparency is only the surface. Underneath is a harder promise: **nothing here
-is taken on faith.** What the machine computes, it can compute again a second way
-and meet the first at every bit. What it claims, it can prove it did — exactly,
-faithfully, giving away nothing it shouldn't.
+You describe what you want; it generates the structure. It runs, it reads
+cleanly, it passes the demo — and you are asked to trust it. The hard part was
+never the typing. It was the trust. Underneath the plausible surface: a side
+effect nobody declared, a branch never handled, a function that does more than
+its name admits. And the plausible now ships faster than anyone can read it.
+
+Glass refuses the asking.
+
+Let the structure be generated — by you, by a model, by anyone. Glass does not
+ask where it came from. It asks only that the truth about it stay visible, and
+visible means machine-checkable, not merely plausible.
+
+> Looks right is not the same as is right. One can be generated. The other has
+> to be reconstructed.
+
+So nothing is left implicit. Every signature states what a function takes,
+returns, touches, and how it fails — declared, not discovered at runtime. A
+function can't touch, return, or fail in any way its signature doesn't admit.
+Effects are declared or they don't compile. Matches are exhaustive. Failure is a
+value the caller must face, never a silent surprise. None of this is taken on
+faith; it's checked, by the compiler, on every program, today.
+
+You don't audit the intention. You audit what's *there* — and what's there has
+nowhere left to hide.
+
+Generated or written, one rule does not bend: you should never have to take the
+code's word for it.
+
+It tells the truth. It reconstructs itself. It proves what happened. The first
+you have just read; the other two it shows you below.
 
 <br/>
 
-> ### It tells the truth.
-> Honest signatures. Exhaustive matches. Effects you must declare. You reason
-> about any function by reading it and only it — nothing hidden, nothing implicit,
-> nothing left to trust.
->
 > ### It reconstructs itself.
 > Glass's compiler is **written in Glass**, and rebuilds itself byte-for-byte with
 > no other language left in the loop. And the discipline runs deeper than that:
 > every layer is computed *two independent ways* — a reference meaning and a
 > compiled one — and forced to agree to the last bit. The instant the two
 > reconstructions diverge, it's a desync, and the build stops. A system you can
-> replay and check against itself, with nowhere for an error to hide.
+> replay and check against itself, where no divergence slips past unnoticed.
 >
 > ### It proves what happened.
 > Built from scratch, in Glass: a **zero-knowledge prover**. Commit a private
-> dataset, ask it a question — *the total payroll, the headcount, the average
-> salary* — and get back a cryptographic proof of the answer that reveals the
-> commitment, the query, the result, and **not a single row**.
+> dataset, ask it a question — *the total payroll, the headcount, and from a
+> proven sum and count, the average* — and get back a cryptographic proof of the
+> answer that reveals the commitment, the query, the result, and **not a single
+> row**.
 >
-> And it closes the loop: **write a Glass function — arithmetic, calls, recursion,
+> Then it closes the loop: **write a Glass function — arithmetic, calls, recursion,
 > `match` — and get a zero-knowledge proof of its result.** The prover is a
-> from-scratch STARK (field, hash, Merkle trees, FRI, blinding), now also over the
-> production **Goldilocks** field that real provers use. You write what a program
-> *means*; you get a machine-checkable proof it ran exactly that way.
+> from-scratch STARK (field, hash, Merkle trees, FRI, blinding). Its full feature
+> set, `match` over your own data types included, runs on the default field; the
+> arithmetic-and-comparison core now also runs over the production **Goldilocks**
+> field that real provers use. You write what a program *means*; you get a
+> machine-checkable proof it ran exactly as written.
+>
+> It is a from-scratch demonstration, not audited cryptography — what a proof here
+> does and does not guarantee is written down in full in
+> [the soundness ledger](docs/soundness.md).
 
 <br/>
 
-Run it once, then run it again a different way: the two must meet at every bit.
-Ask it what a computation did, and it answers with a proof. One principle carried
-the whole distance — from a type signature to a zero-knowledge proof:
+Run it once, then run it again through the other implementation: reference and
+compiled must meet at every bit. Ask it what a function computed, and it answers
+with a proof — the result, and nothing it was built from. One principle runs the
+whole distance, from a type signature to a zero-knowledge proof. It was the rule
+from the first line:
 **you should never have to take the code's word for it.**
 
 → **[Read the whole story, end to end](docs/the-story.md)** — every claim a command you can run.
