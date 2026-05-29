@@ -50,8 +50,9 @@ you have just read; the other two it shows you below.
 <br/>
 
 > ### It reconstructs itself.
-> Glass's compiler is **written in Glass**, and rebuilds itself byte-for-byte with
-> no other language left in the loop. And the discipline runs deeper than that:
+> Glass's compiler is **written in Glass**, and rebuilds itself byte-for-byte —
+> two independently-produced native compilers emit identical C, with no other
+> language left in the loop. And the discipline runs deeper than that:
 > every layer is computed *two independent ways* — a reference meaning and a
 > compiled one — and forced to agree to the last bit. The instant the two
 > reconstructions diverge, it's a desync, and the build stops. A system you can
@@ -111,7 +112,8 @@ match safe_divide(42, 6) {
 ```bash
 git clone https://github.com/EgorKhaklin/Glass.git
 cd Glass
-pip install -e .            # Python 3.10+, no other dependencies
+pip install -e .            # Python 3.10+ — no deps for the interpreter
+                            # (the native compiler also needs cc + libgc; see docs/getting-started.md)
 
 glass examples/basic/hello.glass
 glass examples/prove/prove_pane.glass   # prove queries over a private table, revealing no rows

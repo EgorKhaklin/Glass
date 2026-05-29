@@ -13,7 +13,7 @@ This document explains what Glass means by "self-hosting" — and Glass now full
 | **Stage 3** | The target-language implementation can read source files from disk and run them | ✓ **v1.0** |
 | **Stage 4** | The target-language implementation compiles *itself* and bootstraps (fixpoint) | ✓ **v4.76** |
 
-**Stage 4 is done.** `examples/selfhost/glassc.glass` is a Glass→C compiler written in Glass. `quartz.py` compiles it to a native binary *once*; that binary (`native_glassc`) then compiles glassc.glass itself into `native_glassc_2`, with no Python in the loop. `native_glassc_2` compiles `prism.glass` byte-identically to `glass.py prism.glass` (all 191 demo lines), and `native_glassc` and `native_glassc_2` emit byte-identical C — exact self-reproduction. Reproduce the whole chain with `bash examples/selfhost/bootstrap_fixpoint.sh`.
+**Stage 4 is done.** `examples/selfhost/glassc.glass` is a Glass→C compiler written in Glass. `quartz.py` compiles it to a native binary *once*; that binary (`native_glassc`) then compiles glassc.glass itself into `native_glassc_2`, with no Python in the loop. `native_glassc_2` produces the same `==>` program output for `prism.glass` as `glass.py prism.glass` (diffed line-for-line), and `native_glassc` and `native_glassc_2` emit **byte-identical C** — the fixpoint compares emitted C and program output, **not compiled binaries**. Exact self-reproduction at the source level. Reproduce the whole chain with `bash examples/selfhost/bootstrap_fixpoint.sh`.
 
 ---
 
@@ -21,8 +21,8 @@ This document explains what Glass means by "self-hosting" — and Glass now full
 
 Two implementations are involved:
 
-- **`glass.py`** — the **host**. A Python implementation in one file (~2,400 lines). Lexer, parser, Hindley-Milner inferer with effect rows, tree-walking evaluator.
-- **`examples/selfhost/prism.glass`** — the **self-host**. A Glass implementation of Glass (3,984 lines). Same architecture as the host but written in the target language.
+- **`glass.py`** — the **host**. A Python implementation in one file (~3,600 lines). Lexer, parser, Hindley-Milner inferer with effect rows, tree-walking evaluator.
+- **`examples/selfhost/prism.glass`** — the **self-host**. A Glass implementation of Glass (~6,700 lines). Same architecture as the host but written in the target language.
 
 The two implementations agree. When you give them the same program, they return the same answer.
 
@@ -45,7 +45,7 @@ $ glass examples/selfhost/prism.glass
 
 ## What prism.glass contains
 
-[`examples/selfhost/prism.glass`](../examples/selfhost/prism.glass) is one file, 3,984 lines. Reading top to bottom:
+[`examples/selfhost/prism.glass`](../examples/selfhost/prism.glass) is one file, ~6,700 lines. Reading top to bottom (section order; the line numbers below are illustrative):
 
 | Lines | Section | What it does |
 |-------|---------|--------------|
@@ -58,7 +58,7 @@ $ glass examples/selfhost/prism.glass
 | 3500–3900 | The `compile` pipeline | wires lex + parse + check + eval together |
 | 3900–3984 | Demo block | exercises the pipeline on inline + on-disk programs |
 
-The total Glass-in-Glass body across all `examples/selfhost/` is **6,462 lines — 274% the size of the Python host.**
+The two core self-host files (`prism.glass` + `glassc.glass`) are ~7,700 lines — about 2× the Python host (~3,600 lines); the full `examples/selfhost/` body is ~13,800 lines.
 
 ---
 
@@ -104,15 +104,16 @@ It also demonstrates that the language is **consistent under reflection**. A pro
 
 ---
 
-## What's NOT done yet
+## What's beyond the self-hosted core
 
-Stage 3 is not the same as a fully bootstrapping compiler.
-
-- **prism.glass cannot yet read itself.** It can read small Glass files. Reading its own ~4,000-line source through itself is technically possible but slow — the tree-walking evaluator rebuilds environments on each call and would take hours.
-- **There is no Glass→native compiler.** prism.glass is an interpreter. Glass is interpreted on top of an interpreter on top of Python.
-- **No module system.** All declarations share a single top-level namespace.
-
-These are the **Quartz** roadmap items. See [`../CHANGELOG.md`](../CHANGELOG.md) for the v2.0 plan.
+Stage 4 closed the bootstrap (v4.76): there **is** a Glass→native compiler
+(`glassc.glass` → `native_glassc`), and it reproduces itself and `prism` to the
+byte (emitted C). What remains is not the bootstrap but the **dialect boundary** —
+the handful of interpreter-only surface features (the `|>` pipe operator, `import`,
+zero-argument calls, a few runtime builtins) detailed in
+[Dialect scope](#dialect-scope-what-self-hosts-exactly) below — plus performance
+and ergonomics polish on the native path. See [`roadmap.md`](roadmap.md) for what's
+next.
 
 ---
 
@@ -121,7 +122,14 @@ These are the **Quartz** roadmap items. See [`../CHANGELOG.md`](../CHANGELOG.md)
 Glass has two execution paths, and they are *not* interchangeable in cost:
 
 - **`glass.py`** — the reference interpreter. Readable, the spec, the differential-testing oracle. But a tree-walker in Python: heavy programs (the from-scratch zk-STARK, large circuits) take tens of seconds.
-- **`native_glassc`** — the self-hosted compiler: Glass → C → a native binary. **~50–100× faster**, and bit-for-bit identical to the interpreter (that's exactly what `dogfood.sh` guarantees).
+- **`native_glassc`** — the self-hosted compiler: Glass → C → a native binary. **~50–100× faster**, and byte-for-byte identical to the interpreter *in program output* (that's exactly what `dogfood.sh` guarantees — it diffs the two runs' output, not their binaries).
+
+**Native-build prerequisite.** The native path compiles emitted C with `cc` and
+links the Boehm garbage collector (`libgc`) — the generated runtime allocates via
+`GC_malloc` (see `glassc.glass`, `#include <gc.h>`). Install it once:
+`brew install bdw-gc` (macOS) or `sudo apt-get install libgc-dev` (Linux). Both
+Clang and GCC work (the build retries without the Clang-only `-fbracket-depth` on
+GCC); the interpreter `glass.py` needs none of it.
 
 One command compiles and runs through the fast path:
 
@@ -150,9 +158,49 @@ Three implementations are kept in lockstep by differential testing: the referenc
 
 A parser-parity audit closed **every** case where they had drifted: the reference now **rejects chained comparisons** (`a == b == c`) and **uppercase value bindings** (matching prism); **both** sides accept **negative literals** (`-5`) and **fixed-length list patterns** (`[a, b]`); `prism` + `glassc` parse and compile **record patterns** (`Point { x, y } => …`); the **whole standard prelude** self-hosts (`fst`/`snd`/`reverse` and the `map_option`/`bind_option`/`map_result` family); and a **bare top-level function used as a value** (`map(xs, inc)`) self-hosts via an eta-expansion pass in `glassc` that rewrites it to `fn(a) -> inc(a)` before codegen.
 
-**The reference interpreter and the self-hosted compiler now agree on the entire practical language** — there are no known self-hosting divergences. (One auxiliary note: the Python *Quartz* backend still wants an explicit lambda for a bare fn-as-value; it shares the reference's parser and is used to bootstrap `glassc`, but doesn't carry the eta pass — and nothing in the bootstrap or test suite exercises that case.)
+**The reference interpreter and the self-hosted compiler agree on the entire _core_ language** `prism` implements. The remaining divergences are a precisely bounded set of interpreter-only *surface* features — the `|>` pipe operator, `import`, zero-argument calls, a couple of refinement-syntax conveniences, and a few runtime builtins — each a **clean compile error, never a silent desync**, and documented in [Dialect scope](#dialect-scope-what-self-hosts-exactly) below. (One auxiliary note: the Python *Quartz* backend still wants an explicit lambda for a bare fn-as-value; it shares the reference's parser and is used to bootstrap `glassc`, but doesn't carry the eta pass — and nothing in the bootstrap or test suite exercises that case.)
 
 The principle held throughout: every layer is a reference semantics plus a compiler, and they must agree bit-for-bit — checked by `dogfood.sh` and the bootstrap fixpoint on every change.
+
+---
+
+## Dialect scope (what self-hosts, exactly)
+
+Read in the spirit of the [soundness ledger](soundness.md): the precise boundary
+of the self-host, stated so it can be neither over- nor under-read.
+
+**What self-hosts — the core, and it reproduces itself.** `prism.glass` (front
+end), `glassc.glass` (Glass→C back end), and the from-scratch ZK prover are each
+written entirely in **core Glass**, and the bootstrap chain closes on them.
+`quartz.py` compiles `glassc.glass` to `native_glassc` once (the only Python in
+the loop); `native_glassc` then rebuilds `glassc` itself into `native_glassc_2`
+with no Python; and the two independently-produced compilers emit **byte-identical
+C for `prism.glass`** — `native_glassc_2`, itself the native build of the
+compiler's own source, reproduces gen1's behavior exactly. The check is on emitted
+C and program output, never on compiled binaries.
+
+**The honest boundary.** The reference interpreter `glass.py` accepts a slightly
+larger *surface* language than `prism` parses. The interpreter-only features are:
+
+- the `|>` pipe operator — the single binary operator in the gap (`prism`'s lexer
+  emits only the single-char `|`, and its precedence chain has no pipe layer);
+- the `import "path"` statement;
+- zero-argument calls, `f()`;
+- let-binding refinements, and named-and-refined constructor fields.
+
+There is also a back-end runtime boundary, distinct from the parser: `glassc.glass`
+links a fixed builtin set, so a few higher-order/effect builtins (`head`, `tail`,
+`filter`, `model_call`, `random_int`) are not available on the native path.
+
+**Why this costs the self-host story nothing.** Every one of these produces a
+**clean compile-time error**, never a silent semantic divergence — and neither
+`prism`, nor `glassc`, nor the prover uses any of them. So "the compiler is written
+in Glass" is exact once read as: *written in core Glass, compiling core Glass — and
+it reproduces itself and the prover to the byte.*
+
+**Not a gap.** `prism` fully supports list-cons patterns `[h, ...t]` — it parses
+its own source (which uses them heavily) and self-compiles. Cons-spread and
+fixed-length list patterns are core dialect.
 
 ---
 
