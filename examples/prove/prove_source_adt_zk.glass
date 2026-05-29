@@ -104,22 +104,43 @@ fn fold_pair4(fx: F4, fmx: F4, x: Int, beta: F4, v: F2, w: Int) : F4 =
 fn fold_at4(cw: List<F4>, dom: List<Int>, beta: F4, i: Int, half: Int, v: F2, w: Int) : List<F4> =
   if i >= half then [] else [fold_pair4(nth4(cw, i), nth4(cw, i + half), nth(dom, i), beta, v, w)] ++ fold_at4(cw, dom, beta, i + 1, half, v, w)
 fn square_dom(dom: List<Int>, i: Int, half: Int) : List<Int> = if i >= half then [] else [fmul(nth(dom, i), nth(dom, i))] ++ square_dom(dom, i + 1, half)
-type Layer = | Layer(List<F4>, List<Int>, Int, F4)
+# --- memoized Merkle tree (v5.43, ported from the Goldilocks path's v5.41) --------
+# Build each FRI layer's full tree ONCE in commit, store its levels in the Layer, and
+# read sibling paths straight from the stored levels — so 64 queries no longer rebuild
+# a tree per query (merkle_path4 did). Byte-identical (same hashes), just not recomputed.
+fn wnth2l(xs: List<List<Int>>, i: Int) : List<Int> = match xs { [] => []; [x, ...r] => if i == 0 then x else wnth2l(r, i - 1) }
+fn l2len(xs: List<List<Int>>) : Int = match xs { [] => 0; [x, ...r] => 1 + l2len(r) }
+fn build_levels(level: List<Int>, acc: List<List<Int>>) : List<List<Int>> =
+  if ilen(level) <= 1 then acc ++ [level] else build_levels(level_up(level), acc ++ [level])
+fn merkle_levels(cw: List<F4>) : List<List<Int>> = build_levels(pad_pow2(leaf_hashes(cw)), [])
+fn root_of_levels(levels: List<List<Int>>) : Int = match wnth2l(levels, l2len(levels) - 1) { [] => 0; [r, ...t] => r }
+fn path_of_levels(levels: List<List<Int>>, li: Int, index: Int) : List<Int> =
+  if li >= l2len(levels) - 1 then []
+  else let level : List<Int> = wnth2l(levels, li) in
+       let sib : Int = if index % 2 == 0 then nth(level, index + 1) else nth(level, index - 1) in
+       [sib] ++ path_of_levels(levels, li + 1, index / 2)
+fn merkle_path_levels(levels: List<List<Int>>, index: Int) : List<Int> = path_of_levels(levels, 0, index)
+type Layer = | Layer(List<F4>, List<Int>, Int, F4, List<List<Int>>)
 fn beta_of_root(root: Int) : F4 = F4(F2(hash2(root, 101), hash2(root, 102)), F2(hash2(root, 103), hash2(root, 104)))
+# FRI rate (v5.43): the quotient has degree ~2n (the qm·l·r gate is degree 3n, ÷ Z_H
+# of degree n), so the test must certify degree < 2n. With a 16n coset the fold runs
+# to length coset/(2n) = 16n/(2n) = 8 — NOT length 2, which would test degree < 8n and
+# pin the rate at 1/2. Stopping at 8 keeps the tested degree 2n while the coset is 16n,
+# so ρ = 2n/16n = 1/8 (up from 1/2; ~53 provable / ~96 list-decode bits at 64 queries).
 fn commit(cw: List<F4>, dom: List<Int>, acc: List<Layer>, v: F2, w: Int) : (List<Layer>, List<F4>) =
-  if ilen4(cw) <= 2 then (acc, cw)
-  else let root : Int = merkle_root4(cw) in let beta : F4 = beta_of_root(root) in let half : Int = ilen4(cw) / 2 in
-    commit(fold_at4(cw, dom, beta, 0, half, v, w), square_dom(dom, 0, half), acc ++ [Layer(cw, dom, root, beta)], v, w)
-fn transcript_seed(layers: List<Layer>, acc: Int) : Int = match layers { [] => acc; [Layer(cw, dom, root, beta), ...rest] => transcript_seed(rest, hash2(acc, root)) }
+  if ilen4(cw) <= 8 then (acc, cw)
+  else let levels : List<List<Int>> = merkle_levels(cw) in let root : Int = root_of_levels(levels) in let beta : F4 = beta_of_root(root) in let half : Int = ilen4(cw) / 2 in
+    commit(fold_at4(cw, dom, beta, 0, half, v, w), square_dom(dom, 0, half), acc ++ [Layer(cw, dom, root, beta, levels)], v, w)
+fn transcript_seed(layers: List<Layer>, acc: Int) : Int = match layers { [] => acc; [Layer(cw, dom, root, beta, levels), ...rest] => transcript_seed(rest, hash2(acc, root)) }
 fn sample_queries(seed: Int, count: Int, dsize: Int) : List<Int> = if count <= 0 then [] else [hash2(seed, count) % dsize] ++ sample_queries(seed, count - 1, dsize)
-fn next_val4(rest: List<Layer>, final: List<F4>, j: Int) : F4 = match rest { [] => nth4(final, j); [Layer(cw, dom, root, beta), ...more] => nth4(cw, j) }
+fn next_val4(rest: List<Layer>, final: List<F4>, j: Int) : F4 = match rest { [] => nth4(final, j); [Layer(cw, dom, root, beta, levels), ...more] => nth4(cw, j) }
 fn verify_query(layers: List<Layer>, final: List<F4>, p: Int, v: F2, w: Int) : Bool =
   match layers { [] => true;
-    [Layer(cw, dom, root, beta), ...rest] =>
+    [Layer(cw, dom, root, beta, levels), ...rest] =>
       let half : Int = ilen4(cw) / 2 in let j : Int = p % half in
       let lx : F4 = nth4(cw, j) in let lmx : F4 = nth4(cw, j + half) in
-      let ok1 : Bool = merkle_verify4(lx, j, merkle_path4(cw, j), root) in
-      let ok2 : Bool = merkle_verify4(lmx, j + half, merkle_path4(cw, j + half), root) in
+      let ok1 : Bool = merkle_verify4(lx, j, merkle_path_levels(levels, j), root) in
+      let ok2 : Bool = merkle_verify4(lmx, j + half, merkle_path_levels(levels, j + half), root) in
       let folded : F4 = fold_pair4(lx, lmx, nth(dom, j), beta, v, w) in
       if ok1 then if ok2 then if eq4(folded, next_val4(rest, final, j)) then verify_query(rest, final, j, v, w) else false else false else false }
 fn count_catches(layers: List<Layer>, final: List<F4>, qs: List<Int>, v: F2, w: Int) : Int =
@@ -187,15 +208,15 @@ fn stark_ok(gates: List<Gate>, w: List<Int>, seed: Int, nv: F2, nw: Int) : Bool 
   let qx : List<Int> = interpolate(pad(vqx(gates), n)) in let cc : List<Int> = interpolate(pad(vc(gates), n)) in
   let ll : List<Int> = interpolate(pad(vl(gates, w), n)) in let rr : List<Int> = interpolate(pad(vr(gates, w), n)) in
   let oo : List<Int> = interpolate(pad(vo(gates, w), n)) in
-  let coset : List<Int> = coset_domain(4 * n) in
+  let coset : List<Int> = coset_domain(16 * n) in
   let qcw : List<F4> = qcode(qa, qm, qs, qc, qx, ll, rr, oo, cc, rand_poly(seed), coset, n) in
   match commit(qcw, coset, [], nv, nw) { (layers, final) =>
-    fri_verify(layers, final, sample_queries(transcript_seed(layers, 0), 24, 4 * n), nv, nw) }
+    fri_verify(layers, final, sample_queries(transcript_seed(layers, 0), 64, 16 * n), nv, nw) }
 fn qopen5(gates: List<Gate>, w: List<Int>, seed: Int) : F4 =
   let n : Int = ng(gates) in
   nth4(qcode(interpolate(pad(vqa(gates), n)), interpolate(pad(vqm(gates), n)), interpolate(pad(vqs(gates), n)), interpolate(pad(vqc(gates), n)), interpolate(pad(vqx(gates), n)),
              interpolate(pad(vl(gates, w), n)), interpolate(pad(vr(gates, w), n)), interpolate(pad(vo(gates, w), n)), interpolate(pad(vc(gates), n)),
-             rand_poly(seed), coset_domain(4 * n), n), 5)
+             rand_poly(seed), coset_domain(16 * n), n), 5)
 
 # =============================================================================
 # THE MULTI-WIRE FRONT END: a circuit value is a List<Int> of wires.

@@ -58,15 +58,19 @@ What is **not** production-grade is the **primitives and parameters**:
 | **Challenge space** | FRI challenges live in **F_{p⁴} ≈ 2¹²⁴** | This part *is* cryptographic-width: a cheating prover guesses a fold challenge with prob ~2⁻¹²⁴. The "toy" is the value range, not the challenge space. |
 | **Hash** | **Poseidon over Goldilocks, byte-identical to Plonky2** — the de-facto standard Goldilocks ZK hash — verified against **Plonky2's own published test vectors** (all four pass): t=12, R_F=8, R_P=22, S-box x⁷, Plonky2's exact MDS and all 360 round constants (the Poseidon reference's "hadeshash" Grain-LFSR constants), reproduced in `frost_goldilocks_poseidon.glass` and dogfooded byte-identical. It is also **load-bearing**: `frost_goldilocks_merkle.glass` builds a real Merkle commitment on it (Plonky2's exact `two_to_one` + `hash_no_pad`, inclusion proofs, tamper-rejection). (Also `frost_grain.glass`: a from-scratch Grain-LFSR generator + domain-separated transcript over Baby Bear.) | This settles "is it the standard hash" for the **primitive**: it matches a production reference exactly, and now drives a commitment. **But it is not yet integrated into the STARKs** — their Merkle + Fiat-Shamir still use the educational MiMC (Poseidon is ~300× heavier per call, so the full FRI integration is the heavier follow-on). And matching a reference is **not an audit**: the hash itself is unaudited here. |
 | **Fiat-Shamir** | Transcript-bound challenges + query amplification (soundness ~2⁻ᴷ); a **domain-separated transcript over the vector-verified Goldilocks Poseidon** (`frost_goldilocks_fiat.glass` — `tr_init`/`tr_absorb`/`tr_challenge` tag every message/squeeze by role; demonstrated determinism, role separation, history-binding) | The transcript now runs on the **standard, vector-verified hash** (not the toy MiMC) — a real upgrade. Still: **no formal transcript-separation proof**, and it isn't yet wired into the actual proving STARK's challenges (those still use MiMC). |
-| **Goldilocks stack** | A complete sound + committed + zero-knowledge FRI over Goldilocks (`frost_goldilocks_zk`), int64-safe via limbs | A degree-2 extension F_{p²} ≈ 2¹²⁸ challenge space, but reduced rounds in the hash and **not wired into the source→ZK bridge** (that's roadmap R1b). |
+| **Goldilocks stack** | A complete sound + committed + zero-knowledge FRI over Goldilocks (`frost_goldilocks_zk`), int64-safe via limbs | A degree-2 extension F_{p²} ≈ 2¹²⁸ challenge space; reduced rounds in the standalone hash. This `frost_goldilocks_zk` is the from-scratch reference; the **bridge's own Goldilocks STARK** (`prove_source_goldilocks_zk`, R1c — now **ρ=1/8**, see the Base field row) carries the actual source→ZK path. |
 | **ZK / blinding** | Trace/codeword blinding genuinely randomizes openings; two seeds → different openings | Demonstrates the *zero-knowledge property mechanism*; not a formal simulator-based proof of ZK. |
 
 **The parameters are now analyzed** — see [`parameters.md`](parameters.md) for the
-concrete bit-security of both paths (the short version: the challenge space is
-cryptographic-width ≈2¹²⁴–2¹²⁸, but the FRI *query phase* is demonstration-grade —
-**~16 bits** for Baby Bear, and **~25–28 bits** for Goldilocks (32 queries + a
-12-bit grinding/proof-of-work, up from ~4; the query count is cheap now that the
-FRI Merkle trees are memoized) — and §4 there gives the recipe to 80/128-bit).
+concrete bit-security of both paths. The short version: the challenge space is
+cryptographic-width ≈2¹²⁴–2¹²⁸, and the FRI *query phase* on the **Goldilocks path
+is now hardened** to **~65-bit provable / ~108-bit list-decoding** query soundness
+(ρ=1/8 via a blowup-8 coset + 64 queries + a 12-bit grind — past 80 bits by the
+list-decoding standard modern STARKs use, ~65 by the conservative provable one; up
+from ~25–28, and ~4 raw). The **default Baby Bear path** is now **also ρ=1/8** (~53
+provable / ~96 list-decoding bits, v5.43); its remaining weakness is the **2³¹ value
+space** (a secret is brute-forceable independent of the proof), not the FRI. §4 there
+gives the recipe to 80/128-bit across the board.
 Still **no external audit and no constant-time guarantees.**
 Several demos run *reduced rounds/queries* explicitly so they dogfood on the
 interpreter; the full-strength versions run the same way, just heavier.

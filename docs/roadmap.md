@@ -268,8 +268,10 @@ three under-invested axes — *realness*, *usability*, and *convergence* — on 
       `unroll` inlines calls/HOF, a Goldilocks `cgen` lowers `+`/`-`/`*`/`let` to gates, and the
       R1b STARK proves it. `fn sq(n)=n*n; fn f(x)=sq(x)+5; f(inp)` proves over Goldilocks (honest
       ACCEPT / tampered REJECT / ZK); byte-identical. *Write Glass source, get a proof on the real
-      field.* *Next (the full bridge):* comparisons/`match`/ADTs over bignum (is-zero inverse-hint
-      wires in the Goldilocks witness), and the heavier circuits (native-primary).
+      field.* ✅ **Now with `==`/`if`, multiple private inputs, and claim-binding** (v5.34/v5.38:
+      the is-zero gadget + `if`-mux over bignum, `glass prove --goldilocks`). *Next (the full
+      bridge):* `match`/ADTs over bignum (tagged multi-wire values), and the heavier circuits
+      (native-primary).
   - **R2. 🚧 IN PROGRESS.** A real hash + Fiat-Shamir hardening. ✅ **Step 1 — Grain-LFSR
     round constants** ([`frost_grain.glass`](../examples/frost/frost_grain.glass)): Poseidon's
     constants now come from the spec's Grain LFSR (80-bit state, taps
@@ -285,6 +287,22 @@ three under-invested axes — *realness*, *usability*, and *convergence* — on 
     separates the strong differential-testing guarantee from the educational-grade
     cryptography, per component, with the path to production-soundness and a clear
     "do not use to protect real value" bottom line.
+  - **R4. 🚧 IN PROGRESS.** Concrete soundness — *analyzed, then hardened.* ✅ **The
+    analysis** ([`parameters.md`](parameters.md), v5.39): every parameter of both proving
+    paths and the *actual* bit-security, the FRI bound in both regimes (unique-decoding
+    δ=(1−ρ)/2 and list-decoding δ=1−√ρ), and the recipe to 80/128-bit. ✅ **Grinding**
+    (v5.40): a 12-bit proof-of-work on the Fiat-Shamir query seed (Goldilocks). ✅
+    **Memoized FRI Merkle trees** (v5.41): each layer's tree is built once in `commit_g`
+    and paths read from the stored levels, so raising the query count is cheap. ✅
+    **Lowered the rate to ρ=1/8 on *both* paths** (v5.42–43): the catch was that folding
+    a FRI codeword all the way to length 2 tests degree = domain/2, silently pinning
+    ρ at 1/2 *regardless of blowup* (the quotient is degree ~2n, not n); fixing the fold
+    to stop at domain/(degree-bound) makes a bigger coset actually lower the rate. Both
+    paths now run 64 queries. **Net query-phase soundness: Goldilocks ~65 provable /
+    ~108 list-decode** (ρ=1/8 + 64 q + 12-bit grind — past 80 by the list-decoding
+    standard), **Baby Bear ~53 / ~96** — up from ~4. *Remaining:* the in-STARK hash is
+    still MiMC (→ R2's vetted Poseidon), Baby Bear's value space is still 2³¹ (→ R1's
+    migration), and an external audit (the hard boundary).
 - **Track E — Expressiveness** (past first-order).
   - **E1. ✅ DONE (recursion).** **Bounded recursion** via a source-level **unroll
     pre-pass** (`unroll`/`inline_fn` in [`prove_source_adt_zk.glass`](../examples/prove/prove_source_adt_zk.glass)):

@@ -8,12 +8,15 @@ target. No hand-waving: every number below is read from the code, and where the
 answer is "weak," it says so.
 
 > **Bottom line.** The *challenge space* is already cryptographic-width
-> (≈2¹²⁴–2¹²⁸). The weak link is the **FRI query phase**: too few queries at too
-> high a rate. At today's demo parameters the query-phase soundness is only
-> **~16 bits (Baby Bear)** / **~3–4 bits (Goldilocks)** — fine for a demonstration,
-> not for protecting value. Reaching 80–128 bits is a matter of *more queries +
-> a lower rate (bigger blowup) + grinding*, all of which cost prover time; the
-> recipe is in §4.
+> (≈2¹²⁴–2¹²⁸). The historical weak link was the **FRI query phase** — too few
+> queries at too high a rate. The **Goldilocks path is now hardened**: a 1/8 rate
+> (blowup 8) + 64 queries + a 12-bit grind give **~65-bit provable / ~108-bit
+> list-decoding** query soundness (up from ~3–4 bits raw, ~25–28 after the first
+> pass). The **default Baby Bear path** is now **also ρ=1/8** (~53 provable / ~96
+> list-decoding bits, v5.43) — but its **2³¹ value space** (a secret is brute-forceable
+> independent of the proof) is the binding weakness there, not the FRI. Neither path
+> yet uses a vetted in-STARK hash (still MiMC), and an external audit remains; §4 has
+> the recipe.
 
 ---
 
@@ -24,10 +27,10 @@ answer is "weak," it says so.
 | Base field | Baby Bear, p = 2³¹−2²⁷+1 | Goldilocks, p = 2⁶⁴−2³²+1 |
 | **Value space** | **~2³¹ (secrets brute-forceable; wraps >2.1·10⁹)** | **~2⁶⁴** |
 | Trace domain | n (gate count) | 16 |
-| FRI domain (coset) | 4·n | 64 |
-| Tested degree | < n | < 32 |
-| **Rate ρ = deg/domain** | **≈ 1/4** | **= 1/2** |
-| **FRI queries ℓ** | **24** | **32** |
+| FRI domain (coset) | 16·n (blowup 8 over the degree-2n bound) | 256 (blowup 8 over the degree-32 bound) |
+| Tested degree | < 2n (deg-3 gate ÷ Z_H; fold stops at len 8) | < 32 (fold fixed at 5 rounds, stop at domain/32) |
+| **Rate ρ = deg/domain** | **= 1/8** | **= 1/8** |
+| **FRI queries ℓ** | **64** | **64** |
 | Fold challenge (Fiat-Shamir) | F_{p⁴} ≈ 2¹²⁴ | F_{p²} ≈ 2¹²⁸ |
 | Hash | MiMC, 16 rounds (x⁵) | MiMC, 4 rounds (x⁷) |
 | ZK blinding | random low-degree mask | degree-16 mask |
@@ -75,27 +78,40 @@ Total: **ε ≈ ε_commit + (1 − δ)^ℓ ≈ (1 − δ)^ℓ.**
 
 ## 3. Plugging in the actual numbers
 
-**Default path — Baby Bear, ρ ≈ 1/4, ℓ = 24.**
-- Unique decoding: survival (1+ρ)/2 = 5/8 → ε_query ≤ (5/8)²⁴ ≈ **2⁻¹⁶·³**.
-- List decoding: survival √ρ = 1/2 → ε_query ≤ (1/2)²⁴ = **2⁻²⁴**.
-- → **~16–24 bits** of query soundness. But the *value space is 2³¹* — a private
-  input can simply be enumerated, independent of the proof. That is the dominant
-  weakness of this path.
+**Default path — Baby Bear, ρ = 1/8, ℓ = 64.** (Until v5.43 this path folded to
+length 2 over a 4n coset, which — since the quotient has degree ~2n, the `qm·l·r`
+gate ÷ Z_H — certified only degree < 2n at rate 2n/4n = **1/2** (~10–12 bits), *not*
+the 1/4 the table once claimed. v5.43 grew the coset to 16n and stops the fold at
+length 8, certifying degree < 2n at rate 2n/16n = **1/8**, and raised queries 24 → 64.)
+- Unique decoding: survival (1+ρ)/2 = 9/16 → ε_query ≤ (9/16)⁶⁴ ≈ **2⁻⁵³**.
+- List decoding: survival √ρ ≈ 0.354 → ε_query ≤ 0.354⁶⁴ = **2⁻⁹⁶**.
+- → **~53 bits provable / ~96 bits list-decoding** of query soundness (no grinding on
+  this path). **But the *value space is 2³¹*** — a private input can simply be
+  enumerated in ~2³¹ work, independent of the proof — so *that*, not the FRI, is now
+  the binding weakness of the default path (→ the Goldilocks-ADT migration is the fix).
 
-**Goldilocks path — ρ = 1/2, ℓ = 32, + 12-bit grinding.**
-- Unique decoding: survival (1+ρ)/2 = 3/4 → (3/4)³² ≈ 2⁻¹³·³; **+12 grind → ~2⁻²⁵**.
-- List decoding: survival √ρ ≈ 0.707 → 0.707³² = 2⁻¹⁶; **+12 grind → ~2⁻²⁸**.
-- → **~25–28 bits** of query soundness (32 queries + a 12-bit proof-of-work on the
-  Fiat-Shamir query seed, the standard STARK trick — an adversary must redo 2¹²
-  hashing per attempt to grind favorable query positions). Up from ~4 bits with 8
-  queries / no grind. Both levers are now in play: grinding (a flat 2¹² prover
-  hashes) and the higher query count — the latter is cheap because the FRI layer
-  Merkle trees are now **memoized** (built once in `commit_g`, paths read from the
-  stored levels), so raising ℓ no longer rebuilds a tree per query.
+**Goldilocks path — ρ = 1/8, ℓ = 64, + 12-bit grinding.**
+- Unique decoding: survival (1+ρ)/2 = 9/16 → (9/16)⁶⁴ ≈ 2⁻⁵³·¹; **+12 grind → ~2⁻⁶⁵**.
+- List decoding: survival √ρ = √(1/8) ≈ 0.354 → 0.354⁶⁴ = 2⁻⁹⁶; **+12 grind → ~2⁻¹⁰⁸**.
+- → **~65 bits provable / ~108 bits list-decoding** of query soundness, up from
+  ~25–28 (ρ=1/2, 32 q) and ~4 (8 q, no grind). This spends **two cheap levers
+  together**: (1) a **lower rate** — the FRI coset grew 64 → 256 (blowup 8), with the
+  fold fixed at 5 rounds stopping at domain/32 so the *tested degree stays 32* while
+  ρ drops to 1/8 (folding all the way to length 2 would instead leave ρ pinned at
+  1/2 — no gain); and (2) **more queries** — 32 → 64, nearly free since v5.41
+  **memoized** the FRI layer Merkle trees (built once in `commit_g`, paths read from
+  the stored levels). The rate lever costs ~4× the quotient/commit work (the
+  interpreter-dogfood gate); the query lever is the cheap one — which is why the
+  conservative *provable* bound climbs fastest by spending queries.
 
-Neither path is cryptographically sound today (80+ bits). The honest one-line
-summary: **the challenge space is real; the query phase is hardened with grinding
-but still short of a cryptographic target — §4 is the recipe.**
+The **Goldilocks path now reaches a cryptographic target by the list-decoding
+standard** modern STARKs use: ρ=1/8 + 64 queries + 12-bit grind ≈ **2⁻¹⁰⁸**, past
+80 bits. By the conservative *provable* (unique-decoding) bound it is **~65 bits** —
+strong, not yet 80. The **default Baby Bear path is now also ρ=1/8** (~53 provable /
+~96 list-decoding, v5.43); its remaining weakness is the **2³¹ value space**, not the
+FRI. The honest one-line summary: **both query phases are now hardened (ρ=1/8) — but the
+in-STARK hash is still educational MiMC, the default path's values are still 2³¹, and
+there is no external audit.**
 
 ---
 
@@ -114,16 +130,23 @@ decoding survival = √ρ):
 | 1/16 | 16× | 2.00 | 40  | 30  |
 
 So a concrete 80-bit configuration: **blowup 8 (ρ=1/8), ~54 queries, no grinding**,
-or **~40 queries + 20-bit grinding**. 128-bit scales the query count by ~1.6×.
+or **~40 queries + 20-bit grinding**. The Goldilocks path now **ships at blowup 8
+(ρ=1/8) + 64 queries + 12-bit grind** — past 80 bits by the list-decoding standard
+(~108), ~65 by the conservative provable one. 128-bit scales the query count by ~1.6×.
 Each step multiplies FRI work (bigger coset → more NTT/quotient/hashing), which is
 why the demos ship at low parameters: the reference interpreter would otherwise
 take hours per proof. The levers, in priority order:
 
-1. **Lower the rate** (bigger blowup) — the most efficient bits-per-query.
-2. **More queries** — linear in soundness. Now cheap on the Goldilocks path: the
-   committed Merkle trees are **memoized** (built once in `commit_g`, paths read
-   from stored levels), so raising ℓ no longer rebuilds a tree per query. **Applied
-   today: 8 → 32 queries.**
+1. **Lower the rate** (bigger blowup) — the most efficient bits-per-query (but the
+   priciest: the cost is the quotient evaluation over the bigger coset). **Applied on
+   both paths: ρ 1/2 → 1/8** — Goldilocks (coset 64 → 256, fold stops at domain/32) and
+   Baby Bear (coset 4n → 16n, fold stops at length 8). The fold round count is fixed in
+   both, so the tested degree is unchanged while ρ drops.
+2. **More queries** — linear in soundness, and the *cheapest* lever. On Goldilocks it's
+   cheap because the committed Merkle trees are **memoized** (built once in `commit_g`,
+   paths read from stored levels); on Baby Bear it's cheap because its layer trees are
+   now **memoized too** (v5.43, the same technique ported over — the dogfood went
+   ~32 min → ~2.5 min, 13×). **Applied: Goldilocks 8 → 32 → 64; Baby Bear 24 → 64.**
 3. **Grinding** — a flat `+g` bits for `2^g` prover hashes (standard in
    production STARKs); cheap on proof size and verification. **Applied (g=12) on the
    Goldilocks path.**

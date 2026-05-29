@@ -163,24 +163,42 @@ fn fold_at_b(cw: List<List<Int>>, dom: List<List<Int>>, beta: List<Int>, finv2: 
 fn sqd(dom: List<List<Int>>, i: Int, half: Int) : List<List<Int>> =
   if i >= half then [] else [fmul(wnth(dom, i), wnth(dom, i))] ++ sqd(dom, i + 1, half)
 fn fold_all_b(cw: List<List<Int>>, dom: List<List<Int>>, finv2: List<Int>, round: Int) : List<List<Int>> =
-  if llen(cw) <= 2 then cw
+  if llen(cw) <= fri_final(0) then cw
   else let half : Int = llen(cw) / 2 in fold_all_b(fold_at_b(cw, dom, glit(round * 7919 + 12345), finv2, 0, half), sqd(dom, 0, half), finv2, round + 1)
 fn all_eqb(cw: List<List<Int>>, x: List<Int>) : Bool = match cw { [] => true; [y, ...r] => if bn_eq(y, x) then all_eqb(r, x) else false }
 fn is_constb(cw: List<List<Int>>) : Bool = match cw { [] => true; [x, ...r] => all_eqb(r, x) }
 
 # build all 9 column polynomials and form the quotient codeword Q on the coset.
 # Trace domain N = 16 (the is-zero gadget + if-mux push the gate count past 8); the
-# coset is a 4x blowup (64 = 16th-roots subgroup shifted by the generator 7).
-fn coset64(d: Int) : List<List<Int>> = dom_powers([7], root_pow2(6), 64)
+# coset is a power-of-two blowup (FRI_DSIZE = 2^FRI_LOG points, the 2^FRI_LOG-th
+# roots of unity shifted by the generator 7, disjoint from the trace domain H so
+# Z_H never vanishes on it).
+#
+# THE RATE LEVER.  The tested degree bound is FIXED at 32 = 2^5 by the circuit
+# (deg Q = deg G - deg Z_H = 45 - 16 = 29 < 32), so the FRI fold runs a FIXED 5
+# rounds and stops at length FRI_DSIZE/32 (a degree-<32 codeword has folded to a
+# constant by then). The rate is therefore ρ = 32 / FRI_DSIZE, and GROWING the
+# coset (the single source of truth below) lowers ρ toward a cryptographic target —
+# 64 -> ρ=1/2, 128 -> 1/4, 256 -> 1/8, 512 -> 1/16 — WITHOUT changing what degree
+# is tested. (Folding all the way to length 2 instead would test the useless bound
+# DSIZE/2 and leave ρ pinned at 1/2 — no soundness gain. The stop-at-DSIZE/32 is
+# the whole point.) Each halving of ρ halves the per-query survival probability, at
+# the cost of ~linearly more quotient evaluations + bigger Merkle trees (the
+# interpreter-dogfood gate). See docs/parameters.md §4.
+fn fri_log(d: Int) : Int = 8                  # log2 of the FRI domain (8 -> 256 points, ρ = 1/8)
+fn fri_dsize(d: Int) : Int = 256              # = 2^fri_log (coset size); ρ = 32 / fri_dsize
+fn fri_final(d: Int) : Int = fri_dsize(0) / 32  # fold stops here: the degree-32 bound folded to a constant
+fn fri_queries(d: Int) : Int = 64             # FRI query count — cheap since v5.41 memoized the layer trees
+fn fri_coset(d: Int) : List<List<Int>> = dom_powers([7], root_pow2(fri_log(0)), fri_dsize(0))
 fn q_cw(gates: List<Gate>, w: List<List<Int>>) : List<List<Int>> =
   let qa : List<List<Int>> = interp16(lpad(c_qa(gates), 16)) in let qm : List<List<Int>> = interp16(lpad(c_qm(gates), 16)) in
   let qs : List<List<Int>> = interp16(lpad(c_qs(gates), 16)) in let qc : List<List<Int>> = interp16(lpad(c_qc(gates), 16)) in
   let qe : List<List<Int>> = interp16(lpad(c_qe(gates), 16)) in
   let cc : List<List<Int>> = interp16(lpad(c_c(gates), 16)) in
   let ll : List<List<Int>> = interp16(lpad(c_l(gates, w), 16)) in let rr : List<List<Int>> = interp16(lpad(c_r(gates, w), 16)) in let oo : List<List<Int>> = interp16(lpad(c_o(gates, w), 16)) in
-  quotient_cw(qa, qm, qs, qc, qe, ll, rr, oo, cc, coset64(0))
+  quotient_cw(qa, qm, qs, qc, qe, ll, rr, oo, cc, fri_coset(0))
 fn low_degree_quotient(gates: List<Gate>, w: List<List<Int>>) : Bool =
-  is_constb(fold_all_b(q_cw(gates, w), coset64(0), finv([2]), 0))
+  is_constb(fold_all_b(q_cw(gates, w), fri_coset(0), finv([2]), 0))
 
 # --- ZERO-KNOWLEDGE: blind Q with a random low-degree mask (Stage B) ----------
 # A degree-<8 polynomial R, evaluated on the coset, is added to Q. Since deg R is
@@ -197,10 +215,10 @@ fn rand_coeffs(seed: Int, i: Int, k: Int) : List<List<Int>> = if i >= k then [] 
 fn blind_cw(cw: List<List<Int>>, coeffs: List<List<Int>>, dom: List<List<Int>>, i: Int) : List<List<Int>> =
   if i >= llen(cw) then [] else [fadd(wnth(cw, i), poly_eval_b(coeffs, wnth(dom, i)))] ++ blind_cw(cw, coeffs, dom, i + 1)
 fn prove_zk(gates: List<Gate>, w: List<List<Int>>, seed: Int) : Bool =
-  let bcw : List<List<Int>> = blind_cw(q_cw(gates, w), rand_coeffs(seed, 0, 16), coset64(0), 0) in
-  is_constb(fold_all_b(bcw, coset64(0), finv([2]), 0))
+  let bcw : List<List<Int>> = blind_cw(q_cw(gates, w), rand_coeffs(seed, 0, 16), fri_coset(0), 0) in
+  is_constb(fold_all_b(bcw, fri_coset(0), finv([2]), 0))
 fn opened5(gates: List<Gate>, w: List<List<Int>>, seed: Int) : List<Int> =
-  wnth(blind_cw(q_cw(gates, w), rand_coeffs(seed, 0, 16), coset64(0), 0), 5)
+  wnth(blind_cw(q_cw(gates, w), rand_coeffs(seed, 0, 16), fri_coset(0), 0), 5)
 
 # --- the cryptographic STARK: F_{p^2} fold challenge + Merkle commit + queries --
 # Embed the quotient codeword into F_{p^2}, blind it, Merkle-commit each FRI layer,
@@ -255,7 +273,7 @@ fn path_of_levels(levels: List<List<List<Int>>>, li: Int, index: Int) : List<Lis
 fn merkle_path_levels(levels: List<List<List<Int>>>, index: Int) : List<List<Int>> = path_of_levels(levels, 0, index)
 type Layer = | Layer(List<G2>, List<List<Int>>, List<Int>, G2, List<List<List<Int>>>)
 fn commit_g(cw: List<G2>, dom: List<List<Int>>, acc: List<Layer>, finv2: List<Int>) : (List<Layer>, List<G2>) =
-  if len(cw) <= 2 then (acc, cw)
+  if len(cw) <= fri_final(0) then (acc, cw)
   else let levels : List<List<List<Int>>> = merkle_levels_g(cw) in let root : List<Int> = root_of_levels(levels) in
     let beta : G2 = beta_of_root_g(root) in let half : Int = len(cw) / 2 in
     commit_g(fold_at2(cw, dom, beta, finv2, 0, half), sqd(dom, 0, half), acc ++ [Layer(cw, dom, root, beta, levels)], finv2)
@@ -291,15 +309,15 @@ fn is_const2(cw: List<G2>) : Bool = match cw { [] => true; [x, ...r] => all_eq2(
 fn blind_g(cw: List<G2>, coeffs: List<List<Int>>, dom: List<List<Int>>, i: Int) : List<G2> =
   if i >= len(cw) then [] else [gadd2(nth2(cw, i), emb(poly_eval_b(coeffs, wnth(dom, i))))] ++ blind_g(cw, coeffs, dom, i + 1)
 fn prove_stark(gates: List<Gate>, w: List<List<Int>>, seed: Int) : Bool =
-  let ecw : List<G2> = blind_g(embed_cw(q_cw(gates, w)), rand_coeffs(seed, 0, 16), coset64(0), 0) in
-  match commit_g(ecw, coset64(0), [], finv([2])) { (layers, final) =>
+  let ecw : List<G2> = blind_g(embed_cw(q_cw(gates, w)), rand_coeffs(seed, 0, 16), fri_coset(0), 0) in
+  match commit_g(ecw, fri_coset(0), [], finv([2])) { (layers, final) =>
     let base_seed : List<Int> = transcript_seed_g(layers, []) in
     let nz : Int = grind(base_seed) in                                   # proof-of-work: 12 bits
     let ground : List<Int> = hashg(base_seed, glit(nz)) in               # the PoW-cleared query seed
-    let faults : Int = count_catches_g(layers, final, sample_queries_g(ground, 32, 64), finv([2])) in
+    let faults : Int = count_catches_g(layers, final, sample_queries_g(ground, fri_queries(0), fri_dsize(0)), finv([2])) in
     is_const2(final) && faults == 0 && pow_ok(ground) }
 fn stark_root(gates: List<Gate>, w: List<List<Int>>, seed: Int) : List<Int> =
-  merkle_root_g(blind_g(embed_cw(q_cw(gates, w)), rand_coeffs(seed, 0, 16), coset64(0), 0))
+  merkle_root_g(blind_g(embed_cw(q_cw(gates, w)), rand_coeffs(seed, 0, 16), fri_coset(0), 0))
 
 # --- bridge: parse, inline calls, lower the arithmetic subset to gates -------
 fn fn_body_of(fns: List<FnDecl>, name: String) : Expr = match fns { [] => EInt(0); [FnDecl(fnm, tps, ty, body), ...rest] => if fnm == name then body else fn_body_of(rest, name) }
@@ -411,10 +429,11 @@ let _ : String = print("  a=100000, b=100000, c=99  ->  result = " ++ bn_dec(mre
 let _ : String = print("  honest claim         -> Merkle-committed, Fiat-Shamir queries verify: " ++ show_a(okm))
 let _ : String = print("  wrong claim (R=12345) -> rejected (the output==claim assert breaks): " ++ show_a(badm))
 let _ : String = print("  two blinding seeds give different commitments (ZK): " ++ show_b(bn_eq(rt1, rt2) == false))
-let _ : String = print("  FRI: 32 queries + 12-bit grinding (sample PoW nonce for seed 123456 = " ++ int_to_string(gnonce) ++ ")")
-let _ : String = print("       -> ~25-28 bit query soundness, up from ~4 (memoized Merkle trees make 32 queries cheap); 80-bit needs a bigger blowup (docs/parameters.md)")
+let _ : String = print("  FRI: " ++ int_to_string(fri_queries(0)) ++ " queries over a " ++ int_to_string(fri_dsize(0)) ++ "-pt coset (rate ρ = 1/" ++ int_to_string(fri_dsize(0) / 32) ++ ") + 12-bit grind (sample PoW nonce, seed 123456 = " ++ int_to_string(gnonce) ++ ")")
+let _ : String = print("       -> ~65-bit provable (unique-decoding) / ~108-bit list-decoding query soundness, up from ~25-28 at ρ=1/2, 32 q")
+let _ : String = print("       lever: lower the rate (blowup 8) AND spend v5.41's now-cheap memoized queries (32 -> 64). Full 80-bit recipe: docs/parameters.md")
 let _ : String = print("")
 let _ : String = print("multi-input: each named argument lowers to a PRIVATE wire; the proof is over 2^64, not toy 2^31.")
 let _ : String = print("(arithmetic + let + calls + == + if + multi-input today; match / ADTs over bignum are the next step.)")
 
-"prove_source_goldilocks_zk v0.5 — Goldilocks STARK (multi-input, ==, if; memoized Merkle, 32 queries + 12-bit grinding)"
+"prove_source_goldilocks_zk v0.6 — Goldilocks STARK (multi-input, ==, if; ρ=1/8 blowup + 64 queries -> ~65-bit provable query soundness)"
