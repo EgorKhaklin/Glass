@@ -158,6 +158,35 @@ fn c_prelude_of(unused: Int) : String =
   "  if (strcmp(v->ctor, \"Cons\")) return b;\n" ++
   "  return q_cons(v->fields[0], q_list_concat(v->fields[1], b));\n" ++
   "}\n" ++
+  "/* Goldilocks field fast path: a field element is a base-2^16 limb list (LSB\n" ++
+  "   first, trimmed). Combine to u64, do the op mod p with a 128-bit intermediate,\n" ++
+  "   split back. p = 2^64 - 2^32 + 1. Mirrors glass.py's gold_mul/add/sub. */\n" ++
+  "static long long q_gold_comb(long long xs) {\n" ++
+  "  unsigned long long acc = 0; int sh = 0;\n" ++
+  "  while (xs) { q_value_t* v=(q_value_t*)(intptr_t)xs; if (strcmp(v->ctor,\"Cons\")) break; acc += ((unsigned long long)(v->fields[0] & 0xFFFF)) << sh; sh += 16; xs = v->fields[1]; }\n" ++
+  "  return (long long)acc;\n" ++
+  "}\n" ++
+  "static long long q_gold_split(unsigned long long r) {\n" ++
+  "  long long lst = (long long)(intptr_t)q_alloc(\"Nil\", 0); long long limbs[6]; int n = 0;\n" ++
+  "  while (r > 0) { limbs[n++] = (long long)(r & 0xFFFF); r >>= 16; }\n" ++
+  "  for (int i = n-1; i >= 0; i--) lst = q_cons(limbs[i], lst);\n" ++
+  "  return lst;\n" ++
+  "}\n" ++
+  "static long long q_gold_mul(long long a, long long b) {\n" ++
+  "  unsigned long long P = 18446744069414584321ULL;\n" ++
+  "  unsigned long long ai = (unsigned long long)q_gold_comb(a), bi = (unsigned long long)q_gold_comb(b);\n" ++
+  "  return q_gold_split((unsigned long long)(((unsigned __int128)ai * (unsigned __int128)bi) % P));\n" ++
+  "}\n" ++
+  "static long long q_gold_add(long long a, long long b) {\n" ++
+  "  unsigned long long P = 18446744069414584321ULL;\n" ++
+  "  unsigned long long ai = (unsigned long long)q_gold_comb(a), bi = (unsigned long long)q_gold_comb(b);\n" ++
+  "  return q_gold_split((unsigned long long)(((unsigned __int128)ai + (unsigned __int128)bi) % P));\n" ++
+  "}\n" ++
+  "static long long q_gold_sub(long long a, long long b) {\n" ++
+  "  unsigned long long P = 18446744069414584321ULL;\n" ++
+  "  unsigned long long ai = (unsigned long long)q_gold_comb(a), bi = (unsigned long long)q_gold_comb(b);\n" ++
+  "  return q_gold_split((unsigned long long)(((unsigned __int128)ai + (unsigned __int128)P - (unsigned __int128)bi) % P));\n" ++
+  "}\n" ++
   "/* polymorphic ++: a list is a q_value (magic tag in first word); a string\n" ++
   "   is a char* whose first bytes are ASCII != magic. ++ operands are always\n" ++
   "   pointers (never raw ints), so reading the first word is safe. */\n" ++
@@ -570,6 +599,12 @@ fn gen_builtin(name: String, args: List<Expr>, venv: List<Pair<String, String>>,
         Some(mk_builtin(sargs, tv, lifted, "q_len((long long)(" ++ a0 ++ "))"))
       else if name == "range" then
         Some(mk_builtin(sargs, tv, lifted, "q_range((long long)(" ++ a0 ++ "), (long long)(" ++ a1 ++ "))"))
+      else if name == "gold_mul" then
+        Some(mk_builtin(sargs, tv, lifted, "q_gold_mul((long long)(" ++ a0 ++ "), (long long)(" ++ a1 ++ "))"))
+      else if name == "gold_add" then
+        Some(mk_builtin(sargs, tv, lifted, "q_gold_add((long long)(" ++ a0 ++ "), (long long)(" ++ a1 ++ "))"))
+      else if name == "gold_sub" then
+        Some(mk_builtin(sargs, tv, lifted, "q_gold_sub((long long)(" ++ a0 ++ "), (long long)(" ++ a1 ++ "))"))
       else if name == "string_index_of" then
         Some(mk_builtin(sargs, tv, lifted, "q_str_index_of((char*)(intptr_t)(" ++ a0 ++
                 "), (char*)(intptr_t)(" ++ a1 ++ "))"))

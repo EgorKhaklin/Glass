@@ -20,14 +20,14 @@ set -euo pipefail
 FILE="$1"; TIMEIT="${2:-}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-PY="${PYTHON:-python3}"
+PY="${PYTHON:-$(command -v python3.12 || echo python3)}"   # quartz.py needs Python 3.10+
 PRISM="$ROOT/examples/selfhost/prism.glass"
 T=/tmp/glass-native; mkdir -p "$T"
 
 # 1. the self-hosted native compiler (cached; built once via the quartz bootstrap)
 GLASSC="${GLASSC:-$T/native_glassc}"
-if [ ! -x "$GLASSC" ]; then
-  echo "[build] compiling native_glassc via quartz (one-time)…" >&2
+if [ ! -x "$GLASSC" ] || [ "$ROOT/examples/selfhost/glassc.glass" -nt "$GLASSC" ]; then
+  echo "[build] compiling native_glassc via quartz (glassc.glass changed or first run)…" >&2
   printf '0\n' > /tmp/in.glass   # glassc.glass evals /tmp/in.glass at compile time; keep it trivial
   "$PY" "$ROOT/quartz.py" "$ROOT/examples/selfhost/glassc.glass" -o "$GLASSC" >/dev/null
 fi

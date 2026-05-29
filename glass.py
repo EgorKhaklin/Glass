@@ -1237,6 +1237,11 @@ def builtin_types() -> dict[str, Ty]:
         "filter":         TyFn((TyList(T), TyFn((T,), TyBool(), E)), TyList(T), E),
         "fold":           TyFn((TyList(T), A, TyFn((A, T), A, E)), A, E),
         "range":          TyFn((TyInt(), TyInt()), TyList(TyInt())),
+        # Goldilocks field arithmetic on base-2^16 limb lists (fast path for the
+        # ZK prover; same result as the Glass fmul/fadd/fsub, computed in one bignum op).
+        "gold_mul":       TyFn((TyList(TyInt()), TyList(TyInt())), TyList(TyInt())),
+        "gold_add":       TyFn((TyList(TyInt()), TyList(TyInt())), TyList(TyInt())),
+        "gold_sub":       TyFn((TyList(TyInt()), TyList(TyInt())), TyList(TyInt())),
         "string_length":  TyFn((TyString(),), TyInt()),
         "substring":      TyFn((TyString(), TyInt(), TyInt()), TyString()),
         # v4.40: ASCII case conversion. Strings outside A-Za-z pass
@@ -2465,6 +2470,20 @@ def builtin_values() -> dict[str, Value]:
         # Here we just echo with a tag, so demos run without external state.
         # The point is the TYPE: !{Inference} makes every model call visible.
         return StringV(f"[model]: {prompt.v}")
+    # --- Goldilocks field fast path (base-2^16 limb lists; p = 2^64 - 2^32 + 1) ---
+    _GOLD_P = (1 << 64) - (1 << 32) + 1
+    def _gold_to_int(xs):
+        return sum((l.v & 0xFFFF) << (16 * i) for i, l in enumerate(xs.items))
+    def _gold_to_limbs(r):
+        r %= _GOLD_P
+        out = []
+        while r > 0:
+            out.append(IntV(r & 0xFFFF))
+            r >>= 16
+        return ListV(out)
+    def b_gold_mul(a, b): return _gold_to_limbs(_gold_to_int(a) * _gold_to_int(b))
+    def b_gold_add(a, b): return _gold_to_limbs(_gold_to_int(a) + _gold_to_int(b))
+    def b_gold_sub(a, b): return _gold_to_limbs(_gold_to_int(a) - _gold_to_int(b))
     return {
         "print":            BuiltinV("print", b_print),
         "random_int":       BuiltinV("random_int", b_random_int),
@@ -2477,6 +2496,9 @@ def builtin_values() -> dict[str, Value]:
         "filter":           BuiltinV("filter", b_filter),
         "fold":             BuiltinV("fold", b_fold),
         "range":            BuiltinV("range", b_range),
+        "gold_mul":         BuiltinV("gold_mul", b_gold_mul),
+        "gold_add":         BuiltinV("gold_add", b_gold_add),
+        "gold_sub":         BuiltinV("gold_sub", b_gold_sub),
         "string_length":    BuiltinV("string_length", b_string_length),
         "string_to_upper":  BuiltinV("string_to_upper", b_string_to_upper),
         "string_to_lower":  BuiltinV("string_to_lower", b_string_to_lower),
@@ -3556,7 +3578,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.45.0")
+        print("Glass 5.46.0")
     elif sys.argv[1] == "prove":
         # `glass prove <file.glass> [name=value ...]` — compile the file's `main`
         # expression into a circuit and emit a succinct, zero-knowledge proof of
@@ -3568,10 +3590,12 @@ def main() -> None:
         # (+,-,*,let,calls,==,if) with multiple private inputs; the bignum field makes
         # it heavier on the interpreter. The default keeps Baby Bear for the full ADT
         # feature set. See docs/soundness.md.
-        args = [a for a in sys.argv[2:] if a != "--goldilocks"]
-        goldilocks = "--goldilocks" in sys.argv[2:]
+        args = [a for a in sys.argv[2:] if a not in ("--goldilocks", "--baby-bear")]
+        # Default is now Goldilocks (2^64, ADTs) — off the toy 2^31 Baby Bear field.
+        # `--baby-bear` opts back into the educational small-field prover.
+        goldilocks = "--baby-bear" not in sys.argv[2:]
         if len(args) < 1:
-            print("usage: glass prove [--goldilocks] <file.glass> [name=value ...]")
+            print("usage: glass prove [--baby-bear] <file.glass> [name=value ...]")
             return
         upath = args[0]
         inputs = []
@@ -3594,9 +3618,10 @@ def main() -> None:
             driver = machinery + (
                 '\nlet _usrc : String = "%s"\n'
                 'let _inp : List<Pair<String, Int>> = %s\n'
-                'let _r : List<Int> = gref(_usrc, _inp)\n'
+                'let _rv : List<List<Int>> = gref_m(_usrc, _inp)\n'
+                'let _r : List<Int> = vh(_rv)\n'
                 'let _ : String = print("result:  " ++ bn_dec(_r) ++ "  (over Goldilocks, p = 2^64-2^32+1)")\n'
-                'let _ : String = print("proof:   " ++ (if gprove(_usrc, _inp, _r, 11111) then "ACCEPT  (succinct, zero-knowledge)" else "REJECT"))\n'
+                'let _ : String = print("proof:   " ++ (if gprove_m(_usrc, _inp, _r, 11111) then "ACCEPT  (succinct, zero-knowledge)" else "REJECT"))\n'
                 '"glass prove --goldilocks"\n'
             ) % (esc, inp_glass)
         else:
@@ -3616,7 +3641,16 @@ def main() -> None:
             names = ", ".join(k for k, _ in inputs)
             print("private inputs: %s  (kept in the witness; the proof reveals only the result)" % names)
         print("")
-        run_source(driver, verbose=False, base_dir=bridge_dir)
+        if goldilocks:
+            # Goldilocks is bignum-heavy — run natively (the interpreter is ~hours).
+            # run_native.sh builds native_glassc once, then compiles + runs the driver.
+            _tmp = "/tmp/glass_prove_driver.glass"
+            with open(_tmp, "w") as _f:
+                _f.write(driver)
+            subprocess.run(["bash", os.path.join(here, "examples", "selfhost", "run_native.sh"), _tmp],
+                           check=False, env={**os.environ, "PYTHON": sys.executable})
+        else:
+            run_source(driver, verbose=False, base_dir=bridge_dir)
         print("")
         ext = "F_{p^2}" if goldilocks else "F_{p^4}"
         print("(blinded %s FRI STARK over the gate circuit; `glass prove` proves AND verifies.)" % ext)

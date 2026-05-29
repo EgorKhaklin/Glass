@@ -61,9 +61,9 @@ fn bn_mod_p(a: List<Int>) : List<Int> =
   let t : List<Int> = trim(a) in
   if len(t) > 4 then bn_mod_p(bn_add(take(t, 4), bn_mul(drop(t, 4), fold_hi(0))))
   else if bn_cmp(t, pg(0)) >= 0 then bn_sub(t, pg(0)) else t
-fn fadd(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_add(a, b))
-fn fsub(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_add(a, bn_sub(pg(0), bn_mod_p(b))))
-fn fmul(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_mul(a, b))
+fn fadd(a: List<Int>, b: List<Int>) : List<Int> = gold_add(a, b)
+fn fsub(a: List<Int>, b: List<Int>) : List<Int> = gold_sub(a, b)
+fn fmul(a: List<Int>, b: List<Int>) : List<Int> = gold_mul(a, b)
 fn bn_eq(a: List<Int>, b: List<Int>) : Bool = bn_cmp(a, b) == 0
 fn bn_is_zero(e: List<Int>) : Bool = match trim(e) { [] => true; _ => false }
 fn bn_is_odd(e: List<Int>) : Bool = match e { [] => false; [h, ...t] => h % 2 == 1 }
@@ -135,6 +135,10 @@ fn intt_sum(ev: List<List<Int>>, k: Int, j: Int, n: Int, wi: List<Int>) : List<I
 fn interp_go(ev: List<List<Int>>, k: Int, n: Int, wi: List<Int>, ni: List<Int>) : List<List<Int>> =
   if k >= n then [] else [fmul(ni, intt_sum(ev, k, 0, n, wi))] ++ interp_go(ev, k + 1, n, wi, ni)
 fn interp16(ev: List<List<Int>>) : List<List<Int>> = interp_go(ev, 0, 16, finv(root_pow2(4)), finv(glit(16)))
+# R1b: generic size-n inverse NTT (n a power of two) — the variable trace domain
+fn ilog2(n: Int) : Int = if n <= 1 then 0 else 1 + ilog2(n / 2)
+fn interp_n(ev: List<List<Int>>, n: Int) : List<List<Int>> = interp_go(ev, 0, n, finv(root_pow2(ilog2(n))), finv(glit(n)))
+fn eval_on_dom(c: List<List<Int>>, dom: List<List<Int>>) : List<List<Int>> = match dom { [] => []; [x, ...r] => [poly_eval_b(c, x)] ++ eval_on_dom(c, r) }
 
 # --- domains ------------------------------------------------------------------
 fn dom_powers(cur: List<Int>, g: List<Int>, k: Int) : List<List<Int>> = if k <= 0 then [] else [cur] ++ dom_powers(fmul(cur, g), g, k - 1)
@@ -148,11 +152,11 @@ fn gate_G_at(qa: List<List<Int>>, qm: List<List<Int>>, qs: List<List<Int>>, qc: 
   fadd(fmul(vs, fsub(vo, fsub(vl, vr))),
   fadd(fmul(vc, fsub(vo, vk)),
        fmul(vq, vl)))))
-fn quotient_cw(qa: List<List<Int>>, qm: List<List<Int>>, qs: List<List<Int>>, qc: List<List<Int>>, qe: List<List<Int>>, l: List<List<Int>>, r: List<List<Int>>, o: List<List<Int>>, c: List<List<Int>>, coset: List<List<Int>>) : List<List<Int>> =
+fn quotient_cw(qa: List<List<Int>>, qm: List<List<Int>>, qs: List<List<Int>>, qc: List<List<Int>>, qe: List<List<Int>>, l: List<List<Int>>, r: List<List<Int>>, o: List<List<Int>>, c: List<List<Int>>, coset: List<List<Int>>, n: Int) : List<List<Int>> =
   match coset { [] => []; [x, ...rest] =>
     let g : List<Int> = gate_G_at(qa, qm, qs, qc, qe, l, r, o, c, x) in
-    let zh : List<Int> = fsub(fpow_bn(x, glit(16)), [1]) in
-    [fmul(g, finv(zh))] ++ quotient_cw(qa, qm, qs, qc, qe, l, r, o, c, rest) }
+    let zh : List<Int> = fsub(fpow_bn(x, glit(n)), [1]) in
+    [fmul(g, finv(zh))] ++ quotient_cw(qa, qm, qs, qc, qe, l, r, o, c, rest, n) }
 
 # --- FRI low-degree test (base-field fold; Stage B lifts to F_{p^2}) ----------
 fn fold_at_b(cw: List<List<Int>>, dom: List<List<Int>>, beta: List<Int>, finv2: List<Int>, i: Int, half: Int) : List<List<Int>> =
@@ -185,20 +189,27 @@ fn is_constb(cw: List<List<Int>>) : Bool = match cw { [] => true; [x, ...r] => a
 # the whole point.) Each halving of ρ halves the per-query survival probability, at
 # the cost of ~linearly more quotient evaluations + bigger Merkle trees (the
 # interpreter-dogfood gate). See docs/parameters.md §4.
-fn fri_log(d: Int) : Int = 6                  # DEMO: 64-pt coset (ρ=1/2) so the Poseidon dogfood is tolerable; full-strength = 8 (256, ρ=1/8), native
-fn fri_dsize(d: Int) : Int = 64              # = 2^fri_log (coset size); ρ = 32 / fri_dsize. Full-strength 256 runs native (v5.44 GC, no OOM)
-fn fri_final(d: Int) : Int = fri_dsize(0) / 32  # fold stops here: the degree-32 bound folded to a constant
-fn fri_queries(d: Int) : Int = 8             # DEMO: 8 (full-strength 64, native). Poseidon ~300x MiMC, so the interpreter dogfood needs few
-fn fri_coset(d: Int) : List<List<Int>> = dom_powers([7], root_pow2(fri_log(0)), fri_dsize(0))
+# R1b: VARIABLE trace domain. d = N = ng(gates) = next pow2 of the gate count.
+# deg Q = 3(N-1) - N = 2N-3 < 2N (the tested bound); coset = 16N gives ρ = 2N/16N
+# = 1/8, and the fold stops at 16N/2N = 8 (constant) — the SAME validated relation
+# the Baby Bear prover uses, now N-parametric so ADT circuits (N up to hundreds) prove.
+fn glen(gs: List<Gate>) : Int = match gs { [] => 0; [g, ...r] => 1 + glen(r) }
+fn ng(gates: List<Gate>) : Int = next_pow2(glen(gates), 1)
+fn fri_log(d: Int) : Int = ilog2(d) + 4         # SHIP ρ=1/8: log2(16N)
+fn fri_dsize(d: Int) : Int = 16 * d             # coset = 16N -> ρ = 2N/16N = 1/8
+fn fri_final(d: Int) : Int = 8                  # fold to 8 over 16N (= 16N/2N): degree-<2N folded to a constant
+fn fri_queries(d: Int) : Int = 64               # full-strength 64 queries
+fn fri_coset(d: Int) : List<List<Int>> = dom_powers([7], root_pow2(fri_log(d)), fri_dsize(d))
 fn q_cw(gates: List<Gate>, w: List<List<Int>>) : List<List<Int>> =
-  let qa : List<List<Int>> = interp16(lpad(c_qa(gates), 16)) in let qm : List<List<Int>> = interp16(lpad(c_qm(gates), 16)) in
-  let qs : List<List<Int>> = interp16(lpad(c_qs(gates), 16)) in let qc : List<List<Int>> = interp16(lpad(c_qc(gates), 16)) in
-  let qe : List<List<Int>> = interp16(lpad(c_qe(gates), 16)) in
-  let cc : List<List<Int>> = interp16(lpad(c_c(gates), 16)) in
-  let ll : List<List<Int>> = interp16(lpad(c_l(gates, w), 16)) in let rr : List<List<Int>> = interp16(lpad(c_r(gates, w), 16)) in let oo : List<List<Int>> = interp16(lpad(c_o(gates, w), 16)) in
-  quotient_cw(qa, qm, qs, qc, qe, ll, rr, oo, cc, fri_coset(0))
+  let n : Int = ng(gates) in
+  let qa : List<List<Int>> = interp_n(lpad(c_qa(gates), n), n) in let qm : List<List<Int>> = interp_n(lpad(c_qm(gates), n), n) in
+  let qs : List<List<Int>> = interp_n(lpad(c_qs(gates), n), n) in let qc : List<List<Int>> = interp_n(lpad(c_qc(gates), n), n) in
+  let qe : List<List<Int>> = interp_n(lpad(c_qe(gates), n), n) in
+  let cc : List<List<Int>> = interp_n(lpad(c_c(gates), n), n) in
+  let ll : List<List<Int>> = interp_n(lpad(c_l(gates, w), n), n) in let rr : List<List<Int>> = interp_n(lpad(c_r(gates, w), n), n) in let oo : List<List<Int>> = interp_n(lpad(c_o(gates, w), n), n) in
+  quotient_cw(qa, qm, qs, qc, qe, ll, rr, oo, cc, fri_coset(n), n)
 fn low_degree_quotient(gates: List<Gate>, w: List<List<Int>>) : Bool =
-  is_constb(fold_all_b(q_cw(gates, w), fri_coset(0), finv([2]), 0))
+  is_constb(fold_all_b(q_cw(gates, w), fri_coset(ng(gates)), finv([2]), 0))
 
 # --- ZERO-KNOWLEDGE: blind Q with a random low-degree mask (Stage B) ----------
 # A degree-<8 polynomial R, evaluated on the coset, is added to Q. Since deg R is
@@ -255,10 +266,10 @@ fn rand_coeffs(seed: Int, i: Int, k: Int) : List<List<Int>> = if i >= k then [] 
 fn blind_cw(cw: List<List<Int>>, coeffs: List<List<Int>>, dom: List<List<Int>>, i: Int) : List<List<Int>> =
   if i >= llen(cw) then [] else [fadd(wnth(cw, i), poly_eval_b(coeffs, wnth(dom, i)))] ++ blind_cw(cw, coeffs, dom, i + 1)
 fn prove_zk(gates: List<Gate>, w: List<List<Int>>, seed: Int) : Bool =
-  let bcw : List<List<Int>> = blind_cw(q_cw(gates, w), rand_coeffs(seed, 0, 16), fri_coset(0), 0) in
-  is_constb(fold_all_b(bcw, fri_coset(0), finv([2]), 0))
+  let bcw : List<List<Int>> = blind_cw(q_cw(gates, w), rand_coeffs(seed, 0, 16), fri_coset(ng(gates)), 0) in
+  is_constb(fold_all_b(bcw, fri_coset(ng(gates)), finv([2]), 0))
 fn opened5(gates: List<Gate>, w: List<List<Int>>, seed: Int) : List<Int> =
-  wnth(blind_cw(q_cw(gates, w), rand_coeffs(seed, 0, 16), fri_coset(0), 0), 5)
+  wnth(blind_cw(q_cw(gates, w), rand_coeffs(seed, 0, 16), fri_coset(ng(gates)), 0), 5)
 
 # --- the cryptographic STARK: F_{p^2} fold challenge + Merkle commit + queries --
 # Embed the quotient codeword into F_{p^2}, blind it, Merkle-commit each FRI layer,
@@ -349,15 +360,15 @@ fn is_const2(cw: List<G2>) : Bool = match cw { [] => true; [x, ...r] => all_eq2(
 fn blind_g(cw: List<G2>, coeffs: List<List<Int>>, dom: List<List<Int>>, i: Int) : List<G2> =
   if i >= len(cw) then [] else [gadd2(nth2(cw, i), emb(poly_eval_b(coeffs, wnth(dom, i))))] ++ blind_g(cw, coeffs, dom, i + 1)
 fn prove_stark(gates: List<Gate>, w: List<List<Int>>, seed: Int) : Bool =
-  let ecw : List<G2> = blind_g(embed_cw(q_cw(gates, w)), rand_coeffs(seed, 0, 16), fri_coset(0), 0) in
-  match commit_g(ecw, fri_coset(0), [], finv([2])) { (layers, final) =>
+  let ecw : List<G2> = blind_g(embed_cw(q_cw(gates, w)), rand_coeffs(seed, 0, 16), fri_coset(ng(gates)), 0) in
+  match commit_g(ecw, fri_coset(ng(gates)), [], finv([2])) { (layers, final) =>
     let base_seed : List<Int> = transcript_seed_g(layers, []) in
     let nz : Int = grind(base_seed) in                                   # proof-of-work: 12 bits
     let ground : List<Int> = hashg(base_seed, glit(nz)) in               # the PoW-cleared query seed
-    let faults : Int = count_catches_g(layers, final, sample_queries_g(ground, fri_queries(0), fri_dsize(0)), finv([2])) in
+    let faults : Int = count_catches_g(layers, final, sample_queries_g(ground, fri_queries(ng(gates)), fri_dsize(ng(gates))), finv([2])) in
     is_const2(final) && faults == 0 && pow_ok(ground) }
 fn stark_root(gates: List<Gate>, w: List<List<Int>>, seed: Int) : List<Int> =
-  merkle_root_g(blind_g(embed_cw(q_cw(gates, w)), rand_coeffs(seed, 0, 16), fri_coset(0), 0))
+  merkle_root_g(blind_g(embed_cw(q_cw(gates, w)), rand_coeffs(seed, 0, 16), fri_coset(ng(gates)), 0))
 
 # --- bridge: parse, inline calls, lower the arithmetic subset to gates -------
 fn fn_body_of(fns: List<FnDecl>, name: String) : Expr = match fns { [] => EInt(0); [FnDecl(fnm, tps, ty, body), ...rest] => if fnm == name then body else fn_body_of(rest, name) }
@@ -391,9 +402,158 @@ fn unroll(e: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: In
     EEq(x, y) => EEq(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
     EIf(c, t, f) => EIf(unroll(c, fns, fenv, fuel), unroll(t, fns, fenv, fuel), unroll(f, fns, fenv, fuel));
     ELet(nm, v, body) => ELet(nm, unroll(v, fns, fenv, fuel), unroll(body, fns, fenv, fuel));
+    EMatch(scrut, arms) => EMatch(unroll(scrut, fns, fenv, fuel), unroll_arms(arms, fns, fenv, fuel));
+    ECtor(name, args) => ECtor(name, unroll_args(args, fns, fenv, fuel));
+    ETuple(elems) => ETuple(unroll_args(elems, fns, fenv, fuel));
     _ => e }
 
 fn env_get2(env: List<Pair<String, Int>>, name: String) : Int = match env { [] => 0 - 1; [Pair(k, v), ...r] => if k == name then v else env_get2(r, name) }
+
+# === R1b foundation: multi-wire ADT support over Goldilocks (staged) ==========
+# A value is a wire LIST: scalar Int -> [w]; ADT Ctor(a,b) -> [tag, wa, wb]; tuple
+# (a,b) -> [wa, wb]. These field-agnostic helpers (tags, type-directed widths) +
+# bignum/wire-index list helpers are the foundation; heval (spec) + cgen (circuit)
+# are the next stages. Ported from prove_source_adt_zk.glass, adapted to bignum.
+fn nthI(xs: List<Int>, i: Int) : Int = match xs { [] => 0; [h, ...t] => if i == 0 then h else nthI(t, i - 1) }
+fn ilenI(xs: List<Int>) : Int = match xs { [] => 0; [x, ...r] => 1 + ilenI(r) }
+fn vh(v: List<List<Int>>) : List<Int> = wnth(v, 0)
+fn slw(sv: List<List<Int>>, off: Int, w: Int) : List<List<Int>> = if w <= 0 then [] else [wnth(sv, off)] ++ slw(sv, off + 1, w - 1)
+fn padw(v: List<List<Int>>, t: Int) : List<List<Int>> = if llen(v) >= t then v else padw(v ++ [glit(0)], t)
+fn ctix(ctors: List<CtorDecl>, name: String, i: Int) : Int = match ctors { [] => 0 - 1; [CtorDecl(cn, ats), ...r] => if cn == name then i else ctix(r, name, i + 1) }
+fn ctag(types: List<TypeDecl>, name: String) : Int = match types { [] => 0; [TypeDecl(tn, tps, ctors), ...r] => let idx : Int = ctix(ctors, name, 0) in if idx >= 0 then idx else ctag(r, name) }
+fn find_type(types: List<TypeDecl>, name: String) : List<CtorDecl> = match types { [] => []; [TypeDecl(tn, tps, ctors), ...r] => if tn == name then ctors else find_type(r, name) }
+fn has_ctor(ctors: List<CtorDecl>, name: String) : Bool = match ctors { [] => false; [CtorDecl(cn, ats), ...r] => if cn == name then true else has_ctor(r, name) }
+fn get_args(ctors: List<CtorDecl>, name: String) : List<Type> = match ctors { [] => []; [CtorDecl(cn, ats), ...r] => if cn == name then ats else get_args(r, name) }
+fn ctor_argtypes(types: List<TypeDecl>, name: String) : List<Type> = match types { [] => []; [TypeDecl(tn, tps, ctors), ...r] => if has_ctor(ctors, name) then get_args(ctors, name) else ctor_argtypes(r, name) }
+fn scalar_types_e(xs: List<Expr>) : List<Type> = match xs { [] => []; [x, ...r] => [TyInt] ++ scalar_types_e(r) }
+fn twidth(ty: Type, types: List<TypeDecl>, fuel: Int) : Int = if fuel <= 0 then 1 else match ty { TyAdt(name, args) => match find_type(types, name) { [] => 1; cs => 1 + max_ctor_width(cs, types, fuel - 1) }; TyTuple(tys) => ctor_wsum(tys, types, fuel - 1); _ => 1 }
+fn ctor_wsum(args: List<Type>, types: List<TypeDecl>, fuel: Int) : Int = match args { [] => 0; [a, ...r] => twidth(a, types, fuel) + ctor_wsum(r, types, fuel) }
+fn max_ctor_width(ctors: List<CtorDecl>, types: List<TypeDecl>, fuel: Int) : Int = match ctors { [] => 0; [CtorDecl(cn, ats), ...r] => let w : Int = ctor_wsum(ats, types, fuel) in let rw : Int = max_ctor_width(r, types, fuel) in if w >= rw then w else rw }
+
+# --- R1b stage 1: heval, the reference evaluator (SPEC) for ADTs over Goldilocks --
+# A value is multi-wire: scalar [v]; ADT Ctor(a,b) -> [tag, fa, fb]; tuple [a, b].
+# (int -> bignum vs the Baby Bear original: values List<List<Int>>, vh first comp,
+# tags via glit, is-zero via bn_is_zero.)
+fn scalar_types_p(xs: List<Pattern>) : List<Type> = match xs { [] => []; [x, ...r] => [TyInt] ++ scalar_types_p(r) }
+fn heg(env: List<Pair<String, List<List<Int>>>>, name: String) : List<List<Int>> = match env { [] => [glit(0)]; [Pair(k, v), ...r] => if k == name then v else heg(r, name) }
+fn heval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>) : (List<List<Int>>, List<List<Int>>) =
+  match e {
+    EInt(n) => ([glit(n)], []);
+    EBool(tf) => ([if tf then glit(1) else glit(0)], []);
+    EVar(x) => (heg(env, x), []);
+    EAdd(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) => ([fadd(vh(va), vh(vb))], ha ++ hb) } };
+    ESub(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) => ([fsub(vh(va), vh(vb))], ha ++ hb) } };
+    EMul(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) => ([fmul(vh(va), vh(vb))], ha ++ hb) } };
+    EEq(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) =>
+      let d : List<Int> = fsub(vh(va), vh(vb)) in ([if bn_is_zero(d) then glit(1) else glit(0)], ha ++ hb ++ [if bn_is_zero(d) then glit(0) else finv(d)]) } };
+    EIf(c, t, f) => match heval(c, env, fns, types) { (vc, hc) => match heval(t, env, fns, types) { (vt, ht) => match heval(f, env, fns, types) { (vf, hf) => (if bn_eq(vh(vc), glit(1)) then vt else vf, hc ++ ht ++ hf) } } };
+    ELet(nm, v, body) => match heval(v, env, fns, types) { (vv, hv) => match heval(body, [Pair(nm, vv)] ++ env, fns, types) { (vb, hb) => (vb, hv ++ hb) } };
+    ECtor(name, args) => match heval_fields(args, ctor_argtypes(types, name), env, fns, types) { (vals, hs) => ([glit(ctag(types, name))] ++ vals, hs) };
+    ETuple(elems) => heval_fields(elems, scalar_types_e(elems), env, fns, types);
+    EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => heval_call(fn_body_of(fns, fname), args, [], env, fns, types); _ => ([glit(0)], []) } };
+    EMatch(scrut, arms) => match heval(scrut, env, fns, types) { (sv, hs) => match heval_match(sv, arms, env, fns, types) { (rv, ha) => (rv, hs ++ ha) } };
+    _ => ([glit(0)], []) }
+fn heval_fields(args: List<Expr>, tys: List<Type>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>) : (List<List<Int>>, List<List<Int>>) =
+  match args { [] => ([], []); [a, ...arest] => match tys { [] => ([], []); [t, ...trest] =>
+    match heval(a, env, fns, types) { (va, ha) => match heval_fields(arest, trest, env, fns, types) { (vr, hr) =>
+      (padw(va, twidth(t, types, 12)) ++ vr, ha ++ hr) } } } }
+fn heval_call(body: Expr, args: List<Expr>, ccenv: List<Pair<String, List<List<Int>>>>, fcenv: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>) : (List<List<Int>>, List<List<Int>>) =
+  match body {
+    ELam(p, inner) => match args { [] => heval(body, ccenv, fns, types); [a, ...rest] => match heval(a, fcenv, fns, types) { (va, ha) => match heval_call(inner, rest, [Pair(p, va)] ++ ccenv, fcenv, fns, types) { (vr, hr) => (vr, ha ++ hr) } } };
+    _ => heval(body, ccenv, fns, types) }
+fn pmatch(p: Pattern, sv: List<List<Int>>, types: List<TypeDecl>) : Bool =
+  match p { PWild => true; PVar(x) => true; PInt(n) => bn_eq(vh(sv), glit(n)); PBool(bb) => bn_eq(vh(sv), if bb then glit(1) else glit(0)); PCtor(nm, ps) => if bn_eq(vh(sv), glit(ctag(types, nm))) then pmatch_fields(ps, ctor_argtypes(types, nm), sv, 1, types) else false; PTuple(ps) => pmatch_fields(ps, scalar_types_p(ps), sv, 0, types); PStr(s) => false; PRecord(nm, fs) => false }
+fn pmatch_fields(ps: List<Pattern>, tys: List<Type>, sv: List<List<Int>>, off: Int, types: List<TypeDecl>) : Bool =
+  match ps { [] => true; [p, ...prest] => match tys { [] => true; [t, ...trest] =>
+    let wt : Int = twidth(t, types, 12) in if pmatch(p, slw(sv, off, wt), types) then pmatch_fields(prest, trest, sv, off + wt, types) else false } }
+fn pbind(p: Pattern, sv: List<List<Int>>, types: List<TypeDecl>, env: List<Pair<String, List<List<Int>>>>) : List<Pair<String, List<List<Int>>>> =
+  match p { PVar(x) => [Pair(x, sv)] ++ env; PCtor(nm, ps) => pbind_fields(ps, ctor_argtypes(types, nm), sv, 1, types, env); PWild => env; PInt(n) => env; PBool(bb) => env; PTuple(ps) => pbind_fields(ps, scalar_types_p(ps), sv, 0, types, env); PStr(s) => env; PRecord(nm, fs) => env }
+fn pbind_fields(ps: List<Pattern>, tys: List<Type>, sv: List<List<Int>>, off: Int, types: List<TypeDecl>, env: List<Pair<String, List<List<Int>>>>) : List<Pair<String, List<List<Int>>>> =
+  match ps { [] => env; [p, ...prest] => match tys { [] => env; [t, ...trest] =>
+    let wt : Int = twidth(t, types, 12) in pbind_fields(prest, trest, sv, off + wt, types, pbind(p, slw(sv, off, wt), types, env)) } }
+fn psel_hint(p: Pattern, sv: List<List<Int>>, types: List<TypeDecl>) : List<List<Int>> =
+  match p { PInt(n) => let d : List<Int> = fsub(vh(sv), glit(n)) in [if bn_is_zero(d) then glit(0) else finv(d)]; PBool(bb) => let d : List<Int> = fsub(vh(sv), if bb then glit(1) else glit(0)) in [if bn_is_zero(d) then glit(0) else finv(d)]; PCtor(nm, ps) => let d : List<Int> = fsub(vh(sv), glit(ctag(types, nm))) in [if bn_is_zero(d) then glit(0) else finv(d)] ++ psel_hint_fields(ps, ctor_argtypes(types, nm), sv, 1, types); PWild => []; PVar(x) => []; PTuple(ps) => psel_hint_fields(ps, scalar_types_p(ps), sv, 0, types); PStr(s) => []; PRecord(nm, fs) => [] }
+fn psel_hint_fields(ps: List<Pattern>, tys: List<Type>, sv: List<List<Int>>, off: Int, types: List<TypeDecl>) : List<List<Int>> =
+  match ps { [] => []; [p, ...prest] => match tys { [] => []; [t, ...trest] =>
+    let wt : Int = twidth(t, types, 12) in psel_hint(p, slw(sv, off, wt), types) ++ psel_hint_fields(prest, trest, sv, off + wt, types) } }
+fn heval_match(sv: List<List<Int>>, arms: List<Pair<Pattern, Expr>>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>) : (List<List<Int>>, List<List<Int>>) =
+  match arms { [] => ([glit(0)], []);
+    [Pair(p, body), ...rest] =>
+      let sh : List<List<Int>> = psel_hint(p, sv, types) in
+      match heval(body, pbind(p, sv, types, env), fns, types) { (bv, bh) =>
+      match heval_match(sv, rest, env, fns, types) { (rv, rh) =>
+        (if pmatch(p, sv, types) then bv else rv, sh ++ bh ++ rh) } } }
+
+fn gref_h(src: String) : List<List<Int>> = match parse_prog(src) { Program(types, fns, main) => match heval(unroll(main, fns, [], 8), [], fns, types) { (v, h) => v } }
+
+# --- R1b stage 2: cgen, the multi-wire circuit generator for ADTs --------------
+# Value = wire-index LIST (List<Int>): scalar [w]; ADT [tag, ...fields]; tuple [...].
+# Inline is-zero hints via mkh (no hint region), bignum constants via glit. Adapted
+# from prove_source_adt_zk's cgen; mk_eq_g is the Goldilocks is-zero gadget.
+fn slwi(sv: List<Int>, off: Int, w: Int) : List<Int> = if w <= 0 then [] else [nthI(sv, off)] ++ slwi(sv, off + 1, w - 1)
+fn vhi(v: List<Int>) : Int = nthI(v, 0)
+fn cenv_get(cenv: List<Pair<String, List<Int>>>, name: String) : List<Int> = match cenv { [] => [0 - 1]; [Pair(k, v), ...r] => if k == name then v else cenv_get(r, name) }
+fn padv_g(v: List<Int>, target: Int, b: Build) : (List<Int>, Build) = if ilenI(v) >= target then (v, b) else match mkc(glit(0), b) { (z, b1) => padv_g(v ++ [z], target, b1) }
+fn mk_eq_g(wx: Int, wy: Int, b: Build) : (Int, Build) =
+  match mks(wx, wy, b) { (wd, b1) => let dv : List<Int> = bwire(b1, wd) in let iv : List<Int> = if bn_is_zero(dv) then glit(0) else finv(dv) in
+  match mkh(iv, b1) { (winv, b2) => match mkm(wd, winv, b2) { (wdi, b3) => match mkc(glit(1), b3) { (wone, b4) =>
+  match mks(wone, wdi, b4) { (wz, b5) => match mkm(wz, wd, b5) { (wzd, b6) => (wz, mke(wzd, b6)) } } } } } }
+fn muxw(wc: Int, vt: List<Int>, vf: List<Int>, b: Build) : (List<Int>, Build) =
+  match vt { [] => ([], b); [t, ...tr] => match vf { [] => ([], b); [f, ...fr] =>
+    match mks(t, f, b) { (wd, b1) => match mkm(wc, wd, b1) { (wcd, b2) => match mka(f, wcd, b2) { (wo, b3) =>
+    match muxw(wc, tr, fr, b3) { (rest, b4) => ([wo] ++ rest, b4) } } } } } }
+fn cgen(e: Expr, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: List<TypeDecl>, b: Build) : (List<Int>, Build) =
+  match e {
+    EInt(n) => match mkc(glit(n), b) { (w, b1) => ([w], b1) };
+    EBool(tf) => match mkc(if tf then glit(1) else glit(0), b) { (w, b1) => ([w], b1) };
+    EVar(x) => (cenv_get(cenv, x), b);
+    EAdd(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match mka(vhi(vx), vhi(vy), b2) { (wo, b3) => ([wo], b3) } } };
+    ESub(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match mks(vhi(vx), vhi(vy), b2) { (wo, b3) => ([wo], b3) } } };
+    EMul(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match mkm(vhi(vx), vhi(vy), b2) { (wo, b3) => ([wo], b3) } } };
+    EEq(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match mk_eq_g(vhi(vx), vhi(vy), b2) { (wo, b3) => ([wo], b3) } } };
+    EIf(c, t, f) => match cgen(c, cenv, fns, types, b) { (vc, b1) => match cgen(t, cenv, fns, types, b1) { (vt, b2) => match cgen(f, cenv, fns, types, b2) { (vf, b3) => muxw(vhi(vc), vt, vf, b3) } } };
+    ELet(nm, v, body) => match cgen(v, cenv, fns, types, b) { (vv, b1) => cgen(body, [Pair(nm, vv)] ++ cenv, fns, types, b1) };
+    ECtor(name, args) => match mkc(glit(ctag(types, name)), b) { (wtag, b1) => match cgen_fields(args, ctor_argtypes(types, name), cenv, fns, types, b1) { (fws, b2) => ([wtag] ++ fws, b2) } };
+    ETuple(elems) => cgen_fields(elems, scalar_types_e(elems), cenv, fns, types, b);
+    EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => cgen_call(fn_body_of(fns, fname), args, [], cenv, fns, types, b); _ => match mkc(glit(0), b) { (w, b1) => ([w], b1) } } };
+    EMatch(scrut, arms) => match cgen(scrut, cenv, fns, types, b) { (sv, b1) => match mkc(glit(0), b1) { (zm, b2) => cgen_match(arms, sv, cenv, fns, types, zm, [], b2) } };
+    _ => match mkc(glit(0), b) { (w, b1) => ([w], b1) } }
+fn cgen_fields(args: List<Expr>, tys: List<Type>, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: List<TypeDecl>, b: Build) : (List<Int>, Build) =
+  match args { [] => ([], b); [a, ...arest] => match tys { [] => ([], b); [t, ...trest] =>
+    match cgen(a, cenv, fns, types, b) { (va, b1) => match padv_g(va, twidth(t, types, 12), b1) { (pva, b2) =>
+    match cgen_fields(arest, trest, cenv, fns, types, b2) { (vr, b3) => (pva ++ vr, b3) } } } } }
+fn cgen_call(body: Expr, args: List<Expr>, ccenv: List<Pair<String, List<Int>>>, fcenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: List<TypeDecl>, b: Build) : (List<Int>, Build) =
+  match body { ELam(p, inner) => match args { [] => cgen(body, ccenv, fns, types, b); [a, ...rest] => match cgen(a, fcenv, fns, types, b) { (va, b1) => cgen_call(inner, rest, [Pair(p, va)] ++ ccenv, fcenv, fns, types, b1) } }; _ => cgen(body, ccenv, fns, types, b) }
+fn psel(p: Pattern, sv: List<Int>, types: List<TypeDecl>, b: Build) : (Int, Build) =
+  match p { PWild => mkc(glit(1), b); PVar(x) => mkc(glit(1), b);
+    PInt(n) => match mkc(glit(n), b) { (wn, b1) => mk_eq_g(vhi(sv), wn, b1) };
+    PBool(bb) => match mkc(if bb then glit(1) else glit(0), b) { (wn, b1) => mk_eq_g(vhi(sv), wn, b1) };
+    PCtor(nm, ps) => match mkc(glit(ctag(types, nm)), b) { (wn, b1) => match mk_eq_g(vhi(sv), wn, b1) { (s0, b2) => psel_fields(ps, ctor_argtypes(types, nm), sv, 1, types, s0, b2) } };
+    PTuple(ps) => match mkc(glit(1), b) { (one, b1) => psel_fields(ps, scalar_types_p(ps), sv, 0, types, one, b1) };
+    PStr(s) => mkc(glit(0), b); PRecord(nm, fs) => mkc(glit(0), b) }
+fn psel_fields(ps: List<Pattern>, tys: List<Type>, sv: List<Int>, off: Int, types: List<TypeDecl>, acc: Int, b: Build) : (Int, Build) =
+  match ps { [] => (acc, b); [p, ...prest] => match tys { [] => (acc, b); [t, ...trest] =>
+    let wt : Int = twidth(t, types, 12) in match psel(p, slwi(sv, off, wt), types, b) { (s, b1) => match mkm(acc, s, b1) { (acc2, b2) => psel_fields(prest, trest, sv, off + wt, types, acc2, b2) } } } }
+fn cbind(p: Pattern, sv: List<Int>, types: List<TypeDecl>, cenv: List<Pair<String, List<Int>>>) : List<Pair<String, List<Int>>> =
+  match p { PVar(x) => [Pair(x, sv)] ++ cenv; PCtor(nm, ps) => cbind_fields(ps, ctor_argtypes(types, nm), sv, 1, types, cenv); PWild => cenv; PInt(n) => cenv; PBool(bb) => cenv; PTuple(ps) => cbind_fields(ps, scalar_types_p(ps), sv, 0, types, cenv); PStr(s) => cenv; PRecord(nm, fs) => cenv }
+fn cbind_fields(ps: List<Pattern>, tys: List<Type>, sv: List<Int>, off: Int, types: List<TypeDecl>, cenv: List<Pair<String, List<Int>>>) : List<Pair<String, List<Int>>> =
+  match ps { [] => cenv; [p, ...prest] => match tys { [] => cenv; [t, ...trest] =>
+    let wt : Int = twidth(t, types, 12) in cbind_fields(prest, trest, sv, off + wt, types, cbind(p, slwi(sv, off, wt), types, cenv)) } }
+fn accw(result: List<Int>, eff: Int, body: List<Int>, b: Build) : (List<Int>, Build) =
+  match body { [] => ([], b); [bi, ...br] => match mkm(eff, bi, b) { (contrib, b1) =>
+    match result { [] => match accw([], eff, br, b1) { (rest, b2) => ([contrib] ++ rest, b2) };
+      [ri, ...rr] => match mka(ri, contrib, b1) { (nri, b2) => match accw(rr, eff, br, b2) { (rest, b3) => ([nri] ++ rest, b3) } } } } }
+fn cgen_match(arms: List<Pair<Pattern, Expr>>, sv: List<Int>, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: List<TypeDecl>, matched: Int, result: List<Int>, b: Build) : (List<Int>, Build) =
+  match arms { [] => (result, b);
+    [Pair(p, body), ...rest] =>
+      match psel(p, sv, types, b) { (sel, b1) => match mkc(glit(1), b1) { (one, b2) => match mks(one, matched, b2) { (notm, b3) =>
+      match mkm(sel, notm, b3) { (eff, b4) => match cgen(body, cbind(p, sv, types, cenv), fns, types, b4) { (vb, b5) =>
+      match accw(result, eff, vb, b5) { (nres, b6) => match mka(matched, eff, b6) { (nm, b7) => cgen_match(rest, sv, cenv, fns, types, nm, nres, b7) } } } } } } } }
+# cgen-as-reference: build the circuit, read the output wires' witness values (must equal heval)
+fn wmap(ws: List<Int>, w: List<List<Int>>) : List<List<Int>> = match ws { [] => []; [i, ...r] => [wnth(w, i)] ++ wmap(r, w) }
+fn cref(src: String) : List<List<Int>> = match parse_prog(src) { Program(types, fns, main) =>
+  match cgen(unroll(main, fns, [], 8), [], fns, types, Build(0, [], [])) { (outws, b) => match b { Build(n, gs, w) => wmap(outws, w) } } }
+
 # lower a call-free arithmetic Expr to gates; returns (output wire index, Build)
 fn cg(e: Expr, env: List<Pair<String, Int>>, b: Build) : (Int, Build) =
   match e {
@@ -446,6 +606,21 @@ fn build_claim(src: String, inputs: List<Pair<String, Int>>, claimedR: List<Int>
     match mkc(claimedR, b) { (wR, b1) => match mks(out, wR, b1) { (wd, b2) => mke(wd, b2) } } }
 fn gprove(src: String, inputs: List<Pair<String, Int>>, claimedR: List<Int>, seed: Int) : Bool =
   match build_claim(src, inputs, claimedR) { Build(n, gs, w) => prove_stark(gs, w, seed) }
+# --- R1b stage 3: multi-wire prove path (cgen) — proves programs that USE ADTs ---
+# scalar inputs sit on low wires [0..n); each binds to a single-wire value [i].
+fn in_cenv_m(inputs: List<Pair<String, Int>>, i: Int) : List<Pair<String, List<Int>>> =
+  match inputs { [] => []; [Pair(nm, v), ...r] => [Pair(nm, [i])] ++ in_cenv_m(r, i + 1) }
+fn build_multi_m(src: String, inputs: List<Pair<String, Int>>) : (List<Int>, Build) =
+  match parse_prog(src) { Program(types, fns, main) =>
+    cgen(unroll(main, fns, [], 8), in_cenv_m(inputs, 0), fns, types, Build(iplen(inputs), [], in_vals_g(inputs))) }
+fn gref_m(src: String, inputs: List<Pair<String, Int>>) : List<List<Int>> =
+  match build_multi_m(src, inputs) { (outws, b) => match b { Build(n, gs, w) => wmap(outws, w) } }
+# claim-bind the scalar result (first output component) to claimedR
+fn build_claim_m(src: String, inputs: List<Pair<String, Int>>, claimedR: List<Int>) : Build =
+  match build_multi_m(src, inputs) { (outws, b) =>
+    match mkc(claimedR, b) { (wR, b1) => match mks(vhi(outws), wR, b1) { (wd, b2) => mke(wd, b2) } } }
+fn gprove_m(src: String, inputs: List<Pair<String, Int>>, claimedR: List<Int>, seed: Int) : Bool =
+  match build_claim_m(src, inputs, claimedR) { Build(n, gs, w) => prove_stark(gs, w, seed) }
 
 # --- demo --------------------------------------------------------------------
 fn show_a(b: Bool) : String = if b then "ACCEPT" else "REJECT"

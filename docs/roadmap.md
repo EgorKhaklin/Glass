@@ -314,9 +314,12 @@ three under-invested axes — *realness*, *usability*, and *convergence* — on 
     to stop at domain/(degree-bound) makes a bigger coset actually lower the rate. Both
     paths now run 64 queries. **Net query-phase soundness: Goldilocks ~65 provable /
     ~108 list-decode** (ρ=1/8 + 64 q + 12-bit grind — past 80 by the list-decoding
-    standard), **Baby Bear ~53 / ~96** — up from ~4. *Remaining:* the in-STARK hash is
-    still MiMC (→ R2's vetted Poseidon), Baby Bear's value space is still 2³¹ (→ R1's
-    migration), and an external audit (the hard boundary).
+    standard), **Baby Bear ~53 / ~96** — up from ~4. *Since:* **v5.45** wired the vetted
+    **Poseidon** in as the in-STARK hash (MiMC retired from the Goldilocks prover), and
+    **v5.46** moved the **default `glass prove` off the 2³¹ value space onto Goldilocks-ADT**
+    (variable trace domain + multi-wire `cgen` for `match`/ADTs + a fast `gold_*` field;
+    native ~24–160s). The remaining hard boundary is an **external audit** — never crossed
+    in-repo.
 - **Track E — Expressiveness** (past first-order).
   - **E1. ✅ DONE (recursion).** **Bounded recursion** via a source-level **unroll
     pre-pass** (`unroll`/`inline_fn` in [`prove_source_adt_zk.glass`](../examples/prove/prove_source_adt_zk.glass)):
