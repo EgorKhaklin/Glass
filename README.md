@@ -17,7 +17,7 @@
 Now a machine writes the code.
 
 You describe what you want; it generates the structure. It runs, it reads
-cleanly, it passes the demo — and you are asked to trust it. The hard part was
+cleanly, it passes the demo and you are asked to trust it. The hard part was
 never the typing. It was the trust. Underneath the plausible surface: a side
 effect nobody declared, a branch never handled, a function that does more than
 its name admits. And the plausible now ships faster than anyone can read it.
