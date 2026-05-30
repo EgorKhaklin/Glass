@@ -93,18 +93,18 @@ refinement is **rejected**. Two fields are available:
   challenge), interpreter-only / Python-only — kept as a fast reference. Its *value range*
   is toy (a secret < 2³¹ is brute-forceable; results wrap above ~2.1·10⁹).
 
-The field and hash are now real, but **structural soundness gaps** remain — this is why
-it is **research-grade, not production**: (i) the prover's inline Fiat-Shamir transcript is
-now **seeded with a digest of the statement** (`stmt_seed_of(gates)` over the gate list —
-circuit structure + the `GConst` holding the claimed result R; CLI inputs stay private in
-the witness and are never absorbed), threaded through `commit_g` so *every* challenge — the
-FRI fold β's and the query positions — is a function of the statement (v5.x). But this is
-**prover-side seeding only**: `verify` still reads each layer's *stored* β rather than
-re-deriving it, so the binding is enforced only once the independent verifier exists — the
-gap is **narrowed, not closed**. (ii) there is **no separate `verify(proof, public)`** —
-the prover self-checks over the witness, which does not yet bound a *malicious* prover
-(*the biggest structural gap*). It proves the idea end to end on the production field +
-hash; it is **not** a tool for protecting secrets in production.
+The field and hash are real, and as of **v5.48.0** a from-scratch **sound + zero-knowledge**
+construction (`verify_b3`) exists — an independent witness-free verifier with per-row gate
+soundness, inter-row wire consistency, statement-seeded challenges it re-derives itself, and
+randomized-trace ZK (see §4 and [`audit-readiness.md`](audit-readiness.md)). It is still
+**research-grade, not production**, for two reasons: (i) **the construction is `verify_b3` +
+the prover demo, not yet the CLI default** — `glass prove` still runs the older self-check
+path (prover-side statement-seeding only; `verify` reads stored β's rather than re-deriving
+them). Pin which artifact you mean: the ~80-bit sound+ZK claims are `verify_b3`'s, not the
+CLI default's. (ii) **the whole bound rests on Poseidon-as-random-oracle, unaudited** — every
+reduction is reasoned, not machine-checked, and if Poseidon has exploitable structure the
+bound is vacuous. It proves the idea end to end on the production field + hash; it is **not**
+a tool for protecting secrets in production.
 
 ---
 
@@ -119,24 +119,30 @@ Roughly, in order (✅ = done since this list was first written):
 2. ✅ **A vetted hash (v5.45).** **Poseidon** (Plonky2-exact, vector-verified) is the
    in-STARK hash of the Goldilocks prover — Merkle commitment, Fiat-Shamir, query sampling.
    (Matching a reference is still **not** an audit.)
-3. ⚠️ **Fiat-Shamir rigor — PARTIAL (v5.x).** The prover's inline transcript is now **seeded
-   with a statement digest** (`stmt_seed_of(gates)` — circuit structure + the `GConst` for R),
-   threaded through `commit_g` so the fold β's and query positions all depend on it. What
-   remains: the **verifier must re-derive** those challenges from the statement-seeded
-   transcript (today β is read from the stored layer — coupled to gap 4); the **final folded
-   codeword** isn't yet absorbed before query sampling; protocol params aren't transcript-bound;
-   and there's no formal transcript-separation / soundness argument. *Prover-side seeding done;
-   verifier-side enforcement + the formal argument still to do.*
-4. **A real verifier + soundness reduction** — split prover/verifier into a `verify(proof,
-   public)` that never touches the witness; commit the **execution trace** (today only the
-   quotient codeword is committed) and add the out-of-domain check tying the low-degree
-   codeword to a *satisfying* trace. Today `glass prove` self-checks over the witness — it
-   does not yet bound a malicious prover. *This is the biggest structural gap.*
-5. **Parameters** — ✅ analysed ([`parameters.md`](parameters.md)) and **applied**: ρ=1/8 +
-   64 queries + a real 12-bit grind ⇒ ~65-bit provable / ~108 list-decoding (Goldilocks).
-   Reaching 80-bit *provable* needs ~82 queries (cheap, post the v5.41 memoization).
-6. **An external audit + community cryptanalysis.** None of the above replaces this — the
-   **hard boundary**. The "unaudited — do not protect real value" banner stays until it exists.
+3. ✅ **Fiat-Shamir rigor — done in `verify_b3` (v5.48.0).** Statement-seeding (`stmt_seed_of`,
+   v5.x) is now enforced by an **independent verifier that re-derives every challenge** from the
+   statement-seeded transcript (β's, query positions, the OOD point z) — no longer read from
+   stored layers. Protocol params are bound into `stmt_seed`. *(CLI-default caveat: the
+   `glass prove` default still reads stored β's; the re-deriving verifier is `verify_b3`.)*
+4. ✅ **A real verifier + soundness reduction — done in `verify_b3` (v5.48.0).** The TIER-1
+   build splits out a **witness-free `verify_b3(proof, public)`**: it commits the **execution
+   trace**, adds the out-of-domain quotient identity at z tying the low-degree codeword to a
+   *satisfying* trace (per-row gate-binding — the `P=0` evil proof now REJECTs), and a
+   from-scratch **PLONK grand-product** for inter-row wire consistency (the wiring attack
+   REJECTs). A pen-and-paper [soundness reduction](tier1-soundness-proof.md) accompanies it.
+   *This closes the biggest structural gap — for `verify_b3`. The CLI `glass prove` default is
+   still the self-check path (see [`audit-readiness.md`](audit-readiness.md) for which artifact
+   is under audit).*
+5. ✅ **Parameters — applied + tightened (v5.48.0).** ρ=1/8 + a real 12-bit grind, and queries
+   raised **64 → 82, sampled without replacement**, plus a **4-lane (~128-bit) commitment hash**
+   (closing a ~32-bit binding cap) ⇒ **~80-bit provable** / ~135 list-decoding (conjectural) for
+   `verify_b3`. ([`parameters.md`](parameters.md), [`tier1-wip-soundness.md`](tier1-wip-soundness.md).)
+6. ✅ **Zero-knowledge — implemented in `verify_b3` (v5.48.0).** A randomized trace
+   (`build_claim_zk`, ~240 dummy rows ≫ the openings) gives HVZK / NIZK-in-ROM hiding,
+   reasoned-not-machine-checked ([`tier1-zk-design.md`](tier1-zk-design.md)).
+7. **An external audit + community cryptanalysis.** None of the above replaces this — the
+   **hard boundary**, never producible in-repo. The "unaudited — do not protect real value"
+   banner stays until it exists.
 
 ---
 
