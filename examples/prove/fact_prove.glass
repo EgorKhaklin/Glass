@@ -3,12 +3,14 @@
 #   glass prove examples/prove/fact_prove.glass inp=5
 #
 # `glass prove` handles self-recursion by bounding it: each recursive call is
-# unrolled to a fixed depth (currently 6, so fact(n) is exact for n <= 5), giving
-# a CALL-FREE arithmetic circuit, which is then proven with the blinded F_{p^4}
-# FRI STARK. Within the bound the base case fires first, so the result is exact;
-# an input past the bound would prove the *depth-bounded* function (a truncated
-# value), the way a ZK-VM proves bounded loops. `inp` is a PRIVATE input — the
-# proof reveals only that fact(inp) = R, not inp itself.
+# unrolled to a fixed depth (the Goldilocks default bound is 8, so fact(n) is exact
+# for n <= 7), giving a CALL-FREE arithmetic circuit, proven with the FRI STARK.
+# Within the bound the base case fires first, so the result is exact. An input PAST
+# the bound used to silently prove the depth-truncated value (a wrong result with a
+# valid-looking proof); the default `glass prove` now REFUSES it loudly instead — a
+# short-circuiting guard (`seval`) detects that the genuinely-taken recursion exceeds
+# the unroll bound and aborts (try `inp=8`). `inp` is a PRIVATE input — the proof
+# reveals only that fact(inp) = R, not inp itself.
 
 fn fact(n: Int) : Int = if n == 0 then 1 else n * fact(n - 1)
 

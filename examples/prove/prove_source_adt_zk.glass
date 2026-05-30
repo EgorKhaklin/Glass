@@ -227,7 +227,7 @@ fn vhead(v: List<Int>) : Int = match v { [] => 0; [w, ...r] => w }            # 
 fn vfield(v: List<Int>, i: Int) : List<Int> = [nth(v, i + 1)]                 # field i of an ADT value, as a scalar value
 fn cenv_get(cenv: List<Pair<String, List<Int>>>, name: String) : List<Int> = match cenv { [] => []; [Pair(k, wv), ...r] => if k == name then wv else cenv_get(r, name) }
 fn env_get(env: List<Pair<String, List<Int>>>, name: String) : List<Int> = match env { [] => []; [Pair(k, vv), ...r] => if k == name then vv else env_get(r, name) }
-fn fn_body_of(fns: List<FnDecl>, name: String) : Expr = match fns { [] => EInt(0); [FnDecl(fnm, tps, ty, body), ...rest] => if fnm == name then body else fn_body_of(rest, name) }
+fn fn_body_of(fns: List<FnDecl>, name: String) : Expr = match fns { [] => error("glass prove: internal — body of resolved function '" ++ name ++ "' not found"); [FnDecl(fnm, tps, ty, body), ...rest] => if fnm == name then body else fn_body_of(rest, name) }
 fn unwind_app(e: Expr, acc: List<Expr>) : (Expr, List<Expr>) = match e { EApp(f, a) => unwind_app(f, [a] ++ acc); _ => (e, acc) }
 # C1: a function's RETURN refinement. `fn f(..) : T where (P) = ..` parses to a
 # return type TyRefine(T, "result", P) sitting at the end of the TyFn chain — so
@@ -270,8 +270,8 @@ fn arg_fnv(a: Expr, fns: List<FnDecl>, fenv: List<Pair<String, Expr>>) : Expr =
 fn inline_fv(fv: Expr, args: List<Expr>, fns: List<FnDecl>, fenv: List<Pair<String, Expr>>, fuel: Int) : Expr =
   match fv {
     ELam(p, body) => inline_fn(ELam(p, body), args, fns, fenv, fuel);
-    EVar(nm) => if nm == "" then EInt(0) else inline_fn(fn_body_of(fns, nm), args, fns, fenv, fuel);
-    _ => EInt(0) }
+    EVar(nm) => if nm == "" then error("glass prove: unresolved call — the prove bridge cannot lower this construct to a gate circuit (a silent proven-0 is refused)") else inline_fn(fn_body_of(fns, nm), args, fns, fenv, fuel);
+    _ => error("glass prove: unsupported callee value — cannot lower to a gate circuit (a silent proven-0 is refused)") }
 fn unroll_args(es: List<Expr>, fns: List<FnDecl>, fenv: List<Pair<String, Expr>>, fuel: Int) : List<Expr> =
   match es { [] => []; [e, ...r] => [unroll(e, fns, fenv, fuel)] ++ unroll_args(r, fns, fenv, fuel) }
 fn unroll_arms(arms: List<Pair<Pattern, Expr>>, fns: List<FnDecl>, fenv: List<Pair<String, Expr>>, fuel: Int) : List<Pair<Pattern, Expr>> =
@@ -286,10 +286,14 @@ fn inline_fn(body: Expr, args: List<Expr>, fns: List<FnDecl>, fenv: List<Pair<St
     _ => unroll(body, fns, fenv, fuel - 1) }
 fn unroll(e: Expr, fns: List<FnDecl>, fenv: List<Pair<String, Expr>>, fuel: Int) : Expr =
   match e {
+    # fuel <= 0 => EInt(0) is the bounded-unroll TERMINATOR (not an error): the unroller
+    # can't stop symbolic recursion at its runtime base case, so it caps at the fuel depth.
+    # Exact for runtime depth <= fuel; deeper recursion silently truncates (circuit-model
+    # limitation). The fallbacks below DO refuse loudly on genuinely unlowerable calls.
     EApp(f, a) => if fuel <= 0 then EInt(0) else match unwind_app(EApp(f, a), []) { (hd, args) => match hd {
       EVar(fname) => inline_fv(resolve_fnv(fname, fns, fenv), args, fns, fenv, fuel);
       ELam(p, body) => inline_fn(ELam(p, body), args, fns, fenv, fuel);
-      _ => EInt(0) } };
+      _ => error("glass prove: unsupported call form (computed or higher-order callee) — cannot lower to a gate circuit (a silent proven-0 is refused)") } };
     EAdd(x, y) => EAdd(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
     ESub(x, y) => ESub(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
     EMul(x, y) => EMul(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
@@ -479,7 +483,7 @@ fn in_cenv(inputs: List<Pair<String, Int>>, i: Int) : List<Pair<String, List<Int
 fn in_env(inputs: List<Pair<String, Int>>) : List<Pair<String, List<Int>>> = match inputs { [] => []; [Pair(nm, v), ...r] => [Pair(nm, [fnorm(v)])] ++ in_env(r) }
 fn in_vals(inputs: List<Pair<String, Int>>) : List<Int> = match inputs { [] => []; [Pair(nm, v), ...r] => [fnorm(v)] ++ in_vals(r) }
 fn plen(xs: List<Pair<String, Int>>) : Int = match xs { [] => 0; [x, ...r] => 1 + plen(r) }
-fn parse_prog(src: String) : Program = match parse_program(src) { Ok(p) => p; Err(m) => Program([], [], EInt(0)) }
+fn parse_prog(src: String) : Program = match parse_program(src) { Ok(p) => p; Err(m) => error("glass prove: parse error — " ++ m ++ " (refusing to prove the empty/0 program)") }
 fn hints_of(p: (List<Int>, List<Int>)) : List<Int> = match p { (v, h) => h }
 fn val_of(p: (List<Int>, List<Int>)) : List<Int> = match p { (v, h) => v }
 # build the circuit; assert output == claimed R, AND — if main's function has a

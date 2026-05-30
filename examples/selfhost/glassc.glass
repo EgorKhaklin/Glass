@@ -82,6 +82,7 @@ fn c_prelude_of(unused: Int) : String =
   "  memcpy(r, s + a, len); r[len] = 0; return r;\n" ++
   "}\n" ++
   "static long long q_print(char* s) { printf(\"%s" ++ ("\\" ++ "n") ++ "\", s); return (long long)(intptr_t)s; }\n" ++
+  "static long long q_error(char* s) { fprintf(stderr, \"glass error: %s" ++ ("\\" ++ "n") ++ "\", s); exit(1); return 0; }\n" ++
   "static long long q_cons(long long h, long long t) {\n" ++
   "  q_value_t* v = q_alloc(\"Cons\", 2); v->fields[0]=h; v->fields[1]=t; return (long long)(intptr_t)v;\n" ++
   "}\n" ++
@@ -592,6 +593,8 @@ fn gen_builtin(name: String, args: List<Expr>, venv: List<Pair<String, String>>,
         Some(mk_builtin(sargs, tv, lifted, "(long long)strlen((char*)(intptr_t)(" ++ a0 ++ "))"))
       else if name == "print" then
         Some(mk_builtin(sargs, tv, lifted, "q_print((char*)(intptr_t)(" ++ a0 ++ "))"))
+      else if name == "error" then
+        Some(mk_builtin(sargs, tv, lifted, "q_error((char*)(intptr_t)(" ++ a0 ++ "))"))
       else if name == "substring" then
         Some(mk_builtin(sargs, tv, lifted, "(long long)(intptr_t)q_substring((char*)(intptr_t)(" ++ a0 ++
                 "), (long long)(" ++ a1 ++ "), (long long)(" ++ a2 ++ "))"))

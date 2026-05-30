@@ -1244,6 +1244,12 @@ def builtin_types() -> dict[str, Ty]:
         "gold_sub":       TyFn((TyList(TyInt()), TyList(TyInt())), TyList(TyInt())),
         "string_length":  TyFn((TyString(),), TyInt()),
         "substring":      TyFn((TyString(), TyInt(), TyInt()), TyString()),
+        # Loud, both-sides abort: stderr message + nonzero exit (native q_error
+        # mirrors this). Pure-divergent (no effect row, polymorphic return like
+        # Haskell's `error :: String -> a`) so it composes anywhere — used by the
+        # prove bridge to REFUSE to certify a circuit it cannot faithfully build,
+        # instead of silently lowering to a proven 0.
+        "error":          TyFn((TyString(),), A),
         # v4.40: ASCII case conversion. Strings outside A-Za-z pass
         # through unchanged. Non-ASCII bytes are left alone (no
         # Unicode normalisation) so host and Quartz agree.
@@ -2318,6 +2324,13 @@ def builtin_values() -> dict[str, Value]:
     def b_print(s):
         print(s.v)
         return s
+    def b_error(s):
+        # Mirror native q_error: stderr + nonzero exit. A loud refusal, not a
+        # silent proven-0 — the prove bridge calls this when it cannot lower a
+        # construct faithfully (unresolved/over-deep call, parse failure).
+        sys.stderr.write("glass error: " + s.v + "\n")
+        sys.stderr.flush()
+        sys.exit(1)
     def b_random_int(lo, hi):
         # Half-open [lo, hi). Real crypto would use a secure RNG and a
         # different effect label like CryptoRandom — see LANG.md.
@@ -2486,6 +2499,7 @@ def builtin_values() -> dict[str, Value]:
     def b_gold_sub(a, b): return _gold_to_limbs(_gold_to_int(a) - _gold_to_int(b))
     return {
         "print":            BuiltinV("print", b_print),
+        "error":            BuiltinV("error", b_error),
         "random_int":       BuiltinV("random_int", b_random_int),
         "model_call":       BuiltinV("model_call", b_model_call),
         "len":              BuiltinV("len", b_len),
@@ -3578,7 +3592,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.48.0")
+        print("Glass 5.49.0")
     elif sys.argv[1] == "prove":
         # `glass prove <file.glass> [name=value ...]` — compile the file's `main`
         # expression into a circuit and emit a succinct, zero-knowledge proof of
@@ -3590,12 +3604,19 @@ def main() -> None:
         # (+,-,*,let,calls,==,if) with multiple private inputs; the bignum field makes
         # it heavier on the interpreter. The default keeps Baby Bear for the full ADT
         # feature set. See docs/soundness.md.
-        args = [a for a in sys.argv[2:] if a not in ("--goldilocks", "--baby-bear")]
+        args = [a for a in sys.argv[2:] if a not in ("--goldilocks", "--baby-bear", "--zk", "--fast")]
         # Default is now Goldilocks (2^64, ADTs) — off the toy 2^31 Baby Bear field.
         # `--baby-bear` opts back into the educational small-field prover.
         goldilocks = "--baby-bear" not in sys.argv[2:]
+        # Goldilocks verifier selection:
+        #   default : SOUND — prove_b3 + the independent witness-free verify_b3.
+        #   --zk    : SOUND + zero-knowledge (randomized-trace hiding); heavy.
+        #   --fast  : the old self-check (gprove_m/prove_stark) — NOT a soundness proof,
+        #             kept for quick iteration only.
+        zk_mode = "--zk" in sys.argv[2:]
+        fast_mode = "--fast" in sys.argv[2:]
         if len(args) < 1:
-            print("usage: glass prove [--baby-bear] <file.glass> [name=value ...]")
+            print("usage: glass prove [--baby-bear] [--zk | --fast] <file.glass> [name=value ...]")
             return
         upath = args[0]
         inputs = []
@@ -3615,15 +3636,24 @@ def main() -> None:
         cut = bridge.find("# --- demo")
         machinery = bridge[:cut] if cut > 0 else bridge
         if goldilocks:
+            if fast_mode:
+                _prove_call = "gprove_m(_usrc, _inp, _r, 11111)"
+                _prove_label = "ACCEPT  (self-check over the witness — NOT a soundness proof; drop --fast for verify_b3)"
+            elif zk_mode:
+                _prove_call = "gprove_zk(_usrc, _inp, _r, 11111, 256)"
+                _prove_label = "ACCEPT  (SOUND + zero-knowledge — independent verify_b3 + randomized-trace hiding)"
+            else:
+                _prove_call = "gprove_sound(_usrc, _inp, _r)"
+                _prove_label = "ACCEPT  (SOUND — independent witness-free verify_b3; not zero-knowledge)"
             driver = machinery + (
                 '\nlet _usrc : String = "%s"\n'
                 'let _inp : List<Pair<String, Int>> = %s\n'
-                'let _rv : List<List<Int>> = gref_m(_usrc, _inp)\n'
+                'let _rv : List<List<Int>> = gref_m_checked(_usrc, _inp)\n'
                 'let _r : List<Int> = vh(_rv)\n'
                 'let _ : String = print("result:  " ++ bn_dec(_r) ++ "  (over Goldilocks, p = 2^64-2^32+1)")\n'
-                'let _ : String = print("proof:   " ++ (if gprove_m(_usrc, _inp, _r, 11111) then "ACCEPT  (succinct, zero-knowledge)" else "REJECT"))\n'
+                'let _ : String = print("proof:   " ++ (if %s then "%s" else "REJECT"))\n'
                 '"glass prove --goldilocks"\n'
-            ) % (esc, inp_glass)
+            ) % (esc, inp_glass, _prove_call, _prove_label)
         else:
             driver = machinery + (
                 '\nlet bbw : Int = find_nonres_b(2)\n'
@@ -3647,13 +3677,25 @@ def main() -> None:
             _tmp = "/tmp/glass_prove_driver.glass"
             with open(_tmp, "w") as _f:
                 _f.write(driver)
-            subprocess.run(["bash", os.path.join(here, "examples", "selfhost", "run_native.sh"), _tmp],
+            _proc = subprocess.run(["bash", os.path.join(here, "examples", "selfhost", "run_native.sh"), _tmp],
                            check=False, env={**os.environ, "PYTHON": sys.executable})
+            if _proc.returncode != 0:
+                # The native prover refused (e.g. the bridge's loud `error` on a
+                # parse/unroll failure) — propagate a nonzero exit and do NOT print
+                # the success footer that would imply a proof was produced.
+                sys.exit(_proc.returncode)
         else:
             run_source(driver, verbose=False, base_dir=bridge_dir)
         print("")
-        ext = "F_{p^2}" if goldilocks else "F_{p^4}"
-        print("(blinded %s FRI STARK over the gate circuit; `glass prove` proves AND verifies.)" % ext)
+        if goldilocks:
+            if fast_mode:
+                print("(F_{p^2} FRI STARK; --fast = self-check over the witness, NOT a soundness proof.)")
+            elif zk_mode:
+                print("(F_{p^2} FRI STARK; SOUND + zero-knowledge via the independent verify_b3. Research-grade, UNAUDITED.)")
+            else:
+                print("(F_{p^2} FRI STARK; SOUND via the independent witness-free verify_b3 (per-row gates + PLONK wiring). Research-grade, UNAUDITED; --zk adds hiding.)")
+        else:
+            print("(blinded F_{p^4} FRI STARK over the gate circuit; `glass prove` proves AND verifies.)")
     else:
         # -q/--quiet: run a file printing only its output (no type-signature
         # echoes) — handy for diffing against the self-hosted compiler.

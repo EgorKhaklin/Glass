@@ -880,7 +880,7 @@ fn prove_b3_cols(gates: List<Gate>, lvals: List<List<Int>>, rvals: List<List<Int
     ProofB3(root1, root2, root3, lz, rz, oz, qz, zz, zwz, roots_of(blayers), bfinal, nz, extract_all(blayers, queries), extract_tb(lcw, rcw, ocw, qcw, zcw, lev1, lev2, lev3, queries, m)) }
 
 # --- bridge: parse, inline calls, lower the arithmetic subset to gates -------
-fn fn_body_of(fns: List<FnDecl>, name: String) : Expr = match fns { [] => EInt(0); [FnDecl(fnm, tps, ty, body), ...rest] => if fnm == name then body else fn_body_of(rest, name) }
+fn fn_body_of(fns: List<FnDecl>, name: String) : Expr = match fns { [] => error("glass prove: internal — body of resolved function '" ++ name ++ "' not found"); [FnDecl(fnm, tps, ty, body), ...rest] => if fnm == name then body else fn_body_of(rest, name) }
 fn unwind_app(e: Expr, acc: List<Expr>) : (Expr, List<Expr>) = match e { EApp(f, a) => unwind_app(f, [a] ++ acc); _ => (e, acc) }
 fn fn_exists(fns: List<FnDecl>, name: String) : Bool = match fns { [] => false; [FnDecl(fnm, tps, ty, body), ...rest] => if fnm == name then true else fn_exists(rest, name) }
 fn fenv_get(fenv: List<Pair<String, String>>, name: String) : String = match fenv { [] => ""; [Pair(k, v), ...r] => if k == name then v else fenv_get(r, name) }
@@ -902,9 +902,16 @@ fn inline_fn(body: Expr, args: List<Expr>, fns: List<FnDecl>, fenv: List<Pair<St
     _ => unroll(body, fns, fenv, fuel - 1) }
 fn unroll(e: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: Int) : Expr =
   match e {
+    # fuel <= 0 => EInt(0) is the TERMINATOR of bounded symbolic unrolling, NOT an error:
+    # the unroller can't stop a recursion at its (runtime) base case, so it unrolls to the
+    # fuel bound and caps with 0. For runtime depth <= fuel the cap is never selected (the
+    # `if`s short-circuit on the witness first) and the result is exact; deeper recursion is
+    # silently truncated — a known circuit-model limitation (see soundness.md), not fixable
+    # here without breaking every recursive program. The genuine-error fallbacks below DO
+    # refuse loudly (unresolved / higher-order callee — programs the bridge cannot lower).
     EApp(f, a) => if fuel <= 0 then EInt(0) else match unwind_app(EApp(f, a), []) { (hd, args) => match hd {
-      EVar(fname) => let tgt : String = resolve_fn(fname, fns, fenv) in if tgt == "" then EInt(0) else inline_fn(fn_body_of(fns, tgt), args, fns, fenv, fuel);
-      _ => EInt(0) } };
+      EVar(fname) => let tgt : String = resolve_fn(fname, fns, fenv) in if tgt == "" then error("glass prove: unresolved call to '" ++ fname ++ "' — the prove bridge cannot lower this construct to a gate circuit (a silent proven-0 is refused)") else inline_fn(fn_body_of(fns, tgt), args, fns, fenv, fuel);
+      _ => error("glass prove: unsupported call form (computed or higher-order callee) — cannot lower to a gate circuit (a silent proven-0 is refused)") } };
     EAdd(x, y) => EAdd(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
     ESub(x, y) => ESub(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
     EMul(x, y) => EMul(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
@@ -993,7 +1000,53 @@ fn heval_match(sv: List<List<Int>>, arms: List<Pair<Pattern, Expr>>, env: List<P
       match heval_match(sv, rest, env, fns, types) { (rv, rh) =>
         (if pmatch(p, sv, types) then bv else rv, sh ++ bh ++ rh) } } }
 
-fn gref_h(src: String) : List<List<Int>> = match parse_prog(src) { Program(types, fns, main) => match heval(unroll(main, fns, [], 8), [], fns, types) { (v, h) => v } }
+# --- bounded-unroll depth: ONE source of truth so seval and unroll can never drift ---
+fn unroll_fuel(d: Int) : Int = 8
+
+# --- seval: a SHORT-CIRCUITING, fuel-limited reference interpreter over the SAME multi-wire
+# value domain as heval/cgen (scalar [v]; ADT [tag, ...fields]; tuple). It evaluates the SOURCE
+# with calls intact and is a PURE GUARD: it never builds a gate, never calls prove_b3/verify_b3.
+# Unlike heval (which evaluates BOTH if-arms and EVERY match-arm to accumulate hints), seval
+# descends ONLY the taken arm + the first matching pattern, and decrements `fuel` once per
+# SATURATED call IN LOCKSTEP with inline_fn: spine args at the current fuel (no decrement), the
+# saturated body at fuel-1 (seval_call's `[] =>` / `_ =>`), and the cap check `fuel <= 0` AT the
+# EApp node (mirroring unroll). So it reaches a call-at-fuel-0 ONLY when the genuinely-taken
+# runtime recursion is deeper than the unroll bound -> exactly the case the fuel-bounded circuit
+# would SILENTLY TRUNCATE. There it calls `error` (loud refuse) instead of yielding a truncated
+# value. Within fuel it returns the same value the circuit proves (accept-set is a SUBSET of the
+# circuit-faithful set). HONEST SCOPE: this guards the CLI's honest R-computation path; a
+# malicious prover building a truncated circuit directly (or calling gprove_sound with a forged
+# R) is OUT of the soundness threat model (faithful-lowering, audit-readiness.md) — the
+# do-not-protect-real-value banner stays.
+fn seval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>, fuel: Int) : List<List<Int>> =
+  match e {
+    EInt(n) => [glit(n)];
+    EBool(tf) => [if tf then glit(1) else glit(0)];
+    EVar(x) => heg(env, x);
+    EAdd(a, b) => [fadd(vh(seval(a, env, fns, types, fuel)), vh(seval(b, env, fns, types, fuel)))];
+    ESub(a, b) => [fsub(vh(seval(a, env, fns, types, fuel)), vh(seval(b, env, fns, types, fuel)))];
+    EMul(a, b) => [fmul(vh(seval(a, env, fns, types, fuel)), vh(seval(b, env, fns, types, fuel)))];
+    EEq(a, b) => let d : List<Int> = fsub(vh(seval(a, env, fns, types, fuel)), vh(seval(b, env, fns, types, fuel))) in [if bn_is_zero(d) then glit(1) else glit(0)];
+    EIf(c, t, f) => if bn_eq(vh(seval(c, env, fns, types, fuel)), glit(1)) then seval(t, env, fns, types, fuel) else seval(f, env, fns, types, fuel);
+    ELet(nm, v, body) => seval(body, [Pair(nm, seval(v, env, fns, types, fuel))] ++ env, fns, types, fuel);
+    ECtor(name, args) => [glit(ctag(types, name))] ++ seval_fields(args, ctor_argtypes(types, name), env, fns, types, fuel);
+    ETuple(elems) => seval_fields(elems, scalar_types_e(elems), env, fns, types, fuel);
+    EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd {
+      EVar(fname) => if fuel <= 0 then error("glass prove: recursion depth exceeds the unroll bound (" ++ int_to_string(unroll_fuel(0)) ++ "); refusing to prove a depth-truncated result — it would otherwise be a silently wrong value with a valid-looking proof (the program needs statically-bounded, shallower recursion)") else (let tgt : String = resolve_fn(fname, fns, []) in if tgt == "" then error("glass prove: unresolved call to '" ++ fname ++ "' in the reference evaluator") else seval_call(fn_body_of(fns, tgt), args, [], env, fns, types, fuel));
+      _ => error("glass prove: unsupported call form (computed or higher-order callee) in the reference evaluator") } };
+    EMatch(scrut, arms) => seval_match(seval(scrut, env, fns, types, fuel), arms, env, fns, types, fuel);
+    _ => [glit(0)] }
+fn seval_fields(args: List<Expr>, tys: List<Type>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>, fuel: Int) : List<List<Int>> =
+  match args { [] => []; [a, ...arest] => match tys { [] => []; [t, ...trest] =>
+    padw(seval(a, env, fns, types, fuel), twidth(t, types, 12)) ++ seval_fields(arest, trest, env, fns, types, fuel) } }
+fn seval_call(body: Expr, args: List<Expr>, ccenv: List<Pair<String, List<List<Int>>>>, fcenv: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>, fuel: Int) : List<List<Int>> =
+  match body {
+    ELam(p, inner) => match args { [] => seval(body, ccenv, fns, types, fuel - 1); [a, ...rest] => let va : List<List<Int>> = seval(a, fcenv, fns, types, fuel) in seval_call(inner, rest, [Pair(p, va)] ++ ccenv, fcenv, fns, types, fuel) };
+    _ => seval(body, ccenv, fns, types, fuel - 1) }
+fn seval_match(sv: List<List<Int>>, arms: List<Pair<Pattern, Expr>>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>, fuel: Int) : List<List<Int>> =
+  match arms { [] => [glit(0)]; [Pair(p, body), ...rest] => if pmatch(p, sv, types) then seval(body, pbind(p, sv, types, env), fns, types, fuel) else seval_match(sv, rest, env, fns, types, fuel) }
+
+fn gref_h(src: String) : List<List<Int>> = match parse_prog(src) { Program(types, fns, main) => match heval(unroll(main, fns, [], unroll_fuel(0)), [], fns, types) { (v, h) => v } }
 
 # --- R1b stage 2: cgen, the multi-wire circuit generator for ADTs --------------
 # Value = wire-index LIST (List<Int>): scalar [w]; ADT [tag, ...fields]; tuple [...].
@@ -1061,7 +1114,7 @@ fn cgen_match(arms: List<Pair<Pattern, Expr>>, sv: List<Int>, cenv: List<Pair<St
 # cgen-as-reference: build the circuit, read the output wires' witness values (must equal heval)
 fn wmap(ws: List<Int>, w: List<List<Int>>) : List<List<Int>> = match ws { [] => []; [i, ...r] => [wnth(w, i)] ++ wmap(r, w) }
 fn cref(src: String) : List<List<Int>> = match parse_prog(src) { Program(types, fns, main) =>
-  match cgen(unroll(main, fns, [], 8), [], fns, types, Build(0, [], [])) { (outws, b) => match b { Build(n, gs, w) => wmap(outws, w) } } }
+  match cgen(unroll(main, fns, [], unroll_fuel(0)), [], fns, types, Build(0, [], [])) { (outws, b) => match b { Build(n, gs, w) => wmap(outws, w) } } }
 
 # lower a call-free arithmetic Expr to gates; returns (output wire index, Build)
 fn cg(e: Expr, env: List<Pair<String, Int>>, b: Build) : (Int, Build) =
@@ -1088,10 +1141,10 @@ fn cg(e: Expr, env: List<Pair<String, Int>>, b: Build) : (Int, Build) =
     ELet(nm, v, body) => match cg(v, env, b) { (wv, b1) => cg(body, [Pair(nm, wv)] ++ env, b1) };
     _ => mkc(glit(0), b) }
 # parse, inline calls, lower; wire 0 = the private input `inp`
-fn parse_prog(src: String) : Program = match parse_program(src) { Ok(p) => p; Err(m) => Program([], [], EInt(0)) }
+fn parse_prog(src: String) : Program = match parse_program(src) { Ok(p) => p; Err(m) => error("glass prove: parse error — " ++ m ++ " (refusing to prove the empty/0 program)") }
 fn build_src(src: String, inpv: List<Int>) : (Int, Build) =
   match parse_prog(src) { Program(types, fns, main) =>
-    cg(unroll(main, fns, [], 8), [Pair("inp", 0)], Build(1, [], [inpv])) }
+    cg(unroll(main, fns, [], unroll_fuel(0)), [Pair("inp", 0)], Build(1, [], [inpv])) }
 fn src_result(src: String, inpv: List<Int>) : List<Int> =
   match build_src(src, inpv) { (out, b) => match b { Build(n, gs, w) => wnth(w, out) } }
 
@@ -1106,7 +1159,7 @@ fn in_vals_g(inputs: List<Pair<String, Int>>) : List<List<Int>> =
 fn iplen(xs: List<Pair<String, Int>>) : Int = match xs { [] => 0; [x, ...r] => 1 + iplen(r) }
 fn build_multi(src: String, inputs: List<Pair<String, Int>>) : (Int, Build) =
   match parse_prog(src) { Program(types, fns, main) =>
-    cg(unroll(main, fns, [], 8), in_cenv_g(inputs, 0), Build(iplen(inputs), [], in_vals_g(inputs))) }
+    cg(unroll(main, fns, [], unroll_fuel(0)), in_cenv_g(inputs, 0), Build(iplen(inputs), [], in_vals_g(inputs))) }
 fn gref(src: String, inputs: List<Pair<String, Int>>) : List<Int> =
   match build_multi(src, inputs) { (out, b) => match b { Build(n, gs, w) => wnth(w, out) } }
 # bind the claimed result: assert (output - claimedR) == 0 via the is-zero assert gate
@@ -1121,15 +1174,42 @@ fn in_cenv_m(inputs: List<Pair<String, Int>>, i: Int) : List<Pair<String, List<I
   match inputs { [] => []; [Pair(nm, v), ...r] => [Pair(nm, [i])] ++ in_cenv_m(r, i + 1) }
 fn build_multi_m(src: String, inputs: List<Pair<String, Int>>) : (List<Int>, Build) =
   match parse_prog(src) { Program(types, fns, main) =>
-    cgen(unroll(main, fns, [], 8), in_cenv_m(inputs, 0), fns, types, Build(iplen(inputs), [], in_vals_g(inputs))) }
+    cgen(unroll(main, fns, [], unroll_fuel(0)), in_cenv_m(inputs, 0), fns, types, Build(iplen(inputs), [], in_vals_g(inputs))) }
 fn gref_m(src: String, inputs: List<Pair<String, Int>>) : List<List<Int>> =
   match build_multi_m(src, inputs) { (outws, b) => match b { Build(n, gs, w) => wmap(outws, w) } }
+# seval's initial env from CLI inputs, matching in_vals_g's VALUE (glit4 full-width, NOT glit)
+# so seval agrees with the circuit on large inputs (else a spurious refusal/REJECT near 2^48).
+fn in_cenv_seval(inputs: List<Pair<String, Int>>) : List<Pair<String, List<List<Int>>>> =
+  match inputs { [] => []; [Pair(nm, v), ...r] => [Pair(nm, [glit4(v)])] ++ in_cenv_seval(r) }
+# gref_m_checked: the GUARDED result-computation for the CLI prove path. It forces `seval` as a
+# fail-closed guard (seval `error`s + exits on over-deep recursion BEFORE any proof is built —
+# the let is forced in both interp and native), then returns gref_m's OWN R (the circuit's
+# value), so the PROVEN R is byte-identical to the circuit (zero guard/circuit value drift).
+# seval's accept-set is a SUBSET of the circuit-faithful set (fuel lockstep + short-circuit), so
+# whenever seval does not error, gref_m's R is the exact result. (Bypassing this guard by calling
+# gprove_sound directly still proves a truncated circuit — out of the soundness threat model.)
+fn gref_m_checked(src: String, inputs: List<Pair<String, Int>>) : List<List<Int>> =
+  match parse_prog(src) { Program(types, fns, main) =>
+    let _guard : List<List<Int>> = seval(main, in_cenv_seval(inputs), fns, types, unroll_fuel(0)) in gref_m(src, inputs) }
 # claim-bind the scalar result (first output component) to claimedR
 fn build_claim_m(src: String, inputs: List<Pair<String, Int>>, claimedR: List<Int>) : Build =
   match build_multi_m(src, inputs) { (outws, b) =>
     match mkc(claimedR, b) { (wR, b1) => match mks(vhi(outws), wR, b1) { (wd, b2) => mke(wd, b2) } } }
 fn gprove_m(src: String, inputs: List<Pair<String, Int>>, claimedR: List<Int>, seed: Int) : Bool =
   match build_claim_m(src, inputs, claimedR) { Build(n, gs, w) => prove_stark(gs, w, seed) }
+# --- SOUND path: prove via prove_b3, then verify with the INDEPENDENT witness-free
+# verify_b3 (per-row gate soundness + PLONK grand-product wire consistency). Unlike
+# gprove_m/prove_stark (a self-check over the witness, no malicious-prover bound), this
+# round-trips through the real verifier — accept ==> the committed trace is a consistent
+# satisfying assignment with output == claimedR. NOT zero-knowledge here (the witness is
+# opened in the clear); use gprove_zk for hiding. Research-grade + UNAUDITED (see soundness.md).
+fn gprove_sound(src: String, inputs: List<Pair<String, Int>>, claimedR: List<Int>) : Bool =
+  match build_claim_m(src, inputs, claimedR) { Build(n, gs, w) => verify_b3(gs, prove_b3(gs, w)) }
+# --- SOUND + ZERO-KNOWLEDGE: randomized-trace ZK (build_claim_zk pads to targetN with
+# random dummy rows that hide the openings) then the same sound verify_b3. Heavy (targetN
+# is large so the random rows exceed the ~170 query openings) — opt-in via `--zk`.
+fn gprove_zk(src: String, inputs: List<Pair<String, Int>>, claimedR: List<Int>, seed: Int, targetN: Int) : Bool =
+  match build_claim_zk(src, inputs, claimedR, seed, targetN) { Build(n, gs, w) => verify_b3(gs, prove_b3(gs, w)) }
 # --- PUBLIC INPUTS: pin a chosen input wire to a PUBLIC value, via the same is-zero
 # gadget (mkc+mks+mke = assert wire - value == 0). The value lands in a GConst gate, so
 # it is part of the public statement (absorbed into stmt_seed) and the verifier checks it.
@@ -1160,6 +1240,14 @@ fn build_claim_zk(src: String, inputs: List<Pair<String, Int>>, claimedR: List<I
 # --- demo --------------------------------------------------------------------
 fn show_a(b: Bool) : String = if b then "ACCEPT" else "REJECT"
 fn show_b(b: Bool) : String = if b then "yes" else "no"
+# SOUNDNESS GATE assertions: turn the printed ACCEPT/REJECT expectations into hard checks.
+# A mismatch (an attack that should REJECT but ACCEPTs, or an honest proof that REJECTs)
+# aborts the whole run via the loud `error` builtin -> nonzero exit, so soundness can never
+# silently regress under a refactor (the grind-no-op / hash-cap lesson, institutionalized).
+# Pure (no IO): return the label on success, abort via `error` on a mismatch. Printing is
+# done at the top-level call sites (where IO is allowed), keeping these effect-free.
+fn expect_accept(label: String, got: Bool) : String = if got then label else error("SOUNDNESS GATE FAILED: " ++ label ++ " expected ACCEPT but got REJECT")
+fn expect_reject(label: String, got: Bool) : String = if got then error("SOUNDNESS GATE FAILED: " ++ label ++ " expected REJECT but got ACCEPT") else label
 fn show(xs: List<Int>) : String = match trim(xs) { [] => "0"; [h, ...t] => match t { [] => int_to_string(h); _ => int_to_string(h) ++ " (low limb of " ++ int_to_string(len(trim(xs))) ++ ")" } }
 let msrc : String = "fn f(a: Int, b: Int, c: Int) : Int = a * b + c\nf(a, b, c)"
 let mins : List<Pair<String, Int>> = [Pair("a", 100000), Pair("b", 100000), Pair("c", 99)]
@@ -1259,6 +1347,27 @@ let _ : String = print("")
 let zk_full_b : Build = build_claim_zk(msrc, mins, mres, 31337, 256)
 let zk_full : Bool = match zk_full_b { Build(zn, zgs, zw) => verify_b3(zgs, prove_b3(zgs, zw)) }
 let _ : String = print("ZK FULL INTEGRATION (randomized n=256 trace, ~240 random rows hide the ~170 openings) -> " ++ show_a(zk_full) ++ "   (expect ACCEPT: sound + hiding)")
+let _ : String = print("")
+# === SOUNDNESS GATE === assert every honest case ACCEPTs and every attack REJECTs.
+# Any mismatch calls `error` -> the run aborts with a nonzero exit. This makes the demo a
+# real regression GATE (not just human-readable prints): a refactor that silently weakens
+# verify_b3 can no longer pass. (t1evil/ev_perrow are the DOCUMENTED scaffolding gap +
+# per-row-would-accept marker, not soundness guarantees, so they are not gated.)
+let _ : String = print("=== SOUNDNESS GATE (each case asserted; a mismatch aborts via `error`) ===")
+let _ : String = print("  [OK] " ++ expect_accept("honest (scaffolding verify)", t1honest))
+let _ : String = print("  [OK] " ++ expect_reject("cross-statement (scaffolding verify)", t1cross))
+let _ : String = print("  [OK] " ++ expect_reject("tampered nonce", t1nonce))
+let _ : String = print("  [OK] " ++ expect_accept("honest (sound verify)", s_honest))
+let _ : String = print("  [OK] " ++ expect_reject("cross-statement (sound verify)", s_cross))
+let _ : String = print("  [OK] " ++ expect_reject("P=0 attack (sound verify)", s_evil))
+let _ : String = print("  [OK] " ++ expect_reject("tampered trace opening", s_tamper))
+let _ : String = print("  [OK] " ++ expect_accept("honest (B3 verify)", b3_honest))
+let _ : String = print("  [OK] " ++ expect_reject("cross-statement (B3 verify)", b3_cross))
+let _ : String = print("  [OK] " ++ expect_reject("wiring attack (B3 grand-product)", b3_wiring))
+let _ : String = print("  [OK] " ++ expect_accept("public input pinned to true value", pin_ok))
+let _ : String = print("  [OK] " ++ expect_reject("public input pinned to WRONG value", pin_bad))
+let _ : String = print("  [OK] " ++ expect_accept("ZK full integration (n=256)", zk_full))
+let _ : String = print("=== SOUNDNESS GATE PASSED: all 13 cases as expected ===")
 let _ : String = print("")
 
 "prove_source_goldilocks_zk v1.0 (Glass 5.48.0) — A+B1+B2+B3 sound + public-input pinning + ZK via randomized trace (n=256 ACCEPTs, sound+hiding); 4-lane hash + 82 distinct queries => tight ~80-bit; reasoned-not-machine-checked, UNAUDITED — research-grade, do NOT protect real value"

@@ -97,14 +97,15 @@ The field and hash are real, and as of **v5.48.0** a from-scratch **sound + zero
 construction (`verify_b3`) exists — an independent witness-free verifier with per-row gate
 soundness, inter-row wire consistency, statement-seeded challenges it re-derives itself, and
 randomized-trace ZK (see §4 and [`audit-readiness.md`](audit-readiness.md)). It is still
-**research-grade, not production**, for two reasons: (i) **the construction is `verify_b3` +
-the prover demo, not yet the CLI default** — `glass prove` still runs the older self-check
-path (prover-side statement-seeding only; `verify` reads stored β's rather than re-deriving
-them). Pin which artifact you mean: the ~80-bit sound+ZK claims are `verify_b3`'s, not the
-CLI default's. (ii) **the whole bound rests on Poseidon-as-random-oracle, unaudited** — every
-reduction is reasoned, not machine-checked, and if Poseidon has exploitable structure the
-bound is vacuous. It proves the idea end to end on the production field + hash; it is **not**
-a tool for protecting secrets in production.
+**research-grade, not production**, for two reasons: (i) **the whole bound rests on
+Poseidon-as-random-oracle, unaudited** — every reduction is reasoned, not machine-checked,
+and if Poseidon has exploitable structure the bound is vacuous; and (ii) the ~80-bit figure
+is itself reasoned pen-and-paper, with a razor-thin (68+12) margin an auditor must re-derive.
+*(As of the post-v5.48.0 hardening, the default `glass prove` — Goldilocks, no flags — does
+run `verify_b3` via `gprove_sound`, so the path users invoke is the sound one; `--fast` is
+the old witness self-check, `--zk` adds hiding. That closes the "which artifact does the CLI
+run" gap, but changes neither reason above.)* It proves the idea end to end on the production
+field + hash; it is **not** a tool for protecting secrets in production.
 
 ---
 
@@ -122,17 +123,18 @@ Roughly, in order (✅ = done since this list was first written):
 3. ✅ **Fiat-Shamir rigor — done in `verify_b3` (v5.48.0).** Statement-seeding (`stmt_seed_of`,
    v5.x) is now enforced by an **independent verifier that re-derives every challenge** from the
    statement-seeded transcript (β's, query positions, the OOD point z) — no longer read from
-   stored layers. Protocol params are bound into `stmt_seed`. *(CLI-default caveat: the
-   `glass prove` default still reads stored β's; the re-deriving verifier is `verify_b3`.)*
+   stored layers. Protocol params are bound into `stmt_seed`. *(The default `glass prove`
+   now runs this re-deriving verifier `verify_b3`; `--fast` is the old stored-β self-check.)*
 4. ✅ **A real verifier + soundness reduction — done in `verify_b3` (v5.48.0).** The TIER-1
    build splits out a **witness-free `verify_b3(proof, public)`**: it commits the **execution
    trace**, adds the out-of-domain quotient identity at z tying the low-degree codeword to a
    *satisfying* trace (per-row gate-binding — the `P=0` evil proof now REJECTs), and a
    from-scratch **PLONK grand-product** for inter-row wire consistency (the wiring attack
    REJECTs). A pen-and-paper [soundness reduction](tier1-soundness-proof.md) accompanies it.
-   *This closes the biggest structural gap — for `verify_b3`. The CLI `glass prove` default is
-   still the self-check path (see [`audit-readiness.md`](audit-readiness.md) for which artifact
-   is under audit).*
+   *This closes the biggest structural gap, and the default `glass prove` (Goldilocks, no
+   flags) now invokes `verify_b3` via `gprove_sound` — so the path users run is the sound one
+   (`--fast` = old self-check, `--zk` = sound + hiding). Its cost scales with circuit size.
+   See [`audit-readiness.md`](audit-readiness.md) for which artifact is under audit.*
 5. ✅ **Parameters — applied + tightened (v5.48.0).** ρ=1/8 + a real 12-bit grind, and queries
    raised **64 → 82, sampled without replacement**, plus a **4-lane (~128-bit) commitment hash**
    (closing a ~32-bit binding cap) ⇒ **~80-bit provable** / ~135 list-decoding (conjectural) for

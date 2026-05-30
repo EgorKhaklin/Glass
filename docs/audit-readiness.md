@@ -2,9 +2,10 @@
 
 > **This package makes the construction AUDITABLE. It does NOT claim
 > production-readiness.** The construction is **research/educational-grade**, merged
-> to `main` in **v5.48.0** (the CLI `glass prove` *default* still runs a *different,
-> weaker* per-row path — `verify_b3` is the audited target; see below). **Do not
-> protect real value.** Produced + adversarially
+> to `main` in **v5.48.0**; the default `glass prove` (Goldilocks, no flags) **now runs
+> `verify_b3`** — the sound path is the one users invoke (`--fast` opts into the old
+> witness self-check, `--zk` adds hiding). Wiring the default to `verify_b3` does **not**
+> change the audit boundary. **Do not protect real value.** Produced + adversarially
 > completeness-checked this session (workflow `wa4qip7ht`), every load-bearing claim
 > verified against `examples/prove/prove_source_goldilocks_zk.glass`.
 
@@ -47,13 +48,14 @@ hash widened, and re-validated — all in-session.)*
 
 ## Which artifact is under audit (pin this first)
 
-Audit **`verify_b3`** (merged to `main` in v5.48.0: 82 queries / 32N coset / ρ=1/8 /
-12-bit grind / independent witness-free verifier / B3 wire-consistency). This is **NOT**
-the CLI `glass prove` default (64 queries / 16N / ~65-bit FRI term / prover-side
-statement-binding only / no independent B3 verifier) — different functions, different
-security; the analysis does not transfer. Confirm which path `glass prove` actually
-invokes end-to-end — the v5.48.0 sound+ZK construction is `verify_b3` + the prover demo,
-not yet wired as the CLI default.
+Audit **`verify_b3`** (82 queries / 32N coset / ρ=1/8 / 12-bit grind / independent
+witness-free verifier / B3 wire-consistency). As of the post-v5.48.0 production-hardening
+work this **is** the default `glass prove` path (Goldilocks, no flags): `gprove_sound`
+builds the claim circuit and runs `verify_b3(gs, prove_b3(gs, w))`. The other two CLI modes
+are **out of the audited scope**: `--fast` is the old witness self-check (`gprove_m` /
+`prove_stark` — NOT a soundness proof), and `--baby-bear` is the educational 2³¹ path.
+`--zk` is `verify_b3` over a randomized trace (sound + hiding). Confirm end-to-end that the
+no-flag default invokes `verify_b3` (it does) — and note its cost scales with circuit size.
 
 ## Threat model (security goals + attack surfaces)
 
@@ -80,9 +82,19 @@ mis-parsed/unresolved call becomes a *proven 0* with no error; side channels (li
 not constant-time); the ZK mask RNG (Poseidon-seeded PRG, an ideal-RNG idealization).
 
 **Explicitly out of the threat model:** compiler correctness (proves the *gate-circuit's*
-out = R, not faithful lowering of the source); witness/input semantics
-(private inputs = "knowledge of a witness yielding R"; *public* inputs are now pinnable via
-`build_claim_pub`, a wrong public value REJECTs); constant-time; the conjectures.
+out = R, not faithful lowering of the source) — including **bounded symbolic unrolling**: the
+unroller inlines recursion to a fixed fuel (8) and caps deeper calls with 0, so a program
+whose *runtime* recursion depth exceeds the fuel lowers to a depth-truncated circuit. On the
+**honest CLI path this is now caught loudly** — `gref_m_checked` runs a short-circuiting,
+fuel-locked guard (`seval`) that detects when the genuinely-taken recursion exceeds the
+unroll bound and **aborts** (e.g. `glass prove fact_prove.glass inp=8` refuses instead of
+proving the truncated `0`), so the honest user no longer gets a silent-wrong result + a valid
+proof. **Still out of scope (faithful-lowering / malicious path):** a prover hand-building a
+truncated circuit, or calling `gprove_sound`/`prove_b3` directly with a forged `R`, can still
+produce a valid proof of the truncated value — the guard is a CLI check, not a circuit-level
+constraint. *Unresolved / unparseable* programs also abort loudly. Also out: witness/input
+semantics (private inputs = "knowledge of a witness yielding R"; *public* inputs are pinnable
+via `build_claim_pub`, a wrong public value REJECTs); constant-time; the conjectures.
 
 ## Assumptions ledger
 
@@ -124,8 +136,12 @@ Must NOT protect anything of real value.** The do-not-protect-real-value banner 
 permanent until an external audit + cryptanalysis completes and clears the scope above.
 This package is the bridge *to* that audit; it is not a substitute for it.
 
-**Auditor, start here:** (1) pin the target (`verify_b3`, the v5.48.0 construction, params
-— not the CLI `glass prove` default). (2) Attack Poseidon — the single load-bearing primitive, including the 64-bit
+**Auditor, start here:** (1) pin the target (`verify_b3` — now the default Goldilocks
+`glass prove` path via `gprove_sound`; `--fast` self-check and `--baby-bear` are out of
+scope). (2) Attack Poseidon — the single load-bearing primitive, including the 64-bit
 squeeze width; if its RO model is false, nothing else matters. Everything else (the thin
-68+12 margin, the hash-width cap, with-replacement sampling, the bridge's silent `EInt(0)`,
+68+12 margin, the hash-width cap, with-replacement sampling, the bridge's unresolved /
+unsupported-call lowering — now a loud `error`, was a silent `EInt(0)` proven-0 (deep
+recursion past the unroll fuel now also REFUSES loudly on the honest CLI path via the
+`seval` guard, though the malicious/bypass path can still prove a truncated circuit) — and
 the missing z-in-coset guard) is itemized above but secondary to those two.

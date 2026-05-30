@@ -189,6 +189,15 @@ proves the things the project was for."
     *end-to-end integration* — swapping the prove-bridge's STARK backend
     (`prove_zk`) from Baby Bear to this Goldilocks stack, so a proof of real Glass
     source runs on the production field.
+  - ✅ **Integration + a sound verifier — done (v5.46–v5.48 + post-v5.48 hardening).**
+    The default `glass prove` now proves real Glass source over Goldilocks
+    ([`prove_source_goldilocks_zk.glass`](../examples/prove/prove_source_goldilocks_zk.glass)),
+    and as of v5.48.0 there is an **independent, witness-free `verify_b3`** (per-row
+    gate soundness + PLONK grand-product wire consistency + randomized-trace ZK) — now
+    the **default** path the CLI invokes (`--fast` = old self-check, `--zk` = hiding).
+    **Honest status lives in [`soundness.md`](soundness.md) + [`audit-readiness.md`](audit-readiness.md):
+    research-grade, reasoned-not-machine-checked, UNAUDITED — production-readiness needs
+    an external audit (the hard boundary). Do not protect real value.**
 - **H3 — Recursive proofs. 🚧 IN PROGRESS.** A proof that verifies another proof. The
   hard core is expressing a verifier as a circuit; a STARK verifier's algebraic
   heart is the FRI **fold check**.
