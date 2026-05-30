@@ -2252,6 +2252,7 @@ fn compile_program(prog: Program, nl: String) : String =
           "    printf(\"%lld" ++ nl_escape ++ "\", _result);" in
       "#include <stdio.h>" ++ nl ++
       "#include <stdint.h>" ++ nl ++
+      "#include <stdlib.h>" ++ nl ++
       "#include <string.h>" ++ nl ++
       stdarg ++
       runtime ++

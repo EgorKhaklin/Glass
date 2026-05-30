@@ -1,0 +1,79 @@
+# =============================================================================
+# frost_m31_circle.glass — the CIRCLE GROUP over Mersenne-31, the core structure
+# of Circle STARKs (eprint 2024/278; Plonky3 / Stwo).
+#
+# C(F_p) = { (x,y) : x^2 + y^2 = 1 }  is the unit group of the complex extension
+# F_p[i]/(i^2+1) (−1 is a non-residue for M31), so its law is COMPLEX MULTIPLICATION
+# — NOT elliptic-curve addition. Its order is p+1 = 2^31 (full 2-adicity 31), and
+# THAT is what gives radix-2 FFT structure (the multiplicative group F_p* has order
+# p−1 = 2^31−2, 2-adicity 1 — useless for FFT). The doubling map π(x,y)=(2x^2−1, 2xy)
+# is the 2-to-1 fold the circle FFT/FRI are built on.
+#
+# Self-contained (the M31 field ops are copied from frost_m31.glass so this DOGFOODS
+# byte-identical, glass.py == native_glassc — no cross-file import). Built from the
+# public spec under Frost; research/educational-grade, UNAUDITED.
+# =============================================================================
+
+# --- M31 field (p = 2^31 - 1), copied verbatim from frost_m31.glass -----------
+fn m31_reduce(v: Int) : Int =
+  let s1 : Int = (v % 2147483648) + (v / 2147483648) in
+  let s2 : Int = (s1 % 2147483648) + (s1 / 2147483648) in
+  if s2 >= 2147483647 then s2 - 2147483647 else s2
+fn m31_add(a: Int, b: Int) : Int = let s : Int = a + b in if s >= 2147483647 then s - 2147483647 else s
+fn m31_sub(a: Int, b: Int) : Int = let d : Int = a - b in if d < 0 then d + 2147483647 else d
+fn m31_mul(a: Int, b: Int) : Int = m31_reduce(a * b)
+fn m31_neg(a: Int) : Int = if a == 0 then 0 else 2147483647 - a
+
+# --- the circle group: a Point is [x, y] (two M31 coords) ---------------------
+fn cx(p: List<Int>) : Int = match p { [] => 0; [x, ...r] => x }
+fn cy(p: List<Int>) : Int = match p { [] => 0; [x, ...r] => match r { [] => 0; [y, ...rr] => y } }
+fn c_id(d: Int) : List<Int> = [1, 0]                 # identity = (1, 0)  (dummy arg: glassc rejects zero-arg fns)
+fn on_circle(p: List<Int>) : Bool = m31_add(m31_mul(cx(p), cx(p)), m31_mul(cy(p), cy(p))) == 1
+fn c_eq(p: List<Int>, q: List<Int>) : Bool = cx(p) == cx(q) && cy(p) == cy(q)
+# group law (complex mult): (x0,y0)+(x1,y1) = (x0x1 − y0y1, x0y1 + y0x1)
+fn c_add(p: List<Int>, q: List<Int>) : List<Int> =
+  [m31_sub(m31_mul(cx(p), cx(q)), m31_mul(cy(p), cy(q))), m31_add(m31_mul(cx(p), cy(q)), m31_mul(cy(p), cx(q)))]
+# subtraction (add the conjugate): (x0,y0)−(x1,y1) = (x0x1 + y0y1, y0x1 − x0y1)  [exact Plonky3 sign pattern]
+fn c_sub(p: List<Int>, q: List<Int>) : List<Int> =
+  [m31_add(m31_mul(cx(p), cx(q)), m31_mul(cy(p), cy(q))), m31_sub(m31_mul(cy(p), cx(q)), m31_mul(cx(p), cy(q)))]
+fn c_neg(p: List<Int>) : List<Int> = [cx(p), m31_neg(cy(p))]
+# doubling map π(x,y) = (2x^2 − 1, 2xy). reduce square BEFORE doubling (2·(<2^31) < 2^32, safe).
+fn c_double(p: List<Int>) : List<Int> =
+  let x : Int = cx(p) in let y : Int = cy(p) in let sq : Int = m31_mul(x, x) in let xy : Int = m31_mul(x, y) in
+  [m31_sub(m31_add(sq, sq), 1), m31_add(xy, xy)]
+fn iter_double(p: List<Int>, k: Int) : List<Int> = if k <= 0 then p else iter_double(c_double(p), k - 1)
+
+fn yn(b: Bool) : String = if b then "yes" else "no"
+fn shp(p: List<Int>) : String = "(" ++ int_to_string(cx(p)) ++ ", " ++ int_to_string(cy(p)) ++ ")"
+
+# --- checks -------------------------------------------------------------------
+let g : List<Int> = [311014874, 1584694829]          # Plonky3's circle generator (order 2^31)
+let gg : List<Int> = c_double(g)
+# (1) g is on the circle; identity is on the circle
+let c1 : Bool = on_circle(g) && on_circle(c_id(0))
+# (2) the group law preserves the circle invariant under +, −, double, neg
+let c2 : Bool = on_circle(c_add(g, gg)) && on_circle(c_sub(g, gg)) && on_circle(c_double(g)) && on_circle(c_neg(g))
+# (3) group axioms on samples: (g+gg)−gg == g ; g+(−g) == identity ; g+id == g
+let c3 : Bool = c_eq(c_sub(c_add(g, gg), gg), g) && c_eq(c_add(g, c_neg(g)), c_id(0)) && c_eq(c_add(g, c_id(0)), g)
+# (4) ORDER of g is exactly 2^31: doubling 31 times reaches identity, 30 times does not
+let c4a : Bool = c_eq(iter_double(g, 31), c_id(0))
+let c4b : Bool = c_eq(iter_double(g, 30), c_id(0)) == false
+# (5) doubling is the squaring map: π(g) == g + g
+let c5 : Bool = c_eq(c_double(g), c_add(g, g))
+let allok : Bool = c1 && c2 && c3 && c4a && c4b && c5
+
+let _ : String = print("--- frost_m31_circle.glass: the circle group over M31, order p+1 = 2^31 ---")
+let _ : String = print("law = complex multiplication; doubling π(x,y) = (2x^2−1, 2xy) is the FFT/FRI fold.")
+let _ : String = print("")
+let _ : String = print("  generator g = " ++ shp(g))
+let _ : String = print("  g on the circle (x^2+y^2==1)     : " ++ yn(on_circle(g)))
+let _ : String = print("  law preserves the circle (+,−,×2,neg): " ++ yn(c2))
+let _ : String = print("  group axioms ((p+q)−q=p, g−g=0, g+0=g): " ++ yn(c3))
+let _ : String = print("  ord(g)=2^31: 31 doublings -> identity : " ++ yn(c4a))
+let _ : String = print("            30 doublings -> NOT identity : " ++ yn(c4b))
+let _ : String = print("  doubling == self-add (π(g)=g+g)        : " ++ yn(c5))
+let _ : String = print("  ALL CIRCLE-GROUP LAWS HOLD             : " ++ yn(allok))
+let _ : String = print("")
+let _ : String = print("Frost's circle group, dogfood byte-identical. The 2-adic structure circle-FFT/FRI need. Research-grade, UNAUDITED.")
+
+"frost_m31_circle v0.1 — the circle group over Mersenne-31 (order 2^31), the Circle-STARK core"

@@ -1,0 +1,163 @@
+# =============================================================================
+# frost_goldilocks_poseidon2.glass — POSEIDON2 over Goldilocks, byte-exact to Plonky3.
+#
+# Poseidon2 (Grassi-Khovratovich-Roy-Schofnegger, eprint 2023/323) is the modern
+# successor to Poseidon used by Plonky3 / the current STARK stacks: cheaper linear
+# layers (an external block-circulant MDS built from the 4x4 matrix M4, and an
+# internal "diagonal + all-ones" matrix M_I) and a split round schedule (R_F=8 full
+# rounds bracketing R_P=22 partial rounds, S-box x^7), with ONE M_E pre-multiply
+# before round 1. This is Frost's own from-scratch build of the PUBLIC spec (NOT a
+# Plonky3 port/reskin): the int64-safe Goldilocks bignum field + S-box are reused
+# VERBATIM from frost_goldilocks_poseidon.glass, so it DOGFOODS byte-identical
+# (glass.py == native_glassc); only the linear layers, schedule, and constants differ.
+#
+# Verified the only way that settles correctness: against Plonky3's OWN published
+# permutation test vectors (goldilocks/src/poseidon2.rs), for BOTH t=8 and t=12 — a
+# full-permutation match proves the round structure, both matrices, AND all
+# constants. Constants pulled programmatically from the Plonky3 source (instance A:
+# small-integer internal diagonal) and emitted as base-2^16 limbs; never hand-typed.
+#
+# SCOPE: matching the vectors proves CORRECTNESS-OF-PORT, not adversarial soundness.
+# Research/educational-grade, UNAUDITED — building a modern primitive from its public
+# spec does NOT confer production safety. Do not protect real value.
+# =============================================================================
+
+fn lmod(x: Int) : Int = x % 65536
+fn ldiv(x: Int) : Int = x / 65536
+fn rev_go(xs: List<Int>, acc: List<Int>) : List<Int> = match xs { [] => acc; [h, ...t] => rev_go(t, [h] ++ acc) }
+fn rev(xs: List<Int>) : List<Int> = rev_go(xs, [])
+fn drop_zeros(xs: List<Int>) : List<Int> = match xs { [] => []; [h, ...t] => if h == 0 then drop_zeros(t) else xs }
+fn trim(xs: List<Int>) : List<Int> = rev(drop_zeros(rev(xs)))
+fn addc(a: List<Int>, b: List<Int>, carry: Int) : List<Int> =
+  match a {
+    [] => match b { [] => if carry == 0 then [] else [carry]; [hb, ...tb] => let s : Int = hb + carry in [lmod(s)] ++ addc([], tb, ldiv(s)) };
+    [ha, ...ta] => match b { [] => let s : Int = ha + carry in [lmod(s)] ++ addc(ta, [], ldiv(s)); [hb, ...tb] => let s : Int = ha + hb + carry in [lmod(s)] ++ addc(ta, tb, ldiv(s)) }
+  }
+fn bn_add(a: List<Int>, b: List<Int>) : List<Int> = trim(addc(a, b, 0))
+fn smul(xs: List<Int>, k: Int, carry: Int) : List<Int> =
+  match xs { [] => if carry == 0 then [] else [carry]; [h, ...t] => let p : Int = h * k + carry in [lmod(p)] ++ smul(t, k, ldiv(p)) }
+fn shift(xs: List<Int>, n: Int) : List<Int> = if n <= 0 then xs else [0] ++ shift(xs, n - 1)
+fn mul_go(a: List<Int>, b: List<Int>, i: Int) : List<Int> =
+  match b { [] => []; [hb, ...tb] => bn_add(shift(smul(a, hb, 0), i), mul_go(a, tb, i + 1)) }
+fn bn_mul(a: List<Int>, b: List<Int>) : List<Int> = trim(mul_go(a, b, 0))
+fn cmp_hi(a: List<Int>, b: List<Int>) : Int = match a { [] => 0; [ha, ...ta] => match b { [] => 0; [hb, ...tb] => if ha == hb then cmp_hi(ta, tb) else (if ha < hb then 0 - 1 else 1) } }
+fn bn_cmp(a: List<Int>, b: List<Int>) : Int =
+  let ta : List<Int> = trim(a) in let tb : List<Int> = trim(b) in
+  if len(ta) == len(tb) then cmp_hi(rev(ta), rev(tb)) else (if len(ta) < len(tb) then 0 - 1 else 1)
+fn subb(a: List<Int>, b: List<Int>, borrow: Int) : List<Int> =
+  match a { [] => [];
+    [ha, ...ta] => match b {
+      [] => let d : Int = ha - borrow in if d < 0 then [d + 65536] ++ subb(ta, [], 1) else [d] ++ subb(ta, [], 0);
+      [hb, ...tb] => let d : Int = ha - hb - borrow in if d < 0 then [d + 65536] ++ subb(ta, tb, 1) else [d] ++ subb(ta, tb, 0) } }
+fn bn_sub(a: List<Int>, b: List<Int>) : List<Int> = trim(subb(a, b, 0))
+fn take(xs: List<Int>, n: Int) : List<Int> = if n <= 0 then [] else match xs { [] => []; [h, ...t] => [h] ++ take(t, n - 1) }
+fn drop(xs: List<Int>, n: Int) : List<Int> = if n <= 0 then xs else match xs { [] => []; [h, ...t] => drop(t, n - 1) }
+fn pg(d: Int) : List<Int> = [1, 0, 65535, 65535]
+fn fold_hi(d: Int) : List<Int> = [65535, 65535]
+fn bn_mod_p(a: List<Int>) : List<Int> =
+  let t : List<Int> = trim(a) in
+  if len(t) > 4 then bn_mod_p(bn_add(take(t, 4), bn_mul(drop(t, 4), fold_hi(0))))
+  else if bn_cmp(t, pg(0)) >= 0 then bn_sub(t, pg(0)) else t
+fn fadd(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_add(a, b))
+fn fsub(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_add(a, bn_sub(pg(0), bn_mod_p(b))))
+fn fmul(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_mul(a, b))
+fn bn_eq(a: List<Int>, b: List<Int>) : Bool = bn_cmp(a, b) == 0
+fn bn_is_zero(e: List<Int>) : Bool = match trim(e) { [] => true; _ => false }
+fn bn_is_odd(e: List<Int>) : Bool = match e { [] => false; [h, ...t] => h % 2 == 1 }
+fn half_hl(xs: List<Int>, rem: Int) : List<Int> = match xs { [] => []; [h, ...t] => let cur : Int = rem * 65536 + h in [cur / 2] ++ half_hl(t, cur % 2) }
+fn bn_half(e: List<Int>) : List<Int> = trim(rev(half_hl(rev(trim(e)), 0)))
+fn fpow_bn(base: List<Int>, e: List<Int>) : List<Int> =
+  if bn_is_zero(e) then [1]
+  else let h : List<Int> = fpow_bn(fmul(base, base), bn_half(e)) in
+       if bn_is_odd(e) then fmul(base, h) else h
+fn finv(a: List<Int>) : List<Int> = fpow_bn(a, bn_sub(pg(0), [2]))
+fn halve_k(e: List<Int>, k: Int) : List<Int> = if k <= 0 then e else halve_k(bn_half(e), k - 1)
+fn root_pow2(k: Int) : List<Int> = fpow_bn([7], halve_k(bn_sub(pg(0), [1]), k))
+fn glit(c: Int) : List<Int> = trim([c % 65536, (c / 65536) % 65536, c / 4294967296])
+
+# --- list-of-bignum helpers ---------------------------------------------------
+fn wnth(xs: List<List<Int>>, i: Int) : List<Int> = match xs { [] => []; [x, ...r] => if i == 0 then x else wnth(r, i - 1) }
+fn lset(xs: List<List<Int>>, i: Int, v: List<Int>) : List<List<Int>> = match xs { [] => []; [x, ...r] => if i == 0 then [v] ++ r else [x] ++ lset(r, i - 1, v) }
+fn llen(xs: List<List<Int>>) : Int = match xs { [] => 0; [x, ...r] => 1 + llen(r) }
+
+# --- index helpers ------------------------------------------------------------
+fn inth(xs: List<Int>, i: Int) : Int = match xs { [] => 0; [h, ...t] => if i == 0 then h else inth(t, i - 1) }
+fn pdrop1(st: List<List<Int>>) : List<List<Int>> = match st { [] => []; [h, ...t] => t }
+
+# --- Poseidon over Goldilocks — byte-exact to Plonky2 (t=12, R_F=8, R_P=22) ----
+# S-box x^7 (gcd(7, p-1)=1 over Goldilocks, so it is a permutation). Computed as
+# Plonky2 does: x2=x^2, x4=x^4, x3=x^3, return x3*x4 = x^7.
+fn sbox(x: List<Int>) : List<Int> = let x2 : List<Int> = fmul(x, x) in let x4 : List<Int> = fmul(x2, x2) in let x3 : List<Int> = fmul(x, x2) in fmul(x3, x4)
+
+# --- Poseidon2 permutation (Plonky3 instance A): t lanes, R_F=8 (4+4), R_P=22, x^7 -
+# nthrow: index a list of RC rows (List<List<List<Int>>>)
+fn nthrow(xs: List<List<List<Int>>>, i: Int) : List<List<Int>> = match xs { [] => []; [x, ...r] => if i == 0 then x else nthrow(r, i - 1) }
+
+# EXTERNAL linear layer M_E = (apply M4 to each 4-lane chunk) then (add cross-chunk column sums).
+# M4 = [[2,3,1,1],[1,2,3,1],[1,1,2,3],[3,1,1,2]]  (Plonky3 apply_mat4: 7 adds + 2 doubles).
+fn mat4l(c: List<List<Int>>) : List<List<Int>> =
+  let x0 : List<Int> = wnth(c, 0) in let x1 : List<Int> = wnth(c, 1) in let x2 : List<Int> = wnth(c, 2) in let x3 : List<Int> = wnth(c, 3) in
+  let t01 : List<Int> = fadd(x0, x1) in let t23 : List<Int> = fadd(x2, x3) in let t0123 : List<Int> = fadd(t01, t23) in
+  let t01123 : List<Int> = fadd(t0123, x1) in let t01233 : List<Int> = fadd(t0123, x3) in
+  [fadd(t01123, t01), fadd(t01123, fadd(x2, x2)), fadd(t01233, t23), fadd(t01233, fadd(x0, x0))]
+fn get_chunk(st: List<List<Int>>, c: Int) : List<List<Int>> = [wnth(st, 4 * c), wnth(st, 4 * c + 1), wnth(st, 4 * c + 2), wnth(st, 4 * c + 3)]
+fn set_chunk(st: List<List<Int>>, c: Int, ch: List<List<Int>>) : List<List<Int>> =
+  lset(lset(lset(lset(st, 4 * c, wnth(ch, 0)), 4 * c + 1, wnth(ch, 1)), 4 * c + 2, wnth(ch, 2)), 4 * c + 3, wnth(ch, 3))
+fn ext_a(st: List<List<Int>>, c: Int, k: Int) : List<List<Int>> = if c >= k then st else ext_a(set_chunk(st, c, mat4l(get_chunk(st, c))), c + 1, k)
+fn col_sum(st: List<List<Int>>, m: Int, c: Int, k: Int, acc: List<Int>) : List<Int> = if c >= k then acc else col_sum(st, m, c + 1, k, fadd(acc, wnth(st, 4 * c + m)))
+fn add_cols(st: List<List<Int>>, sums: List<List<Int>>, i: Int, t: Int) : List<List<Int>> = if i >= t then [] else [fadd(wnth(st, i), wnth(sums, i % 4))] ++ add_cols(st, sums, i + 1, t)
+fn m_external(st: List<List<Int>>, t: Int) : List<List<Int>> =
+  let k : Int = t / 4 in let sa : List<List<Int>> = ext_a(st, 0, k) in
+  let sums : List<List<Int>> = [col_sum(sa, 0, 0, k, []), col_sum(sa, 1, 0, k, []), col_sum(sa, 2, 0, k, []), col_sum(sa, 3, 0, k, [])] in
+  add_cols(sa, sums, 0, t)
+
+# INTERNAL linear layer M_I: sum = sum of all lanes; state[i] = diag[i]*state[i] + sum.
+fn st_sum(st: List<List<Int>>, i: Int, t: Int, acc: List<Int>) : List<Int> = if i >= t then acc else st_sum(st, i + 1, t, fadd(acc, wnth(st, i)))
+fn mi_lanes(st: List<List<Int>>, diag: List<List<Int>>, ssum: List<Int>, i: Int, t: Int) : List<List<Int>> = if i >= t then [] else [fadd(fmul(wnth(diag, i), wnth(st, i)), ssum)] ++ mi_lanes(st, diag, ssum, i + 1, t)
+fn m_internal(st: List<List<Int>>, diag: List<List<Int>>, t: Int) : List<List<Int>> = mi_lanes(st, diag, st_sum(st, 0, t, []), 0, t)
+
+# rounds (order: add-const -> sbox -> matrix)
+fn add_vec(st: List<List<Int>>, rc: List<List<Int>>, i: Int, t: Int) : List<List<Int>> = if i >= t then [] else [fadd(wnth(st, i), wnth(rc, i))] ++ add_vec(st, rc, i + 1, t)
+fn sbox_all_t(st: List<List<Int>>, i: Int, t: Int) : List<List<Int>> = if i >= t then [] else [sbox(wnth(st, i))] ++ sbox_all_t(st, i + 1, t)
+fn external_round(st: List<List<Int>>, rc: List<List<Int>>, t: Int) : List<List<Int>> = m_external(sbox_all_t(add_vec(st, rc, 0, t), 0, t), t)
+fn internal_round(st: List<List<Int>>, rc: List<Int>, diag: List<List<Int>>, t: Int) : List<List<Int>> = m_internal(lset(st, 0, sbox(fadd(wnth(st, 0), rc))), diag, t)
+fn do_ext(st: List<List<Int>>, rcs: List<List<List<Int>>>, r: Int, stop: Int, t: Int) : List<List<Int>> = if r >= stop then st else do_ext(external_round(st, nthrow(rcs, r), t), rcs, r + 1, stop, t)
+fn do_int(st: List<List<Int>>, ic: List<List<Int>>, r: Int, stop: Int, diag: List<List<Int>>, t: Int) : List<List<Int>> = if r >= stop then st else do_int(internal_round(st, wnth(ic, r), diag, t), ic, r + 1, stop, diag, t)
+
+# THE PERMUTATION: initial M_E pre-multiply (no const, no sbox), 4 external, 22 internal, 4 external.
+fn perm2(st: List<List<Int>>, t: Int, ei: List<List<List<Int>>>, ef: List<List<List<Int>>>, ic: List<List<Int>>, diag: List<List<Int>>) : List<List<Int>> =
+  do_ext(do_int(do_ext(m_external(st, t), ei, 0, 4, t), ic, 0, 22, diag, t), ef, 0, 4, t)
+
+# vec_eq (reused from poseidon1)
+fn vec_eq(a: List<List<Int>>, b: List<List<Int>>) : Bool =
+  match a { [] => match b { [] => true; _ => false };
+            [x, ...xr] => match b { [] => false; [y, ...yr] => if bn_eq(x, y) then vec_eq(xr, yr) else false } }
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+
+# --- Poseidon2 constants (Plonky3 instance A), pulled programmatically + limb-encoded ---
+let rc8_ei : List<List<List<Int>>> = [[[42457, 62117, 17383, 56663], [42059, 22701, 34382, 52026], [36060, 54063, 17566, 65442], [5102, 54973, 24421, 16898], [25379, 9552, 5982, 30857], [46903, 15652, 35760, 13497], [43562, 52303, 21342, 48588], [53299, 40896, 44422, 23328]], [[64692, 9629, 42425, 61917], [11609, 48657, 21008, 10065], [27711, 35958, 53617, 16935], [55188, 6747, 13078, 9939], [45094, 31732, 14485, 18873], [13929, 35617, 46483, 19030], [13629, 18632, 17003, 4384], [27821, 4261, 15423, 27442]], [[42674, 24028, 54820, 52823], [7857, 11194, 36160, 45564], [48388, 43353, 2412, 46533], [8063, 1747, 23763, 28085], [38465, 33227, 10554, 50333], [29087, 59769, 23119, 7397], [42193, 53624, 24745, 43310], [64908, 29628, 50761, 44]], [[45339, 59439, 8652, 52903], [52865, 2446, 24248, 58805], [56678, 28445, 21084, 20016], [2439, 9991, 28712, 17350], [30250, 42933, 33840, 44198], [40083, 13535, 9094, 13940], [13363, 9699, 57800, 35022], [29046, 29877, 44685, 56985]]]
+let rc8_ef : List<List<List<Int>>> = [[[4934, 32052, 61721, 334], [29588, 9680, 57864, 38693], [44603, 11355, 23279, 64946], [38686, 22924, 732, 48724], [51773, 1229, 28959, 37797], [47483, 12175, 39515, 50266], [13637, 9363, 18089, 65161], [2332, 29545, 38818, 11001]], [[16401, 2857, 51342, 43618], [40820, 4302, 47576, 1422], [39652, 60724, 9196, 46027], [19076, 42875, 33143, 41828], [55645, 22930, 15760, 17173], [43595, 55876, 43388, 62690], [26671, 47368, 9986, 23466], [20689, 62711, 9149, 2089]], [[14339, 9609, 2467, 39086], [34872, 30614, 18256, 63654], [11359, 61451, 29531, 52912], [57458, 14472, 23957, 2586], [17525, 35321, 6404, 12235], [27132, 3564, 1575, 46526], [53131, 45210, 47412, 29596], [62043, 24263, 20663, 21367]], [[14689, 44575, 12683, 59869], [65050, 10654, 8503, 63302], [47424, 59821, 47342, 45558], [65131, 32925, 52362, 48619], [33043, 6935, 8057, 16636], [18532, 11521, 49974, 15041], [44730, 48568, 24964, 39425], [49758, 23035, 14660, 38386]]]
+let rc8_in : List<List<Int>> = [[8022, 24565, 38872, 18568], [8728, 51990, 29564, 4416], [60725, 22630, 47393, 42990], [64713, 61001, 38767, 39890], [16332, 22538, 61662, 49352], [51091, 61071, 56038, 20402], [14683, 24375, 35315, 13370], [29384, 30666, 21082, 8763], [43288, 29866, 46629, 22220], [63981, 634, 2008, 50389], [59740, 61623, 26428, 41088], [56568, 60272, 18564, 61464], [23657, 52029, 4272, 1103], [61830, 14648, 63385, 59875], [62553, 59250, 7296, 7030], [24492, 31259, 60512, 24684], [973, 54367, 49889, 5280], [22351, 21400, 59525, 20140], [62438, 1007, 51825, 63749], [49241, 2146, 63698, 63688], [36442, 56679, 65163, 46372], [60481, 417, 34393, 64439]]
+let diag8 : List<List<Int>> = [[65535, 65535, 65534, 65535], [1], [2], [1, 32768, 65535, 32767], [3], [0, 32768, 65535, 32767], [65534, 65535, 65534, 65535], [65533, 65535, 65534, 65535]]
+let rc12_ei : List<List<List<Int>>> = [[[20294, 47649, 62266, 5084], [28035, 41434, 46676, 12467], [39766, 42517, 13485, 8134], [13414, 19904, 22934, 37748], [39204, 42900, 61228, 60882], [12136, 57570, 45053, 60905], [10285, 47817, 47574, 34069], [216, 59881, 1972, 27484], [35336, 33676, 25448, 7878], [64427, 32977, 13949, 36930], [14233, 19004, 33622, 16386], [42846, 26300, 48644, 18944]], [[33151, 22755, 48878, 30995], [32144, 12835, 59525, 62789], [8197, 13828, 52103, 8952], [9763, 9338, 39182, 28420], [14541, 41852, 59515, 65058], [10261, 24574, 13000, 53774], [65139, 16456, 10087, 4466], [45381, 39078, 47082, 20127], [61579, 11146, 27683, 57478], [18788, 5768, 51065, 187], [28950, 39181, 49403, 28721], [4239, 53045, 40583, 9226]], [[17587, 41250, 25509, 11875], [284, 53685, 14215, 24092], [28299, 10777, 26126, 16690], [17191, 36157, 15204, 14849], [59971, 39048, 14836, 63384], [5177, 47870, 25998, 65157], [16573, 41282, 38949, 46728], [14379, 21825, 21344, 22404], [15593, 63158, 52648, 17672], [19601, 18536, 62296, 39998], [6028, 15495, 48610, 2066], [11284, 32626, 25487, 65097]], [[52213, 59525, 26764, 36415], [43133, 63302, 4268, 47329], [44015, 14957, 59543, 46258], [25324, 41940, 19549, 40561], [3093, 15677, 63747, 25656], [29081, 61858, 12156, 9265], [49009, 18348, 17339, 9208], [40705, 13502, 61722, 37251], [23999, 47572, 25339, 33680], [17402, 27694, 28286, 9397], [10866, 7318, 15782, 57704], [49063, 6681, 25495, 43356]]]
+let rc12_ef : List<List<List<Int>>> = [[[41549, 18562, 59337, 50827], [60889, 23770, 27997, 44953], [63141, 59354, 61477, 38679], [5876, 28274, 26526, 25654], [62055, 1146, 15769, 35362], [47770, 41267, 11829, 47953], [43523, 30321, 17417, 64447], [7777, 63105, 22763, 61504], [32763, 16300, 33904, 23754], [18079, 24038, 51092, 39765], [37711, 32910, 48905, 36357], [2007, 34659, 222, 11945]], [[64393, 45965, 65522, 30536], [23937, 56635, 42614, 27545], [31763, 10191, 47046, 44107], [62906, 59874, 60389, 44470], [19171, 44962, 14220, 11571], [63682, 30019, 29568, 7771], [45327, 49131, 34836, 2336], [37853, 47963, 25782, 30766], [46351, 44176, 42126, 44501], [42161, 29550, 50508, 44500], [32728, 60801, 48006, 54669], [19933, 13299, 53669, 27998]], [[31929, 58219, 27299, 10344], [40758, 30312, 48436, 22810], [14453, 30961, 30310, 1149], [23369, 25183, 4370, 41633], [18776, 63536, 4259, 8701], [640, 17467, 1809, 63924], [59534, 45757, 32440, 53865], [6975, 20851, 30987, 13459], [16419, 29558, 63965, 4554], [5710, 10360, 47351, 31439], [64550, 9166, 50395, 29774], [25408, 16940, 58767, 7680]], [[11738, 1702, 10457, 8669], [23391, 24390, 18091, 62250], [32363, 7999, 4896, 49102], [1250, 56147, 11898, 62221], [18665, 43949, 20196, 60639], [20505, 11577, 33304, 63822], [34757, 17624, 11831, 20197], [33714, 44032, 7292, 41268], [33610, 49932, 64294, 8962], [63443, 10043, 50567, 44707], [16071, 24962, 57929, 63384], [52628, 59810, 60323, 38445]]]
+let rc12_in : List<List<Int>> = [[17174, 42845, 33834, 19167], [46315, 43594, 47217, 63739], [27371, 45789, 23406, 26856], [896, 11559, 45163, 1952], [11748, 48424, 552, 55630], [21112, 9484, 37331, 35805], [30607, 35770, 26808, 8348], [14455, 46975, 36058, 46561], [37882, 2266, 41960, 45718], [12926, 41242, 60605, 33648], [56024, 14197, 29992, 16272], [43652, 9158, 38331, 46976], [20063, 29357, 47614, 16182], [46419, 2832, 38520, 27068], [47233, 11959, 13343, 16157], [34840, 5507, 40600, 20115], [5636, 58019, 27450, 55862], [54537, 29319, 56094, 48265], [22105, 63983, 62481, 24834], [61611, 31425, 23646, 22642], [33767, 31112, 34156, 3573], [38427, 55884, 25256, 63419]]
+let diag12 : List<List<Int>> = [[65535, 65535, 65534, 65535], [1], [2], [1, 32768, 65535, 32767], [3], [4], [0, 32768, 65535, 32767], [65534, 65535, 65534, 65535], [65533, 65535, 65534, 65535], [1, 16384, 65535, 49151], [0, 49152, 65535, 16383], [1, 8192, 65535, 57343]]
+
+# --- Plonky3 published permutation vectors (goldilocks/src/poseidon2.rs), verified ---
+let in8 : List<List<Int>> = [[], [1], [2], [3], [4], [5], [6], [7]]
+let out8 : List<List<Int>> = [[19732, 6945, 61514, 524], [60709, 60106, 19114, 34017], [29783, 59420, 63040, 6880], [55461, 44720, 1227, 42194], [43007, 10163, 14262, 3318], [18539, 38027, 12365, 30861], [39668, 41364, 4926, 29479], [14683, 9434, 43961, 62485]]
+let in12 : List<List<Int>> = [[], [1], [2], [3], [4], [5], [6], [7], [8], [9], [10], [11]]
+let out12 : List<List<Int>> = [[19203, 49393, 43879, 62098], [21580, 30294, 61875, 2610], [39134, 35156, 25003, 1340], [28667, 23321, 37605, 767], [51890, 28504, 28303, 22551], [49400, 59310, 4614, 45226], [15524, 56552, 5107, 59660], [14786, 16095, 5427, 62682], [51820, 21442, 448, 9143], [48984, 56543, 54675, 53811], [46382, 20847, 42489, 20223], [358, 61940, 17545, 2735]]
+let v8 : Bool = vec_eq(perm2(in8, 8, rc8_ei, rc8_ef, rc8_in, diag8), out8)
+let v12 : Bool = vec_eq(perm2(in12, 12, rc12_ei, rc12_ef, rc12_in, diag12), out12)
+let _ : String = print("--- frost_goldilocks_poseidon2.glass: POSEIDON2 over Goldilocks (Plonky3 instance A) ---")
+let _ : String = print("t=8 and t=12 state, R_F=8 (4+4), R_P=22, S-box x^7; external M_E (block-circulant M4) + internal M_I (diag+ones); initial M_E pre-multiply.")
+let _ : String = print("MATCHES PLONKY3 PUBLISHED PERMUTATION VECTORS:")
+let _ : String = print("  width 8  (input 0..7)  : " ++ show_b(v8))
+let _ : String = print("  width 12 (input 0..11) : " ++ show_b(v12))
+let _ : String = print("  BOTH MATCH (byte-exact to Plonky3): " ++ show_b(v8 && v12))
+let _ : String = print("")
+let _ : String = print("Frost's from-spec Poseidon2; reuses the int64-safe Goldilocks field, dogfoods byte-identical. Research-grade, UNAUDITED.")
+
+"frost_goldilocks_poseidon2 v0.1 — Poseidon2 over Goldilocks, byte-exact to Plonky3 (verified vs its published permutation vectors)"

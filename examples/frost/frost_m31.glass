@@ -1,0 +1,80 @@
+# =============================================================================
+# frost_m31.glass — the Mersenne-31 field, p = 2^31 - 1 = 2147483647.
+#
+# M31 is the base field of Circle STARKs (eprint 2024/278, Haböck-Levit-Papini;
+# Plonky3 / Stwo). It is the SIMPLEST field Frost has: an element is a plain Int in
+# [0, p-1] — no base-2^16 bignum limbs at all — because the reduction is just a
+# fold. Since 2^31 ≡ 1 (mod p), any v < 2^62 reduces by v = hi·2^31 + lo ≡ hi + lo
+# (two folds + one conditional subtract). Products of two field elements are < 2^62
+# < 2^63, so everything fits a single signed i64 and DOGFOODS byte-identical
+# (glass.py Int == native_glassc int64). We use `% 2147483648` for "low 31 bits"
+# and `/ 2147483648` for ">> 31" (Glass has %, /, not bit-ops).
+#
+# WHY M31 (vs the multiplicative group): the CIRCLE group over M31 has order
+# p+1 = 2^31 (full 2-adicity 31), which is what makes radix-2 FFT possible —
+# see frost_m31_circle.glass. The multiplicative group has order p-1 = 2^31-2
+# (2-adicity 1), useless for FFT. This file is just the field; the circle is next.
+#
+# Research/educational-grade, UNAUDITED. Built from the public Circle-STARK spec
+# under Frost (Glass's own prover), not a Plonky3/Stwo port.
+# =============================================================================
+
+# reduce v in [0, 2^62) to its canonical M31 representative in [0, p-1].
+# (Plonky3 reduce_64: two (lo+hi) folds, then one conditional subtract; the final
+# subtract also canonicalizes the "redundant zero" bit pattern p == 0.)
+fn m31_reduce(v: Int) : Int =
+  let s1 : Int = (v % 2147483648) + (v / 2147483648) in
+  let s2 : Int = (s1 % 2147483648) + (s1 / 2147483648) in
+  if s2 >= 2147483647 then s2 - 2147483647 else s2
+
+fn m31_add(a: Int, b: Int) : Int = let s : Int = a + b in if s >= 2147483647 then s - 2147483647 else s
+fn m31_sub(a: Int, b: Int) : Int = let d : Int = a - b in if d < 0 then d + 2147483647 else d
+fn m31_mul(a: Int, b: Int) : Int = m31_reduce(a * b)
+fn m31_neg(a: Int) : Int = if a == 0 then 0 else 2147483647 - a
+
+# Fermat inverse: a^(p-2), p-2 = 2147483645 (square-and-multiply, ~31 levels).
+fn m31_pow(base: Int, e: Int) : Int =
+  if e <= 0 then 1
+  else let h : Int = m31_pow(m31_mul(base, base), e / 2) in
+       if e % 2 == 1 then m31_mul(base, h) else h
+fn m31_inv(a: Int) : Int = m31_pow(a, 2147483645)
+
+fn yn(b: Bool) : String = if b then "yes" else "no"
+
+# --- field-law checks on samples (the only honest way to vet a field) ---------
+let a : Int = 123456789
+let b : Int = 2000000000
+let c : Int = 7
+# closure into range
+let r1 : Bool = m31_add(a, b) >= 0 && m31_add(a, b) < 2147483647
+# additive inverse: a + (-a) == 0
+let r2 : Bool = m31_add(a, m31_neg(a)) == 0
+# multiplicative inverse: a * a^{-1} == 1
+let r3 : Bool = m31_mul(a, m31_inv(a)) == 1
+let r3b : Bool = m31_mul(c, m31_inv(c)) == 1
+# (p-1)^2 ≡ 1  (since p-1 ≡ -1)
+let r4 : Bool = m31_mul(2147483646, 2147483646) == 1
+# redundant-zero canonicalization: reduce(p) == 0
+let r5 : Bool = m31_reduce(2147483647) == 0
+# distributivity: a*(b+c) == a*b + a*c
+let r6 : Bool = m31_mul(a, m31_add(b, c)) == m31_add(m31_mul(a, b), m31_mul(a, c))
+# commutativity / associativity of mul on a sample
+let r7 : Bool = m31_mul(a, b) == m31_mul(b, a) && m31_mul(m31_mul(a, b), c) == m31_mul(a, m31_mul(b, c))
+let allok : Bool = r1 && r2 && r3 && r3b && r4 && r5 && r6 && r7
+
+let _ : String = print("--- frost_m31.glass: Mersenne-31 field, p = 2^31 - 1 = 2147483647 ---")
+let _ : String = print("single-i64 element (no limbs); reduce = fold-twice + conditional subtract.")
+let _ : String = print("")
+let _ : String = print("  in range (a+b)             : " ++ yn(r1))
+let _ : String = print("  additive inverse a+(-a)==0 : " ++ yn(r2))
+let _ : String = print("  mul inverse a*inv(a)==1     : " ++ yn(r3))
+let _ : String = print("  mul inverse 7*inv(7)==1     : " ++ yn(r3b))
+let _ : String = print("  (p-1)^2 == 1               : " ++ yn(r4))
+let _ : String = print("  redundant zero reduce(p)==0: " ++ yn(r5))
+let _ : String = print("  distributivity             : " ++ yn(r6))
+let _ : String = print("  comm + assoc of mul        : " ++ yn(r7))
+let _ : String = print("  ALL FIELD LAWS HOLD        : " ++ yn(allok))
+let _ : String = print("")
+let _ : String = print("Frost's M31 field, dogfood byte-identical. Foundation for the circle group + circle-STARK. Research-grade, UNAUDITED.")
+
+"frost_m31 v0.1 — Mersenne-31 field (p = 2^31-1), single-i64, the Circle-STARK base field"

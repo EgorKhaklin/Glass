@@ -174,7 +174,7 @@ differential testing. `glass.py` ⟷ `native_glassc`. `eval` ⟷ circuit.
 
 ```bash
 bash examples/selfhost/dogfood.sh examples/prove/prove_pane.glass
-# native_glassc == glass.py, byte-identical.  381/381 suite, every example.
+# native_glassc == glass.py, byte-identical.  382/382 suite, every example.
 ```
 
 Nothing here is "done" until the interpreter and the self-hosted compiler give

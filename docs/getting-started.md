@@ -18,7 +18,7 @@ Verify the install:
 
 ```bash
 glass --version
-# Glass 5.49.0
+# Glass 5.50.0
 ```
 
 ### Native compiler (optional)
@@ -79,16 +79,19 @@ glass examples/features/infer.glass         # Type inference walkthrough
 glass examples/selfhost/prism.glass         # Glass-in-Glass (the self-host)
 ```
 
-## Prove a function (zero-knowledge)
+## Prove a function
 
-Glass can compile a function into an arithmetic circuit and emit a **succinct,
-zero-knowledge proof of its result** — names passed on the command line are
-*private inputs* that stay in the witness:
+Glass can compile a function into an arithmetic circuit and emit a **succinct
+proof of its result** — names passed on the command line are *private inputs*
+that stay in the witness. The default proves over Goldilocks and verifies with the
+independent, witness-free **`verify_b3`** (sound, but not hiding); `--zk` adds
+zero-knowledge (randomized-trace hiding) and `--fast` is the old witness self-check
+(not a soundness proof):
 
 ```bash
 glass prove examples/prove/hello_prove.glass inp=9
-#   result:  86
-#   proof:   ACCEPT  (succinct, zero-knowledge)
+#   result:  86  (over Goldilocks, p = 2^64-2^32+1)
+#   proof:   ACCEPT  (SOUND — independent witness-free verify_b3; not zero-knowledge)
 ```
 
 The proof reveals only the result (`86`), not `inp`. Supported today: arithmetic,

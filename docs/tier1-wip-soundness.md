@@ -1,7 +1,7 @@
-# TIER-1 sound prover/verifier — concrete soundness budget (WIP, branch only)
+# TIER-1 sound prover/verifier — concrete soundness budget
 
-> **Status: WIP on branch `tier1-soundness-wip`. NOT shipped, NOT on `main`, NOT
-> audited.** These are *reasoned pen-and-paper* bounds, not machine-checked or
+> **Status: SHIPPED in v5.48.0 (on `main`; developed on branch `tier1-soundness-wip`),
+> UNAUDITED.** These are *reasoned pen-and-paper* bounds, not machine-checked or
 > audited. The "do not protect real value" boundary stands.
 >
 > **HASH-WIDTH NOTE (2026-05-30): caught, then FIXED.** The audit-readiness pass found

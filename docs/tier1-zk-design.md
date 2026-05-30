@@ -1,9 +1,8 @@
-# Re-adding zero-knowledge to the sound path — design + implementation plan (WIP, branch)
+# Re-adding zero-knowledge to the sound path — design + implementation
 
-> **Status: design only (WIP on `tier1-soundness-wip`); not yet implemented.**
-> Adversarially reviewed (workflow `wq66j2t9d`, GO-WITH-FIXES). The construction is
-> correct; the open item is implementation under a real perf trade-off and a
-> *silent-failure trap*. Research-grade, audit-pending; do not protect real value.
+> **Status: IMPLEMENTED in v5.48.0 (on `main`; randomized-trace ZK, `build_claim_zk`;
+> developed on branch `tier1-soundness-wip`).** Adversarially reviewed (workflow
+> `wq66j2t9d`, GO-WITH-FIXES). Research-grade, UNAUDITED; do not protect real value.
 
 The sound path (`verify_b3`) currently opens the witness columns `l,r,o`, the
 grand-product `Z`, and the quotient `Q` in the clear at ~164 query points + the OOD

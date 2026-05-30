@@ -6,7 +6,7 @@
 ### You can see straight through it.
 
 [![Tests](https://github.com/EgorKhaklin/Glass/actions/workflows/tests.yml/badge.svg)](https://github.com/EgorKhaklin/Glass/actions/workflows/tests.yml)
-[![Tests passing](https://img.shields.io/badge/tests-381%2F381-00bcd4?style=flat-square)](tests/test_glass.py)
+[![Tests passing](https://img.shields.io/badge/tests-382%2F382-00bcd4?style=flat-square)](tests/test_glass.py)
 [![Self-hosting](https://img.shields.io/badge/self--hosting-✓_bootstrap_fixpoint-00bcd4?style=flat-square)](docs/self-hosting.md)
 [![License](https://img.shields.io/badge/license-MIT_OR_Apache--2.0-00bcd4?style=flat-square)](LICENSE)
 
@@ -152,7 +152,7 @@ glass/
 │   └── pane/  frost/  prove/                ·  built in Glass: a query language, a
 │                                                zk-STARK, and a bridge from source to proof
 ├── docs/             # tour, spec, self-hosting, soundness, roadmap
-├── tests/            # the regression suite (381/381)
+├── tests/            # the regression suite (382/382)
 └── playground.html   # browser playground (Pyodide)
 ```
 
@@ -160,7 +160,7 @@ glass/
 
 ## Status
 
-Glass is a research language and a labor of love. It self-hosts, ships 381
+Glass is a research language and a labor of love. It self-hosts, ships 382
 passing tests, runs in the browser, and is the foundation for the experiments
 in [`examples/frost/`](examples/frost/) and [`examples/prove/`](examples/prove/).
 It is not production-hardened, and it doesn't pretend to be: every claim above is

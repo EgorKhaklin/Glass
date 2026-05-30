@@ -31,7 +31,7 @@ to agree **bit-for-bit**:
   output is **byte-identical**.
 - `bootstrap_fixpoint.sh` checks that `native_glassc` compiles **itself** and
   `prism` byte-identically, with no Python in the loop (the fixpoint).
-- The suite is **381/381**.
+- The suite is **382/382**.
 
 This is real and load-bearing. When a release says "dogfoods byte-identical," it
 means a different implementation of the same semantics produced the same answer —

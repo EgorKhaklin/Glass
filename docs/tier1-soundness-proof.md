@@ -1,7 +1,8 @@
 # Soundness reduction for the Glass Goldilocks STARK (`verify_b3`)
 
-> **Status: WIP on branch `tier1-soundness-wip`. A rigorous *pen-and-paper*
-> reduction — NOT machine-checked (no Lean/Coq), and NOT an audit.** It reduces
+> **Status: SHIPPED to `main` in v5.48.0 (developed on branch `tier1-soundness-wip`).
+> A rigorous *pen-and-paper* reduction — NOT machine-checked (no Lean/Coq), and NOT
+> an audit.** It reduces
 > soundness to named standard theorems plus explicitly-stated assumptions that are
 > *not themselves validated in-repo* (Poseidon-as-random-oracle, Fiat-Shamir-in-ROM
 > for this composition, the FRI list-decoding conjecture). Research-grade,
