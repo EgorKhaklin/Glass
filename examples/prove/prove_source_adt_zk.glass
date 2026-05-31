@@ -310,14 +310,14 @@ fn unroll(e: Expr, fns: List<FnDecl>, fenv: List<Pair<String, Expr>>, fuel: Int)
     _ => e }
 # constructor -> tag = its index within its type's constructor list
 fn ctix(ctors: List<CtorDecl>, name: String, i: Int) : Int = match ctors { [] => 0 - 1; [CtorDecl(cn, ats), ...r] => if cn == name then i else ctix(r, name, i + 1) }
-fn ctag(types: List<TypeDecl>, name: String) : Int = match types { [] => 0; [TypeDecl(tn, tps, ctors), ...r] => let idx : Int = ctix(ctors, name, 0) in if idx >= 0 then idx else ctag(r, name) }
+fn ctag(types: List<TypeDecl>, name: String) : Int = match types { [] => 0; [TypeDecl(tn, tps, ctors), ...r] => let idx : Int = ctix(ctors, name, 0) in if idx >= 0 then idx else ctag(r, name); [_, ...r] => ctag(r, name) }
 # type-directed layout: a value's wire-width is type-determined; a sum type is
 # padded to its widest constructor, and an ADT's fields are sliced out by these
 # widths (so a field can itself be an ADT — nested values).
-fn find_type(types: List<TypeDecl>, name: String) : List<CtorDecl> = match types { [] => []; [TypeDecl(tn, tps, ctors), ...r] => if tn == name then ctors else find_type(r, name) }
+fn find_type(types: List<TypeDecl>, name: String) : List<CtorDecl> = match types { [] => []; [TypeDecl(tn, tps, ctors), ...r] => if tn == name then ctors else find_type(r, name); [_, ...r] => find_type(r, name) }
 fn has_ctor(ctors: List<CtorDecl>, name: String) : Bool = match ctors { [] => false; [CtorDecl(cn, ats), ...r] => if cn == name then true else has_ctor(r, name) }
 fn get_args(ctors: List<CtorDecl>, name: String) : List<Type> = match ctors { [] => []; [CtorDecl(cn, ats), ...r] => if cn == name then ats else get_args(r, name) }
-fn ctor_argtypes(types: List<TypeDecl>, name: String) : List<Type> = match types { [] => []; [TypeDecl(tn, tps, ctors), ...r] => if has_ctor(ctors, name) then get_args(ctors, name) else ctor_argtypes(r, name) }
+fn ctor_argtypes(types: List<TypeDecl>, name: String) : List<Type> = match types { [] => []; [TypeDecl(tn, tps, ctors), ...r] => if has_ctor(ctors, name) then get_args(ctors, name) else ctor_argtypes(r, name); [_, ...r] => ctor_argtypes(r, name) }
 fn twidth(ty: Type, types: List<TypeDecl>, fuel: Int) : Int =
   if fuel <= 0 then 1 else match ty {
     TyAdt(name, args) => match find_type(types, name) { [] => 1; cs => 1 + max_ctor_width(cs, types, fuel - 1) };

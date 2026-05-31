@@ -1172,8 +1172,32 @@ def main() -> int:
             print(f"        stderr: {err.strip()[-200:]}")
         failures += 1
 
+    print("== baby-bear prove guard ==")
+    # The baby-bear prove bridge (prove_source_adt_zk.glass) is an
+    # interpreter-only path the POSITIVE list and the bootstrap fixpoint don't
+    # exercise — so a v5.55.0 exhaustiveness tightening silently broke it (a
+    # match on the imported 2-constructor TypeDecl handled only one ctor and
+    # was no longer accepted as total). Pin an end-to-end ACCEPT so the bridge
+    # stays type-checkable and sound. ~seconds, interpreter, --fast self-check.
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".glass", delete=False) as _tf:
+        _tf.write("fn f(a: Int) : Int = a * a + 1\nf(inp)\n")
+        _bb_path = _tf.name
+    _bb = subprocess.run(
+        [sys.executable, GLASS, "prove", "--baby-bear", "--fast", _bb_path, "inp=5"],
+        capture_output=True, text=True,
+    )
+    os.unlink(_bb_path)
+    bb_ok = (_bb.returncode == 0) and ("ACCEPT" in _bb.stdout) and ("26" in _bb.stdout)
+    print(f"  {'OK ' if bb_ok else 'FAIL'}  baby-bear prove f(5)=26 ACCEPT (bridge exhaustiveness/soundness)")
+    if not bb_ok:
+        print(f"        rc={_bb.returncode}; expected ACCEPT + result 26")
+        if _bb.stderr.strip():
+            print(f"        stderr: {_bb.stderr.strip()[-200:]}")
+        failures += 1
+
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 1)  # +1: statement-binding guard
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 2)  # +2: statement-binding + baby-bear prove guards
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures
