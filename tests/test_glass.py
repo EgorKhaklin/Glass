@@ -161,6 +161,23 @@ NEGATIVE = [
      'fn f(xs: List<Int>) : Int = match xs { [] => 0 }',
      "non-exhaustive match on list"),
 
+    # Nested-pattern exhaustiveness: a refutable SUB-pattern leaves cases
+    # uncovered even when the outer shape looks total. These used to type-check
+    # and then crash at runtime ("non-exhaustive match" RuntimeError).
+    ("non-exhaustive: refutable list head",
+     'fn f(xs: List<Int>) : Int = match xs { [] => 0; [1, ...t] => 9 }',
+     "non-exhaustive match on list"),
+    ("non-exhaustive: fixed-length list misses longer",
+     'fn f(xs: List<Int>) : Int = match xs { [] => 0; [a, b] => a + b }',
+     "non-exhaustive match on list"),
+    ("non-exhaustive: refutable tuple component",
+     'fn f(p: (Int, Int)) : Int = match p { (1, b) => b }',
+     "non-exhaustive match on tuple"),
+    ("non-exhaustive: refutable constructor argument",
+     'type Box = Empty | Hold(Int)\n'
+     'fn f(b: Box) : Int = match b { Empty => 0; Hold(1) => 9 }',
+     "non-exhaustive match on Box"),
+
     ("ctor from wrong type",
      'fn f(o: Option<Int>) : Int = match o { Ok(x) => x ; None => 0 }',
      "Ok is from Result, but scrutinee is Option"),
@@ -517,6 +534,17 @@ def main() -> int:
     # (label, source, expected substring in stdout). Short programs that
     # pin down specific past bugs. Add a case when fixing a real bug.
     inline_positive = [
+        # Exhaustiveness must recognise coverage spread ACROSS arms via nested
+        # patterns: the two Ok(...) arms together cover all of Box, so this is
+        # total and must NOT be rejected (guards the recursive checker against
+        # the over-strict per-arm version).
+        ("nested cross-arm exhaustiveness accepted",
+         "type Box = Empty | Hold(Int)\n"
+         "fn f(r: Result<Box, String>) : Int =\n"
+         "  match r { Ok(Hold(x)) => x; Ok(Empty) => 0; Err(m) => 0 - 1 }\n"
+         "let out : Int = f(Ok(Hold(7)))\n"
+         "out\n",
+         "out : Int = 7"),
         # v4.21: parser used to greedily eat an LPAREN-starting next line as
         # call-continuation. `let s = id("hello")\n(n, s)` mis-parsed to
         # `id("hello")(n, s)` and crashed with "not a function: String".

@@ -1,5 +1,5 @@
 """
-Glass v5.54.0 — reference implementation.
+Glass v5.55.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -2238,55 +2238,148 @@ class TypeChecker:
             return bindings
         raise TypeError_(f"bad pattern {p}")
 
-    def check_exhaustive(self, pats: list[Pattern], scrut_ty: Ty) -> None:
-        # A wildcard or bare identifier alone is exhaustive.
-        for p in pats:
+    # ---- Exhaustiveness (Maranget-style recursive specialization) -----------
+    # A `match` is exhaustive iff its pattern rows cover every value of the
+    # scrutinee type. The earlier check only inspected the OUTERMOST pattern of
+    # each arm, so a refutable sub-pattern (`[1, ...t]`, `(1, b)`, `Hold(1)`,
+    # the fixed length `[a, b]`) was wrongly accepted as total and then crashed
+    # at runtime. We now recurse into sub-patterns via column specialization,
+    # so coverage that is spread ACROSS arms (e.g. `Ok(Hold(x)); Ok(Empty)`)
+    # is still recognised, while a genuinely-missing case is rejected.
+
+    _WILD = Pattern("wild")
+
+    def _ctor_arg_types(self, ctor_name: str, adt_ty: TyADT) -> list[Ty]:
+        """Field types of `ctor_name`, instantiated with the ADT's type args."""
+        _adt, field_tys, param_names = self.ctor_registry[ctor_name]
+        mapping = dict(zip(param_names, adt_ty.args))
+        return [instantiate(ft, mapping) for ft in field_tys]
+
+    def _specialize(self, matrix: list[list[Pattern]], match_kind: str,
+                    arity: int, value: Any = None) -> list[list[Pattern]]:
+        """Rows whose first column matches the constructor `match_kind`
+        (with literal `value` where relevant), with that column expanded into
+        `arity` sub-pattern columns. Wildcard/ident rows match every
+        constructor and contribute `arity` wildcards."""
+        out: list[list[Pattern]] = []
+        for row in matrix:
+            p, rest = row[0], row[1:]
             if p.kind in ("wild", "ident"):
-                return
-        scrut_ty = base_of(resolve(scrut_ty, {}))
-        if isinstance(scrut_ty, TyTuple):
-            # A tuple pattern destructures; one arm with a tuple pattern is
-            # always exhaustive over the tuple type.
-            for p in pats:
-                if p.kind == "tuple":
-                    return
+                out.append([self._WILD] * arity + rest)
+            elif p.kind == match_kind and (value is None or p.value == value):
+                if match_kind == "cons":
+                    subs = [p.head, p.tail]
+                elif match_kind in ("ctor", "tuple"):
+                    subs = list(p.args or [])
+                else:                       # nil / bool literal: arity 0
+                    subs = []
+                # Defensive: keep row width == arity even on an ill-typed arm.
+                subs = (subs + [self._WILD] * arity)[:arity]
+                out.append(subs + rest)
+            # a different constructor: row does not match, drop it
+        return out
+
+    def _default(self, matrix: list[list[Pattern]]) -> list[list[Pattern]]:
+        """Rows whose first column is a wildcard/identifier, first column
+        dropped — the rows that still match when the head constructor is one
+        not otherwise enumerated."""
+        return [row[1:] for row in matrix if row[0].kind in ("wild", "ident")]
+
+    def _matrix_exhaustive(self, matrix: list[list[Pattern]],
+                           types: list[Ty]) -> bool:
+        if not types:
+            # No columns left: exhaustive iff some row remains (it matches []).
+            return len(matrix) > 0
+        t0 = base_of(resolve(types[0], {}))
+        rest = types[1:]
+        col0 = [row[0] for row in matrix]
+
+        if isinstance(t0, TyBool):
+            present = {p.value for p in col0 if p.kind == "bool"}
+            if {True, False} <= present:
+                return all(self._matrix_exhaustive(
+                    self._specialize(matrix, "bool", 0, v), rest)
+                    for v in (True, False))
+            return self._matrix_exhaustive(self._default(matrix), rest)
+
+        if isinstance(t0, TyList):
+            present = {p.kind for p in col0 if p.kind in ("nil", "cons")}
+            if {"nil", "cons"} <= present:
+                return (self._matrix_exhaustive(
+                            self._specialize(matrix, "nil", 0), rest)
+                        and self._matrix_exhaustive(
+                            self._specialize(matrix, "cons", 2),
+                            [t0.elem, TyList(t0.elem)] + rest))
+            return self._matrix_exhaustive(self._default(matrix), rest)
+
+        if isinstance(t0, TyTuple):
+            n = len(t0.items)
+            return self._matrix_exhaustive(
+                self._specialize(matrix, "tuple", n),
+                list(t0.items) + rest)
+
+        if isinstance(t0, TyADT):
+            if t0.name in self.record_registry:
+                # A record pattern binds named fields and always matches; treat
+                # it (and wild/ident) as covering this single-constructor type.
+                rows = [row[1:] for row in matrix
+                        if row[0].kind in ("record", "wild", "ident")]
+                return self._matrix_exhaustive(rows, rest)
+            if t0.name in self.adt_registry:
+                _, variants = self.adt_registry[t0.name]
+                present = {p.value for p in col0 if p.kind == "ctor"}
+                if {v.name for v in variants} <= present:
+                    for v in variants:
+                        arg_tys = self._ctor_arg_types(v.name, t0)
+                        if not self._matrix_exhaustive(
+                                self._specialize(matrix, "ctor", len(arg_tys),
+                                                 v.name),
+                                arg_tys + rest):
+                            return False
+                    return True
+                return self._matrix_exhaustive(self._default(matrix), rest)
+            # Unknown ADT name — only a wildcard can cover it.
+            return self._matrix_exhaustive(self._default(matrix), rest)
+
+        # TyInt / TyString / TyVar / TyFn: an unbounded or opaque type; only a
+        # wildcard/identifier arm covers it.
+        return self._matrix_exhaustive(self._default(matrix), rest)
+
+    def check_exhaustive(self, pats: list[Pattern], scrut_ty: Ty) -> None:
+        if self._matrix_exhaustive([[p] for p in pats], [scrut_ty]):
+            return
+        st = base_of(resolve(scrut_ty, {}))
+        if isinstance(st, TyTuple):
             raise TypeError_(
-                "non-exhaustive match on tuple: need a tuple pattern or wildcard"
-            )
-        if isinstance(scrut_ty, TyBool):
-            seen = {p.value for p in pats if p.kind == "bool"}
-            if seen >= {True, False}: return
-            missing = {True, False} - seen
-            raise TypeError_(f"non-exhaustive match: missing {missing}")
-        if isinstance(scrut_ty, TyList):
-            has_nil = any(p.kind == "nil" for p in pats)
-            has_cons = any(p.kind == "cons" for p in pats)
-            if has_nil and has_cons: return
+                "non-exhaustive match on tuple: a component pattern leaves cases "
+                "uncovered — bind every component (a literal like (1, b) is not "
+                "exhaustive) or add a wildcard")
+        if isinstance(st, TyList):
             raise TypeError_(
-                "non-exhaustive match on list: need both [] and [h, ...t]"
-            )
-        if isinstance(scrut_ty, TyADT):
-            # Record destructure is exhaustive with one record pattern.
-            if scrut_ty.name in self.record_registry:
-                for p in pats:
-                    if p.kind == "record":
-                        return
+                "non-exhaustive match on list: need both [] and an irrefutable "
+                "[h, ...t] (a fixed length like [a, b] or a refutable head does "
+                "not cover every list), or a wildcard")
+        if isinstance(st, TyADT) and st.name not in self.record_registry \
+                and st.name in self.adt_registry:
+            _, variants = self.adt_registry[st.name]
+            present = {p.value for p in pats if p.kind == "ctor"}
+            missing = {v.name for v in variants} - present
+            if missing:
                 raise TypeError_(
-                    f"non-exhaustive match on record {scrut_ty.name}: "
-                    f"need a record pattern or wildcard"
-                )
-            _, variants = self.adt_registry[scrut_ty.name]
-            seen = {p.value for p in pats if p.kind == "ctor"}
-            all_ctors = {v.name for v in variants}
-            if seen >= all_ctors: return
-            missing = all_ctors - seen
+                    f"non-exhaustive match on {st.name}: missing {sorted(missing)}")
             raise TypeError_(
-                f"non-exhaustive match on {scrut_ty.name}: missing {sorted(missing)}"
-            )
-        if isinstance(scrut_ty, (TyInt, TyString)):
+                f"non-exhaustive match on {st.name}: a constructor argument leaves "
+                f"cases uncovered (a refutable arg such as C(1) does not fully "
+                f"cover C — use C(x) or add a wildcard)")
+        if isinstance(st, TyADT) and st.name in self.record_registry:
             raise TypeError_(
-                f"non-exhaustive match on {scrut_ty}: needs a wildcard or identifier arm"
-            )
+                f"non-exhaustive match on record {st.name}: "
+                f"need a record pattern or wildcard")
+        if isinstance(st, TyBool):
+            raise TypeError_("non-exhaustive match: missing a Bool case "
+                             "(need both true and false, or a wildcard)")
+        raise TypeError_(
+            f"non-exhaustive match on {st}: needs a wildcard or identifier arm")
 
 
 # =============================================================================
@@ -3535,7 +3628,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.54.0 — interactive REPL")
+    print("Glass v5.55.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3647,7 +3740,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.54.0")
+        print("Glass 5.55.0")
     elif sys.argv[1] == "prove":
         # `glass prove <file.glass> [name=value ...]` — compile the file's `main`
         # expression into a circuit and emit a succinct, zero-knowledge proof of
