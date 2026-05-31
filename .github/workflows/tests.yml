@@ -49,3 +49,46 @@ jobs:
           glass examples/showcase/derive.glass | grep -E "⟶" | head
           glass examples/showcase/prover.glass | grep -E "⟶" | head
           glass examples/showcase/nash.glass | grep -E "Nash equilibria" | head
+
+  # The project's defining invariant: native_glassc (the Glass-written compiler)
+  # reproduces ITSELF and prism byte-identically, and its output matches the
+  # reference interpreter. Until now this was enforced only by a human remembering
+  # to run the script locally — this job gates it on every push/PR.
+  bootstrap:
+    name: self-hosting fixpoint (byte-identical)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        # bootstrap_fixpoint.sh hardcodes python3.12 (bare python3 may be older,
+        # which the toolchain does not support).
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install clang + Boehm GC (native compiler prereqs)
+        # The Glass-written compiler emits C that `#include <gc.h>` and links -lgc
+        # (Boehm-Demers-Weiser GC), and uses Clang's -fbracket-depth for its deeply
+        # nested, erasure-heavy output (it falls back without the flag on GCC).
+        # libgc-dev provides /usr/include/gc.h + libgc.so; the macOS /opt/homebrew
+        # -I/-L paths baked into the emit are harmlessly ignored on Linux.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libgc-dev
+          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/clang 100
+          cc --version
+
+      - name: Install Glass
+        run: pip install -e .
+
+      - name: Bootstrap fixpoint — self-reproduction is byte-identical
+        # 4 steps: quartz builds native_glassc; it self-compiles; it compiles prism
+        # and the output matches glass.py; gen1 and gen2 emit identical C.
+        run: bash examples/selfhost/bootstrap_fixpoint.sh
+
+      - name: Dogfood — native_glassc output == glass.py, byte-for-byte
+        env:
+          PYTHON: python3.12
+        run: bash examples/selfhost/dogfood.sh examples/frost/frost_m31.glass
