@@ -916,6 +916,10 @@ fn unroll(e: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: In
     ESub(x, y) => ESub(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
     EMul(x, y) => EMul(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
     EEq(x, y) => EEq(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
+    ENeq(x, y) => ENeq(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
+    EAnd(x, y) => EAnd(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
+    EOr(x, y) => EOr(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
+    EUNot(a) => EUNot(unroll(a, fns, fenv, fuel));
     EIf(c, t, f) => EIf(unroll(c, fns, fenv, fuel), unroll(t, fns, fenv, fuel), unroll(f, fns, fenv, fuel));
     ELet(nm, v, body) => ELet(nm, unroll(v, fns, fenv, fuel), unroll(body, fns, fenv, fuel));
     EMatch(scrut, arms) => EMatch(unroll(scrut, fns, fenv, fuel), unroll_arms(arms, fns, fenv, fuel));
@@ -962,13 +966,18 @@ fn heval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, t
     EMul(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) => ([fmul(vh(va), vh(vb))], ha ++ hb) } };
     EEq(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) =>
       let d : List<Int> = fsub(vh(va), vh(vb)) in ([if bn_is_zero(d) then glit(1) else glit(0)], ha ++ hb ++ [if bn_is_zero(d) then glit(0) else finv(d)]) } };
+    ENeq(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) =>
+      let d : List<Int> = fsub(vh(va), vh(vb)) in ([if bn_is_zero(d) then glit(0) else glit(1)], ha ++ hb ++ [if bn_is_zero(d) then glit(0) else finv(d)]) } };
+    EAnd(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) => ([fmul(vh(va), vh(vb))], ha ++ hb) } };
+    EOr(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) => ([fsub(fadd(vh(va), vh(vb)), fmul(vh(va), vh(vb)))], ha ++ hb) } };
+    EUNot(a) => match heval(a, env, fns, types) { (va, ha) => ([fsub(glit(1), vh(va))], ha) };
     EIf(c, t, f) => match heval(c, env, fns, types) { (vc, hc) => match heval(t, env, fns, types) { (vt, ht) => match heval(f, env, fns, types) { (vf, hf) => (if bn_eq(vh(vc), glit(1)) then vt else vf, hc ++ ht ++ hf) } } };
     ELet(nm, v, body) => match heval(v, env, fns, types) { (vv, hv) => match heval(body, [Pair(nm, vv)] ++ env, fns, types) { (vb, hb) => (vb, hv ++ hb) } };
     ECtor(name, args) => match heval_fields(args, ctor_argtypes(types, name), env, fns, types) { (vals, hs) => ([glit(ctag(types, name))] ++ vals, hs) };
     ETuple(elems) => heval_fields(elems, scalar_types_e(elems), env, fns, types);
-    EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => heval_call(fn_body_of(fns, fname), args, [], env, fns, types); _ => ([glit(0)], []) } };
+    EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => heval_call(fn_body_of(fns, fname), args, [], env, fns, types); _ => error("glass prove: unsupported call form (computed or higher-order callee) in the reference evaluator — refusing rather than silently proving 0") } };
     EMatch(scrut, arms) => match heval(scrut, env, fns, types) { (sv, hs) => match heval_match(sv, arms, env, fns, types) { (rv, ha) => (rv, hs ++ ha) } };
-    _ => ([glit(0)], []) }
+    _ => error("glass prove: unsupported expression in the prove bridge (heval) — only + - * == != && || ! and if/let/match/ADT/calls lower to the field circuit; comparisons (< > <= >=), / %, strings and records have no faithful field lowering and are refused, not silently proven as 0") }
 fn heval_fields(args: List<Expr>, tys: List<Type>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>) : (List<List<Int>>, List<List<Int>>) =
   match args { [] => ([], []); [a, ...arest] => match tys { [] => ([], []); [t, ...trest] =>
     match heval(a, env, fns, types) { (va, ha) => match heval_fields(arest, trest, env, fns, types) { (vr, hr) =>
@@ -1027,6 +1036,10 @@ fn seval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, t
     ESub(a, b) => [fsub(vh(seval(a, env, fns, types, fuel)), vh(seval(b, env, fns, types, fuel)))];
     EMul(a, b) => [fmul(vh(seval(a, env, fns, types, fuel)), vh(seval(b, env, fns, types, fuel)))];
     EEq(a, b) => let d : List<Int> = fsub(vh(seval(a, env, fns, types, fuel)), vh(seval(b, env, fns, types, fuel))) in [if bn_is_zero(d) then glit(1) else glit(0)];
+    ENeq(a, b) => let d : List<Int> = fsub(vh(seval(a, env, fns, types, fuel)), vh(seval(b, env, fns, types, fuel))) in [if bn_is_zero(d) then glit(0) else glit(1)];
+    EAnd(a, b) => [fmul(vh(seval(a, env, fns, types, fuel)), vh(seval(b, env, fns, types, fuel)))];
+    EOr(a, b) => let va : List<Int> = vh(seval(a, env, fns, types, fuel)) in let vb : List<Int> = vh(seval(b, env, fns, types, fuel)) in [fsub(fadd(va, vb), fmul(va, vb))];
+    EUNot(a) => [fsub(glit(1), vh(seval(a, env, fns, types, fuel)))];
     EIf(c, t, f) => if bn_eq(vh(seval(c, env, fns, types, fuel)), glit(1)) then seval(t, env, fns, types, fuel) else seval(f, env, fns, types, fuel);
     ELet(nm, v, body) => seval(body, [Pair(nm, seval(v, env, fns, types, fuel))] ++ env, fns, types, fuel);
     ECtor(name, args) => [glit(ctag(types, name))] ++ seval_fields(args, ctor_argtypes(types, name), env, fns, types, fuel);
@@ -1035,7 +1048,7 @@ fn seval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, t
       EVar(fname) => if fuel <= 0 then error("glass prove: recursion depth exceeds the unroll bound (" ++ int_to_string(unroll_fuel(0)) ++ "); refusing to prove a depth-truncated result — it would otherwise be a silently wrong value with a valid-looking proof (the program needs statically-bounded, shallower recursion)") else (let tgt : String = resolve_fn(fname, fns, []) in if tgt == "" then error("glass prove: unresolved call to '" ++ fname ++ "' in the reference evaluator") else seval_call(fn_body_of(fns, tgt), args, [], env, fns, types, fuel));
       _ => error("glass prove: unsupported call form (computed or higher-order callee) in the reference evaluator") } };
     EMatch(scrut, arms) => seval_match(seval(scrut, env, fns, types, fuel), arms, env, fns, types, fuel);
-    _ => [glit(0)] }
+    _ => error("glass prove: unsupported expression in the prove bridge (seval guard) — only + - * == != && || ! and if/let/match/ADT/calls lower to the field circuit; comparisons (< > <= >=), / %, strings and records are refused, not silently proven as 0") }
 fn seval_fields(args: List<Expr>, tys: List<Type>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>, fuel: Int) : List<List<Int>> =
   match args { [] => []; [a, ...arest] => match tys { [] => []; [t, ...trest] =>
     padw(seval(a, env, fns, types, fuel), twidth(t, types, 12)) ++ seval_fields(arest, trest, env, fns, types, fuel) } }
@@ -1073,13 +1086,17 @@ fn cgen(e: Expr, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: 
     ESub(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match mks(vhi(vx), vhi(vy), b2) { (wo, b3) => ([wo], b3) } } };
     EMul(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match mkm(vhi(vx), vhi(vy), b2) { (wo, b3) => ([wo], b3) } } };
     EEq(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match mk_eq_g(vhi(vx), vhi(vy), b2) { (wo, b3) => ([wo], b3) } } };
+    ENeq(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match mk_eq_g(vhi(vx), vhi(vy), b2) { (weq, b3) => match mkc(glit(1), b3) { (wone, b4) => match mks(wone, weq, b4) { (wo, b5) => ([wo], b5) } } } } };
+    EAnd(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match mkm(vhi(vx), vhi(vy), b2) { (wo, b3) => ([wo], b3) } } };
+    EOr(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match mka(vhi(vx), vhi(vy), b2) { (ws, b3) => match mkm(vhi(vx), vhi(vy), b3) { (wp, b4) => match mks(ws, wp, b4) { (wo, b5) => ([wo], b5) } } } } };
+    EUNot(x) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match mkc(glit(1), b1) { (wone, b2) => match mks(wone, vhi(vx), b2) { (wo, b3) => ([wo], b3) } } };
     EIf(c, t, f) => match cgen(c, cenv, fns, types, b) { (vc, b1) => match cgen(t, cenv, fns, types, b1) { (vt, b2) => match cgen(f, cenv, fns, types, b2) { (vf, b3) => muxw(vhi(vc), vt, vf, b3) } } };
     ELet(nm, v, body) => match cgen(v, cenv, fns, types, b) { (vv, b1) => cgen(body, [Pair(nm, vv)] ++ cenv, fns, types, b1) };
     ECtor(name, args) => match mkc(glit(ctag(types, name)), b) { (wtag, b1) => match cgen_fields(args, ctor_argtypes(types, name), cenv, fns, types, b1) { (fws, b2) => ([wtag] ++ fws, b2) } };
     ETuple(elems) => cgen_fields(elems, scalar_types_e(elems), cenv, fns, types, b);
-    EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => cgen_call(fn_body_of(fns, fname), args, [], cenv, fns, types, b); _ => match mkc(glit(0), b) { (w, b1) => ([w], b1) } } };
+    EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => cgen_call(fn_body_of(fns, fname), args, [], cenv, fns, types, b); _ => error("glass prove: unsupported call form (computed or higher-order callee) in cgen — refusing rather than silently building a 0 circuit") } };
     EMatch(scrut, arms) => match cgen(scrut, cenv, fns, types, b) { (sv, b1) => match mkc(glit(0), b1) { (zm, b2) => cgen_match(arms, sv, cenv, fns, types, zm, [], b2) } };
-    _ => match mkc(glit(0), b) { (w, b1) => ([w], b1) } }
+    _ => error("glass prove: unsupported expression in the prove bridge (cgen) — only + - * == != && || ! and if/let/match/ADT/calls lower to the field circuit; comparisons (< > <= >=), / %, strings and records are refused, not silently built as a 0 circuit") }
 fn cgen_fields(args: List<Expr>, tys: List<Type>, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: List<TypeDecl>, b: Build) : (List<Int>, Build) =
   match args { [] => ([], b); [a, ...arest] => match tys { [] => ([], b); [t, ...trest] =>
     match cgen(a, cenv, fns, types, b) { (va, b1) => match padv_g(va, twidth(t, types, 12), b1) { (pva, b2) =>
@@ -1135,11 +1152,27 @@ fn cg(e: Expr, env: List<Pair<String, Int>>, b: Build) : (Int, Build) =
             match mkc(glit(1), b5) { (wone, b6) =>
               match mks(wone, wdi, b6) { (wz, b7) =>
                 match mkm(wz, wd, b7) { (wzd, b8) => (wz, mke(wzd, b8)) } } } } } } } };
+    # a != b  ->  1 - (a == b), reusing the is-zero gadget (z is 0/1).
+    ENeq(x, y) => match cg(x, env, b) { (wx, b1) => match cg(y, env, b1) { (wy, b2) =>
+      match mks(wx, wy, b2) { (wd, b3) =>
+        let dv : List<Int> = bwire(b3, wd) in
+        let iv : List<Int> = if bn_is_zero(dv) then glit(0) else finv(dv) in
+        match mkh(iv, b3) { (winv, b4) =>
+          match mkm(wd, winv, b4) { (wdi, b5) =>
+            match mkc(glit(1), b5) { (wone, b6) =>
+              match mks(wone, wdi, b6) { (wz, b7) =>
+                match mkm(wz, wd, b7) { (wzd, b8) =>
+                  let b9 : Build = mke(wzd, b8) in
+                  match mkc(glit(1), b9) { (wone2, b10) => mks(wone2, wz, b10) } } } } } } } } };
+    # boolean ops on 0/1 wires: a && b = a*b ; a || b = a+b - a*b ; !a = 1 - a
+    EAnd(x, y) => match cg(x, env, b) { (wx, b1) => match cg(y, env, b1) { (wy, b2) => mkm(wx, wy, b2) } };
+    EOr(x, y) => match cg(x, env, b) { (wx, b1) => match cg(y, env, b1) { (wy, b2) => match mka(wx, wy, b2) { (ws, b3) => match mkm(wx, wy, b3) { (wp, b4) => mks(ws, wp, b4) } } } };
+    EUNot(x) => match cg(x, env, b) { (wx, b1) => match mkc(glit(1), b1) { (wone, b2) => mks(wone, wx, b2) } };
     # if c then t else f  ->  f + c*(t - f), with c a 0/1 wire (from a comparison)
     EIf(c, t, f) => match cg(c, env, b) { (wc, b1) => match cg(t, env, b1) { (wt, b2) => match cg(f, env, b2) { (wf, b3) =>
       match mks(wt, wf, b3) { (wtf, b4) => match mkm(wc, wtf, b4) { (wctf, b5) => mka(wf, wctf, b5) } } } } };
     ELet(nm, v, body) => match cg(v, env, b) { (wv, b1) => cg(body, [Pair(nm, wv)] ++ env, b1) };
-    _ => mkc(glit(0), b) }
+    _ => error("glass prove: unsupported expression in the prove bridge (cg) — only + - * == != && || ! and if/let lower to the scalar field circuit; comparisons (< > <= >=), / %, strings and records are refused, not silently built as a 0 circuit") }
 # parse, inline calls, lower; wire 0 = the private input `inp`
 fn parse_prog(src: String) : Program = match parse_program(src) { Ok(p) => p; Err(m) => error("glass prove: parse error — " ++ m ++ " (refusing to prove the empty/0 program)") }
 fn build_src(src: String, inpv: List<Int>) : (Int, Build) =

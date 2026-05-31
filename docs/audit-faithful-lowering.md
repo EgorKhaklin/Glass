@@ -1,11 +1,19 @@
-# Audit finding — faithful lowering of the prove bridge (UNRESOLVED)
+# Audit finding — faithful lowering of the prove bridge (RESOLVED in v5.52.0)
 
-**Status: confirmed, fix scoped, NOT yet fixed.** Research/educational-grade, UNAUDITED.
+**Status: confirmed, fixed in v5.52.0.** Research/educational-grade, UNAUDITED.
 This documents a concrete, reproducible **silent wrong-certification** in `glass prove` on the
-Goldilocks default path, and the planned fix. It is a concrete instance of the
+Goldilocks default path — found, confirmed, and then fixed. It was a concrete instance of the
 "compiler-bridge faithful lowering" gap that [`docs/audit-readiness.md`](audit-readiness.md)
-already lists as out of the soundness threat model — made executable here, and shown to affect
-shipped examples.
+lists as out of the soundness threat model — made executable here, shown to affect shipped
+examples, and now closed (faithful boolean lowering + loud refusal for anything else).
+
+> **Resolution (v5.52.0):** the boolean gadgets (`&& || ! !=`) were ported into the Goldilocks
+> bridge's `unroll`/`heval`/`seval`/`cgen`/`cg` (faithful — operands are boolean 0/1), and every
+> operator with no faithful field lowering (`< > <= >=`, `/ %`, strings, records, higher-order
+> callees) now calls `error` and refuses loudly instead of lowering to `0`. Validated natively:
+> the `&&` repro proves `7` (was `0`); `age_prove a=25` proves the correct `1` (was `0`); an
+> `x < 10` program refuses loudly. Suite 387/387. The section below is the original finding,
+> preserved for the record.
 
 ## What the soundness proof does and does not cover
 
