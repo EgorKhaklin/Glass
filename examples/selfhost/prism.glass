@@ -429,7 +429,44 @@ fn tokenize_at(s: String, i: Int) : List<Token> =
     (t, k)    => [t] ++ tokenize_at(s, k)
   }
 
-fn tokenize(s: String) : List<Token> = tokenize_at(s, 0)
+# Token kinds that can END a value expression — mirrors the reference lexer's
+# _VALUE_ENDERS. next_token reads `-5` as a negative literal everywhere, but a
+# negative literal immediately after a value is really binary subtraction
+# (`10-3` is `10 - 3`, not `10` then `-3`). split_neg_after_value re-splits those
+# into TMinus + a positive TInt so they match the spaced form exactly
+# (parse_add_rest already turns TMinus into ESub). Prefix negatives (`-5`,
+# `[-1]`, `f(-2)`, `x = -3`) sit after a non-value token and are left as TInt
+# literals. TNlBdy markers are transparent (they only ever precede `(`).
+fn tok_ends_value(t: Token) : Bool =
+  match t {
+    TInt(_)   => true;
+    TStr(_)   => true;
+    TIdent(_) => true;
+    TTrue     => true;
+    TFalse    => true;
+    TRParen   => true;
+    TRBracket => true;
+    TRBrace   => true;
+    _         => false
+  }
+
+fn split_neg_after_value(ts: List<Token>, prev_val: Bool) : List<Token> =
+  match ts {
+    [] => [];
+    [t, ...rest] =>
+      match t {
+        TNlBdy  => [TNlBdy] ++ split_neg_after_value(rest, prev_val);
+        TInt(n) =>
+          if n < 0 then
+            (if prev_val
+               then [TMinus, TInt(0 - n)] ++ split_neg_after_value(rest, true)
+               else [TInt(n)] ++ split_neg_after_value(rest, true))
+          else [TInt(n)] ++ split_neg_after_value(rest, true);
+        _ => [t] ++ split_neg_after_value(rest, tok_ends_value(t))
+      }
+  }
+
+fn tokenize(s: String) : List<Token> = split_neg_after_value(tokenize_at(s, 0), false)
 
 
 # --- Parser -------------------------------------------------------------

@@ -1,5 +1,5 @@
 """
-Glass v5.53.0 — reference implementation.
+Glass v5.54.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -103,6 +103,15 @@ TOKEN_REGEX = re.compile(
     "|".join(f"(?P<{name}>{pat})" for name, pat in TOKEN_SPEC)
 )
 
+# Token kinds that can END a value expression. The INT rule (`-?\d+`) greedily
+# lexes a `-` glued to digits as a negative literal, but immediately after a
+# value that `-` is binary subtraction: `10-3` is `10 - 3`, not `10` then `-3`.
+# When a negative INT follows one of these, we split it back into MINUS + INT
+# so it matches the spaced form exactly — no parser change needed. A negative
+# literal in any other position (`-5`, `[-1]`, `f(-2)`, `x = -3`) is untouched.
+_VALUE_ENDERS = {"INT", "IDENT", "STRING", "RPAREN", "RBRACK", "RBRACE",
+                 "true", "false"}
+
 
 def tokenize(src: str) -> list[Token]:
     tokens: list[Token] = []
@@ -123,7 +132,15 @@ def tokenize(src: str) -> list[Token]:
         elif kind == "IDENT" and text in KEYWORDS:
             tokens.append(Token(text, text, line, col))
         elif kind == "INT":
-            tokens.append(Token("INT", int(text), line, col))
+            ival = int(text)
+            prev = tokens[-1].kind if tokens else None
+            if text[0] == "-" and prev in _VALUE_ENDERS:
+                # Binary subtraction glued to its operand: re-split `10-3` into
+                # `10 - 3` (the parser already handles MINUS + positive INT).
+                tokens.append(Token("MINUS", "-", line, col))
+                tokens.append(Token("INT", -ival, line, col + 1))
+            else:
+                tokens.append(Token("INT", ival, line, col))
         elif kind == "STRING":
             # strip quotes, handle minimal escapes
             inner = text[1:-1]
@@ -3518,7 +3535,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.53.0 — interactive REPL")
+    print("Glass v5.54.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3630,7 +3647,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.53.0")
+        print("Glass 5.54.0")
     elif sys.argv[1] == "prove":
         # `glass prove <file.glass> [name=value ...]` — compile the file's `main`
         # expression into a circuit and emit a succinct, zero-knowledge proof of

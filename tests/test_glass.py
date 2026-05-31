@@ -1149,7 +1149,7 @@ def main() -> int:
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures
-    total += 170  # quartz: + 2 v4.73 (tuple-ctor dispatch + final `let _` discard)
+    total += 173  # quartz: + 2 v4.73 (tuple-ctor dispatch + final `let _` discard); + 3 v5.54 glued-minus split
     passed = total - failures
     print(f"\n{passed}/{total} passed")
     return 0 if failures == 0 else 1
@@ -1165,6 +1165,13 @@ def run_quartz_tests() -> int:
     cases = [
         ("int literal",              "42\n",                                   "42\n"),
         ("arithmetic precedence",    "1 + 2 * 3\n",                            "7\n"),
+        # Glued binary minus: `10-3` is subtraction, not `10` then a negative
+        # literal `-3` (the lexer used to drop the subtraction). After a value
+        # token a `-N` re-splits into MINUS + N; a prefix `-N` stays a literal.
+        ("glued minus after int (lexer fix)",        "10-3\n",                 "7\n"),
+        ("glued minus after ident; prefix -N kept",  "let n = -5\nn-3\n",      "-8\n"),
+        ("glued minus after paren",                  "(2 + 3)-1\n",            "4\n"),
+        ("prefix -N after = preserved, glued after int", "let n = -2\n100-1 + n\n", "97\n"),
         ("top-level lets",           "let x = 5\nlet y = 10\nx + y\n",         "15\n"),
         ("if-then-else as expr",     "if 3 < 5 then 100 else 200\n",           "100\n"),
         ("nested let-in",            "let r = (let x = 7 in x * 3)\nr + 1\n",  "22\n"),
