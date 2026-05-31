@@ -1,5 +1,5 @@
 """
-Glass v5.52.0 — reference implementation.
+Glass v5.53.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -162,30 +162,35 @@ class TyList(Ty):
 
 @dataclass(frozen=True)
 class EffectRow:
-    """An effect row: a concrete set of effect labels plus an optional row
-    variable for polymorphism.
+    """An effect row: a concrete set of effect labels plus a set of row
+    variables for polymorphism.
 
-    {IO}        →  EffectRow({IO}, var=None)         — concrete
-    {IO, E}     →  EffectRow({IO}, var="E")          — at least IO, plus E
-    {E}         →  EffectRow(frozenset(), var="E")   — polymorphic
-    {}          →  EffectRow(frozenset(), var=None)  — pure
+    {IO}        →  EffectRow({IO}, vars={})           — concrete
+    {IO, E}     →  EffectRow({IO}, vars={"E"})        — at least IO, plus E
+    {E}         →  EffectRow(frozenset(), vars={"E"}) — polymorphic
+    {E, F}      →  EffectRow(frozenset(), {"E","F"})  — two abstract rows
+    {}          →  EffectRow(frozenset(), vars={})    — pure
+
+    A single annotation `!{...}` can name at most one row variable (parser
+    restriction), but a row may accumulate several distinct vars when a body
+    propagates effects from two effect-polymorphic callees — keeping the full
+    set is what lets the body-subset check stay sound (see extend_effects).
 
     Substitution of row variables happens at call sites (effect polymorphism),
     similar to how TyVars are bound for parametric polymorphism."""
     concrete: frozenset[str]
-    var: str | None = None
+    vars: frozenset[str] = frozenset()
 
     def is_pure(self) -> bool:
-        return not self.concrete and self.var is None
+        return not self.concrete and not self.vars
 
     def __str__(self) -> str:
-        parts = sorted(self.concrete)
-        if self.var: parts.append(self.var)
+        parts = sorted(self.concrete) + sorted(self.vars)
         if not parts: return ""
         return " !{" + ", ".join(parts) + "}"
 
 
-PURE = EffectRow(frozenset(), None)
+PURE = EffectRow(frozenset(), frozenset())
 
 
 @dataclass(frozen=True)
@@ -668,7 +673,8 @@ class Parser:
                 else:
                     concrete.add(nxt)
         self.eat("RBRACE")
-        return EffectRow(frozenset(concrete), var)
+        return EffectRow(frozenset(concrete),
+                         frozenset({var}) if var is not None else frozenset())
 
     def _current_scope(self) -> list[str]:
         """Flatten the type-params stack into a single list."""
@@ -1241,7 +1247,7 @@ def builtin_types() -> dict[str, Ty]:
     T, U, A = TyVar("T"), TyVar("U"), TyVar("A")
     # Effect-row variable used by polymorphic higher-order builtins so they
     # adapt to whatever effects their callback brings.
-    E = EffectRow(frozenset(), "E")
+    E = EffectRow(frozenset(), frozenset({"E"}))
     # Data-first convention: the subject (list) is the first argument.
     # Note: TyADT("Option", ...) here is a structural reference; Option is
     # registered by the prelude before any user code runs.
@@ -1360,19 +1366,22 @@ def unify_effects(
     e2 = resolve_effects(e2, eff_subst)
     if e1 == e2:
         return True
-    # Pure-var on the left: bind it (if non-rigid).
-    if e1.var is not None and not e1.concrete:
-        if e1.var in rigid_eff:
+    # Pure single-var on the left: bind it (if non-rigid). A row with two or
+    # more vars, or any concrete labels, is not a bindable variable.
+    if len(e1.vars) == 1 and not e1.concrete:
+        v = next(iter(e1.vars))
+        if v in rigid_eff:
             # Rigid: only equal to same row (handled above).
             return False
-        eff_subst[e1.var] = e2
+        eff_subst[v] = e2
         return True
-    if e2.var is not None and not e2.concrete:
-        if e2.var in rigid_eff:
+    if len(e2.vars) == 1 and not e2.concrete:
+        v = next(iter(e2.vars))
+        if v in rigid_eff:
             return False
-        eff_subst[e2.var] = e1
+        eff_subst[v] = e1
         return True
-    # Mixed (concrete + var) rows: require structural equality.
+    # Mixed (concrete + var) or multi-var rows: require structural equality.
     return False
 
 
@@ -1380,41 +1389,48 @@ def resolve_effects(
     e: EffectRow,
     eff_subst: dict[str, EffectRow],
 ) -> EffectRow:
-    if e.var is None or e.var not in eff_subst:
+    if not (e.vars & eff_subst.keys()):
         return e
-    bound = resolve_effects(eff_subst[e.var], eff_subst)
-    return EffectRow(e.concrete | bound.concrete, bound.var)
+    concrete = set(e.concrete)
+    out_vars: set[str] = set()
+    for v in e.vars:
+        if v in eff_subst:
+            bound = resolve_effects(eff_subst[v], eff_subst)
+            concrete |= bound.concrete
+            out_vars |= bound.vars
+        else:
+            out_vars.add(v)
+    return EffectRow(frozenset(concrete), frozenset(out_vars))
 
 
 def instantiate_effects(
     e: EffectRow,
     eff_mapping: dict[str, str],
 ) -> EffectRow:
-    if e.var is None or e.var not in eff_mapping:
+    if not (e.vars & eff_mapping.keys()):
         return e
-    return EffectRow(e.concrete, eff_mapping[e.var])
+    return EffectRow(e.concrete,
+                     frozenset(eff_mapping.get(v, v) for v in e.vars))
 
 
 def effect_row_subset(small: EffectRow, big: EffectRow) -> bool:
     """Is `small` a subset of `big`? Used for the body-effects-vs-declared
-    check. small.concrete must be ⊆ big.concrete, and any row variable in
-    small must equal big's row variable (or big must be the same rigid var)."""
-    if not small.concrete.issubset(big.concrete):
-        return False
-    if small.var is None:
-        return True
-    return small.var == big.var
+    check. small.concrete must be ⊆ big.concrete, and every row variable in
+    small must also appear in big (so a body that propagates an abstract
+    effect not named in the declared row is rejected, not silently dropped)."""
+    return (small.concrete.issubset(big.concrete)
+            and small.vars.issubset(big.vars))
 
 
 def extend_effects(acc: EffectRow, more: EffectRow) -> EffectRow:
     """Accumulate `more` into `acc` for effect propagation through calls.
-    Concrete labels union; row variables are kept if compatible (same name
-    or one side has no var). If two distinct row vars appear, the result
-    keeps the existing one — callers detect mismatches via the body-subset
-    check at fn-body end."""
-    new_concrete = acc.concrete | more.concrete
-    new_var = acc.var if acc.var is not None else more.var
-    return EffectRow(new_concrete, new_var)
+    Concrete labels AND row variables both union — no row variable is ever
+    dropped. If a body propagates two distinct abstract effect rows, both are
+    retained so the body-subset check at fn-body end sees (and, since v0.7
+    allows at most one row var per declared signature, rejects) them. Dropping
+    the second var here was a soundness hole: it let a fn that performs a
+    second effect be certified without it."""
+    return EffectRow(acc.concrete | more.concrete, acc.vars | more.vars)
 
 
 def unify(
@@ -1560,8 +1576,7 @@ def collect_effect_vars(t: Ty, rigid_eff: set[str] | None = None) -> set[str]:
         s: set[str] = set()
         for p in t.params: s |= collect_effect_vars(p, rigid_eff)
         s |= collect_effect_vars(t.ret, rigid_eff)
-        if t.effects.var is not None and t.effects.var not in rigid_eff:
-            s.add(t.effects.var)
+        s |= (t.effects.vars - rigid_eff)
         return s
     if isinstance(t, TyList):
         return collect_effect_vars(t.elem, rigid_eff)
@@ -1742,10 +1757,8 @@ class TypeChecker:
         for p, t in rigid_params:
             self.check_refinement_pred(p, t, local_env)
         self.rigid_stack.append(rigid_map)
-        # Rigid effect var: the var named in the declared row, if any.
-        rigid_eff_frame: set[str] = set()
-        if declared_effects.var is not None:
-            rigid_eff_frame.add(declared_effects.var)
+        # Rigid effect var(s): the var(s) named in the declared row, if any.
+        rigid_eff_frame: set[str] = set(declared_effects.vars)
         self.rigid_effect_stack.append(rigid_eff_frame)
         saved_effects = self.current_effects
         saved_eff_subst = self.eff_subst
@@ -1762,14 +1775,11 @@ class TypeChecker:
         # Subset check on the resolved body row vs declared row.
         if not effect_row_subset(body_effects, declared_effects):
             extra: list[str] = []
-            if not body_effects.concrete.issubset(declared_effects.concrete):
-                extra.extend(sorted(body_effects.concrete - declared_effects.concrete))
-            if body_effects.var is not None and body_effects.var != declared_effects.var:
-                extra.append(body_effects.var)
+            extra.extend(sorted(body_effects.concrete - declared_effects.concrete))
+            extra.extend(sorted(body_effects.vars - declared_effects.vars))
+            declared_labels = sorted(declared_effects.concrete) + sorted(declared_effects.vars)
             declared_str = (
-                "{" + ", ".join(sorted(declared_effects.concrete) +
-                                ([declared_effects.var] if declared_effects.var else []))
-                + "}" if (declared_effects.concrete or declared_effects.var) else "{}"
+                "{" + ", ".join(declared_labels) + "}" if declared_labels else "{}"
             )
             raise TypeError_(
                 f"fn {d.name} performs effect(s) {extra} not declared "
@@ -3508,7 +3518,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.52.0 — interactive REPL")
+    print("Glass v5.53.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3620,7 +3630,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.52.0")
+        print("Glass 5.53.0")
     elif sys.argv[1] == "prove":
         # `glass prove <file.glass> [name=value ...]` — compile the file's `main`
         # expression into a circuit and emit a succinct, zero-knowledge proof of

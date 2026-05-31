@@ -318,6 +318,14 @@ NEGATIVE = [
      '  model_call(s)',
      "performs effect(s) ['Inference']"),
 
+    # A body that propagates TWO distinct abstract effect rows but declares
+    # only one used to be accepted (extend_effects dropped the 2nd row var),
+    # which let a fn that performs the 2nd effect be certified without it —
+    # a soundness hole. The dropped row must now surface as undeclared.
+    ("fn propagating a 2nd abstract effect row can't hide it under a 1-var decl",
+     'fn twice<E, F>(p: () -> Int !{E}, q: () -> Int !{F}) : Int !{E} = p() + q()',
+     "not declared in {E}"),
+
     # ---- v0.6 tuple cases ----
     ("tuple-arity mismatch in pattern",
      'let p : (Int, String) = (1, "x")\n'
