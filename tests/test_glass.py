@@ -545,6 +545,15 @@ def main() -> int:
          "let out : Int = f(Ok(Hold(7)))\n"
          "out\n",
          "out : Int = 7"),
+        # Interpreter integer arithmetic matches the compiled int64/C backend
+        # (see eval_binop): / and % truncate toward zero (not Python floor),
+        # + - * wrap at 64 bits, and a shift count is masked to 6 bits. Pins
+        # the host side of the host<->compiled agreement on the exact inputs
+        # where they used to diverge.
+        ("neg division truncates toward zero",  "let r : Int = (0 - 7) / 2\nr\n",  "r : Int = -3"),
+        ("neg modulo has dividend sign",        "let r : Int = (0 - 7) % 2\nr\n",  "r : Int = -1"),
+        ("int64 overflow wraps (+)",            "let r : Int = 9223372036854775807 + 1\nr\n", "r : Int = -9223372036854775808"),
+        ("shift count masked to 6 bits",        "let r : Int = bit_shl(1, 64)\nr\n", "r : Int = 1"),
         # v4.21: parser used to greedily eat an LPAREN-starting next line as
         # call-continuation. `let s = id("hello")\n(n, s)` mis-parsed to
         # `id("hello")(n, s)` and crashed with "not a function: String".
@@ -1201,7 +1210,7 @@ def main() -> int:
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures
-    total += 173  # quartz: + 2 v4.73 (tuple-ctor dispatch + final `let _` discard); + 3 v5.54 glued-minus split
+    total += 174  # quartz: + 2 v4.73 (tuple-ctor dispatch + final `let _` discard); + 3 v5.54 glued-minus split; + 1 v5.57 shift-count mask
     passed = total - failures
     print(f"\n{passed}/{total} passed")
     return 0 if failures == 0 else 1
@@ -1224,6 +1233,10 @@ def run_quartz_tests() -> int:
         ("glued minus after ident; prefix -N kept",  "let n = -5\nn-3\n",      "-8\n"),
         ("glued minus after paren",                  "(2 + 3)-1\n",            "4\n"),
         ("prefix -N after = preserved, glued after int", "let n = -2\n100-1 + n\n", "97\n"),
+        # Shift count masked to 6 bits in the emitted C (& 63): a shift of an
+        # int64 by >= 64 is UB in C; the mask makes it well-defined and equal
+        # to the host interpreter (b_bit_shl). 1 << (64 & 63) == 1 << 0 == 1.
+        ("shift count masked to 6 bits (compiled, UB-free)", "bit_shl(1, 64)\n", "1\n"),
         ("top-level lets",           "let x = 5\nlet y = 10\nx + y\n",         "15\n"),
         ("if-then-else as expr",     "if 3 < 5 then 100 else 200\n",           "100\n"),
         ("nested let-in",            "let r = (let x = 7 in x * 3)\nr + 1\n",  "22\n"),

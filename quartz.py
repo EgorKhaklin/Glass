@@ -233,8 +233,12 @@ def _emit_bit_and(args, cg): return f"({args[0]} & {args[1]})"
 def _emit_bit_or(args, cg):  return f"({args[0]} | {args[1]})"
 def _emit_bit_xor(args, cg): return f"({args[0]} ^ {args[1]})"
 def _emit_bit_not(args, cg): return f"(~{args[0]})"
-def _emit_bit_shl(args, cg): return f"({args[0]} << {args[1]})"
-def _emit_bit_shr(args, cg): return f"({args[0]} >> {args[1]})"
+# Mask the shift count to 6 bits: a shift of an int64 by >= 64 is undefined
+# behaviour in C. `& 63` makes it well-defined and identical to the host
+# interpreter (b_bit_shl/b_bit_shr); it is the identity for the 0..63 counts
+# real code uses.
+def _emit_bit_shl(args, cg): return f"({args[0]} << ({args[1]} & 63))"
+def _emit_bit_shr(args, cg): return f"({args[0]} >> ({args[1]} & 63))"
 
 
 # v4.43: wrap_int64 is a no-op in Quartz — int64_t is the native

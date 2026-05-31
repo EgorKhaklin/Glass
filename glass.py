@@ -1,5 +1,5 @@
 """
-Glass v5.56.0 — reference implementation.
+Glass v5.57.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -2542,11 +2542,15 @@ def builtin_values() -> dict[str, Value]:
     def b_bit_or(a, b):  return IntV(_to_int64(a.v | b.v))
     def b_bit_xor(a, b): return IntV(_to_int64(a.v ^ b.v))
     def b_bit_not(a):    return IntV(_to_int64(~a.v))
-    def b_bit_shl(a, b): return IntV(_to_int64(a.v << b.v))
-    # bit_shr is arithmetic right shift on signed int64. Python's >>
-    # is already arithmetic on negative ints, so the result for any
-    # in-range input matches C without an extra mask.
-    def b_bit_shr(a, b): return IntV(a.v >> b.v)
+    # The shift count is masked to 6 bits (& 63) so the result is well-defined
+    # for every count and matches the emitted C, where a shift of an int64 by
+    # >= 64 is undefined behaviour. For the in-range counts real code uses
+    # (0..63) the mask is the identity. Quartz emits the same `& 63`.
+    def b_bit_shl(a, b): return IntV(_to_int64(a.v << (b.v & 63)))
+    # bit_shr is arithmetic right shift on signed int64. Python's >> is already
+    # arithmetic on negative ints, so an in-range result matches C; the & 63
+    # keeps out-of-range counts well-defined and identical to the emitted C.
+    def b_bit_shr(a, b): return IntV(a.v >> (b.v & 63))
     def b_wrap_int64(n): return IntV(_to_int64(n.v))
     def b_substring(s, start, end):
         # Clamp to string bounds; raise on inverted indices to keep semantics
@@ -3219,6 +3223,30 @@ def eval_expr(e: Node, env: dict[str, Value]) -> Value:
     raise RuntimeError(f"cannot eval {t.__name__}")
 
 
+# Integer arithmetic matches the compiled (int64 / C) backend, so the
+# reference interpreter and the native binary agree. `Int` is int64 (see
+# docs/quartz.md): + - * wrap two's-complement at 64 bits, and / % truncate
+# toward zero (C99), where Python's // % floor toward negative infinity.
+# Both are the identity on the non-negative / non-overflowing operands that
+# real programs use; they differ only on exactly the inputs where host and
+# native used to silently disagree.
+_INT64_MASK = (1 << 64) - 1
+
+def _wrap64(n: int) -> int:
+    n &= _INT64_MASK
+    return n - (1 << 64) if n & (1 << 63) else n
+
+def _c_div(a: int, b: int) -> int:
+    """Truncating integer division (C99): quotient rounds toward zero."""
+    q = abs(a) // abs(b)
+    return -q if (a < 0) != (b < 0) else q
+
+def _c_mod(a: int, b: int) -> int:
+    """Remainder with the sign of the dividend (C99): a == b*_c_div(a,b)+r."""
+    r = abs(a) % abs(b)
+    return -r if a < 0 else r
+
+
 def eval_binop(e: BinOp, env: dict[str, Value]) -> Value:
     op = e.op
     # v4.51: short-circuit boolean combinators. Evaluate lhs first;
@@ -3250,18 +3278,22 @@ def eval_binop(e: BinOp, env: dict[str, Value]) -> Value:
     elif tr is BinOp:  rv = eval_binop(rhs, env)
     elif tr is IntLit: rv = IntV(rhs.value)
     else:              rv = eval_expr(rhs, env)
-    if op == "+":  return IntV(lv.v + rv.v)
-    if op == "-":  return IntV(lv.v - rv.v)
-    if op == "*":  return IntV(lv.v * rv.v)
-    if op == "/":  return IntV(lv.v // rv.v)
-    # v4.53: modulo. Uses Python's `%` which is floor-modulo (result
-    # has sign of divisor); Quartz emits C's `%` which is truncated
-    # (result has sign of dividend). The two agree for non-negative
-    # operands — the common case — and diverge only when the dividend
-    # is negative. Same divergence story as `/` (host uses `//` floor,
-    # Quartz uses C `/` truncate). Documented under the v4.43 overflow
-    # parity discussion; calling out here for completeness.
-    if op == "%":  return IntV(lv.v % rv.v)
+    # + - * wrap at int64 to match the compiled backend (identity unless the
+    # result overflows 64 bits — exactly the case host/native used to disagree).
+    if op == "+":  return IntV(_wrap64(lv.v + rv.v))
+    if op == "-":  return IntV(_wrap64(lv.v - rv.v))
+    if op == "*":  return IntV(_wrap64(lv.v * rv.v))
+    # / and % truncate toward zero (C99 / the emitted C), not Python's floor.
+    # Agree with `//`/`%` for non-negative operands; differ only on a negative
+    # dividend or divisor — where the compiled binary truncates too.
+    if op == "/":
+        if rv.v == 0:
+            raise RuntimeError("division by zero")
+        return IntV(_wrap64(_c_div(lv.v, rv.v)))
+    if op == "%":
+        if rv.v == 0:
+            raise RuntimeError("modulo by zero")
+        return IntV(_c_mod(lv.v, rv.v))
     if op == "++":
         if type(lv) is StringV: return StringV(lv.v + rv.v)
         if type(lv) is ListV:   return ListV(lv.items + rv.items)
@@ -3628,7 +3660,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.56.0 — interactive REPL")
+    print("Glass v5.57.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3740,7 +3772,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.56.0")
+        print("Glass 5.57.0")
     elif sys.argv[1] == "prove":
         # `glass prove <file.glass> [name=value ...]` — compile the file's `main`
         # expression into a circuit and emit a succinct, zero-knowledge proof of
