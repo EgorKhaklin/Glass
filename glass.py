@@ -1,5 +1,5 @@
 """
-Glass v5.50.0 — reference implementation.
+Glass v5.51.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -936,13 +936,23 @@ class Parser:
             return BoolLit(False)
         if t.kind == "LBRACK":
             self.eat("LBRACK")
-            items: list[Node] = []
+            segments: list[tuple[str, object]] = []
+            run: list[Node] = []
             if self.peek().kind != "RBRACK":
-                items.append(self.parse_expr())
-                while self.accept("COMMA"):
-                    items.append(self.parse_expr())
+                while True:
+                    if self.accept("ELLIPSIS"):
+                        if run:
+                            segments.append(("elems", run))
+                            run = []
+                        segments.append(("spread", self.parse_expr()))
+                    else:
+                        run.append(self.parse_expr())
+                    if not self.accept("COMMA"):
+                        break
+            if run:
+                segments.append(("elems", run))
             self.eat("RBRACK")
-            return ListLit(items)
+            return self._build_list_literal(segments)
         if t.kind == "LPAREN":
             self.eat("LPAREN")
             e = self.parse_expr()
@@ -984,7 +994,25 @@ class Parser:
                 self.eat("RBRACE")
                 return RecordLit(name=t.value, fields=fields)
             return Ident(t.value)
+        if t.kind == "ELLIPSIS":
+            raise SyntaxError(
+                f"unexpected '...' (spread) at line {t.line}: spread is only "
+                f"valid inside a list literal, e.g. [...a, x, ...b]; to "
+                f"concatenate lists or strings use '++'"
+            )
         raise SyntaxError(f"unexpected token {t.kind} ({t.value!r}) at line {t.line}")
+
+    def _build_list_literal(self, segments: list[tuple[str, object]]) -> Node:
+        if all(kind == "elems" for kind, _ in segments):
+            items: list[Node] = []
+            for _, run in segments:
+                items.extend(run)
+            return ListLit(items)
+        result: Node | None = None
+        for kind, payload in reversed(segments):
+            piece: Node = payload if kind == "spread" else ListLit(payload)
+            result = piece if result is None else BinOp("++", piece, result)
+        return result if result is not None else ListLit([])
 
     def _parse_record_field(self) -> tuple[str, Node]:
         name = self.eat("IDENT").value
@@ -3480,7 +3508,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.50.0 — interactive REPL")
+    print("Glass v5.51.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3592,7 +3620,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.50.0")
+        print("Glass 5.51.0")
     elif sys.argv[1] == "prove":
         # `glass prove <file.glass> [name=value ...]` — compile the file's `main`
         # expression into a circuit and emit a succinct, zero-knowledge proof of

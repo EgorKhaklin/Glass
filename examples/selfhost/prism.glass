@@ -498,7 +498,7 @@ fn parse_atom(ts: List<Token>) : Result<(Expr, List<Token>), String> =
     TSemi        => Err("parse: unexpected ; in atom");
     TBang        => Err("parse: unexpected ! in atom");
     TQmark       => Err("parse: unexpected ? in atom");
-    TEllipsis    => Err("parse: unexpected ... in atom");
+    TEllipsis    => Err("parse: unexpected ... (spread) here; spread is valid only inside a list literal like [...a, x, ...b]; use ++ to concatenate lists");
     TIn          => Err("parse: unexpected 'in' in atom");
     TThen        => Err("parse: unexpected 'then' in atom");
     TElse        => Err("parse: unexpected 'else' in atom");
@@ -778,11 +778,10 @@ fn parse_tuple_rest(
       }
     })
 
-# Parse `[]`, `[e1, e2, ...eN]`, or `[e1, e2, ...tail_expr]` (spread).
-# Desugars to a chain of Cons calls ending in Nil (or the tail expr).
 fn parse_list_literal(ts: List<Token>) : Result<(Expr, List<Token>), String> =
   match peek_tok(ts) {
     TRBracket => Ok((ECtor("Nil", []), rest_tok(ts)));
+    TEllipsis => parse_list_spread_tail(ts);
     _ =>
       bind_result(parse_list_elems(ts, []),
                   fn(p: (List<Expr>, Expr, List<Token>)) ->
@@ -790,6 +789,33 @@ fn parse_list_literal(ts: List<Token>) : Result<(Expr, List<Token>), String> =
           Ok((build_cons_chain(elems, tail), after))
         })
   }
+
+fn parse_list_tail_rest(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  match peek_tok(ts) {
+    TRBracket => Ok((ECtor("Nil", []), rest_tok(ts)));
+    TEllipsis => parse_list_spread_tail(ts);
+    _ =>
+      bind_result(parse_list_elems(ts, []),
+                  fn(p: (List<Expr>, Expr, List<Token>)) ->
+        match p { (elems, tail, after) =>
+          Ok((build_cons_chain(elems, tail), after))
+        })
+  }
+
+fn parse_list_spread_tail(ts: List<Token>) : Result<(Expr, List<Token>), String> =
+  bind_result(parse_expr(rest_tok(ts)), fn(p: (Expr, List<Token>)) ->
+    match p { (spread_expr, after) =>
+      match peek_tok(after) {
+        TRBracket => Ok((spread_expr, rest_tok(after)));
+        TComma    =>
+          bind_result(parse_list_tail_rest(rest_tok(after)),
+                      fn(p2: (Expr, List<Token>)) ->
+            match p2 { (rest_expr, after2) =>
+              Ok((EConcat(spread_expr, rest_expr), after2))
+            });
+        _ => Err("parse: expected , or ] after spread expr; use ++ to concatenate lists")
+      }
+    })
 
 fn parse_list_elems(
   ts: List<Token>,
@@ -802,13 +828,18 @@ fn parse_list_elems(
         TComma =>
           match peek_tok(rest_tok(after)) {
             TEllipsis =>
-              # `..., ...tail]`: tail expression replaces Nil
               bind_result(parse_expr(rest_tok(rest_tok(after))),
                           fn(p2: (Expr, List<Token>)) ->
                 match p2 { (tail_expr, after_tail) =>
                   match peek_tok(after_tail) {
                     TRBracket => Ok((new_acc, tail_expr, rest_tok(after_tail)));
-                    _ => Err("parse: expected ] after spread expr")
+                    TComma    =>
+                      bind_result(parse_list_tail_rest(rest_tok(after_tail)),
+                                  fn(p3: (Expr, List<Token>)) ->
+                        match p3 { (rest_expr, after_rest) =>
+                          Ok((new_acc, EConcat(tail_expr, rest_expr), after_rest))
+                        });
+                    _ => Err("parse: expected , or ] after spread expr; use ++ to concatenate lists")
                   }
                 });
             _ => parse_list_elems(rest_tok(after), new_acc)
@@ -6272,6 +6303,19 @@ let _ : String = match read_file("examples/showcase/markdown.glass") {
         match triple {
           (t, eff, v) =>
             print("examples/showcase/markdown.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
+        };
+      Err(msg) => print("compile error: " ++ msg)
+    };
+  Err(msg) => print("read error: " ++ msg)
+}
+
+let _ : String = match read_file("examples/features/spread_general.glass") {
+  Ok(src) =>
+    match compile(src) {
+      Ok(triple) =>
+        match triple {
+          (t, eff, v) =>
+            print("examples/features/spread_general.glass ==> " ++ show_value(v) ++ " : " ++ show_type(t))
         };
       Err(msg) => print("compile error: " ++ msg)
     };

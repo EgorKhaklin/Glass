@@ -1,0 +1,6 @@
+let a : List<Int> = [1, 2]
+let b : List<Int> = [4, 5]
+let combined : List<Int> = [...a, 3, ...b]
+let head_concat : List<Int> = [...a, ...b]
+let tail_form : List<Int> = [0, ...combined]
+[...tail_form, ...head_concat]

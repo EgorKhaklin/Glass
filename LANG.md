@@ -1,6 +1,6 @@
 # Glass — Language Specification
 
-**Version:** 5.50.0
+**Version:** 5.51.0
 **Status:** Self-hosting research language (not production-hardened). Installable
 via `pip install -e .` from the repo root; the `glass` console script runs
 files or starts a REPL.
@@ -314,6 +314,14 @@ literals `[...]`, tuple literals `(a, b, c)`.
 ## Operators
 
 `*`, `/`, `+`, `-`, `++`, `==`, `!=`, `<`, `>`, `<=`, `>=`, `|>`.
+
+## List literals
+
+`[]`, `[a, b, c]`, and **spread** anywhere — `[...a, x, ...b]` — spliced from
+other lists at the head, the middle, or repeatedly. A spread desugars to `++`
+(the general case) or stays a `Cons` chain (the tail-only form `[h, ...t]`),
+so it is exactly list concatenation with prettier syntax. (Spread also binds
+the tail in *patterns*; see Patterns below.)
 
 ## Declarations
 

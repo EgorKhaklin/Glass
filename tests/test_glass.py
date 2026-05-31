@@ -124,6 +124,11 @@ NEGATIVE = [
      'let xs : List<Int> = [1, 2, "three"]',
      "list elements differ"),
 
+    ("bare spread outside list points to ++",
+     'let x : Int = 1\n'
+     'let y : List<Int> = ...x',
+     "use '++'"),
+
     ("if branches differ",
      'let x : Int = if true then 1 else "x"',
      "if branches differ"),
@@ -937,6 +942,23 @@ def main() -> int:
          "let r : Int = span(Range(3, 10))\n"
          "r\n",
          "r : Int = 7"),
+        ("list spread: leading + trailing (...a ++ ...b)",
+         "let a : List<Int> = [1, 2]\n"
+         "let b : List<Int> = [3, 4]\n"
+         "let r : List<Int> = [...a, ...b]\n"
+         "r\n",
+         "r : List<Int> = [1, 2, 3, 4]"),
+        ("list spread: middle element (...a, x, ...b)",
+         "let a : List<Int> = [1, 2]\n"
+         "let b : List<Int> = [4, 5]\n"
+         "let r : List<Int> = [...a, 3, ...b]\n"
+         "r\n",
+         "r : List<Int> = [1, 2, 3, 4, 5]"),
+        ("list spread: tail form (a, ...b)",
+         "let b : List<Int> = [2, 3]\n"
+         "let r : List<Int> = [1, ...b]\n"
+         "r\n",
+         "r : List<Int> = [1, 2, 3]"),
     ]
     for label, src, needle in inline_positive:
         rc, out, err = run(src)
@@ -968,6 +990,9 @@ def main() -> int:
         # check only fired on the first param. The VRefinedClos wrapper
         # carries the remaining formals past the first apply so subsequent
         # applies still see their refinements.
+        ("prism general list spread (self-host parity)",
+         "examples/features/spread_general.glass ==> "
+         "[0, 1, 2, 3, 4, 5, 1, 2, 4, 5] : List<Int>"),
         ("prism curried-refine accepts (v4.24)",
          "examples/features/curried_refine.glass ==> 15 : Int"),
         ("prism curried-refine rejects (v4.24)",
