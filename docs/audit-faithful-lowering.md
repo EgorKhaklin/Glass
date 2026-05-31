@@ -90,11 +90,39 @@ affected examples natively (each ~2–3 min) to confirm they ACCEPT with the **c
 the now-unsupported operators refuse loudly. Gates: `python3.12 tests/test_glass.py` + native
 re-validation (this bridge is **not** bootstrap-critical, so no fixpoint dependency).
 
+## Remaining gap (still open): field-semantics divergence for `+ - *`
+
+Closing the unsupported-operator hole resolves the *coverage* half of faithful lowering. The
+*arithmetic* half is still open and must be stated plainly, because it is silent on the supported
+operators themselves:
+
+`heval`/`seval`/`cgen` compute `+ - *` in the field **mod p = 2⁶⁴−2³²+1**, but `glass.py` (the
+reference semantics) uses **unbounded signed integers**. So whenever a program's reference result —
+or any intermediate — leaves the range `[0, p)`, the proof certifies the **field-reduced** value,
+not the integer the program denotes, with no warning:
+
+- **Negatives.** `2 - 5` is `-3` in `glass.py`; the field gives `p − 3` (a 20-digit positive), and
+  `bn_dec` prints `p − 3`. A program that legitimately computes a negative result is silently
+  certified at a huge positive.
+- **Overflow.** `a * b` for `a, b ≈ 2³²` is `≈ 2⁶⁴` in `glass.py` (unbounded); the field reduces it
+  mod p. If the true product `≥ p`, the certified value differs silently.
+
+There is currently **no in-field precondition check** and no overflow/negativity guard: the bridge
+assumes, without verifying, that the program stays in `[0, p)`. Unlike the operator-coverage hole
+(now a loud refusal), this one cannot be closed by refusal alone — detecting it requires either a
+range/sign side-condition on the witnessed values or an explicit documented precondition that the
+caller's program is field-valued. **Until then, `glass prove` is faithful to `glass.py` only for
+programs whose every intermediate and result lies in `[0, p)`** — for everything else it proves a
+true statement about the *field* computation, which is not the integer computation the source
+denotes. This is the next piece of the compiler-bridge faithful-lowering work.
+
 ## Honest framing
 
 This does not change the crypto soundness boundary or any production claim — it is squarely inside
 the already-disclosed "faithful lowering is assumed, not proven" caveat. But a silent wrong-ACCEPT
 on shipped examples is strictly worse than a refusal, and closing it (faithful gadget **or** loud
 refusal, never silent 0) measurably shrinks the trusted-lowering surface an external auditor must
-take on faith. Until fixed, treat `glass prove` results for any program using operators outside
-`+ - * ==` (and `match`/ADT/`if`/`let`/calls) as **unsound on the Goldilocks default**.
+take on faith. As of v5.52.0 the operator-coverage hole is closed (booleans lower faithfully;
+everything else refuses loudly), so a `glass prove` ACCEPT can no longer come from a silently-dropped
+operator. The one residual is the field-semantics caveat above: results are faithful to `glass.py`
+**only for programs whose every intermediate and result stays in `[0, p)`**.
