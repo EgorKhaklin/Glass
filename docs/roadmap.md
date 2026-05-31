@@ -39,7 +39,7 @@ language feature, not a library you assemble by hand.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not
   for the frontier edge. A partial DX pass (prelude, diagnostics) is Phase 4.
 
-## Shipped (through v5.33)
+## Shipped (through v5.57)
 
 - **Self-hosting** — the bootstrap fixpoint (`prism` + `glassc`, no Python).
 - **Pane** — a query language in Glass.
@@ -52,6 +52,18 @@ language feature, not a library you assemble by hand.
 - **The prove bridge** — write *real Glass source* (parsed by prism), get a
   proof: arithmetic, comparisons, booleans, `if`/`let`. *(Today this emits a
   sound RLC proof, not yet the succinct ZK STARK — see N1.)*
+- **Production-field + sound verifier (v5.34–v5.57)** — the default `glass prove`
+  moved off toy Baby Bear onto **Goldilocks-ADT** (v5.46), `match`/ADTs lower over
+  the 2⁶⁴ field, **Poseidon** (Plonky2-exact) then **Poseidon2** (Plonky3-exact,
+  v5.50) replaced MiMC as the in-STARK hash, a statement-binding Fiat-Shamir
+  transcript seeds every challenge (v5.37/v5.47), and an independent witness-free
+  **`verify_b3`** (per-row gate soundness + PLONK grand-product wire consistency,
+  ~80-bit provable) became the **CLI default** (v5.48/v5.49). A soundness cluster
+  (v5.52–v5.57) hardened it: **faithful boolean lowering with loud refusal** of any
+  operator lacking a sound field lowering (v5.52, fixing a silent proven-0
+  regression), plus reference-interpreter fixes — effect-row soundness (v5.53),
+  the `10-3` lexer mis-parse (v5.54), nested-pattern exhaustiveness (v5.55), and
+  host↔native int64/C arithmetic agreement (v5.57).
 
 ## What's next
 
@@ -97,7 +109,7 @@ proves the things the project was for."
 > Glass function, get a proof of its result. (Hint-free subset — arithmetic + let +
 > calls; `==`/`if` ride the RLC bridge until their inverse-hint wires are added.)
 
-- **H1 — Pane ⊕ Frost: zero-knowledge queries. 🚧 IN PROGRESS.** The founding
+- **H1 — Pane ⊕ Frost: zero-knowledge queries. ✅ DONE.** The founding
   vision (*Frost = the ZK extension of Pane*): commit a private table, run a Pane
   query, prove *"query Q over the committed table yields R"* — revealing only Q,
   the commitment, and R.
@@ -138,7 +150,7 @@ proves the things the project was for."
   - **Hardened the discipline along the way:** glass.py now rejects uppercase
     value bindings (they silently miscompiled — glassc read them as constructors);
     `dogfood.sh`'s build seed was fixed (it was seeding the wrong path).
-- **H2 — A cryptographic prover. 🚧 IN PROGRESS.** Wire a real field through the
+- **H2 — A cryptographic prover. ✅ DONE.** Wire a real field through the
   FRI/quotient so the end-to-end proof has cryptographic security, not the toy
   base field.
   - ✅ **The field STARKs actually use, built from scratch**
@@ -185,10 +197,9 @@ proves the things the project was for."
     zero-knowledge, over Goldilocks** — the full zk-STARK shape on the production
     field, int64-safe and dogfooded.
   - **H2 core is complete**: field → FRI fold → F_{p²} challenge → committed +
-    query-verified → zero-knowledge, all over Goldilocks. The open follow-on is
-    *end-to-end integration* — swapping the prove-bridge's STARK backend
-    (`prove_zk`) from Baby Bear to this Goldilocks stack, so a proof of real Glass
-    source runs on the production field.
+    query-verified → zero-knowledge, all over Goldilocks. End-to-end integration
+    shipped (v5.46–v5.48, the ✅ bullet below): the default `glass prove` runs real
+    Glass source on the production field, no longer toy Baby Bear.
   - ✅ **Integration + a sound verifier — done (v5.46–v5.48 + post-v5.48 hardening).**
     The default `glass prove` now proves real Glass source over Goldilocks
     ([`prove_source_goldilocks_zk.glass`](../examples/prove/prove_source_goldilocks_zk.glass)),
@@ -278,10 +289,14 @@ three under-invested axes — *realness*, *usability*, and *convergence* — on 
       R1b STARK proves it. `fn sq(n)=n*n; fn f(x)=sq(x)+5; f(inp)` proves over Goldilocks (honest
       ACCEPT / tampered REJECT / ZK); byte-identical. *Write Glass source, get a proof on the real
       field.* ✅ **Now with `==`/`if`, multiple private inputs, and claim-binding** (v5.34/v5.38:
-      the is-zero gadget + `if`-mux over bignum, `glass prove --goldilocks`). *Next (the full
-      bridge):* `match`/ADTs over bignum (tagged multi-wire values), and the heavier circuits
-      (native-primary).
-  - **R2. 🚧 IN PROGRESS.** A real hash + Fiat-Shamir hardening. ✅ **Step 1 — Grain-LFSR
+      the is-zero gadget + `if`-mux over bignum, `glass prove --goldilocks`). ✅ **match/ADTs
+      over bignum shipped (v5.46):** the ADT multi-wire `cgen` ported to Goldilocks limbs
+      (`cgen==heval` validated), so the default bridge proves `match`/ADT circuits over p=2⁶⁴.
+      *Next (the genuine frontier):* a **full prism-AST bridge** — faithful field gadgets for the
+      operators the hand-written subset still loudly refuses (ordering `< > <= >=`, `/`/`%`,
+      string `++`, records/fields, higher-order callees). The loud refusal itself shipped v5.52;
+      the standalone range/comparison gadget exists (`age_prove.glass`) but isn't wired in yet.
+  - **R2. ✅ MOSTLY DONE** (two formal-analysis follow-ons remain, below). A real hash + Fiat-Shamir hardening. ✅ **Step 1 — Grain-LFSR
     round constants** ([`frost_grain.glass`](../examples/frost/frost_grain.glass)): Poseidon's
     constants now come from the spec's Grain LFSR (80-bit state, taps
     b₀⊕b₁₃⊕b₂₃⊕b₃₈⊕b₅₁⊕b₆₂, 160-round warm-up, rejection sampling) — reproducible and
@@ -289,9 +304,12 @@ three under-invested axes — *realness*, *usability*, and *convergence* — on 
     Fiat-Shamir transcript** on that Poseidon (`tr_init`/`tr_absorb`/`tr_challenge`, same file):
     every message and squeeze is tagged by role, so a fold challenge can't coincide with a
     query index; demonstrated determinism, domain separation, no (tag,value) collision, and
-    history-binding. *Next:* cross-check the constants against the official reference test
-    vectors, analyze the MDS/round counts, wire the transcript into the bridge's challenges,
-    and give a formal FS-separation argument.
+    history-binding. ✅ **Cross-checked against official reference vectors** (Poseidon vs Plonky2,
+    v5.35; Poseidon2 vs Plonky3 t=8/t=12, constants pulled programmatically, v5.50) and ✅ **transcript
+    wired into the bridge** (Fiat-Shamir over the verified hash v5.37; statement-binding — a circuit
+    digest seeds all FS challenges — v5.47). *Still open (prose, not gateable):* a formal MDS/round-count
+    cryptanalysis (distinct from byte-matching a vector) and a formal Fiat-Shamir separation argument —
+    both partly subsumed by the standing external-audit boundary.
     ✅ **Resolved (v5.44) — the native runtime got a GC.** Wiring the vetted Poseidon into
     the prover first hit a wall: the full FRI prover **OOM'd the native runtime** (even one
     minimal proof exceeded 16 GB, because the native backend was **no-free** — never called
@@ -310,7 +328,7 @@ three under-invested axes — *realness*, *usability*, and *convergence* — on 
     separates the strong differential-testing guarantee from the educational-grade
     cryptography, per component, with the path to production-soundness and a clear
     "do not use to protect real value" bottom line.
-  - **R4. 🚧 IN PROGRESS.** Concrete soundness — *analyzed, then hardened.* ✅ **The
+  - **R4. ✅ DONE (in-repo; external audit is the standing hard boundary).** Concrete soundness — *analyzed, then hardened.* ✅ **The
     analysis** ([`parameters.md`](parameters.md), v5.39): every parameter of both proving
     paths and the *actual* bit-security, the FRI bound in both regimes (unique-decoding
     δ=(1−ρ)/2 and list-decoding δ=1−√ρ), and the recipe to 80/128-bit. ✅ **Grinding**
@@ -327,8 +345,11 @@ three under-invested axes — *realness*, *usability*, and *convergence* — on 
     **Poseidon** in as the in-STARK hash (MiMC retired from the Goldilocks prover), and
     **v5.46** moved the **default `glass prove` off the 2³¹ value space onto Goldilocks-ADT**
     (variable trace domain + multi-wire `cgen` for `match`/ADTs + a fast `gold_*` field;
-    native ~24–160s). The remaining hard boundary is an **external audit** — never crossed
-    in-repo.
+    native ~24–160s). ✅ **The sound verifier landed (v5.48):** the independent, witness-free
+    `verify_b3` (per-row gate soundness + PLONK grand-product wire consistency, ~80-bit provable)
+    became the **CLI default** in v5.49. R4's body is complete in-repo; the remaining hard boundary
+    is an **external audit + Poseidon cryptanalysis** — by design never crossed in-repo. The
+    "do not use to protect real value" banner stays.
 - **Track E — Expressiveness** (past first-order).
   - **E1. ✅ DONE (recursion).** **Bounded recursion** via a source-level **unroll
     pre-pass** (`unroll`/`inline_fn` in [`prove_source_adt_zk.glass`](../examples/prove/prove_source_adt_zk.glass)):
@@ -425,3 +446,39 @@ Every item ships a differential-tested, self-hosting artifact: the reference and
 the compiled/proved result agree, and `native_glassc` reproduces it byte-for-byte.
 Nothing is "done" until the interpreter and the self-hosted compiler give the
 same answer.
+
+## What's open (as of v5.57)
+
+Ranked by value × tractability. Items 1–2 are the real frontier; 3 is a stated
+horizon; 4 is prose; the rest are deferred/known.
+
+1. **Full prism-AST prove bridge** — *the frontier headline.* The bridge is still a
+   hand-written operator subset; since v5.52 it *loudly refuses* the rest (ordering
+   `< > <= >=`, `/`/`%`, string `++`, records/fields, higher-order callees) rather
+   than lower them unsoundly. Reaching a full Glass-AST bridge means a faithful field
+   gadget per refused construct — and the comparison case can reuse the proven
+   bit-decomposition range gadget (`age_prove.glass`), it just isn't wired into the
+   general bridge yet. Differential-test gateable (`cgen==heval==seval`), one gadget
+   per pass, **no bootstrap exposure**. *The discipline that matters here: each gadget
+   must narrow the loud refusal, never replace it with a silent wrong proof — an
+   un-range-bounded operand must keep refusing.*
+2. **Substrate performance (P)** — highest raw value, but *large*. No bytecode/closure
+   compiler exists; the interpreter dogfood (multi-hour for heavy Goldilocks/Poseidon
+   STARKs) is the bottleneck gating heavy Track E/R demos under the routine gate.
+   Alternative lever: promote `native_glassc` to a co-equal differential-tested oracle.
+   A multi-pass structural project, not one changeset.
+3. **H3 — full recursive STARK verifier** (medium, large, native-primary). The
+   fold-check-as-circuit is done; composing it with *in-circuit* Merkle membership
+   (openings authenticated against the commitment inside the circuit) hasn't shipped.
+4. **R2 formal follow-ons** (not gateable): a formal MDS/round-count cryptanalysis and a
+   formal Fiat-Shamir separation argument — reviewed prose, partly subsumed by the
+   external-audit boundary. **The external audit + Poseidon cryptanalysis is the standing
+   hard boundary, never produced in-repo; the "do not protect real value" banner stays.**
+
+**Deferred/known** (tracked in the audit-findings memory): **RC-D** string codepoint-vs-byte
+divergence (the host counts Unicode codepoints, the emitted C counts UTF-8 bytes; codepoints
+are the intended semantics so the C side is the deviation — but it is non-ASCII-only,
+unreachable in the corpus, and the correct fix touches bootstrap `glassc.glass` for zero
+current behavioural payoff, so it waits until a non-ASCII showcase needs it or another
+`glassc.glass` change already pays the fixpoint gate); plus the `--baby-bear`
+silent-truncation, the `glassc` TyInt fallback, and the `run_command` argv divergence.
