@@ -355,7 +355,7 @@ fn heval(e: Expr, env: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: 
     ETuple(elems) => heval_fields(elems, scalar_types_e(elems), env, fns, types);
     EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => heval_call(fn_body_of(fns, fname), args, [], env, fns, types); _ => ([0], []) } };
     EMatch(scrut, arms) => match heval(scrut, env, fns, types) { (sv, hs) => match heval_match(sv, arms, env, fns, types) { (rv, ha) => (rv, hs ++ ha) } };
-    _ => ([0], []) }
+    _ => error("glass prove (baby-bear): unsupported expression — only + - * == != && || ! and if/let/match/ADT/calls lower on the toy Baby Bear path; comparisons (< > <= >=), / %, strings and records are REFUSED, not silently proven as 0. (The default Goldilocks path — drop --baby-bear — proves comparisons via a sound range gadget.)") }
 fn heval_fields(args: List<Expr>, tys: List<Type>, env: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: List<TypeDecl>) : (List<Int>, List<Int>) =
   match args { [] => ([], []); [a, ...arest] => match tys { [] => ([], []); [t, ...trest] =>
     match heval(a, env, fns, types) { (va, ha) => match heval_fields(arest, trest, env, fns, types) { (vr, hr) =>
@@ -424,7 +424,7 @@ fn cgen(e: Expr, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: 
     ETuple(elems) => cgen_fields(elems, scalar_types_e(elems), cenv, fns, types, hbase, hidx, b);
     EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => cgen_call(fn_body_of(fns, fname), args, [], cenv, fns, types, hbase, hidx, b); _ => match mkc(0, b) { (w, b1) => ([w], hidx, b1) } } };
     EMatch(scrut, arms) => match cgen(scrut, cenv, fns, types, hbase, hidx, b) { (sv, h1, b1) => match mkc(0, b1) { (zm, b2) => cgen_match(arms, sv, cenv, fns, types, hbase, h1, zm, [], b2) } };
-    _ => match mkc(0, b) { (w, b1) => ([w], hidx, b1) } }
+    _ => error("glass prove (baby-bear): unsupported expression in cgen — comparisons (< > <= >=), / %, strings and records are REFUSED, not silently built as a 0 circuit. (The default Goldilocks path proves comparisons via a sound range gadget.)") }
 fn cgen_fields(args: List<Expr>, tys: List<Type>, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: List<TypeDecl>, hbase: Int, hidx: Int, b: Build) : (List<Int>, Int, Build) =
   match args { [] => ([], hidx, b); [a, ...arest] => match tys { [] => ([], hidx, b); [t, ...trest] =>
     match cgen(a, cenv, fns, types, hbase, hidx, b) { (va, h1, b1) =>

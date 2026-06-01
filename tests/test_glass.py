@@ -1205,8 +1205,29 @@ def main() -> int:
             print(f"        stderr: {_bb.stderr.strip()[-200:]}")
         failures += 1
 
+    # The baby-bear bridge lowered every UNSUPPORTED operator (comparisons,
+    # / %, strings, records) to a SILENT 0 — so `glass prove --baby-bear` on
+    # `a < b` certified `result: 0 ACCEPT`, a FALSE statement with a valid
+    # proof (the silent-wrong-certification class). It must now REFUSE loudly,
+    # never silently prove a wrong value. (The default Goldilocks path already
+    # refused comparisons since v5.52; this brings the toy path to parity.)
+    with tempfile.NamedTemporaryFile("w", suffix=".glass", delete=False) as _tf:
+        _tf.write("fn lt(a: Int, b: Int) : Bool = a < b\nlt(a, b)\n")
+        _cmp_path = _tf.name
+    _cmp = subprocess.run(
+        [sys.executable, GLASS, "prove", "--baby-bear", "--fast", _cmp_path, "a=3", "b=5"],
+        capture_output=True, text=True,
+    )
+    os.unlink(_cmp_path)
+    cmp_ok = (_cmp.returncode != 0) and ("ACCEPT" not in _cmp.stdout) and ("REFUSED" in _cmp.stderr)
+    print(f"  {'OK ' if cmp_ok else 'FAIL'}  baby-bear refuses comparisons (no silent wrong-cert)")
+    if not cmp_ok:
+        print(f"        rc={_cmp.returncode}; expected nonzero + REFUSED, no ACCEPT")
+        print(f"        stdout: {_cmp.stdout.strip()[-150:]}  stderr: {_cmp.stderr.strip()[-150:]}")
+        failures += 1
+
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 2)  # +2: statement-binding + baby-bear prove guards
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 3)  # +3: statement-binding + 2 baby-bear prove guards
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

@@ -462,6 +462,15 @@ horizon; 4 is prose; the rest are deferred/known.
    per pass, **no bootstrap exposure**. *The discipline that matters here: each gadget
    must narrow the loud refusal, never replace it with a silent wrong proof — an
    un-range-bounded operand must keep refusing.*
+   **Status (v5.58):** the ordering-comparison gadget (`< > <= >=`) is *designed,
+   adversarially hardened (0 soundness holes), implemented for the Goldilocks bridge,
+   and compiles to a native binary* — but the range circuit's ~100 extra gates make
+   its STARK proof take **>15 min even native**, so it can't be validated/CI'd and is
+   **not landed** (preserved as a patch). The blocker is item 2 (the prover), not the
+   gadget — a faster prover or a cheaper range argument (a lookup table instead of
+   bit-decomposition) unblocks it. Until then, comparisons stay *loudly refused* on
+   both paths (the v5.58 fix made the Baby-Bear path refuse too, instead of silently
+   proving `0`).
 2. **Substrate performance (P)** — highest raw value, but *large*. No bytecode/closure
    compiler exists; the interpreter dogfood (multi-hour for heavy Goldilocks/Poseidon
    STARKs) is the bottleneck gating heavy Track E/R demos under the routine gate.
