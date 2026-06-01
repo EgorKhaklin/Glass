@@ -1,0 +1,4 @@
+0	a+b==8 (a=3,b=5) over Goldilocks	8	ACCEPT
+1	3<5 over Goldilocks	1	ACCEPT
+2	5<3 over Goldilocks	0	ACCEPT
+3	a<b with a>=2^32 (out of provable range)	-	ABSTAIN

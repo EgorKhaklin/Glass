@@ -1294,8 +1294,18 @@ def main() -> int:
         print(f"        (a canonical artifact changed — regenerate with: python3 name/glass_name.py --write)")
         failures += 1
 
+    # The Preserved Tablet — the append-only proof-verdict ledger: determinism, inclusion
+    # proofs verify, a forged entry does not, and tampering a past entry changes the root.
+    _tab = subprocess.run([sys.executable, os.path.join(_root, "ledger", "tablet.py"), "--selftest"],
+                          capture_output=True, text=True)
+    tb_ok = (_tab.returncode == 0) and ("CHECK tablet T" in _tab.stdout)
+    print(f"  {'OK ' if tb_ok else 'FAIL'}  the Preserved Tablet: append-only ledger (inclusion + tamper-evidence)")
+    if not tb_ok:
+        print(f"        {(_tab.stdout + _tab.stderr).strip()[-220:]}")
+        failures += 1
+
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 9)  # +9: stmt-binding + 2 baby-bear + goldw + poseidon + ntt + vget + measure + name guards
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 10)  # +10: stmt-binding + 2 baby-bear + goldw + poseidon + ntt + vget + measure + name + tablet guards
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

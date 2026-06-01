@@ -513,9 +513,10 @@ in priority order (the traditions push hardest on the first):
   int-mod-p; a Glass-side serializer (`emit_proofb3`, byte-for-byte with `parse()`: fe as limb
   counts, digests as the 4 Poseidon lanes, the 16-field TOpenB order) feeds it. The fast prover
   (v5.59–v5.62) was the last blocker; now a proof emits in ~25s and Pentecost checks it.
-- **The Preserved Tablet — a committed, append-only proof ledger.** Each `glass prove`
-  verdict committed into a growing Merkle root with inclusion proofs. Reuses
-  Poseidon-Merkle; binds existing verdicts, adds no new trust. *Primitive, quick–medium.*
+- **The Preserved Tablet — committed, append-only proof ledger. ✅ SHIPPED v5.66.0.** `glass
+  tablet` ([`../ledger/`](../ledger/)) appends each verdict and commits the history into a
+  Poseidon-Merkle root with inclusion proofs (`prove`/`verify <i>`); tampering a past entry
+  changes the root. Reuses the Plonky2-exact Poseidon; binds existing verdicts, adds no new trust.
 - **The Name — content-addressed canonical identity. ✅ SHIPPED v5.65.0.** `glass name`
   ([`../name/`](../name/)) publishes one Poseidon-Merkle root over the self-hosting core +
   prover/`verify_b3` bridge + the second verifier (`pentecost/`) + tests + `LANG.md` — recomputed
