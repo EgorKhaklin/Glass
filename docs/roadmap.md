@@ -471,9 +471,13 @@ horizon; 4 is prose; the rest are deferred/known.
      and `17%5=2` ACCEPT, divide-by-zero and out-of-range ABSTAIN, the Third Witness
      (interpreter) independently agrees, and the committed division proof fixture passes the
      Pentecost differential. Non-negative operands only for now (see new frontier below).
+   - **Higher-order functions. ✅ LANDED v5.87.0.** `map`/`fold`-style programs that pass a *named*
+     function as an argument now prove: `unroll` already beta-reduced them to a first-order circuit,
+     and the guard `seval` now resolves function-valued parameters via `fenv` (mirroring `unroll`'s
+     `inline_fn`) instead of spuriously refusing them. `map(inc, [5,2,3])` → sum 13, ACCEPT.
    - **Still refused (the remaining bridge frontier):** string `++` / string ops, records &
-     field access, and higher-order *callees* (computed function values). Each needs its own
-     faithful gadget or a principled refusal; same one-gadget-per-pass discipline.
+     field access, and *computed* higher-order callees (a function value chosen at runtime, not a
+     named fn passed as an argument). Each needs its own faithful gadget or a principled refusal.
 
    **New frontiers identified while landing division (v5.84):**
    - **Signed / negative-aware arithmetic gadgets.** Comparison and division currently require

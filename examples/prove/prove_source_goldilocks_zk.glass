@@ -1151,49 +1151,61 @@ fn unroll_fuel(d: Int) : Int = 8
 # malicious prover building a truncated circuit directly (or calling gprove_sound with a forged
 # R) is OUT of the soundness threat model (faithful-lowering, audit-readiness.md) — the
 # do-not-protect-real-value banner stays.
-fn seval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>, fuel: Int) : List<List<Int>> =
+# seval carries `fenv` (param -> fn-name) exactly like unroll's inline_fn, so the guard resolves
+# FUNCTION-VALUED parameters the same way the prover (unroll+cgen) does — higher-order programs like
+# `map(inc, xs)` are guarded (and provable) instead of spuriously refused. fn-args bind into fenv (no
+# fuel decrement, matching inline_fn); value-args bind into env. seval's accept-set stays a subset of
+# the circuit-faithful set because the resolution now MATCHES unroll's.
+fn seval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>, fenv: List<Pair<String, String>>, fuel: Int) : List<List<Int>> =
   match e {
     EInt(n) => [glit(n)];
     EBool(tf) => [if tf then glit(1) else glit(0)];
     EVar(x) => heg(env, x);
-    EAdd(a, b) => [fadd(vh(seval(a, env, fns, types, fuel)), vh(seval(b, env, fns, types, fuel)))];
-    ESub(a, b) => [fsub(vh(seval(a, env, fns, types, fuel)), vh(seval(b, env, fns, types, fuel)))];
-    EMul(a, b) => [fmul(vh(seval(a, env, fns, types, fuel)), vh(seval(b, env, fns, types, fuel)))];
-    EEq(a, b) => let d : List<Int> = fsub(vh(seval(a, env, fns, types, fuel)), vh(seval(b, env, fns, types, fuel))) in [if bn_is_zero(d) then glit(1) else glit(0)];
-    ENeq(a, b) => let d : List<Int> = fsub(vh(seval(a, env, fns, types, fuel)), vh(seval(b, env, fns, types, fuel))) in [if bn_is_zero(d) then glit(0) else glit(1)];
-    EAnd(a, b) => [fmul(vh(seval(a, env, fns, types, fuel)), vh(seval(b, env, fns, types, fuel)))];
-    EOr(a, b) => let va : List<Int> = vh(seval(a, env, fns, types, fuel)) in let vb : List<Int> = vh(seval(b, env, fns, types, fuel)) in [fsub(fadd(va, vb), fmul(va, vb))];
-    EUNot(a) => [fsub(glit(1), vh(seval(a, env, fns, types, fuel)))];
-    EIf(c, t, f) => if bn_eq(vh(seval(c, env, fns, types, fuel)), glit(1)) then seval(t, env, fns, types, fuel) else seval(f, env, fns, types, fuel);
-    ELet(nm, v, body) => seval(body, [Pair(nm, seval(v, env, fns, types, fuel))] ++ env, fns, types, fuel);
-    ECtor(name, args) => [glit(ctag(types, name))] ++ seval_fields(args, ctor_argtypes(types, name), env, fns, types, fuel);
-    ETuple(elems) => seval_fields(elems, scalar_types_e(elems), env, fns, types, fuel);
+    EAdd(a, b) => [fadd(vh(seval(a, env, fns, types, fenv, fuel)), vh(seval(b, env, fns, types, fenv, fuel)))];
+    ESub(a, b) => [fsub(vh(seval(a, env, fns, types, fenv, fuel)), vh(seval(b, env, fns, types, fenv, fuel)))];
+    EMul(a, b) => [fmul(vh(seval(a, env, fns, types, fenv, fuel)), vh(seval(b, env, fns, types, fenv, fuel)))];
+    EEq(a, b) => let d : List<Int> = fsub(vh(seval(a, env, fns, types, fenv, fuel)), vh(seval(b, env, fns, types, fenv, fuel))) in [if bn_is_zero(d) then glit(1) else glit(0)];
+    ENeq(a, b) => let d : List<Int> = fsub(vh(seval(a, env, fns, types, fenv, fuel)), vh(seval(b, env, fns, types, fenv, fuel))) in [if bn_is_zero(d) then glit(0) else glit(1)];
+    EAnd(a, b) => [fmul(vh(seval(a, env, fns, types, fenv, fuel)), vh(seval(b, env, fns, types, fenv, fuel)))];
+    EOr(a, b) => let va : List<Int> = vh(seval(a, env, fns, types, fenv, fuel)) in let vb : List<Int> = vh(seval(b, env, fns, types, fenv, fuel)) in [fsub(fadd(va, vb), fmul(va, vb))];
+    EUNot(a) => [fsub(glit(1), vh(seval(a, env, fns, types, fenv, fuel)))];
+    EIf(c, t, f) => if bn_eq(vh(seval(c, env, fns, types, fenv, fuel)), glit(1)) then seval(t, env, fns, types, fenv, fuel) else seval(f, env, fns, types, fenv, fuel);
+    ELet(nm, v, body) => seval(body, [Pair(nm, seval(v, env, fns, types, fenv, fuel))] ++ env, fns, types, fenv, fuel);
+    ECtor(name, args) => [glit(ctag(types, name))] ++ seval_fields(args, ctor_argtypes(types, name), env, fns, types, fenv, fuel);
+    ETuple(elems) => seval_fields(elems, scalar_types_e(elems), env, fns, types, fenv, fuel);
     EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd {
-      EVar(fname) => if fuel <= 0 then error("glass prove: recursion depth exceeds the unroll bound (" ++ int_to_string(unroll_fuel(0)) ++ "); refusing to prove a depth-truncated result — it would otherwise be a silently wrong value with a valid-looking proof (the program needs statically-bounded, shallower recursion)") else (let tgt : String = resolve_fn(fname, fns, []) in if tgt == "" then error("glass prove: unresolved call to '" ++ fname ++ "' in the reference evaluator") else seval_call(fn_body_of(fns, tgt), args, [], env, fns, types, fuel));
+      EVar(fname) => if fuel <= 0 then error("glass prove: recursion depth exceeds the unroll bound (" ++ int_to_string(unroll_fuel(0)) ++ "); refusing to prove a depth-truncated result — it would otherwise be a silently wrong value with a valid-looking proof (the program needs statically-bounded, shallower recursion)") else (let tgt : String = resolve_fn(fname, fns, fenv) in if tgt == "" then error("glass prove: unresolved call to '" ++ fname ++ "' in the reference evaluator") else seval_call(fn_body_of(fns, tgt), args, [], env, [], fenv, fns, types, fuel));
       _ => error("glass prove: unsupported call form (computed or higher-order callee) in the reference evaluator") } };
-    EMatch(scrut, arms) => seval_match(seval(scrut, env, fns, types, fuel), arms, env, fns, types, fuel);
-    ELt(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fuel)) in
+    EMatch(scrut, arms) => seval_match(seval(scrut, env, fns, types, fenv, fuel), arms, env, fns, types, fenv, fuel);
+    ELt(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fenv, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fenv, fuel)) in
       if cmp_ok_g(xa, xb) then (if bn_cmp(trim(xa), trim(xb)) < 0 then [glit(1)] else [glit(0)]) else error("glass prove: ordering comparison operand out of provable range [0,2^32) — ABSTAIN (cannot lower; abstaining, not disproving)");
-    EGt(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fuel)) in
+    EGt(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fenv, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fenv, fuel)) in
       if cmp_ok_g(xa, xb) then (if bn_cmp(trim(xb), trim(xa)) < 0 then [glit(1)] else [glit(0)]) else error("glass prove: ordering comparison operand out of provable range [0,2^32) — ABSTAIN (cannot lower; abstaining, not disproving)");
-    ELe(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fuel)) in
+    ELe(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fenv, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fenv, fuel)) in
       if cmp_ok_g(xa, xb) then (if bn_cmp(trim(xb), trim(xa)) < 0 then [glit(0)] else [glit(1)]) else error("glass prove: ordering comparison operand out of provable range [0,2^32) — ABSTAIN (cannot lower; abstaining, not disproving)");
-    EGe(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fuel)) in
+    EGe(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fenv, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fenv, fuel)) in
       if cmp_ok_g(xa, xb) then (if bn_cmp(trim(xa), trim(xb)) < 0 then [glit(0)] else [glit(1)]) else error("glass prove: ordering comparison operand out of provable range [0,2^32) — ABSTAIN (cannot lower; abstaining, not disproving)");
-    EDiv(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fuel)) in
+    EDiv(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fenv, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fenv, fuel)) in
       if div_ok_g(xa, xb) then [gdiv_lit(xa, xb)] else error("glass prove: integer division operand out of provable range [0,2^32) or divisor zero — ABSTAIN (cannot lower; abstaining, not disproving)");
-    EMod(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fuel)) in
+    EMod(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fenv, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fenv, fuel)) in
       if div_ok_g(xa, xb) then [gmod_lit(xa, xb)] else error("glass prove: integer modulo operand out of provable range [0,2^32) or divisor zero — ABSTAIN (cannot lower; abstaining, not disproving)");
     _ => error("glass prove: unsupported expression in the prove bridge (seval guard) — only + - * == != && || ! < > <= >= / % (range-bounded) and if/let/match/ADT/calls lower to the field circuit; strings and records are refused, not silently proven as 0") }
-fn seval_fields(args: List<Expr>, tys: List<Type>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>, fuel: Int) : List<List<Int>> =
+fn seval_fields(args: List<Expr>, tys: List<Type>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>, fenv: List<Pair<String, String>>, fuel: Int) : List<List<Int>> =
   match args { [] => []; [a, ...arest] => match tys { [] => []; [t, ...trest] =>
-    padw(seval(a, env, fns, types, fuel), twidth(t, types, 12)) ++ seval_fields(arest, trest, env, fns, types, fuel) } }
-fn seval_call(body: Expr, args: List<Expr>, ccenv: List<Pair<String, List<List<Int>>>>, fcenv: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>, fuel: Int) : List<List<Int>> =
+    padw(seval(a, env, fns, types, fenv, fuel), twidth(t, types, 12)) ++ seval_fields(arest, trest, env, fns, types, fenv, fuel) } }
+# seval_call mirrors inline_fn: a fn-valued arg (resolvable in the CALLER's f_fenv) binds the param
+# into the CALLEE's c_fenv (no fuel decrement); a value arg is seval'd in the caller's env and binds
+# into ccenv. ccenv/c_fenv start empty (fresh callee scope); fcenv/f_fenv are the caller's.
+fn seval_call(body: Expr, args: List<Expr>, ccenv: List<Pair<String, List<List<Int>>>>, fcenv: List<Pair<String, List<List<Int>>>>, c_fenv: List<Pair<String, String>>, f_fenv: List<Pair<String, String>>, fns: List<FnDecl>, types: List<TypeDecl>, fuel: Int) : List<List<Int>> =
   match body {
-    ELam(p, inner) => match args { [] => seval(body, ccenv, fns, types, fuel - 1); [a, ...rest] => let va : List<List<Int>> = seval(a, fcenv, fns, types, fuel) in seval_call(inner, rest, [Pair(p, va)] ++ ccenv, fcenv, fns, types, fuel) };
-    _ => seval(body, ccenv, fns, types, fuel - 1) }
-fn seval_match(sv: List<List<Int>>, arms: List<Pair<Pattern, Expr>>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>, fuel: Int) : List<List<Int>> =
-  match arms { [] => [glit(0)]; [Pair(p, body), ...rest] => if pmatch(p, sv, types) then seval(body, pbind(p, sv, types, env), fns, types, fuel) else seval_match(sv, rest, env, fns, types, fuel) }
+    ELam(p, inner) => match args {
+      [] => seval(body, ccenv, fns, types, c_fenv, fuel - 1);
+      [a, ...rest] => if is_fn_arg(a, fns, f_fenv)
+        then seval_call(inner, rest, ccenv, fcenv, [Pair(p, arg_fn_name(a, fns, f_fenv))] ++ c_fenv, f_fenv, fns, types, fuel)
+        else (let va : List<List<Int>> = seval(a, fcenv, fns, types, f_fenv, fuel) in seval_call(inner, rest, [Pair(p, va)] ++ ccenv, fcenv, c_fenv, f_fenv, fns, types, fuel)) };
+    _ => seval(body, ccenv, fns, types, c_fenv, fuel - 1) }
+fn seval_match(sv: List<List<Int>>, arms: List<Pair<Pattern, Expr>>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>, fenv: List<Pair<String, String>>, fuel: Int) : List<List<Int>> =
+  match arms { [] => [glit(0)]; [Pair(p, body), ...rest] => if pmatch(p, sv, types) then seval(body, pbind(p, sv, types, env), fns, types, fenv, fuel) else seval_match(sv, rest, env, fns, types, fenv, fuel) }
 
 fn gref_h(src: String) : List<List<Int>> = match parse_prog(src) { Program(types, fns, main) => match heval(unroll(main, fns, [], unroll_fuel(0)), [], fns, types) { (v, h) => v } }
 
@@ -1459,7 +1471,7 @@ fn in_cenv_seval(inputs: List<Pair<String, Int>>) : List<Pair<String, List<List<
 # so both cgen and heval are slow there regardless; that is a separate frontier, see the roadmap.)
 fn gref_m_checked(src: String, inputs: List<Pair<String, Int>>) : List<List<Int>> =
   match parse_prog(src) { Program(types, fns, main) =>
-    let _guard : List<List<Int>> = seval(main, in_cenv_seval(inputs), fns, types, unroll_fuel(0)) in
+    let _guard : List<List<Int>> = seval(main, in_cenv_seval(inputs), fns, types, [], unroll_fuel(0)) in
     match heval(unroll(main, fns, [], unroll_fuel(0)), in_cenv_seval(inputs), fns, types) { (_hv, _hh) =>
     gref_m(src, inputs) } }
 # claim-bind the scalar result (first output component) to claimedR

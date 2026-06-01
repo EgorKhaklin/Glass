@@ -1254,6 +1254,19 @@ def main() -> int:
         print(f"        rc={_db.returncode}  out: {_db.stdout.strip()[-150:]}  err: {_db.stderr.strip()[-150:]}")
         failures += 1
 
+    # Higher-order proving (v5.87): the seval guard resolves function-valued parameters via fenv
+    # (mirroring unroll), so a higher-order program — `map(inc, xs)` — is GUARDED and PROVEN instead
+    # of spuriously refused (it ABSTAINed before, because seval couldn't resolve the `f` callee that
+    # unroll+cgen handle). Goldilocks native path (~30s); proves the result and ACCEPTs.
+    _ho_path = os.path.join(EX, "prove", "map_prove.glass")
+    _ho = subprocess.run([sys.executable, GLASS, "prove", _ho_path, "inp=5"],
+                         capture_output=True, text=True, cwd=ROOT)
+    ho_ok = (_ho.returncode == 0) and ("ACCEPT" in _ho.stdout) and ("result:  13" in _ho.stdout)
+    print(f"  {'OK ' if ho_ok else 'FAIL'}  higher-order proving: map(inc, [5,2,3]) sum = 13 ACCEPT (no spurious refusal)")
+    if not ho_ok:
+        print(f"        rc={_ho.returncode}  out: {_ho.stdout.strip()[-200:]}  err: {_ho.stderr.strip()[-150:]}")
+        failures += 1
+
     # The unboxed single-Int Goldilocks field (goldw_*) must agree with the trusted
     # base-2^16 limb field (gold_*) and obey the field laws — the load-bearing
     # correctness of the "unbox the field" speed cut. (Interpreter check; the native
@@ -1452,7 +1465,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 20)  # +20: ... + witness3 + h3-merkle + tamper-fuzz + plain-name-surface + statement-binding + proof-corpus + dead-branch-ABSTAIN guards
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 21)  # +21: ... + witness3 + h3-merkle + tamper-fuzz + plain-name-surface + statement-binding + proof-corpus + dead-branch-ABSTAIN + higher-order guards
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures
