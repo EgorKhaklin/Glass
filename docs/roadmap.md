@@ -561,6 +561,10 @@ in priority order (the traditions push hardest on the first):
   perturbations and confirm the independent verifier REJECTs every one. The v5.78 campaign ran
   **1,600 forged proofs across 16 parallel seeds → 0 wrong-ACCEPTs**; a fast slice is now suite-gated
   off a committed proof fixture so a `verify_b3` regression that lets a forgery pass cannot land silently.
+  **Statement-binding (v5.80.0):** a `--claim` mode tampers the PUBLIC statement (gate list + claimed
+  result) rather than the proof — a valid proof of `a+b==8` must not verify against `a+b==9`. 640
+  claim-tampers across 8 seeds → 0 wrong-ACCEPTs; suite-gated. (Both campaigns surfaced *fuzzer* bugs,
+  never prover-soundness bugs — a no-op "tamper" miscount, now forced to a real change.)
 - **A plain-name surface — the thematic layer made optional. ✅ SHIPPED v5.79.0.** Every feature
   above now has a neutral public name beside its thematic one: `glass help` lists them, and
   `glass fingerprint`/`ledger`/`disclose` + `--cross-check` alias `name`/`tablet`/`seal`/`--witness3`.

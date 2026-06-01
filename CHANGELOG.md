@@ -7,6 +7,12 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [5.80.0] — 2026-06-01 — Statement-binding, fuzzed: a valid proof can't be re-pointed at a false claim
+- **A second soundness property under the tamper fuzzer.** v5.78 fuzzed the *proof* region (perturb the proof → must REJECT). This release adds `--claim` mode to `fuzz/tamper_pentecost.py`, which tampers the **public statement** — the gate list and the claimed result. This is *statement-binding*: a valid proof of `a+b==8` must NOT verify against a tampered claim `a+b==9` or an altered gate. A break here is the most dangerous kind — a true proof passed off as proving a *false* statement — so it is now fuzzed too.
+- **Campaign: 8 seeds × 40 = 640 claim-tampers → 0 wrong-ACCEPTs.** Every tampered statement was rejected by the independent Pentecost verifier. The suite gates a fast slice (`statement-binding: tampered public claim REJECTs`).
+- **Fixed a fuzzer false-positive (the v5.76-class lesson again).** A "tamper" that set an already-`0` token to `"0"` was a no-op, and an unchanged proof correctly ACCEPTs — which the fuzzer miscounted as a wrong-ACCEPT. Tampers are now forced to produce a real change, which also hardens the proof-region mode against the same artifact. The verifier itself was never wrong; the fuzzer was.
+- Suite **421/421**. Research/educational-grade, UNAUDITED; *do not protect real value.*
+
 ## [5.79.0] — 2026-06-01 — A plain-name surface: the esoteric layer made optional
 - **Two names, one feature.** Glass's verification suite wears thematic names (the Name, the Preserved Tablet, Opening the Seals, Pentecost, the Third Witness…). This release adds a **plain, professional surface** so neither audience is forced on the other. New `glass help` lists neutral command names; new CLI aliases `glass fingerprint` (= `name`), `glass ledger` (= `tablet`), `glass disclose` (= `seal`), and `--cross-check` (= `--witness3`) work identically to their thematic counterparts.
 - **The translation is documented, not hidden.** New [`docs/naming.md`](docs/naming.md) maps every plain name ⇆ thematic name ⇆ what it actually is. A newcomer can read Glass as a plain verifiable-computing toolkit; the thematic framing (see `docs/revelation.md`) stays as an optional inner layer.

@@ -1394,6 +1394,17 @@ def main() -> int:
         print(f"        {(_tp.stdout + _tp.stderr).strip()[-220:]}")
         failures += 1
 
+    # Statement-binding: tampering the PUBLIC CLAIM (the GATES region — gate list + claimed result)
+    # must REJECT. A break here is catastrophic (a true proof passed off as proving a false claim),
+    # so it's fuzzed too. A 640-tamper/8-seed campaign (v5.80.0) was clean; the suite gates a slice.
+    _tc = subprocess.run([sys.executable, os.path.join("fuzz", "tamper_pentecost.py"), "20251", "10", "--claim"],
+                         capture_output=True, text=True, cwd=_root)
+    tc_ok = (_tc.returncode == 0) and ("0 wrong-ACCEPTs" in _tc.stdout)
+    print(f"  {'OK ' if tc_ok else 'FAIL'}  statement-binding: tampered public claim REJECTs (gates region)")
+    if not tc_ok:
+        print(f"        {(_tc.stdout + _tc.stderr).strip()[-220:]}")
+        failures += 1
+
     # Plain-name surface (docs/naming.md): the public CLI exposes neutral names; the thematic
     # names remain as aliases. `glass help` must list the plain names, and each plain alias must
     # be identical to its thematic counterpart (so neither audience drifts out of test coverage).
@@ -1412,7 +1423,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 17)  # +17: ... + witness3 + h3-merkle + tamper-fuzz + plain-name-surface guards
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 18)  # +18: ... + witness3 + h3-merkle + tamper-fuzz + plain-name-surface + statement-binding guards
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

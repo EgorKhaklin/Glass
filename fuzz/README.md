@@ -21,6 +21,8 @@ python3 fuzz/fuzz_soundness.py --differential [N] [seed]   # two-verifier mode: 
 python3 fuzz/tamper_pentecost.py [seed] [M] [proof]       # adversarial mode: forge M proofs by random
                                                           #   single-token tampers, confirm the independent
                                                           #   Pentecost verifier REJECTs every one
+python3 fuzz/tamper_pentecost.py [seed] [M] --claim       # statement-binding: tamper the PUBLIC CLAIM
+                                                          #   (gate list + claimed result), confirm REJECT
 ```
 
 ## Adversarial mode — attacking the second witness
@@ -37,6 +39,13 @@ per-seed scratch file, so it parallelizes trivially across seeds.
 A 16-seed × 100-tamper campaign (**1,600 forged proofs**, v5.78.0) was clean — every tamper
 rejected. The suite gates a fast slice on every push so a future `verify_b3` regression that lets a
 forged proof pass cannot land silently.
+
+**`--claim` mode (v5.80.0)** tampers the *public statement* instead of the proof — the gate list and
+the claimed result. This is **statement-binding**: a valid proof of `a+b==8` must NOT verify against a
+tampered claim `a+b==9` or an altered gate. A break here is the most dangerous kind (a true proof
+passed off as proving a false statement), so it is fuzzed too — a 640-tamper/8-seed campaign was clean.
+(A "tamper" that doesn't change the token — e.g. setting an already-`0` token to `0` — is forced to a
+real change, so a no-op is never miscounted as a wrong-ACCEPT; this also hardened the proof-region mode.)
 
 This is the testing that finds bugs the enumerated gate cannot. Its first run did exactly that —
 it surfaced an over-strict equality in the Third Witness (a negative result like `-560` false-
