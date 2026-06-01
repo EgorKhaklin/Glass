@@ -1,5 +1,5 @@
 """
-Glass v5.78.0 — reference implementation.
+Glass v5.79.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -3822,7 +3822,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.78.0 — interactive REPL")
+    print("Glass v5.79.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3951,10 +3951,32 @@ def main() -> None:
     """Console entry point. After `pip install glass-lang`, this is what
     the `glass` command invokes. With no args it starts the REPL; with a
     filename it runs that file."""
+    # Plain-name flag aliases. The public CLI uses neutral, professional names;
+    # the thematic names (drawn from the docs/revelation.md reading) remain as
+    # aliases so neither audience is forced on the other. See docs/naming.md.
+    # `--cross-check` is the plain name for the Third Witness's `--witness3`.
+    sys.argv = [("--witness3" if a == "--cross-check" else a) for a in sys.argv]
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.78.0")
+        print("Glass 5.79.0")
+    elif sys.argv[1] in ("help", "--help", "-h"):
+        # Plain, professional command listing. The thematic names are aliases
+        # (docs/naming.md) — this surface keeps the esoteric layer optional.
+        print(
+            "Glass — a verifiable functional language.\n\n"
+            "Usage:\n"
+            "  glass <file.glass>            run a program\n"
+            "  glass prove <file> [k=v ...]  generate a zero-knowledge proof of its result\n"
+            "      --cross-check             also re-execute under the reference interpreter\n"
+            "      --emit <path>             write a portable proof instead of self-checking\n"
+            "  glass verify <proof>          check a portable proof with the independent verifier\n"
+            "  glass fingerprint [--check]   print/verify the content-addressed project identity\n"
+            "  glass ledger <cmd>            append-only, tamper-evident proof-verdict ledger\n"
+            "  glass disclose <cmd>          selective disclosure over a commitment\n"
+            "  glass --version               print the version\n\n"
+            "Run a subcommand with no further args for its own usage.\n"
+            "Thematic command aliases (the Name / Tablet / Seals / …) are documented in docs/naming.md.")
     elif sys.argv[1] == "prove":
         # `glass prove <file.glass> [name=value ...]` — compile the file's `main`
         # expression into a circuit and emit a succinct, zero-knowledge proof of
@@ -4132,20 +4154,20 @@ def main() -> None:
                 print(f"witness3: THIRD LINEAGE AGREES — the reference interpreter (glass.py, independent of the bridge\'s evaluator and its circuit lowering) independently computes f(inputs) = {_r3} (= the proven result mod the Goldilocks prime). Three lineages agree on the SEMANTICS — closing the source<->circuit gap that verify_b3 and Pentecost, both verifying the circuit, cannot see.")
             else:
                 print(f"witness3: DIVERGENCE — the proof attests {_rp} but the reference interpreter computes f(inputs) = {_r3}, and they differ EVEN MODULO the Goldilocks prime. The proof is STARK-valid, yet the lowered circuit\'s semantics differ from the source — a genuine source<->circuit or domain mismatch (e.g. an int64 wraparound the field does not share). Worth investigating.")
-    elif sys.argv[1] == "name":
-        # The Name — Glass's content-addressed canonical identity: one Poseidon-Merkle
+    elif sys.argv[1] in ("fingerprint", "name"):
+        # Content-addressed canonical identity (thematic name: "the Name"): one Poseidon-Merkle
         # root over the self-hosting core + prover/verifier bridge + the second verifier
-        # + tests + semantics. `glass name` prints it; `--check` matches name/NAME.
+        # + tests + semantics. Prints it; `--check` matches name/NAME.
         here = os.path.dirname(os.path.abspath(__file__))
         sys.exit(subprocess.run([sys.executable, os.path.join(here, "name", "glass_name.py"), *sys.argv[2:]]).returncode)
-    elif sys.argv[1] == "tablet":
-        # The Preserved Tablet — an append-only, tamper-evident Poseidon-Merkle ledger of
-        # proof verdicts (append | root | list | prove <i> | verify <i> | --selftest).
+    elif sys.argv[1] in ("ledger", "tablet"):
+        # Append-only, tamper-evident Poseidon-Merkle ledger of proof verdicts (thematic name:
+        # "the Preserved Tablet"). append | root | list | prove <i> | verify <i> | --selftest.
         here = os.path.dirname(os.path.abspath(__file__))
         sys.exit(subprocess.run([sys.executable, os.path.join(here, "ledger", "tablet.py"), *sys.argv[2:]]).returncode)
-    elif sys.argv[1] == "seal":
-        # Opening the Seals — selective disclosure over a blinded Poseidon commitment
-        # (commit k=v… | reveal <sealed> f… | verify <pres> | --selftest).
+    elif sys.argv[1] in ("disclose", "seal"):
+        # Selective disclosure over a blinded Poseidon commitment (thematic name: "Opening the
+        # Seals"). commit k=v… | reveal <sealed> f… | verify <pres> | --selftest.
         here = os.path.dirname(os.path.abspath(__file__))
         sys.exit(subprocess.run([sys.executable, os.path.join(here, "seal", "reveal.py"), *sys.argv[2:]]).returncode)
     elif sys.argv[1] == "verify":

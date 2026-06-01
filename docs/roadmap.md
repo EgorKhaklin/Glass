@@ -561,6 +561,12 @@ in priority order (the traditions push hardest on the first):
   perturbations and confirm the independent verifier REJECTs every one. The v5.78 campaign ran
   **1,600 forged proofs across 16 parallel seeds → 0 wrong-ACCEPTs**; a fast slice is now suite-gated
   off a committed proof fixture so a `verify_b3` regression that lets a forgery pass cannot land silently.
+- **A plain-name surface — the thematic layer made optional. ✅ SHIPPED v5.79.0.** Every feature
+  above now has a neutral public name beside its thematic one: `glass help` lists them, and
+  `glass fingerprint`/`ledger`/`disclose` + `--cross-check` alias `name`/`tablet`/`seal`/`--witness3`.
+  [`naming.md`](naming.md) maps plain ⇆ thematic ⇆ what-it-is. Additive (CLI aliases + docs, no rename —
+  the dir names path-bind into the Name), so a newcomer can read Glass as a plain verifiable-computing
+  toolkit while the [`revelation.md`](revelation.md) framing stays the inner layer. Both names are suite-gated.
 
 The research-scale bet, wearing its honest scope: **the Third Witness.** 🟡 **Semantic cut
 LANDED v5.71.0:** `glass prove --witness3` binds the proof's public result to the reference

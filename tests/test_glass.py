@@ -1394,8 +1394,25 @@ def main() -> int:
         print(f"        {(_tp.stdout + _tp.stderr).strip()[-220:]}")
         failures += 1
 
+    # Plain-name surface (docs/naming.md): the public CLI exposes neutral names; the thematic
+    # names remain as aliases. `glass help` must list the plain names, and each plain alias must
+    # be identical to its thematic counterpart (so neither audience drifts out of test coverage).
+    def _glass(*a):
+        return subprocess.run([sys.executable, "glass.py", *a], capture_output=True, text=True, cwd=_root)
+    _help = _glass("help")
+    _fp_plain, _fp_them = _glass("fingerprint"), _glass("name")
+    alias_ok = (
+        _help.returncode == 0
+        and all(w in _help.stdout for w in ("fingerprint", "ledger", "disclose", "verify"))
+        and _fp_plain.stdout == _fp_them.stdout          # `fingerprint` ≡ `name`
+        and _fp_plain.returncode == _fp_them.returncode)
+    print(f"  {'OK ' if alias_ok else 'FAIL'}  plain-name surface: `help` + fingerprint/ledger/disclose aliases")
+    if not alias_ok:
+        print(f"        {(_help.stdout + _help.stderr).strip()[-200:]}")
+        failures += 1
+
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 15)  # +15: ... + witness3 + h3-merkle-membership guards
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 17)  # +17: ... + witness3 + h3-merkle + tamper-fuzz + plain-name-surface guards
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

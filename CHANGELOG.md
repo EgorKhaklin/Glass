@@ -7,6 +7,12 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [5.79.0] — 2026-06-01 — A plain-name surface: the esoteric layer made optional
+- **Two names, one feature.** Glass's verification suite wears thematic names (the Name, the Preserved Tablet, Opening the Seals, Pentecost, the Third Witness…). This release adds a **plain, professional surface** so neither audience is forced on the other. New `glass help` lists neutral command names; new CLI aliases `glass fingerprint` (= `name`), `glass ledger` (= `tablet`), `glass disclose` (= `seal`), and `--cross-check` (= `--witness3`) work identically to their thematic counterparts.
+- **The translation is documented, not hidden.** New [`docs/naming.md`](docs/naming.md) maps every plain name ⇆ thematic name ⇆ what it actually is. A newcomer can read Glass as a plain verifiable-computing toolkit; the thematic framing (see `docs/revelation.md`) stays as an optional inner layer.
+- **Additive, not a rename.** The directories (`pentecost/`, `name/`, `ledger/`, `seal/`) keep their names — renaming them would break the Name's path-bindings and the suite — so the plain layer is aliases + docs, zero behavior change. Both names stay under test: the suite asserts `glass help` lists the plain names and each alias is byte-identical to its thematic form.
+- Suite **420/420** (the plain-name surface is now gated). Research/educational-grade, UNAUDITED.
+
 ## [5.78.0] — 2026-06-01 — Adversarial tamper-fuzz of the second witness: 1,600 forged proofs, every one rejected
 - **Attacking the independent verifier directly.** The v5.77 differential fuzzed *honest* proofs (do the two verifiers agree on ACCEPT?). This release fuzzes the dual property on the second witness alone: a **tampered** proof must NEVER verify. New `fuzz/tamper_pentecost.py <seed> [M] [proof]` perturbs random single tokens of an honest proof — `v±1`, `0`, `2v+1`, a uniform field element — across the whole ~155k-token `ProofB3` region and runs the **independent** Pentecost `verify_b3` on each. A "wrong-ACCEPT" (a forged proof that still verifies) would be a verifier soundness hole of the crown-jewel class.
 - **Campaign: 16 seeds × 100 tampers = 1,600 forged proofs → 0 wrong-ACCEPTs** (workflow `whrym5q4r`, 16 parallel workers). Every tampered proof was rejected by the second, independently-implemented verifier; the honest baseline ACCEPTs first (asserted, so the campaign can't be vacuously "sound"). The fuzzer is pure Python with a per-seed scratch file — embarrassingly parallel across seeds.
