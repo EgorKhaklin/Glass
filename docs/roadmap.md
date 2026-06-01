@@ -617,11 +617,17 @@ recursively improve itself and prove it at the same time.*
   - **Deeper / unbounded recursion.** The bridge unrolls recursion to a fixed fuel (8); programs deeper
     than that ABSTAIN. Proving Glass's *own* larger functions needs either a higher bound (cost) or a
     recursion/induction argument rather than unrolling.
-  - **Dead-branch out-of-domain ops should ABSTAIN, not REJECT.** `cgen` builds *both* arms of an `if`,
-    so an out-of-domain operation in the *not-taken* arm (a divide-by-zero in a base case, an out-of-range
-    comparison) makes the circuit unsatisfiable → the prover REJECTs a *true* statement. The honest verdict
-    is ABSTAIN (Glass can't faithfully lower this program), not REJECT (a disproof). A real soundness-of-
-    *messaging* gap surfaced by the division work — `gcd` (Euclid, `b==0` base over `a % b`) hits it today.
-    Fixing it means predicated/dead-branch-safe gadgets, or a seval pass that detects the case and abstains.
+  - **Dead-branch out-of-domain ops — verdict fixed (ABSTAIN, not REJECT). ✅ v5.86.0.** `cgen` builds
+    *both* arms of an `if`, so an out-of-domain op in the *not-taken* arm (a divide-by-zero in a base case,
+    an out-of-range comparison) makes the circuit unsatisfiable. Before v5.86 the prover would REJECT such a
+    *true* statement (misreading as a disproof); now an all-branches `heval` domain guard in `gref_m_checked`
+    catches it and **ABSTAINs** honestly (`examples/prove/deadbranch_abstain.glass`, suite-gated). Safe and
+    regression-free: `seval` already refuses higher-order callees / over-deep recursion *first*, so only
+    first-order depth-ok programs reach the guard, on which `heval` errors *exactly* when `cgen`'s gadget is
+    unsatisfiable. **Still open — ABSTAIN → ACCEPT via predication:** the *ideal* is to prove the live result
+    even when a dead arm is out-of-domain. That needs predicated constraints (selector-gate each `GEqZero` by
+    a per-branch live bit so dead arms impose nothing) — an architectural change to the gate model + both
+    verifiers. (`gcd` also needs this, AND a fix for its exponential unroll — its compound recursive arg
+    `a%b` duplicates each level, so the unrolled AST is exponential regardless.)
   - **Proving a property of the compiler itself** (not just a helper's result) — the largest step:
     `verify_b3`-as-a-circuit (H3), or proving the fixpoint relation, is the eventual closing of the loop.

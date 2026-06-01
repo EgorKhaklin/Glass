@@ -1445,9 +1445,23 @@ fn in_cenv_seval(inputs: List<Pair<String, Int>>) : List<Pair<String, List<List<
 # seval's accept-set is a SUBSET of the circuit-faithful set (fuel lockstep + short-circuit), so
 # whenever seval does not error, gref_m's R is the exact result. (Bypassing this guard by calling
 # gprove_sound directly still proves a truncated circuit — out of the soundness threat model.)
+# It then forces a SECOND guard — `heval` on the UNROLLED program — the ALL-BRANCHES domain guard,
+# closing the dead-branch case. cgen builds BOTH if-arms / all match-arms into one muxed circuit, so a
+# program is faithfully lowerable only if EVERY branch's `/ % < > <= >=` operands are in-domain — not
+# just the taken one. heval evaluates all arms and `error`s (ABSTAIN) on any out-of-domain op, so an
+# out-of-domain op in a DEAD branch (e.g. `if cond then a else a%0`, cond true) ABSTAINs honestly
+# instead of making cgen's circuit UNSATISFIABLE and REJECTing a TRUE statement.
+# Why this is safe (no ACCEPTing program regresses): seval runs FIRST and already refuses higher-order
+# callees and over-deep recursion, so only first-order, depth-ok programs reach heval; on those, heval
+# `error`s EXACTLY when an operand is out-of-range / a divisor is zero — EXACTLY when cgen's gadget is
+# unsatisfiable. heval is O(unrolled-AST-size), the same order as cgen, so it adds no complexity class.
+# (It does NOT rescue gcd-class programs — a compound recursive arg makes the UNROLL itself exponential,
+# so both cgen and heval are slow there regardless; that is a separate frontier, see the roadmap.)
 fn gref_m_checked(src: String, inputs: List<Pair<String, Int>>) : List<List<Int>> =
   match parse_prog(src) { Program(types, fns, main) =>
-    let _guard : List<List<Int>> = seval(main, in_cenv_seval(inputs), fns, types, unroll_fuel(0)) in gref_m(src, inputs) }
+    let _guard : List<List<Int>> = seval(main, in_cenv_seval(inputs), fns, types, unroll_fuel(0)) in
+    match heval(unroll(main, fns, [], unroll_fuel(0)), in_cenv_seval(inputs), fns, types) { (_hv, _hh) =>
+    gref_m(src, inputs) } }
 # claim-bind the scalar result (first output component) to claimedR
 fn build_claim_m(src: String, inputs: List<Pair<String, Int>>, claimedR: List<Int>) : Build =
   match build_multi_m(src, inputs) { (outws, b) =>

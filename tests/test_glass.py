@@ -1241,6 +1241,19 @@ def main() -> int:
         print(f"        stdout: {_cmp.stdout.strip()[-150:]}  stderr: {_cmp.stderr.strip()[-150:]}")
         failures += 1
 
+    # Dead-branch domain guard (v5.86): cgen builds BOTH if-arms, so an out-of-domain op in a DEAD
+    # arm (here `a % 0`, with the `a==a` condition always true) must ABSTAIN — never REJECT a true
+    # statement, never silently prove. The all-branches heval guard in gref_m_checked catches it.
+    # (Goldilocks native path; ~15s — it abstains before any proof is built.)
+    _db_path = os.path.join(EX, "prove", "deadbranch_abstain.glass")
+    _db = subprocess.run([sys.executable, GLASS, "prove", _db_path, "a=7", "b=0"],
+                         capture_output=True, text=True, cwd=ROOT)
+    db_ok = (_db.returncode != 0) and ("ABSTAIN" in (_db.stdout + _db.stderr)) and ("ACCEPT" not in _db.stdout)
+    print(f"  {'OK ' if db_ok else 'FAIL'}  dead-branch out-of-domain ABSTAINs (a%0 in a dead arm; no false REJECT/ACCEPT)")
+    if not db_ok:
+        print(f"        rc={_db.returncode}  out: {_db.stdout.strip()[-150:]}  err: {_db.stderr.strip()[-150:]}")
+        failures += 1
+
     # The unboxed single-Int Goldilocks field (goldw_*) must agree with the trusted
     # base-2^16 limb field (gold_*) and obey the field laws — the load-bearing
     # correctness of the "unbox the field" speed cut. (Interpreter check; the native
@@ -1439,7 +1452,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 19)  # +19: ... + witness3 + h3-merkle + tamper-fuzz + plain-name-surface + statement-binding + proof-corpus guards
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 20)  # +20: ... + witness3 + h3-merkle + tamper-fuzz + plain-name-surface + statement-binding + proof-corpus + dead-branch-ABSTAIN guards
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

@@ -1,0 +1,13 @@
+# Dead-branch domain safety. The else-arm divides by zero, but the condition `a == a`
+# is always true, so that arm is DEAD at runtime. The prover's circuit model builds
+# BOTH arms of an `if`, though — so Glass cannot faithfully lower this program. The
+# honest verdict is ABSTAIN (refuse), NOT a REJECT (which would wrongly read as "the
+# statement is false") and NOT a silently-wrong proof.
+#
+#   glass prove examples/prove/deadbranch_abstain.glass a=7 b=0    # -> verdict: ABSTAIN
+#
+# (Added v5.86: the all-branches domain guard catches the out-of-domain op in the dead
+#  arm and abstains. See docs/roadmap.md "The convergence" for the deeper fix — predicated
+#  constraints — that would let the dead arm impose nothing and prove the live result.)
+
+if a == a then a else a % b
