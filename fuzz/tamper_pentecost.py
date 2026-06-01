@@ -16,22 +16,32 @@
 # proof-file defaults to the committed honest corpus fixture, so the campaign needs no slow
 # native re-proof. The honest baseline is asserted to ACCEPT before any tampering — otherwise
 # the fuzzer would be vacuously "sound" against a proof nothing accepts.
-import sys, os, random
+import sys, os, random, gzip
 sys.setrecursionlimit(100000)
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _root)
 from pentecost.pentecost_verify import parse, verify_b3
 
+def load_tokens(path):
+    """Fixtures are stored gzipped (token streams compress ~3-5x); read either form."""
+    op = gzip.open if path.endswith(".gz") else open
+    with op(path, "rt") as f:
+        return f.read().split()
+
 argv = [a for a in sys.argv[1:] if not a.startswith("--")]
 claim = "--claim" in sys.argv          # tamper the public statement instead of the proof
 seed = int(argv[0])
 M = int(argv[1]) if len(argv) > 1 else 50
-proof = argv[2] if len(argv) > 2 else os.path.join(_root, "pentecost", "corpus", "honest_a_plus_b.b3.txt")
+proof = argv[2] if len(argv) > 2 else os.path.join(_root, "pentecost", "corpus", "honest_a_plus_b.b3.txt.gz")
 P = 2**64 - 2**32 + 1
-base = open(proof).read().split()
+base = load_tokens(proof)
+region = "claim" if claim else "proof"
+scratch = f"/tmp/tamper_{region}_seed_{seed}.txt"
 
 # Baseline sanity: the untampered proof MUST verify, or the campaign tests nothing.
-_g0, _p0 = parse(proof); _r0 = verify_b3(_g0, _p0)
+# (parse() reads a plain file, so write the baseline out first — handles the gzip case too.)
+open(scratch, "w").write(" ".join(base))
+_g0, _p0 = parse(scratch); _r0 = verify_b3(_g0, _p0)
 if not (_r0[0] if isinstance(_r0, tuple) else _r0):
     print(f"SEED {seed}: BASELINE FAIL — honest proof did not ACCEPT under Pentecost"); sys.exit(2)
 pi = base.index("PROOF")
@@ -40,9 +50,7 @@ if claim:
     numpos = [i for i in range(1, pi) if base[i].lstrip("-").isdigit()]
 else:
     numpos = [i for i in range(pi + 1, len(base)) if base[i].lstrip("-").isdigit()]
-region = "claim" if claim else "proof"
 rng = random.Random(seed)
-scratch = f"/tmp/tamper_{region}_seed_{seed}.txt"
 wrong = []
 for _ in range(M):
     t = base[:]

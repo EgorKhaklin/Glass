@@ -50,9 +50,11 @@ passed off as proving a false statement), so it is fuzzed too — a 640-tamper/8
 real change, so a no-op is never miscounted as a wrong-ACCEPT; this also hardened the proof-region mode.)
 
 **`corpus_check.py` (v5.82.0)** runs the differential + tamper checks across every committed proof
-fixture in `pentecost/corpus/` (`a+b`, `a*b`, `a*a+b`), not just one — honest must ACCEPT, a proof-region
-or claim-region tamper must REJECT. This catches a `verify_b3` bug that only manifests on certain circuit
-shapes (more gates, different gate kinds), which a single-fixture gate would miss. Suite-gated.
+fixture in `pentecost/corpus/` (`a+b`, `a*b`, `a*a+b`, and `a<b` — the **comparison gadget**, the
+riskiest lowering, 696 gates), not just one — honest must ACCEPT, a proof-region or claim-region tamper
+must REJECT. This catches a `verify_b3` bug that only manifests on certain circuit shapes (more gates,
+different gate kinds), which a single-fixture gate would miss. Suite-gated. The fixtures are stored
+**gzipped** (token streams compress ~3-5x); `corpus_check.py` and `tamper_pentecost.py` read either form.
 
 This is the testing that finds bugs the enumerated gate cannot. Its first run did exactly that —
 it surfaced an over-strict equality in the Third Witness (a negative result like `-560` false-

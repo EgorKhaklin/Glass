@@ -7,6 +7,12 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [5.83.0] — 2026-06-01 — The comparison gadget under the second verifier — and a gzipped corpus
+- **The riskiest lowering, now in the differential corpus.** The v5.82 corpus covered `+`, `*`, and a compound — all simple arithmetic. The **comparison gadget** (`<` `>` `<=` `>=` — range-decomposition into 696 gates, the most intricate and soundness-sensitive lowering Glass does) was *not* checked by the independent verifier on a committed fixture. Now it is: `pentecost/corpus/honest_a_lt_b.b3.txt.gz` (a proof of `a<b`, 3<5→1, 552k tokens), with Pentecost ACCEPTing the honest proof and REJECTing proof- and claim-region tampers.
+- **Corpus stored gzipped.** Proof token streams compress ~3–5×; the four fixtures are ~1.5 MB gzipped (vs ~5 MB plain). `fuzz/corpus_check.py` and `fuzz/tamper_pentecost.py` read either form transparently — the CANON verifier (`pentecost/pentecost_verify.py`) is untouched.
+- **All clean.** 4 fixtures × (honest ACCEPT + proof-tamper REJECT + claim-tamper REJECT) → 0 failures; suite-gated. The two-verifier guarantee now spans arithmetic *and* the comparison gadget.
+- Suite **422/422**. Research/educational-grade, UNAUDITED.
+
 ## [5.82.0] — 2026-06-01 — A multi-shape proof corpus: the two-verifier agreement broadened beyond `a+b`
 - **The differential's blind spot, closed.** Every second-verifier guarantee so far — the end-to-end differential, the tamper fuzz, the statement-binding fuzz — ran on a single circuit shape, `a+b`. A `verify_b3` bug that only manifests on a *different* shape (more gates, a multiply, a compound expression) would have been invisible to the gate.
 - **Three committed fixtures.** `pentecost/corpus/` now holds honest portable proofs of `a+b` (8), `a*b` (15), and `a*a+b` (14 — a 192k-token circuit with more gates). New `fuzz/corpus_check.py` asserts, for **every** fixture, that the independent Pentecost verifier ACCEPTs the honest proof and REJECTs a tamper in *both* the proof region and the public-claim region.

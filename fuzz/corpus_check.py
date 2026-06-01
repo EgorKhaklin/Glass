@@ -7,11 +7,17 @@
 # This broadens the "let the verifier be two" + tamper guarantees beyond the single a+b
 # shape the end-to-end differential originally ran on. Pure Python; fast (verify only).
 #   python3 fuzz/corpus_check.py
-import sys, os, glob
+import sys, os, glob, gzip
 sys.setrecursionlimit(100000)
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _root)
 from pentecost.pentecost_verify import parse, verify_b3
+
+def load_tokens(path):
+    """Fixtures are stored gzipped (token streams compress ~3-5x); read either form."""
+    op = gzip.open if path.endswith(".gz") else open
+    with op(path, "rt") as f:
+        return f.read().split()
 
 def accepts(toks):
     open("/tmp/corpus_scratch.txt", "w").write(" ".join(toks))
@@ -21,12 +27,12 @@ def accepts(toks):
     except Exception:
         return False
 
-corpus = sorted(glob.glob(os.path.join(_root, "pentecost", "corpus", "*.b3.txt")))
+corpus = sorted(glob.glob(os.path.join(_root, "pentecost", "corpus", "*.b3.txt*")))
 assert corpus, "no corpus fixtures under pentecost/corpus/"
 fails = []
 for path in corpus:
     name = os.path.basename(path)
-    toks = open(path).read().split()
+    toks = load_tokens(path)
     pi = toks.index("PROOF")
     if not accepts(toks):
         fails.append(f"{name}: honest proof REJECTED"); continue

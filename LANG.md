@@ -1,6 +1,6 @@
 # Glass — Language Specification
 
-**Version:** 5.82.0
+**Version:** 5.83.0
 **Status:** Self-hosting research language (not production-hardened). Installable
 via `pip install -e .` from the repo root; the `glass` console script runs
 files or starts a REPL.
