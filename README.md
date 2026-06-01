@@ -6,8 +6,9 @@
 ### You can see straight through it.
 
 [![Tests](https://github.com/EgorKhaklin/Glass/actions/workflows/tests.yml/badge.svg)](https://github.com/EgorKhaklin/Glass/actions/workflows/tests.yml)
-[![Tests passing](https://img.shields.io/badge/tests-418%2F418-00bcd4?style=flat-square)](tests/test_glass.py)
+[![Tests passing](https://img.shields.io/badge/tests-422%2F422-00bcd4?style=flat-square)](tests/test_glass.py)
 [![Self-hosting](https://img.shields.io/badge/self--hosting-✓_bootstrap_fixpoint-00bcd4?style=flat-square)](docs/self-hosting.md)
+[![Verified twice](https://img.shields.io/badge/proofs-checked_by_two_verifiers-00bcd4?style=flat-square)](pentecost/)
 [![License](https://img.shields.io/badge/license-MIT_OR_Apache--2.0-00bcd4?style=flat-square)](LICENSE)
 
 </div>
@@ -44,8 +45,9 @@ nowhere left to hide.
 Generated or written, one rule does not bend: you should never have to take the
 code's word for it.
 
-It tells the truth. It reconstructs itself. It proves what happened. The first
-you have just read; the other two it shows you below.
+It tells the truth. It reconstructs itself. It proves what happened — and lets
+the proof be checked by something other than itself. The first you have just
+read; the rest it shows you below.
 
 <br/>
 
@@ -65,13 +67,24 @@ you have just read; the other two it shows you below.
 > answer that reveals the commitment, the query, the result, and **not a single
 > row**.
 >
-> Then it closes the loop: **write a Glass function — arithmetic, calls, recursion,
-> `match` — and get a zero-knowledge proof of its result.** The prover is a
-> from-scratch STARK (field, hash, Merkle trees, FRI, blinding). Its full feature
-> set, `match` over your own data types included, runs on the default field; the
-> arithmetic-and-comparison core now also runs over the production **Goldilocks**
-> field that real provers use. You write what a program *means*; you get a
+> Then it closes the loop: **write a Glass function — arithmetic, comparisons,
+> calls, recursion — and get a zero-knowledge proof of its result**, over the
+> production **Goldilocks** field that real provers use (the default for `glass
+> prove`; a toy Baby Bear field adds full `match`-over-your-own-types for
+> teaching). The prover is a from-scratch STARK — field, Poseidon hash, Merkle
+> trees, FRI, blinding. You write what a program *means*; you get a
 > machine-checkable proof it ran exactly as written.
+>
+> ### And it's checked twice.
+> A proof you can't independently check is just a promise. So the verifier is
+> **two**: a second, from-scratch re-implementation — a different language, a
+> different number representation, sharing **no code** with the prover —
+> re-derives every challenge and re-checks the proof. Emit it on one side
+> (`glass prove --emit`), verify it on the other (`glass verify`) — separate
+> programs, separate lineages, one verdict that must agree. And when the prover
+> can't faithfully turn a program into a circuit, it says so (**ABSTAIN**) rather
+> than bluff an answer. A thousand-plus tampered and forged proofs have been
+> thrown at the second verifier; every one was rejected.
 >
 > It is a from-scratch demonstration, not audited cryptography — what a proof here
 > does and does not guarantee is written down in full in
@@ -118,6 +131,10 @@ pip install -e .            # Python 3.10+ — no deps for the interpreter
 glass examples/basic/hello.glass
 glass examples/prove/prove_pane.glass   # prove queries over a private table, revealing no rows
 glass                        # or start the REPL
+
+# Prove a function's result, then check the proof with the INDEPENDENT verifier:
+glass prove --emit /tmp/p.txt examples/prove/hello_prove.glass inp=9
+glass verify /tmp/p.txt                 # -> PENTECOST: ACCEPT  (a separate program, no shared code)
 ```
 
 Prefer the browser? `python -m http.server` and open
@@ -134,6 +151,7 @@ Prefer the browser? `python -m http.server` and open
 | **Watch Glass reconstruct itself** | [Self-hosting](docs/self-hosting.md) · [`examples/selfhost/`](examples/selfhost/) |
 | **See the zero-knowledge prover** | **[Frost — a zk-STARK in Glass](examples/frost/)** · [write Glass, get a proof](examples/prove/) |
 | **Prove a query over private data** | **[Pane ⊕ Frost — the founding payoff](examples/prove/prove_pane.glass)** · [in zero-knowledge](examples/prove/prove_query_zk.glass) |
+| **See a proof checked independently** | **[Pentecost — let the verifier be two](pentecost/)** · [`glass prove --emit` → `glass verify`](pentecost/README.md) |
 | **Read the whole story** | [Glass, end to end](docs/the-story.md) |
 | **Know what a proof here really guarantees** | [Soundness — the honest ledger](docs/soundness.md) |
 | **Know where it's headed** | [Roadmap](docs/roadmap.md) |
@@ -151,8 +169,11 @@ glass/
 │   ├── selfhost/  quartz/  stage3/          ·  Glass compiling Glass
 │   └── pane/  frost/  prove/                ·  built in Glass: a query language, a
 │                                                zk-STARK, and a bridge from source to proof
+├── pentecost/        # a second, independent verifier — every proof checked twice
+├── name/ ledger/ seal/   # content-addressed identity · append-only verdict ledger · selective disclosure
+├── fuzz/             # soundness fuzzers — random + adversarial tamper/claim campaigns
 ├── docs/             # tour, spec, self-hosting, soundness, roadmap
-├── tests/            # the regression suite (418/418)
+├── tests/            # the regression suite (422/422)
 └── playground.html   # browser playground (Pyodide)
 ```
 
@@ -160,9 +181,10 @@ glass/
 
 ## Status
 
-Glass is a research language and a labor of love. It self-hosts, ships 418
-passing tests, runs in the browser, and is the foundation for the experiments
-in [`examples/frost/`](examples/frost/) and [`examples/prove/`](examples/prove/).
+Glass is a research language and a labor of love. It self-hosts, ships 422
+passing tests, runs in the browser, proves the result of a function and has that
+proof re-checked by a second independent verifier, and is the foundation for the
+experiments in [`examples/frost/`](examples/frost/) and [`examples/prove/`](examples/prove/).
 It is not production-hardened, and it doesn't pretend to be: every claim above is
 a command you can run, and every limit is written down plainly — start with the
 [soundness ledger](docs/soundness.md). Nothing taken on faith, including the faith
