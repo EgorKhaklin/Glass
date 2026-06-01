@@ -1226,8 +1226,20 @@ def main() -> int:
         print(f"        stdout: {_cmp.stdout.strip()[-150:]}  stderr: {_cmp.stderr.strip()[-150:]}")
         failures += 1
 
+    # The unboxed single-Int Goldilocks field (goldw_*) must agree with the trusted
+    # base-2^16 limb field (gold_*) and obey the field laws — the load-bearing
+    # correctness of the "unbox the field" speed cut. (Interpreter check; the native
+    # half of the difftest + the bootstrap fixpoint are run separately.)
+    rc, out, err = run_file(os.path.join(EX, "prove", "goldw_difftest.glass"))
+    gw_ok = (rc == 0) and ("CHECK" in out) and (" F" not in out)
+    print(f"  {'OK ' if gw_ok else 'FAIL'}  goldw_* unboxed field == gold_* (field laws hold)")
+    if not gw_ok:
+        print(f"        rc={rc}; any 'CHECK ... F' is a field mismatch")
+        print(f"        out: {out.strip()[-200:]}  err: {err.strip()[-150:]}")
+        failures += 1
+
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 3)  # +3: statement-binding + 2 baby-bear prove guards
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 4)  # +4: stmt-binding + 2 baby-bear + goldw field guards
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

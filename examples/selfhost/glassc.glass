@@ -188,6 +188,27 @@ fn c_prelude_of(unused: Int) : String =
   "  unsigned long long ai = (unsigned long long)q_gold_comb(a), bi = (unsigned long long)q_gold_comb(b);\n" ++
   "  return q_gold_split((unsigned long long)(((unsigned __int128)ai + (unsigned __int128)P - (unsigned __int128)bi) % P));\n" ++
   "}\n" ++
+  "/* UNBOXED Goldilocks: element = raw u64 bits in a signed long long. No comb/split\n" ++
+  "   (no Cons-walk, no GC-alloc) — the whole point of the speed cut. Mirrors glass.py's goldw_*. */\n" ++
+  "static long long q_goldw_mul(long long a, long long b) {\n" ++
+  "  unsigned long long P = 18446744069414584321ULL;\n" ++
+  "  return (long long)(((unsigned __int128)(unsigned long long)a * (unsigned long long)b) % P);\n" ++
+  "}\n" ++
+  "static long long q_goldw_add(long long a, long long b) {\n" ++
+  "  unsigned long long P = 18446744069414584321ULL;\n" ++
+  "  return (long long)(((unsigned __int128)(unsigned long long)a + (unsigned long long)b) % P);\n" ++
+  "}\n" ++
+  "static long long q_goldw_sub(long long a, long long b) {\n" ++
+  "  unsigned long long P = 18446744069414584321ULL;\n" ++
+  "  return (long long)(((unsigned __int128)(unsigned long long)a + (unsigned __int128)P - (unsigned long long)b) % P);\n" ++
+  "}\n" ++
+  "static long long q_goldw_inv(long long a) {\n" ++
+  "  unsigned long long P = 18446744069414584321ULL;\n" ++
+  "  unsigned long long base = (unsigned long long)a % P; if (base == 0) return 0;\n" ++
+  "  unsigned long long e = P - 2, r = 1, b2 = base;\n" ++
+  "  while (e > 0) { if (e & 1) r = (unsigned long long)(((unsigned __int128)r * b2) % P); b2 = (unsigned long long)(((unsigned __int128)b2 * b2) % P); e >>= 1; }\n" ++
+  "  return (long long)r;\n" ++
+  "}\n" ++
   "/* polymorphic ++: a list is a q_value (magic tag in first word); a string\n" ++
   "   is a char* whose first bytes are ASCII != magic. ++ operands are always\n" ++
   "   pointers (never raw ints), so reading the first word is safe. */\n" ++
@@ -608,6 +629,18 @@ fn gen_builtin(name: String, args: List<Expr>, venv: List<Pair<String, String>>,
         Some(mk_builtin(sargs, tv, lifted, "q_gold_add((long long)(" ++ a0 ++ "), (long long)(" ++ a1 ++ "))"))
       else if name == "gold_sub" then
         Some(mk_builtin(sargs, tv, lifted, "q_gold_sub((long long)(" ++ a0 ++ "), (long long)(" ++ a1 ++ "))"))
+      else if name == "goldw_mul" then
+        Some(mk_builtin(sargs, tv, lifted, "q_goldw_mul((long long)(" ++ a0 ++ "), (long long)(" ++ a1 ++ "))"))
+      else if name == "goldw_add" then
+        Some(mk_builtin(sargs, tv, lifted, "q_goldw_add((long long)(" ++ a0 ++ "), (long long)(" ++ a1 ++ "))"))
+      else if name == "goldw_sub" then
+        Some(mk_builtin(sargs, tv, lifted, "q_goldw_sub((long long)(" ++ a0 ++ "), (long long)(" ++ a1 ++ "))"))
+      else if name == "goldw_inv" then
+        Some(mk_builtin(sargs, tv, lifted, "q_goldw_inv((long long)(" ++ a0 ++ "))"))
+      else if name == "goldw_to_limbs" then
+        Some(mk_builtin(sargs, tv, lifted, "q_gold_split((unsigned long long)(long long)(" ++ a0 ++ "))"))
+      else if name == "limbs_to_goldw" then
+        Some(mk_builtin(sargs, tv, lifted, "q_gold_comb((long long)(" ++ a0 ++ "))"))
       else if name == "string_index_of" then
         Some(mk_builtin(sargs, tv, lifted, "q_str_index_of((char*)(intptr_t)(" ++ a0 ++
                 "), (char*)(intptr_t)(" ++ a1 ++ "))"))

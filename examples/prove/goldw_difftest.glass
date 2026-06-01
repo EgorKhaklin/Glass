@@ -1,0 +1,41 @@
+# STAGE 0 of the "unbox the field" cut: prove the unboxed single-Int Goldilocks
+# (goldw_*) agrees with the trusted base-2^16 limb field (gold_*) AND that the
+# interpreter and the native compiler agree BYTE-IDENTICALLY. No bridge import —
+# only builtins — so it type-checks on both front ends and run_native just cp's it.
+#
+#   python3 glass.py examples/prove/goldw_difftest.glass            (interpreter)
+#   bash examples/selfhost/run_native.sh examples/prove/goldw_difftest.glass  (native)
+#   diff the two outputs -> must be empty, and every CHECK must be T.
+#
+# A goldw element is ONE Int holding the u64 bit-pattern (canonical values >= 2^63
+# look "negative"); equal field elements have equal bits, so `==` is field equality.
+
+fn lw(c: Int) : List<Int> = goldw_to_limbs(c)            # goldw elem -> canonical limbs
+fn gw(xs: List<Int>) : Int = limbs_to_goldw(xs)          # limbs -> goldw elem
+fn ck_mul(a: Int, b: Int) : Bool = goldw_mul(a, b) == gw(gold_mul(lw(a), lw(b)))
+fn ck_add(a: Int, b: Int) : Bool = goldw_add(a, b) == gw(gold_add(lw(a), lw(b)))
+fn ck_sub(a: Int, b: Int) : Bool = goldw_sub(a, b) == gw(gold_sub(lw(a), lw(b)))
+fn sb(b: Bool) : String = if b then "T" else "F"
+
+# walk a generator to build a long sequence of (often >= 2^63) field values, and at
+# each step assert goldw matches gold for *, +, -
+fn walk(x: Int, n: Int, acc: Bool) : Bool =
+  if n <= 0 then acc
+  else let y : Int = goldw_add(goldw_mul(x, 7), 3) in
+       walk(y, n - 1, acc && ck_mul(x, y) && ck_add(x, y) && ck_sub(x, y))
+
+let big1 : Int = gw([0, 0, 0, 40000])                    # 40000*2^48 mod p — a large element (>= 2^63 path)
+let big2 : Int = gw([12345, 54321, 9999, 60000])
+let _ : String = print("CHECK walk " ++ sb(walk(123456789, 300, true)))
+let _ : String = print("CHECK bigmul " ++ sb(ck_mul(big1, big2)))
+let _ : String = print("CHECK bigadd " ++ sb(ck_add(big1, big2)))
+let _ : String = print("CHECK bigsub " ++ sb(ck_sub(big1, big2)))
+let _ : String = print("CHECK inv_big1 " ++ sb(goldw_mul(big1, goldw_inv(big1)) == 1))
+let _ : String = print("CHECK inv_big2 " ++ sb(goldw_mul(big2, goldw_inv(big2)) == 1))
+let _ : String = print("CHECK inv_small " ++ sb(goldw_mul(123456789, goldw_inv(123456789)) == 1))
+let _ : String = print("CHECK inv0 " ++ sb(goldw_inv(0) == 0))
+let _ : String = print("CHECK distrib " ++ sb(goldw_mul(big1, goldw_add(big2, 7)) == goldw_add(goldw_mul(big1, big2), goldw_mul(big1, 7))))
+let _ : String = print("CHECK subrt " ++ sb(goldw_sub(goldw_add(big1, big2), big2) == big1))
+let _ : String = print("CHECK addcomm " ++ sb(goldw_add(big1, big2) == goldw_add(big2, big1)))
+let _ : String = print("CHECK mulcomm " ++ sb(goldw_mul(big1, big2) == goldw_mul(big2, big1)))
+"done"

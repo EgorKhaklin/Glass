@@ -1,5 +1,5 @@
 """
-Glass v5.58.0 — reference implementation.
+Glass v5.59.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -1293,6 +1293,12 @@ def builtin_types() -> dict[str, Ty]:
         "gold_mul":       TyFn((TyList(TyInt()), TyList(TyInt())), TyList(TyInt())),
         "gold_add":       TyFn((TyList(TyInt()), TyList(TyInt())), TyList(TyInt())),
         "gold_sub":       TyFn((TyList(TyInt()), TyList(TyInt())), TyList(TyInt())),
+        "goldw_mul":      TyFn((TyInt(), TyInt()), TyInt()),
+        "goldw_add":      TyFn((TyInt(), TyInt()), TyInt()),
+        "goldw_sub":      TyFn((TyInt(), TyInt()), TyInt()),
+        "goldw_inv":      TyFn((TyInt(),), TyInt()),
+        "goldw_to_limbs": TyFn((TyInt(),), TyList(TyInt())),
+        "limbs_to_goldw": TyFn((TyList(TyInt()),), TyInt()),
         "string_length":  TyFn((TyString(),), TyInt()),
         "substring":      TyFn((TyString(), TyInt(), TyInt()), TyString()),
         # Loud, both-sides abort: stderr message + nonzero exit (native q_error
@@ -2649,6 +2655,24 @@ def builtin_values() -> dict[str, Value]:
     def b_gold_mul(a, b): return _gold_to_limbs(_gold_to_int(a) * _gold_to_int(b))
     def b_gold_add(a, b): return _gold_to_limbs(_gold_to_int(a) + _gold_to_int(b))
     def b_gold_sub(a, b): return _gold_to_limbs(_gold_to_int(a) - _gold_to_int(b))
+    # --- UNBOXED Goldilocks (goldw_*): a field element is ONE Int holding the u64
+    # bit-pattern as signed int64 (Goldilocks p > 2^63, so canonical values >= 2^63
+    # appear "negative" — the bits are the u64). No limb lists => no comb/split tax.
+    # This is the interpreter ORACLE; the native q_goldw_* C must match it bit-for-bit.
+    # Equal field elements have equal bits, so Glass `==` works directly as field eq.
+    _U64 = (1 << 64) - 1
+    def _u64(v): return v & _U64
+    def _s64(v):
+        v &= _U64
+        return v - (1 << 64) if (v & (1 << 63)) else v
+    def b_goldw_mul(a, b): return IntV(_s64((_u64(a.v) * _u64(b.v)) % _GOLD_P))
+    def b_goldw_add(a, b): return IntV(_s64((_u64(a.v) + _u64(b.v)) % _GOLD_P))
+    def b_goldw_sub(a, b): return IntV(_s64((_u64(a.v) - _u64(b.v)) % _GOLD_P))
+    def b_goldw_inv(a):
+        ai = _u64(a.v) % _GOLD_P
+        return IntV(_s64(pow(ai, _GOLD_P - 2, _GOLD_P) if ai else 0))
+    def b_goldw_to_limbs(x): return _gold_to_limbs(_u64(x.v))            # canonical limb-list (boundary/display)
+    def b_limbs_to_goldw(xs): return IntV(_s64(_gold_to_int(xs) % _GOLD_P))
     return {
         "print":            BuiltinV("print", b_print),
         "error":            BuiltinV("error", b_error),
@@ -2665,6 +2689,12 @@ def builtin_values() -> dict[str, Value]:
         "gold_mul":         BuiltinV("gold_mul", b_gold_mul),
         "gold_add":         BuiltinV("gold_add", b_gold_add),
         "gold_sub":         BuiltinV("gold_sub", b_gold_sub),
+        "goldw_mul":        BuiltinV("goldw_mul", b_goldw_mul),
+        "goldw_add":        BuiltinV("goldw_add", b_goldw_add),
+        "goldw_sub":        BuiltinV("goldw_sub", b_goldw_sub),
+        "goldw_inv":        BuiltinV("goldw_inv", b_goldw_inv),
+        "goldw_to_limbs":   BuiltinV("goldw_to_limbs", b_goldw_to_limbs),
+        "limbs_to_goldw":   BuiltinV("limbs_to_goldw", b_limbs_to_goldw),
         "string_length":    BuiltinV("string_length", b_string_length),
         "string_to_upper":  BuiltinV("string_to_upper", b_string_to_upper),
         "string_to_lower":  BuiltinV("string_to_lower", b_string_to_lower),
@@ -3660,7 +3690,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.58.0 — interactive REPL")
+    print("Glass v5.59.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3772,7 +3802,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.58.0")
+        print("Glass 5.59.0")
     elif sys.argv[1] == "prove":
         # `glass prove <file.glass> [name=value ...]` — compile the file's `main`
         # expression into a circuit and emit a succinct, zero-knowledge proof of
