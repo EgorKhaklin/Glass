@@ -1335,8 +1335,24 @@ def main() -> int:
         print(f"        {(_pk.stdout + _pk.stderr).strip()[-220:]}")
         failures += 1
 
+    # The Third Witness: the reference interpreter (glass.py) re-executes f independently and
+    # binds the proof's public result — a lineage separate from the bridge's heval AND cgen.
+    # Gate the evaluator logic directly (fast; the end-to-end --witness3 line is validated natively).
+    _w3check = ("import glass; "
+               "assert glass._witness3_eval('a + b', [('a',3),('b',5)]) == 8; "
+               "assert glass._witness3_eval('a < b', [('a',3),('b',5)]) == 1; "
+               "assert glass._witness3_eval('a < b', [('a',5),('b',3)]) == 0; "
+               "print('W3 OK')")
+    _w3p = subprocess.run([sys.executable, "-c", _w3check], capture_output=True, text=True, cwd=_root)
+    w3 = (_w3p.returncode == 0) and ("W3 OK" in _w3p.stdout)
+    if not w3:
+        print(f"        {(_w3p.stdout + _w3p.stderr).strip()[-200:]}")
+    print(f"  {'OK ' if w3 else 'FAIL'}  the Third Witness: reference-interpreter re-execution (a+b=8, 3<5=1, 5<3=0)")
+    if not w3:
+        failures += 1
+
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 13)  # +13: ... + poseidon2 + pentecost-keystone guards
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 14)  # +14: ... + poseidon2 + pentecost-keystone + witness3 guards
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

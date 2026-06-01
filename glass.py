@@ -1,5 +1,5 @@
 """
-Glass v5.70.0 — reference implementation.
+Glass v5.71.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -3797,7 +3797,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.70.0 — interactive REPL")
+    print("Glass v5.71.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3902,6 +3902,26 @@ def _save_history(path: str) -> None:
         pass
 
 
+def _witness3_eval(usrc, inputs):
+    """Third Witness: evaluate the proven source under the reference INTERPRETER (glass.py) —
+    a lineage independent of the bridge's Glass-level `heval` AND its `cgen` circuit lowering.
+    Binds the inputs as top-level lets so the final bare expression (-> env["_"]) is the result.
+    Returns an int (Bool -> 1/0), or None if it can't be evaluated (then the witness abstains)."""
+    try:
+        binds = "".join("let %s : Int = %d\n" % (k, v) for k, v in inputs)
+        checker, env = make_runtime()
+        decls = Parser(tokenize(binds + usrc)).parse_program()
+        install_program(decls, checker, env, verbose=False)
+        r = env.get("_")
+        if isinstance(r, BoolV):
+            return 1 if r.v else 0
+        if isinstance(r, IntV):
+            return r.v
+        return None
+    except Exception:
+        return None
+
+
 def main() -> None:
     """Console entry point. After `pip install glass-lang`, this is what
     the `glass` command invokes. With no args it starts the REPL; with a
@@ -3909,7 +3929,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.70.0")
+        print("Glass 5.71.0")
     elif sys.argv[1] == "prove":
         # `glass prove <file.glass> [name=value ...]` — compile the file's `main`
         # expression into a circuit and emit a succinct, zero-knowledge proof of
@@ -3921,7 +3941,7 @@ def main() -> None:
         # (+,-,*,let,calls,==,if) with multiple private inputs; the bignum field makes
         # it heavier on the interpreter. The default keeps Baby Bear for the full ADT
         # feature set. See docs/soundness.md.
-        args = [a for a in sys.argv[2:] if a not in ("--goldilocks", "--baby-bear", "--zk", "--fast")]
+        args = [a for a in sys.argv[2:] if a not in ("--goldilocks", "--baby-bear", "--zk", "--fast", "--witness3")]
         # Default is now Goldilocks (2^64, ADTs) — off the toy 2^31 Baby Bear field.
         # `--baby-bear` opts back into the educational small-field prover.
         goldilocks = "--baby-bear" not in sys.argv[2:]
@@ -3998,8 +4018,12 @@ def main() -> None:
             _tmp = "/tmp/glass_prove_driver.glass"
             with open(_tmp, "w") as _f:
                 _f.write(driver)
+            _w3 = "--witness3" in sys.argv[2:]
             _proc = subprocess.run(["bash", os.path.join(here, "examples", "selfhost", "run_native.sh"), _tmp],
-                           check=False, env={**os.environ, "PYTHON": sys.executable})
+                           check=False, env={**os.environ, "PYTHON": sys.executable},
+                           capture_output=_w3, text=True if _w3 else None)
+            if _w3:
+                sys.stdout.write(_proc.stdout or ""); sys.stderr.write(_proc.stderr or "")
             if _proc.returncode != 0:
                 # ABSTAIN — the third verdict. The native prover REFUSED before reaching a
                 # verdict (the bridge's loud `error`: an op with no faithful field lowering,
@@ -4023,6 +4047,25 @@ def main() -> None:
                 print("(F_{p^2} FRI STARK; SOUND via the independent witness-free verify_b3 (per-row gates + PLONK wiring). Research-grade, UNAUDITED; --zk adds hiding.)")
         else:
             print("(blinded F_{p^4} FRI STARK over the gate circuit; `glass prove` proves AND verifies.)")
+        # The Third Witness (--witness3): re-execute f under the reference INTERPRETER (glass.py —
+        # a lineage independent of the bridge's Glass-level evaluator AND its circuit lowering) and
+        # bind the proof's PUBLIC RESULT to it. This catches the one class the compiler fixpoint
+        # (gen1==gen2) and verifier-be-two (two verifiers of the SAME circuit) structurally cannot:
+        # a lowering where heval AND cgen share a bug, so the circuit faithfully proves g != f.
+        if goldilocks and "--witness3" in sys.argv[2:]:
+            import re as _re3
+            _m3 = _re3.search(r"result:\s*(-?[0-9]+)", _proc.stdout or "")
+            _rp = int(_m3.group(1)) if _m3 else None
+            _r3 = _witness3_eval(usrc, inputs)
+            print("")
+            if _r3 is None:
+                print("witness3: (the reference interpreter could not evaluate this source — third witness skipped)")
+            elif _rp is None:
+                print("witness3: (no proven result to bind to — third witness skipped)")
+            elif _r3 == _rp:
+                print(f"witness3: THIRD LINEAGE AGREES — the reference interpreter (glass.py, independent of the bridge\'s evaluator and its circuit lowering) independently computes f(inputs) = {_r3}, matching the proven public result. Three lineages agree on the SEMANTICS — closing the source<->circuit gap that verify_b3 and Pentecost, both verifying the circuit, cannot see.")
+            else:
+                print(f"witness3: DIVERGENCE — the proof attests {_rp} but the reference interpreter computes f(inputs) = {_r3}. The proof is STARK-valid, yet the lowered circuit\'s semantics differ from the source. (Caveat: the bridge computes over Goldilocks mod p; the interpreter over int64 — a divergence only on results that wrap differently is a semantics-domain difference, not necessarily a lowering bug.)")
     elif sys.argv[1] == "name":
         # The Name — Glass's content-addressed canonical identity: one Poseidon-Merkle
         # root over the self-hosting core + prover/verifier bridge + the second verifier

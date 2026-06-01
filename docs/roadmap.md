@@ -546,6 +546,10 @@ in priority order (the traditions push hardest on the first):
   keystone is now suite-gated (closed a v5.56-class coverage gap). The Name re-rooted (one Poseidon
   everywhere). Stage 0 (v5.69.0) was the native intrinsic; stage 1 (v5.70.0) the lock-step swap.
 
-The research-scale bet, wearing its honest scope: **the Third Witness** — a reference
-oracle that does not descend from the source, turning the gate from a 2-way byte-match
-into 3-way consensus (the one bug class `gen1 == gen2` structurally cannot catch).
+The research-scale bet, wearing its honest scope: **the Third Witness.** 🟡 **Semantic cut
+LANDED v5.71.0:** `glass prove --witness3` binds the proof's public result to the reference
+INTERPRETER (`glass.py`) — a lineage independent of the bridge's evaluator AND its circuit
+lowering — catching a source↔circuit gap (`heval`+`cgen` sharing a bug) that `gen1==gen2`
+and verifier-be-two (both verify the circuit) structurally cannot. The fuller bet — a third
+INDEPENDENT verifier of the STARK construction itself (3-way consensus on the proof, not just
+the semantics) — remains open.
