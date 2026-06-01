@@ -1,5 +1,5 @@
 """
-Glass v5.73.0 — reference implementation.
+Glass v5.74.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -3822,7 +3822,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.73.0 — interactive REPL")
+    print("Glass v5.74.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3954,7 +3954,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.73.0")
+        print("Glass 5.74.0")
     elif sys.argv[1] == "prove":
         # `glass prove <file.glass> [name=value ...]` — compile the file's `main`
         # expression into a circuit and emit a succinct, zero-knowledge proof of
@@ -3966,7 +3966,13 @@ def main() -> None:
         # (+,-,*,let,calls,==,if) with multiple private inputs; the bignum field makes
         # it heavier on the interpreter. The default keeps Baby Bear for the full ADT
         # feature set. See docs/soundness.md.
-        args = [a for a in sys.argv[2:] if a not in ("--goldilocks", "--baby-bear", "--zk", "--fast", "--witness3")]
+        _argv2 = sys.argv[2:]
+        emit_path = None
+        if "--emit" in _argv2:
+            _ei = _argv2.index("--emit")
+            emit_path = _argv2[_ei + 1] if _ei + 1 < len(_argv2) else None
+            _argv2 = _argv2[:_ei] + _argv2[_ei + 2:]   # drop --emit and its path argument
+        args = [a for a in _argv2 if a not in ("--goldilocks", "--baby-bear", "--zk", "--fast", "--witness3")]
         # Default is now Goldilocks (2^64, ADTs) — off the toy 2^31 Baby Bear field.
         # `--baby-bear` opts back into the educational small-field prover.
         goldilocks = "--baby-bear" not in sys.argv[2:]
@@ -3997,6 +4003,36 @@ def main() -> None:
             bridge = f.read()
         cut = bridge.find("# --- demo")
         machinery = bridge[:cut] if cut > 0 else bridge
+        if emit_path is not None:
+            # Emit a PORTABLE proof: the bridge serializes a real ProofB3 as the token stream the
+            # independent verifier (pentecost/) consumes — prove once here, `glass verify` it anywhere.
+            if not goldilocks:
+                print("glass prove --emit: only the Goldilocks path emits a portable proof"); return
+            _ed = machinery + (
+                '\nlet _usrc : String = "%s"\n'
+                'let _inp : List<Pair<String, Int>> = %s\n'
+                'let _rv : List<List<Int>> = gref_m_checked(_usrc, _inp)\n'
+                'let _r : List<Int> = vh(_rv)\n'
+                'let _ : String = print(gprove_emit(_usrc, _inp, _r))\n'
+                '"emit-done"\n'
+            ) % (esc, inp_glass)
+            _et = "/tmp/glass_emit_driver.glass"
+            with open(_et, "w") as _f:
+                _f.write(_ed)
+            print("Glass prove --emit %s  [field: Goldilocks (2^64)]\n" % emit_path)
+            _ep = subprocess.run(["bash", os.path.join(here, "examples", "selfhost", "run_native.sh"), _et],
+                                 check=False, capture_output=True, text=True,
+                                 env={**os.environ, "PYTHON": sys.executable})
+            if _ep.returncode != 0:
+                sys.stderr.write(_ep.stderr or "")
+                print("\nverdict: ABSTAIN  (Glass refused to lower this statement — no proof emitted.)")
+                sys.exit(_ep.returncode)
+            with open(emit_path, "w") as _f:
+                _f.write(_ep.stdout)
+            _ntok = len((_ep.stdout or "").split())
+            print("wrote a portable proof: %s  (%d tokens)" % (emit_path, _ntok))
+            print("verify it independently with:  glass verify %s" % emit_path)
+            return
         if goldilocks:
             if fast_mode:
                 _prove_call = "gprove_m(_usrc, _inp, _r, 11111)"
@@ -4107,6 +4143,14 @@ def main() -> None:
         # (commit k=v… | reveal <sealed> f… | verify <pres> | --selftest).
         here = os.path.dirname(os.path.abspath(__file__))
         sys.exit(subprocess.run([sys.executable, os.path.join(here, "seal", "reveal.py"), *sys.argv[2:]]).returncode)
+    elif sys.argv[1] == "verify":
+        # Verify a PORTABLE proof emitted by `glass prove --emit` using the INDEPENDENT
+        # second verifier (pentecost/, plain int mod p, no Glass code). "Let the verifier be two":
+        # prove on one side, check on the other. Exits 0 (ACCEPT) / 1 (REJECT).
+        if len(sys.argv) < 3:
+            print("usage: glass verify <proof-file>   (a proof from `glass prove --emit`)"); return
+        here = os.path.dirname(os.path.abspath(__file__))
+        sys.exit(subprocess.run([sys.executable, "-m", "pentecost.pentecost_verify", sys.argv[2]], cwd=here).returncode)
     else:
         # -q/--quiet: run a file printing only its output (no type-signature
         # echoes) — handy for diffing against the self-hosted compiler.
