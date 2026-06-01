@@ -1282,8 +1282,20 @@ def main() -> int:
         print(f"        out: {out.strip()[-200:]}  err: {err.strip()[-150:]}")
         failures += 1
 
+    # The Name — Glass's content-addressed identity must match name/NAME (the committed
+    # fingerprint is kept current, lockfile-style: regenerate with `glass name --write`).
+    _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _nm = subprocess.run([sys.executable, os.path.join(_root, "name", "glass_name.py"), "--check"],
+                         capture_output=True, text=True)
+    nm_ok = (_nm.returncode == 0)
+    print(f"  {'OK ' if nm_ok else 'FAIL'}  the Name: content-addressed identity matches name/NAME")
+    if not nm_ok:
+        print(f"        {(_nm.stdout + _nm.stderr).strip()[-220:]}")
+        print(f"        (a canonical artifact changed — regenerate with: python3 name/glass_name.py --write)")
+        failures += 1
+
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 8)  # +8: stmt-binding + 2 baby-bear + goldw + poseidon + ntt + vget + measure field guards
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 9)  # +9: stmt-binding + 2 baby-bear + goldw + poseidon + ntt + vget + measure + name guards
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

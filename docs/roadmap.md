@@ -516,9 +516,11 @@ in priority order (the traditions push hardest on the first):
 - **The Preserved Tablet — a committed, append-only proof ledger.** Each `glass prove`
   verdict committed into a growing Merkle root with inclusion proofs. Reuses
   Poseidon-Merkle; binds existing verdicts, adds no new trust. *Primitive, quick–medium.*
-- **The Name — content-addressed canonical identity:** one published Merkle root over
-  `(source ⊕ emitted-C ⊕ tests ⊕ semantics)`, recomputed by the gate — the fixpoint as
-  a publicly attestable fingerprint. *Primitive, quick.*
+- **The Name — content-addressed canonical identity. ✅ SHIPPED v5.65.0.** `glass name`
+  ([`../name/`](../name/)) publishes one Poseidon-Merkle root over the self-hosting core +
+  prover/`verify_b3` bridge + the second verifier (`pentecost/`) + tests + `LANG.md` — recomputed
+  by the suite (`--check` gates `name/NAME`, lockfile-style) on the SAME Plonky2-exact Poseidon
+  the prover uses. The fixpoint as a publicly attestable fingerprint. Path+content bound.
 - **The Measuring Reed — bit-security on every ACCEPT. ✅ SHIPPED v5.63.0.** `glass prove`
   (Goldilocks) prints `security: 80 bits provable / 135 bits list-decoding (82 queries,
   blowup 32 => rate 1/8, 12-bit grind, 4-lane hash)`, re-derived by the prover from the
