@@ -1351,8 +1351,23 @@ def main() -> int:
     if not w3:
         failures += 1
 
+    # H3 milestone — in-circuit Merkle membership: the path-hashing program must be deterministic
+    # and BINDING (a different leaf or sibling yields a different root). The full in-circuit proof
+    # is validated natively (~39s); here the membership LOGIC is gated fast via the interpreter.
+    _mmcheck = ("import glass; src=open('examples/prove/merkle_member.glass').read(); "
+                "b=[('leaf',42),('s0',7),('d0',0),('s1',99),('d1',1)]; r=glass._witness3_eval(src,b); "
+                "assert r is not None and r==glass._witness3_eval(src,b); "
+                "assert r!=glass._witness3_eval(src,[('leaf',43)]+b[1:]); "
+                "assert r!=glass._witness3_eval(src,b[:1]+[('s0',8)]+b[2:]); print('MM OK')")
+    _mmp = subprocess.run([sys.executable, "-c", _mmcheck], capture_output=True, text=True, cwd=_root)
+    mm_ok = (_mmp.returncode == 0) and ("MM OK" in _mmp.stdout)
+    print(f"  {'OK ' if mm_ok else 'FAIL'}  H3: in-circuit Merkle membership (deterministic + binding path-hash)")
+    if not mm_ok:
+        print(f"        {(_mmp.stdout + _mmp.stderr).strip()[-200:]}")
+        failures += 1
+
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 14)  # +14: ... + poseidon2 + pentecost-keystone + witness3 guards
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 15)  # +15: ... + witness3 + h3-merkle-membership guards
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

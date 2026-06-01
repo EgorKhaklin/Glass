@@ -477,8 +477,12 @@ horizon; 4 is prose; the rest are deferred/known.
    Alternative lever: promote `native_glassc` to a co-equal differential-tested oracle.
    A multi-pass structural project, not one changeset.
 3. **H3 — full recursive STARK verifier** (medium, large, native-primary). The
-   fold-check-as-circuit is done; composing it with *in-circuit* Merkle membership
-   (openings authenticated against the commitment inside the circuit) hasn't shipped.
+   fold-check-as-circuit is done, and **in-circuit Merkle MEMBERSHIP now ships (v5.72.0,
+   `../examples/prove/merkle_member.glass`)** — a leaf authenticated to its root by hashing up
+   the path INSIDE the proven circuit (written as Glass, lowered by the bridge; deterministic,
+   binding, suite-gated). REMAINING: full Poseidon2 per node, composing membership with the FRI
+   fold-check, and `verify_b3`-as-a-circuit — performance-gated (a path of full-Poseidon2 nodes
+   needs a faster prover or a lookup argument).
 4. **R2 formal follow-ons** (not gateable): a formal MDS/round-count cryptanalysis and a
    formal Fiat-Shamir separation argument — reviewed prose, partly subsumed by the
    external-audit boundary. **The external audit + Poseidon cryptanalysis is the standing
