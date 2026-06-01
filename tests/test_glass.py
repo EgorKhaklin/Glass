@@ -1357,12 +1357,14 @@ def main() -> int:
                "assert glass._witness3_eval('a + b', [('a',3),('b',5)]) == 8; "
                "assert glass._witness3_eval('a < b', [('a',3),('b',5)]) == 1; "
                "assert glass._witness3_eval('a < b', [('a',5),('b',3)]) == 0; "
+               "assert glass._witness3_eval('a / b', [('a',17),('b',5)]) == 3; "
+               "assert glass._witness3_eval('a % b', [('a',17),('b',5)]) == 2; "
                "print('W3 OK')")
     _w3p = subprocess.run([sys.executable, "-c", _w3check], capture_output=True, text=True, cwd=_root)
     w3 = (_w3p.returncode == 0) and ("W3 OK" in _w3p.stdout)
     if not w3:
         print(f"        {(_w3p.stdout + _w3p.stderr).strip()[-200:]}")
-    print(f"  {'OK ' if w3 else 'FAIL'}  the Third Witness: reference-interpreter re-execution (a+b=8, 3<5=1, 5<3=0)")
+    print(f"  {'OK ' if w3 else 'FAIL'}  the Third Witness: reference-interpreter re-execution (a+b=8, 3<5=1, 5<3=0, 17/5=3, 17%5=2)")
     if not w3:
         failures += 1
 

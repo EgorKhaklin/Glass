@@ -1019,6 +1019,8 @@ fn unroll(e: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: In
     EGt(x, y) => EGt(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
     ELe(x, y) => ELe(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
     EGe(x, y) => EGe(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
+    EDiv(x, y) => EDiv(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
+    EMod(x, y) => EMod(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
     _ => e }
 
 fn env_get2(env: List<Pair<String, Int>>, name: String) : Int = match env { [] => 0 - 1; [Pair(k, v), ...r] => if k == name then v else env_get2(r, name) }
@@ -1091,7 +1093,15 @@ fn heval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, t
       if cmp_ok_g(xa, xb) then let d : List<Int> = fadd(fsub(xa, xb), pow2_lit(32)) in
         ([if bn_cmp(trim(xa), trim(xb)) < 0 then glit(0) else glit(1)], ha ++ hb ++ cmp_bits_w(xa, 32) ++ cmp_bits_w(xb, 32) ++ cmp_bits_w(d, 33))
       else error("glass prove: ordering comparison operand out of provable range [0,2^32) — ABSTAIN (cannot lower; abstaining, not disproving)") } };
-    _ => error("glass prove: unsupported expression in the prove bridge (heval) — only + - * == != && || ! and if/let/match/ADT/calls lower to the field circuit; / %, strings and records have no faithful field lowering and are refused, not silently proven as 0") }
+    EDiv(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) =>
+      let xa : List<Int> = vh(va) in let xb : List<Int> = vh(vb) in
+      if div_ok_g(xa, xb) then ([gdiv_lit(xa, xb)], ha ++ hb)
+      else error("glass prove: integer division operand out of provable range [0,2^32) or divisor zero — ABSTAIN (Glass cannot faithfully lower this division; abstaining, not disproving — and never a wrong ACCEPT)") } };
+    EMod(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) =>
+      let xa : List<Int> = vh(va) in let xb : List<Int> = vh(vb) in
+      if div_ok_g(xa, xb) then ([gmod_lit(xa, xb)], ha ++ hb)
+      else error("glass prove: integer modulo operand out of provable range [0,2^32) or divisor zero — ABSTAIN (cannot lower; abstaining, not disproving)") } };
+    _ => error("glass prove: unsupported expression in the prove bridge (heval) — only + - * == != && || ! < > <= >= / % (range-bounded) and if/let/match/ADT/calls lower to the field circuit; strings and records have no faithful field lowering and are refused, not silently proven as 0") }
 fn heval_fields(args: List<Expr>, tys: List<Type>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>) : (List<List<Int>>, List<List<Int>>) =
   match args { [] => ([], []); [a, ...arest] => match tys { [] => ([], []); [t, ...trest] =>
     match heval(a, env, fns, types) { (va, ha) => match heval_fields(arest, trest, env, fns, types) { (vr, hr) =>
@@ -1170,7 +1180,11 @@ fn seval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, t
       if cmp_ok_g(xa, xb) then (if bn_cmp(trim(xb), trim(xa)) < 0 then [glit(0)] else [glit(1)]) else error("glass prove: ordering comparison operand out of provable range [0,2^32) — ABSTAIN (cannot lower; abstaining, not disproving)");
     EGe(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fuel)) in
       if cmp_ok_g(xa, xb) then (if bn_cmp(trim(xa), trim(xb)) < 0 then [glit(0)] else [glit(1)]) else error("glass prove: ordering comparison operand out of provable range [0,2^32) — ABSTAIN (cannot lower; abstaining, not disproving)");
-    _ => error("glass prove: unsupported expression in the prove bridge (seval guard) — only + - * == != && || ! and if/let/match/ADT/calls lower to the field circuit; / %, strings and records are refused, not silently proven as 0") }
+    EDiv(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fuel)) in
+      if div_ok_g(xa, xb) then [gdiv_lit(xa, xb)] else error("glass prove: integer division operand out of provable range [0,2^32) or divisor zero — ABSTAIN (cannot lower; abstaining, not disproving)");
+    EMod(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fuel)) in
+      if div_ok_g(xa, xb) then [gmod_lit(xa, xb)] else error("glass prove: integer modulo operand out of provable range [0,2^32) or divisor zero — ABSTAIN (cannot lower; abstaining, not disproving)");
+    _ => error("glass prove: unsupported expression in the prove bridge (seval guard) — only + - * == != && || ! < > <= >= / % (range-bounded) and if/let/match/ADT/calls lower to the field circuit; strings and records are refused, not silently proven as 0") }
 fn seval_fields(args: List<Expr>, tys: List<Type>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>, fuel: Int) : List<List<Int>> =
   match args { [] => []; [a, ...arest] => match tys { [] => []; [t, ...trest] =>
     padw(seval(a, env, fns, types, fuel), twidth(t, types, 12)) ++ seval_fields(arest, trest, env, fns, types, fuel) } }
@@ -1215,6 +1229,13 @@ fn pow2_lit(i: Int) : List<Int> = glit(ipow2(i))
 fn bn_bit(v: List<Int>, i: Int) : Int = (nthI(v, i / 16) / ipow2(i % 16)) % 2
 fn in_range_k(v: List<Int>, k: Int) : Bool = bn_cmp(trim(v), glit(ipow2(k))) < 0
 fn cmp_ok_g(xa: List<Int>, xb: List<Int>) : Bool = if in_range_k(xa, 32) then in_range_k(xb, 32) else false
+# div/mod gadget support: read a small bignum (in [0,2^32)) as a machine Int (base-2^16 limbs),
+# the lowerability guard (both operands in [0,2^32) AND divisor != 0), and the integer-result
+# literals. Glass `/` `%` here truncate toward zero; with both operands >= 0 that is floor division.
+fn bn_small_to_int(v: List<Int>) : Int = nthI(v, 0) + nthI(v, 1) * 65536
+fn div_ok_g(xa: List<Int>, xb: List<Int>) : Bool = if cmp_ok_g(xa, xb) then (if bn_is_zero(xb) then false else true) else false
+fn gdiv_lit(xa: List<Int>, xb: List<Int>) : List<Int> = glit(bn_small_to_int(xa) / bn_small_to_int(xb))
+fn gmod_lit(xa: List<Int>, xb: List<Int>) : List<Int> = glit(bn_small_to_int(xa) - bn_small_to_int(xb) * (bn_small_to_int(xa) / bn_small_to_int(xb)))
 fn fnot01(v: List<Int>) : List<Int> = fsub(glit(1), v)
 fn cmp_bits_w_go(v: List<Int>, i: Int, k: Int) : List<List<Int>> = if i >= k then [] else [if bn_bit(v, i) == 1 then glit(1) else glit(0)] ++ cmp_bits_w_go(v, i + 1, k)
 fn cmp_bits_w(v: List<Int>, k: Int) : List<List<Int>> = cmp_bits_w_go(v, 0, k)
@@ -1247,6 +1268,32 @@ fn lt_build(wx: Int, wy: Int, b: Build) : (Int, Build) =
   match decompose_capture(wd, 33, 32, b5) { (wbitk, b6) =>
   match mkc(glit(1), b6) { (wone, b7) =>
   match mks(wone, wbitk, b7) { (wlt, b8) => (wlt, b8) } } } } } }
+# divmod_build: integer division/modulo as a circuit via the defining identity a = b*q + r, 0 <= r < b.
+# q and r are injected as advice (mkh) and PINNED by four constraints: range_k(q) and range_k(r) put
+# both in [0,2^32); the multiply-add identity asserts a == b*q + r; and lt_build asserts r < b (which
+# also range-bounds b into [0,2^32)). With r >= 0 and r < b the divisor is forced >= 1 (b != 0 is a
+# circuit fact, not just a host check), and since q,b,r < 2^32 every product stays below the Goldilocks
+# prime, so the field identity IS the integer identity (no wraparound). Given a,b in range with b>=1
+# the (q,r) satisfying a=b*q+r, 0<=r<b is unique = integer division, so the wires are exactly a/b, a%b.
+# The honest q,r come from the witness values of a,b (the seval guard refused b==0/out-of-range first).
+fn divmod_build(wa: Int, wb: Int, b: Build) : (Int, Int, Build) =
+  let ai : Int = bn_small_to_int(bwire(b, wa)) in
+  let bi : Int = bn_small_to_int(bwire(b, wb)) in
+  let qi : Int = if bi <= 0 then 0 else ai / bi in
+  let ri : Int = ai - bi * qi in
+  match mkh(glit(qi), b) { (wq, b1) =>
+  match mkh(glit(ri), b1) { (wr, b2) =>
+  let b3 : Build = range_k(wq, 32, b2) in
+  let b4 : Build = range_k(wr, 32, b3) in
+  match mkm(wb, wq, b4) { (wbq, b5) =>
+  match mka(wbq, wr, b5) { (wsum, b6) =>
+  match mks(wa, wsum, b6) { (wdiff, b7) =>
+  let b8 : Build = mke(wdiff, b7) in
+  match lt_build(wr, wb, b8) { (wlt, b9) =>
+  match mkc(glit(1), b9) { (wone, b10) =>
+  match mks(wone, wlt, b10) { (wd2, b11) =>
+  let b12 : Build = mke(wd2, b11) in
+  (wq, wr, b12) } } } } } } } }
 
 fn cgen(e: Expr, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: List<TypeDecl>, b: Build) : (List<Int>, Build) =
   match e {
@@ -1271,7 +1318,9 @@ fn cgen(e: Expr, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: 
     EGt(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match lt_build(vhi(vy), vhi(vx), b2) { (wlt, b3) => ([wlt], b3) } } };
     ELe(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match lt_build(vhi(vy), vhi(vx), b2) { (wlt, b3) => match mkc(glit(1), b3) { (wone, b4) => match mks(wone, wlt, b4) { (wo, b5) => ([wo], b5) } } } } };
     EGe(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match lt_build(vhi(vx), vhi(vy), b2) { (wlt, b3) => match mkc(glit(1), b3) { (wone, b4) => match mks(wone, wlt, b4) { (wo, b5) => ([wo], b5) } } } } };
-    _ => error("glass prove: unsupported expression in the prove bridge (cgen) — only + - * == != && || ! and if/let/match/ADT/calls lower to the field circuit; / %, strings and records are refused, not silently built as a 0 circuit") }
+    EDiv(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match divmod_build(vhi(vx), vhi(vy), b2) { (wq, wr, b3) => ([wq], b3) } } };
+    EMod(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match divmod_build(vhi(vx), vhi(vy), b2) { (wq, wr, b3) => ([wr], b3) } } };
+    _ => error("glass prove: unsupported expression in the prove bridge (cgen) — only + - * == != && || ! < > <= >= / % (range-bounded) and if/let/match/ADT/calls lower to the field circuit; strings and records are refused, not silently built as a 0 circuit") }
 fn cgen_fields(args: List<Expr>, tys: List<Type>, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: List<TypeDecl>, b: Build) : (List<Int>, Build) =
   match args { [] => ([], b); [a, ...arest] => match tys { [] => ([], b); [t, ...trest] =>
     match cgen(a, cenv, fns, types, b) { (va, b1) => match padv_g(va, twidth(t, types, 12), b1) { (pva, b2) =>

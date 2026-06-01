@@ -452,25 +452,43 @@ same answer.
 Ranked by value × tractability. Items 1–2 are the real frontier; 3 is a stated
 horizon; 4 is prose; the rest are deferred/known.
 
-1. **Full prism-AST prove bridge** — *the frontier headline.* The bridge is still a
-   hand-written operator subset; since v5.52 it *loudly refuses* the rest (ordering
-   `< > <= >=`, `/`/`%`, string `++`, records/fields, higher-order callees) rather
-   than lower them unsoundly. Reaching a full Glass-AST bridge means a faithful field
-   gadget per refused construct — and the comparison case can reuse the proven
-   bit-decomposition range gadget (`age_prove.glass`), it just isn't wired into the
-   general bridge yet. Differential-test gateable (`cgen==heval==seval`), one gadget
-   per pass, **no bootstrap exposure**. *The discipline that matters here: each gadget
-   must narrow the loud refusal, never replace it with a silent wrong proof — an
-   un-range-bounded operand must keep refusing.*
-   **Status (v5.58):** the ordering-comparison gadget (`< > <= >=`) is *designed,
-   adversarially hardened (0 soundness holes), implemented for the Goldilocks bridge,
-   and compiles to a native binary* — but the range circuit's ~100 extra gates make
-   its STARK proof take **>15 min even native**, so it can't be validated/CI'd and is
-   **not landed** (preserved as a patch). The blocker is item 2 (the prover), not the
-   gadget — a faster prover or a cheaper range argument (a lookup table instead of
-   bit-decomposition) unblocks it. Until then, comparisons stay *loudly refused* on
-   both paths (the v5.58 fix made the Baby-Bear path refuse too, instead of silently
-   proving `0`).
+1. **Full prism-AST prove bridge** — *the frontier headline, now substantially in.* The
+   bridge lowers a growing fraction of real Glass; since v5.52 it *loudly refuses* the rest
+   rather than lower it unsoundly. Each pass adds a faithful field gadget for one refused
+   construct, narrowing the refusal without ever replacing it with a silent wrong proof —
+   differential-test gateable (`cgen==heval==seval`), **no bootstrap exposure**.
+   - **Ordering comparisons `< > <= >=`. ✅ LANDED v5.62.0** — the bit-decomposition range
+     gadget (range-prove both operands into `[0,2^32)`, read the sign bit of `d = a−b+2^32`).
+     The v5.59–v5.62 prover speed cuts made the ~100-gate range circuit affordable (`a<b`
+     proves in ~33s, was >15 min); operands outside `[0,2^32)` ABSTAIN. Gated by the
+     committed comparison proof fixture + Pentecost differential.
+   - **Integer division & modulo `/` `%`. ✅ LANDED v5.84.0** — the cut: division-in-a-field
+     looks impossible, but reduces to the defining identity `a = b·q + r, 0 ≤ r < b` over
+     gadgets the bridge already has (a multiply, an add, the comparison/range gadget). `q,r`
+     are injected as advice and pinned by `range_k(q)`, `range_k(r)`, the multiply-add
+     identity, and `r < b` (which forces `b ≠ 0`); all operands `< 2^32` keep products below
+     the prime so the field identity is the integer identity. Validated four ways: `17/5=3`
+     and `17%5=2` ACCEPT, divide-by-zero and out-of-range ABSTAIN, the Third Witness
+     (interpreter) independently agrees, and the committed division proof fixture passes the
+     Pentecost differential. Non-negative operands only for now (see new frontier below).
+   - **Still refused (the remaining bridge frontier):** string `++` / string ops, records &
+     field access, and higher-order *callees* (computed function values). Each needs its own
+     faithful gadget or a principled refusal; same one-gadget-per-pass discipline.
+
+   **New frontiers identified while landing division (v5.84):**
+   - **Signed / negative-aware arithmetic gadgets.** Comparison and division currently require
+     operands in `[0, 2^32)` and ABSTAIN otherwise — so negative inputs and large results are
+     refused. A signed encoding (offset-binary, or sign + magnitude proven in-circuit) would let
+     the gadgets prove over a symmetric range. Soundness-delicate (the field has no native order),
+     so it follows the same adversarial-hardening + differential discipline.
+   - **A lookup-based range argument (the cheap-range unblock).** Both comparison and division pay
+     ~32 range gates per operand via bit-decomposition, which is what makes their proofs ~600k
+     tokens (vs ~150k for pure arithmetic). A plookup-style table range argument would replace the
+     bit gadget with a single table lookup — shrinking every comparison/division proof, widening the
+     affordable range, and unblocking heavier gadgets (and H3's per-node hashing). High leverage:
+     one argument makes a whole family of gadgets cheap.
+   - **Wider provable range.** `[0, 2^32)` is chosen so `q·b < p`; a tighter per-operand analysis (or
+     the lookup argument above) could push the bound toward the field's natural width.
 2. **Substrate performance (P)** — highest raw value, but *large*. No bytecode/closure
    compiler exists; the interpreter dogfood (multi-hour for heavy Goldilocks/Poseidon
    STARKs) is the bottleneck gating heavy Track E/R demos under the routine gate.

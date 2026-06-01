@@ -1,0 +1,6 @@
+# Integer division and modulo in zero-knowledge over Goldilocks. Proven via the
+# defining identity a = b*q + r with 0 <= r < b — a multiply, an add, and the same
+# range gadget the ordering comparisons use. Operands must be in [0, 2^32) and the
+# divisor non-zero; anything else is ABSTAINed (refused), never silently proven.
+#   glass prove examples/prove/div_prove.glass a=17 b=5     # -> 3, ACCEPT
+a / b
