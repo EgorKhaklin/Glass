@@ -1381,6 +1381,19 @@ def main() -> int:
         print(f"        {(_mmp.stdout + _mmp.stderr).strip()[-200:]}")
         failures += 1
 
+    # Adversarial fuzz of the second witness: a TAMPERED proof must never verify. tamper_pentecost.py
+    # perturbs random single tokens of a committed honest proof and asserts the independent Pentecost
+    # verifier REJECTs every one (0 wrong-ACCEPTs). A 1600-tamper/16-seed campaign (workflow whrym5q4r,
+    # v5.78.0) was clean; the suite gates a fast slice so a future verify_b3 regression that makes a
+    # forged proof pass cannot land silently. (Asserts the honest baseline ACCEPTs first.)
+    _tp = subprocess.run([sys.executable, os.path.join("fuzz", "tamper_pentecost.py"), "20251", "6"],
+                         capture_output=True, text=True, cwd=_root)
+    tp_ok = (_tp.returncode == 0) and ("0 wrong-ACCEPTs" in _tp.stdout)
+    print(f"  {'OK ' if tp_ok else 'FAIL'}  tamper-fuzz: independent verifier REJECTs every tampered proof")
+    if not tp_ok:
+        print(f"        {(_tp.stdout + _tp.stderr).strip()[-220:]}")
+        failures += 1
+
     total = (len(POSITIVE) + len(NEGATIVE) +
              len(inline_positive) + len(prism_checks) + len(repl_cases) + 15)  # +15: ... + witness3 + h3-merkle-membership guards
     passed = total - failures

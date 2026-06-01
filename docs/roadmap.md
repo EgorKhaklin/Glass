@@ -552,6 +552,15 @@ in priority order (the traditions push hardest on the first):
   (honest→both ACCEPT, tampers→REJECT); soundness gate 13/13; fixpoint holds; the Pentecost
   keystone is now suite-gated (closed a v5.56-class coverage gap). The Name re-rooted (one Poseidon
   everywhere). Stage 0 (v5.69.0) was the native intrinsic; stage 1 (v5.70.0) the lock-step swap.
+- **Fuzzing the verifiers — random and adversarial. ✅ SHIPPED v5.75–v5.78.0.** Beyond the
+  enumerated soundness gate, [`../fuzz/`](../fuzz/) tests *random* proofs three ways: (1) **witness3**
+  — random Glass programs proved + reconciled against the reference interpreter, no ACCEPT ever
+  unconfirmed (v5.75–v5.76, found a real over-strict-equality bug); (2) **differential** — emit a
+  portable proof per random program, confirm Glass `verify_b3` and the independent Pentecost verifier
+  AGREE on honest proofs (v5.77); (3) **adversarial tamper** — forge proofs by random single-token
+  perturbations and confirm the independent verifier REJECTs every one. The v5.78 campaign ran
+  **1,600 forged proofs across 16 parallel seeds → 0 wrong-ACCEPTs**; a fast slice is now suite-gated
+  off a committed proof fixture so a `verify_b3` regression that lets a forgery pass cannot land silently.
 
 The research-scale bet, wearing its honest scope: **the Third Witness.** 🟡 **Semantic cut
 LANDED v5.71.0:** `glass prove --witness3` binds the proof's public result to the reference

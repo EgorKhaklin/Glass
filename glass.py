@@ -1,5 +1,5 @@
 """
-Glass v5.77.0 — reference implementation.
+Glass v5.78.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -3822,7 +3822,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.77.0 — interactive REPL")
+    print("Glass v5.78.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3954,7 +3954,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.77.0")
+        print("Glass 5.78.0")
     elif sys.argv[1] == "prove":
         # `glass prove <file.glass> [name=value ...]` — compile the file's `main`
         # expression into a circuit and emit a succinct, zero-knowledge proof of

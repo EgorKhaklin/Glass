@@ -18,7 +18,25 @@ python3 fuzz/fuzz_soundness.py [N] [seed]                 # witness3 mode: no wr
 python3 fuzz/fuzz_soundness.py --differential [N] [seed]   # two-verifier mode: emit a portable
                                                           #   proof per program, confirm Glass verify_b3
                                                           #   and the independent Pentecost verifier AGREE
+python3 fuzz/tamper_pentecost.py [seed] [M] [proof]       # adversarial mode: forge M proofs by random
+                                                          #   single-token tampers, confirm the independent
+                                                          #   Pentecost verifier REJECTs every one
 ```
+
+## Adversarial mode — attacking the second witness
+
+`fuzz_soundness.py` fuzzes *honest* proofs (is an ACCEPT ever unconfirmed?). `tamper_pentecost.py`
+fuzzes the dual property on the independent Pentecost verifier alone: **a tampered proof must NEVER
+verify.** It loads an honest proof (default: the committed corpus fixture
+`pentecost/corpus/honest_a_plus_b.b3.txt`), asserts it ACCEPTs, then applies `M` random
+single-token perturbations across the whole `ProofB3` region — `v±1`, `0`, `2v+1`, a uniform field
+element — and runs `verify_b3` on each. A **wrong-ACCEPT** (a forged proof that still verifies) is a
+verifier soundness hole; anything else (REJECT, parse error → REJECT) is sound. Pure Python with a
+per-seed scratch file, so it parallelizes trivially across seeds.
+
+A 16-seed × 100-tamper campaign (**1,600 forged proofs**, v5.78.0) was clean — every tamper
+rejected. The suite gates a fast slice on every push so a future `verify_b3` regression that lets a
+forged proof pass cannot land silently.
 
 This is the testing that finds bugs the enumerated gate cannot. Its first run did exactly that —
 it surfaced an over-strict equality in the Third Witness (a negative result like `-560` false-
