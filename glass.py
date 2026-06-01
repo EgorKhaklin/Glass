@@ -1,5 +1,5 @@
 """
-Glass v5.74.0 — reference implementation.
+Glass v5.75.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -3822,7 +3822,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.74.0 — interactive REPL")
+    print("Glass v5.75.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3954,7 +3954,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.74.0")
+        print("Glass 5.75.0")
     elif sys.argv[1] == "prove":
         # `glass prove <file.glass> [name=value ...]` — compile the file's `main`
         # expression into a circuit and emit a succinct, zero-knowledge proof of
@@ -4123,10 +4123,15 @@ def main() -> None:
                 print("witness3: (the reference interpreter could not evaluate this source — third witness skipped)")
             elif _rp is None:
                 print("witness3: (no proven result to bind to — third witness skipped)")
-            elif _r3 == _rp:
-                print(f"witness3: THIRD LINEAGE AGREES — the reference interpreter (glass.py, independent of the bridge\'s evaluator and its circuit lowering) independently computes f(inputs) = {_r3}, matching the proven public result. Three lineages agree on the SEMANTICS — closing the source<->circuit gap that verify_b3 and Pentecost, both verifying the circuit, cannot see.")
+            # Reconcile MODULO the Goldilocks prime: the bridge reports a field element (0..p-1),
+            # the interpreter an int64 (possibly negative) — the SAME value has different reps, so a
+            # negative result like -560 must match its field form p-560. Comparing mod p makes the
+            # witness correct for small/negative results and still flags a GENUINE domain divergence
+            # (e.g. an int64 multiply that wraps mod 2^64 where the field wraps mod p).
+            elif (_r3 - _rp) % ((1 << 64) - (1 << 32) + 1) == 0:
+                print(f"witness3: THIRD LINEAGE AGREES — the reference interpreter (glass.py, independent of the bridge\'s evaluator and its circuit lowering) independently computes f(inputs) = {_r3} (= the proven result mod the Goldilocks prime). Three lineages agree on the SEMANTICS — closing the source<->circuit gap that verify_b3 and Pentecost, both verifying the circuit, cannot see.")
             else:
-                print(f"witness3: DIVERGENCE — the proof attests {_rp} but the reference interpreter computes f(inputs) = {_r3}. The proof is STARK-valid, yet the lowered circuit\'s semantics differ from the source. (Caveat: the bridge computes over Goldilocks mod p; the interpreter over int64 — a divergence only on results that wrap differently is a semantics-domain difference, not necessarily a lowering bug.)")
+                print(f"witness3: DIVERGENCE — the proof attests {_rp} but the reference interpreter computes f(inputs) = {_r3}, and they differ EVEN MODULO the Goldilocks prime. The proof is STARK-valid, yet the lowered circuit\'s semantics differ from the source — a genuine source<->circuit or domain mismatch (e.g. an int64 wraparound the field does not share). Worth investigating.")
     elif sys.argv[1] == "name":
         # The Name — Glass's content-addressed canonical identity: one Poseidon-Merkle
         # root over the self-hosting core + prover/verifier bridge + the second verifier
