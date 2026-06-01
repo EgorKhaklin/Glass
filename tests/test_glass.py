@@ -1241,17 +1241,29 @@ def main() -> int:
         print(f"        stdout: {_cmp.stdout.strip()[-150:]}  stderr: {_cmp.stderr.strip()[-150:]}")
         failures += 1
 
-    # Dead-branch domain guard (v5.86): cgen builds BOTH if-arms, so an out-of-domain op in a DEAD
-    # arm (here `a % 0`, with the `a==a` condition always true) must ABSTAIN — never REJECT a true
-    # statement, never silently prove. The all-branches heval guard in gref_m_checked catches it.
-    # (Goldilocks native path; ~15s — it abstains before any proof is built.)
-    _db_path = os.path.join(EX, "prove", "deadbranch_abstain.glass")
+    # Dead-branch PREDICATION (v5.88): cgen builds BOTH if-arms, so a divide-by-zero in a DEAD arm
+    # (`if a==a then a else a%b`, b=0) used to poison the circuit. The division gadget now predicates
+    # its `r < b` check on an in-circuit `b!=0` bit, so the dead `a%0` is vacuously satisfiable and the
+    # live result PROVES — `result: 7, ACCEPT` (was ABSTAIN). Goldilocks native path (~15s).
+    _db_path = os.path.join(EX, "prove", "deadbranch_div.glass")
     _db = subprocess.run([sys.executable, GLASS, "prove", _db_path, "a=7", "b=0"],
                          capture_output=True, text=True, cwd=ROOT)
-    db_ok = (_db.returncode != 0) and ("ABSTAIN" in (_db.stdout + _db.stderr)) and ("ACCEPT" not in _db.stdout)
-    print(f"  {'OK ' if db_ok else 'FAIL'}  dead-branch out-of-domain ABSTAINs (a%0 in a dead arm; no false REJECT/ACCEPT)")
+    db_ok = (_db.returncode == 0) and ("ACCEPT" in _db.stdout) and ("result:  7" in _db.stdout)
+    print(f"  {'OK ' if db_ok else 'FAIL'}  dead-branch predication: dead a%0 proves the live result (7, ACCEPT)")
     if not db_ok:
         print(f"        rc={_db.returncode}  out: {_db.stdout.strip()[-150:]}  err: {_db.stderr.strip()[-150:]}")
+        failures += 1
+    # Soundness companion: a LIVE divide-by-zero (b=0 on the TAKEN path) must STILL ABSTAIN — the
+    # predication only relaxes DEAD arms; seval short-circuits to the taken path and refuses b==0.
+    with tempfile.NamedTemporaryFile("w", suffix=".glass", delete=False) as _lf:
+        _lf.write("a % b\n"); _live_path = _lf.name
+    _lv = subprocess.run([sys.executable, GLASS, "prove", _live_path, "a=7", "b=0"],
+                         capture_output=True, text=True, cwd=ROOT)
+    os.unlink(_live_path)
+    lv_ok = (_lv.returncode != 0) and ("ABSTAIN" in (_lv.stdout + _lv.stderr)) and ("ACCEPT" not in _lv.stdout)
+    print(f"  {'OK ' if lv_ok else 'FAIL'}  live divide-by-zero still ABSTAINs (predication relaxes only dead arms)")
+    if not lv_ok:
+        print(f"        rc={_lv.returncode}  out: {_lv.stdout.strip()[-150:]}  err: {_lv.stderr.strip()[-150:]}")
         failures += 1
 
     # Higher-order proving (v5.87): the seval guard resolves function-valued parameters via fenv
@@ -1465,7 +1477,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 21)  # +21: ... + witness3 + h3-merkle + tamper-fuzz + plain-name-surface + statement-binding + proof-corpus + dead-branch-ABSTAIN + higher-order guards
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 22)  # +22: ... + witness3 + h3-merkle + tamper-fuzz + plain-name-surface + statement-binding + proof-corpus + dead-branch-predication + live-div0-ABSTAIN + higher-order guards
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

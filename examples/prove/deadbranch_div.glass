@@ -1,0 +1,14 @@
+# Dead-branch predication. The else-arm divides by zero, but the condition `a == a`
+# is always true, so that arm is DEAD at runtime. The prover's circuit model builds
+# BOTH arms of an `if` — yet this now PROVES the live result (`a`), because the
+# division gadget's `r < b` check is predicated on an in-circuit `b != 0` bit: when
+# the divisor is zero the check goes vacuous, so the dead `a % 0` no longer poisons
+# the circuit, and the mux selects the live arm.
+#
+#   glass prove examples/prove/deadbranch_div.glass a=7 b=0     # -> result: 7, ACCEPT
+#
+# (v5.88 — predicated gadgets, the dead-branch paradigm shift. A LIVE divide-by-zero
+#  is still refused: `glass prove "a % b" a=7 b=0` ABSTAINs, since seval short-circuits
+#  to the taken path and catches it. Pure GMul+GEqZero predication — no verifier change.)
+
+if a == a then a else a % b

@@ -625,13 +625,15 @@ recursively improve itself and prove it at the same time.*
     *both* arms of an `if`, so an out-of-domain op in the *not-taken* arm (a divide-by-zero in a base case,
     an out-of-range comparison) makes the circuit unsatisfiable. Before v5.86 the prover would REJECT such a
     *true* statement (misreading as a disproof); now an all-branches `heval` domain guard in `gref_m_checked`
-    catches it and **ABSTAINs** honestly (`examples/prove/deadbranch_abstain.glass`, suite-gated). Safe and
-    regression-free: `seval` already refuses higher-order callees / over-deep recursion *first*, so only
-    first-order depth-ok programs reach the guard, on which `heval` errors *exactly* when `cgen`'s gadget is
-    unsatisfiable. **Still open — ABSTAIN → ACCEPT via predication:** the *ideal* is to prove the live result
-    even when a dead arm is out-of-domain. That needs predicated constraints (selector-gate each `GEqZero` by
-    a per-branch live bit so dead arms impose nothing) — an architectural change to the gate model + both
-    verifiers. (`gcd` also needs this, AND a fix for its exponential unroll — its compound recursive arg
-    `a%b` duplicates each level, so the unrolled AST is exponential regardless.)
+    caught it and ABSTAINed honestly (v5.86). **✅ ABSTAIN → ACCEPT via predication, for division: v5.88.0.**
+    The textbook escape (predication) was assumed to need a new gate type + verifier changes — it doesn't:
+    the division gadget's `r < b` check is now gated by an in-circuit `b ≠ 0` bit (`mk_eq_g`), using only
+    existing `GMul`+`GEqZero`. A divide-by-zero in a DEAD arm goes vacuous (the mux discards its garbage `q`)
+    and the **live result proves** (`deadbranch_div.glass`: `if a==a then a else a%b`, b=0 → `result 7, ACCEPT`,
+    was ABSTAIN); a LIVE divide-by-zero still ABSTAINs (seval short-circuits to the taken path). No
+    `verify_b3`/Pentecost change. **Still open:** (1) **range-predication** — out-of-*range* operands in dead
+    arms still ABSTAIN; needs a "range → bit" gadget (decompose into >k bits, AND the high bits are zero)
+    to predicate the range asserts the same way. (2) **gcd's exponential unroll** — its compound recursive
+    arg `a%b` duplicates each level, so the unrolled AST is exponential regardless of predication.
   - **Proving a property of the compiler itself** (not just a helper's result) — the largest step:
     `verify_b3`-as-a-circuit (H3), or proving the fixpoint relation, is the eventual closing of the loop.

@@ -1095,12 +1095,12 @@ fn heval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, t
       else error("glass prove: ordering comparison operand out of provable range [0,2^32) — ABSTAIN (cannot lower; abstaining, not disproving)") } };
     EDiv(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) =>
       let xa : List<Int> = vh(va) in let xb : List<Int> = vh(vb) in
-      if div_ok_g(xa, xb) then ([gdiv_lit(xa, xb)], ha ++ hb)
-      else error("glass prove: integer division operand out of provable range [0,2^32) or divisor zero — ABSTAIN (Glass cannot faithfully lower this division; abstaining, not disproving — and never a wrong ACCEPT)") } };
+      if cmp_ok_g(xa, xb) then ([if bn_is_zero(xb) then glit(0) else gdiv_lit(xa, xb)], ha ++ hb)
+      else error("glass prove: integer division operand out of provable range [0,2^32) — ABSTAIN (Glass cannot faithfully lower this division; abstaining, not disproving — and never a wrong ACCEPT)") } };
     EMod(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) =>
       let xa : List<Int> = vh(va) in let xb : List<Int> = vh(vb) in
-      if div_ok_g(xa, xb) then ([gmod_lit(xa, xb)], ha ++ hb)
-      else error("glass prove: integer modulo operand out of provable range [0,2^32) or divisor zero — ABSTAIN (cannot lower; abstaining, not disproving)") } };
+      if cmp_ok_g(xa, xb) then ([if bn_is_zero(xb) then glit(bn_small_to_int(xa)) else gmod_lit(xa, xb)], ha ++ hb)
+      else error("glass prove: integer modulo operand out of provable range [0,2^32) — ABSTAIN (cannot lower; abstaining, not disproving)") } };
     _ => error("glass prove: unsupported expression in the prove bridge (heval) — only + - * == != && || ! < > <= >= / % (range-bounded) and if/let/match/ADT/calls lower to the field circuit; strings and records have no faithful field lowering and are refused, not silently proven as 0") }
 fn heval_fields(args: List<Expr>, tys: List<Type>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>) : (List<List<Int>>, List<List<Int>>) =
   match args { [] => ([], []); [a, ...arest] => match tys { [] => ([], []); [t, ...trest] =>
@@ -1281,13 +1281,18 @@ fn lt_build(wx: Int, wy: Int, b: Build) : (Int, Build) =
   match mkc(glit(1), b6) { (wone, b7) =>
   match mks(wone, wbitk, b7) { (wlt, b8) => (wlt, b8) } } } } } }
 # divmod_build: integer division/modulo as a circuit via the defining identity a = b*q + r, 0 <= r < b.
-# q and r are injected as advice (mkh) and PINNED by four constraints: range_k(q) and range_k(r) put
-# both in [0,2^32); the multiply-add identity asserts a == b*q + r; and lt_build asserts r < b (which
-# also range-bounds b into [0,2^32)). With r >= 0 and r < b the divisor is forced >= 1 (b != 0 is a
-# circuit fact, not just a host check), and since q,b,r < 2^32 every product stays below the Goldilocks
-# prime, so the field identity IS the integer identity (no wraparound). Given a,b in range with b>=1
-# the (q,r) satisfying a=b*q+r, 0<=r<b is unique = integer division, so the wires are exactly a/b, a%b.
-# The honest q,r come from the witness values of a,b (the seval guard refused b==0/out-of-range first).
+# q,r are advice (mkh), pinned by: range_k(q), range_k(r) (both in [0,2^32)); the multiply-add identity
+# a == b*q + r; and r < b — but the r < b assert is PREDICATED on an in-circuit `b != 0` bit (nz). When
+# b != 0 (nz=1) r < b is enforced, so the divisor is forced >= 1 and (q,r) is the unique integer
+# division (products stay < the Goldilocks prime since q,b,r < 2^32, so field == integer identity).
+# When b == 0 (nz=0) the r < b assert goes VACUOUS (nz*(1-(r<b)) == 0 holds for nz=0) and the identity
+# reduces to a == r (the honest witness sets q=0, r=a) — a SATISFIABLE sub-circuit. This is the
+# predication paradigm shift: a divide-by-zero in a DEAD branch (cgen builds both `if` arms) no longer
+# poisons the circuit — the mux discards its garbage q, and the live result proves. A LIVE divide-by-
+# zero is still refused by the seval guard (it short-circuits to the taken path and abstains on b==0),
+# so the unconstrained-q-when-b==0 case is never selected. nz is computed from b in-circuit (mk_eq_g
+# is-zero), so it cannot be faked to escape the r < b constraint when b != 0. No verify_b3/Pentecost
+# change — pure GMul+GEqZero predication in the existing gate model.
 fn divmod_build(wa: Int, wb: Int, b: Build) : (Int, Int, Build) =
   let ai : Int = bn_small_to_int(bwire(b, wa)) in
   let bi : Int = bn_small_to_int(bwire(b, wb)) in
@@ -1301,11 +1306,15 @@ fn divmod_build(wa: Int, wb: Int, b: Build) : (Int, Int, Build) =
   match mka(wbq, wr, b5) { (wsum, b6) =>
   match mks(wa, wsum, b6) { (wdiff, b7) =>
   let b8 : Build = mke(wdiff, b7) in
-  match lt_build(wr, wb, b8) { (wlt, b9) =>
-  match mkc(glit(1), b9) { (wone, b10) =>
-  match mks(wone, wlt, b10) { (wd2, b11) =>
-  let b12 : Build = mke(wd2, b11) in
-  (wq, wr, b12) } } } } } } } }
+  match mkc(glit(0), b8) { (wzero, b9) =>
+  match mk_eq_g(wb, wzero, b9) { (wisz, b10) =>
+  match mkc(glit(1), b10) { (wone, b11) =>
+  match mks(wone, wisz, b11) { (wnz, b12) =>
+  match lt_build(wr, wb, b12) { (wlt, b13) =>
+  match mks(wone, wlt, b13) { (wd2, b14) =>
+  match mkm(wnz, wd2, b14) { (wg, b15) =>
+  let b16 : Build = mke(wg, b15) in
+  (wq, wr, b16) } } } } } } } } } } } }
 
 fn cgen(e: Expr, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: List<TypeDecl>, b: Build) : (List<Int>, Build) =
   match e {
