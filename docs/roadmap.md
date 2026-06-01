@@ -531,9 +531,12 @@ in priority order (the traditions push hardest on the first):
   blowup 32 => rate 1/8, 12-bit grind, 4-lane hash)`, re-derived by the prover from the
   live params of the actual circuit (`fri_queries`/`fri_dsize`/`grind_modulus`), not asserted
   in prose. One `grind_modulus` source feeds both `pow_ok` and the printed grind term.
-- **Tzimtzum-as-a-type — `!{Private}` / `Concealed<T>`:** a withdrawn value, provable
-  about but never observable; makes "the witness stays hidden" a compile-time property.
-  (`LANG.md` already lists `!{Private}` as future.) *Primitive, medium–research.*
+- **Tzimtzum-as-a-type — `Concealed<T>`. ✅ TYPE-LEVEL SHIPPED v5.73.0.** A value provable-about
+  (`concealed_in_range` → public Bool) and computable-within (`cmap`) but never observable:
+  an opaque type with NO reveal eliminator and no constructor, so every reveal (arithmetic,
+  print, pattern-match) is a compile-time type error — privacy by construction. Showcase
+  `../examples/conceal_showcase.glass`. REMAINING: wire concealed values to the prover's ZK
+  witness (cryptographic, not only type-level hiding); native-checker enforcement.
 - **Opening the Seals — selective disclosure. ✅ SHIPPED v5.68.0.** `glass seal` ([`../seal/`](../seal/))
   commits a record as blinded Poseidon leaves and reveals any subset with inclusion proofs —
   revealed fields bind to the root, the rest stay hidden (*prove you're over 21 without your

@@ -1,0 +1,24 @@
+# Tzimtzum — "the withdrawal." A value provable-about but never observable, enforced by the
+# TYPE SYSTEM at compile time. `conceal` introduces a Concealed<T>; `cmap` computes within
+# concealment (the result stays concealed); `concealed_in_range` proves a property and returns
+# a PUBLIC Bool. There is deliberately NO reveal eliminator and no constructor, so a concealed
+# value can NEVER reach an observable position — privacy by construction, not by convention.
+#
+#   python3 glass.py examples/conceal_showcase.glass
+#
+# These would each be COMPILE-TIME TYPE ERRORS (the witness cannot leak):
+#   conceal(42) + 1                          -- +: got Concealed<Int>, not Int
+#   print(int_to_string(conceal(42)))        -- int_to_string: got Concealed<Int>, not Int
+#   match conceal(42) { Conceal(x) => x }    -- unknown constructor 'Conceal' (it is opaque)
+
+fn raise(x: Int) : Int = x + 100              # a computation to run UNDER concealment
+
+let salary : Concealed<Int> = conceal(42000)             # the secret witness — never observable
+let raised : Concealed<Int> = cmap(salary, raise)        # compute on it; result stays concealed
+let in_band : Bool = concealed_in_range(salary, 30000, 50000)   # prove a property -> public Bool
+let raised_ok : Bool = concealed_in_range(raised, 42090, 42110)
+
+let _ : String = print("salary is in [30k, 50k):           " ++ (if in_band then "proven (value hidden)" else "no"))
+let _ : String = print("raised salary is in [42090, 42110): " ++ (if raised_ok then "proven (value hidden)" else "no"))
+let _ : String = print("(the concealed values themselves never appear — the type system forbids it)")
+"tzimtzum"

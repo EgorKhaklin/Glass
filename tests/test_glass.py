@@ -116,6 +116,13 @@ POSITIVE = [
 # (label, source, expected substring in stderr) — must fail with the right reason.
 NEGATIVE = [
     # ---- v0.0.1 cases ----
+    # ---- Tzimtzum: a concealed value can never escape to an observable position ----
+    ("conceal cannot be revealed by arithmetic",
+     'conceal(5) + 1',
+     "Concealed"),
+    ("conceal is opaque — no constructor, cannot be pattern-matched open",
+     'match conceal(5) { Conceal(x) => x }',
+     "unknown constructor"),
     ("fn return mismatch",
      'fn f(n: Int) : Int = "no"',
      "declared return Int, body is String"),
@@ -534,6 +541,14 @@ def main() -> int:
     # (label, source, expected substring in stdout). Short programs that
     # pin down specific past bugs. Add a case when fixing a real bug.
     inline_positive = [
+        # Tzimtzum: conceal a value, compute within concealment (cmap), prove a property
+        # about it (concealed_in_range -> a PUBLIC Bool) — all without ever revealing it.
+        ("Concealed<T>: provable-about, computable-within, never revealed",
+         "fn add5(x: Int) : Int = x + 5\n"
+         "let c : Concealed<Int> = cmap(conceal(20), add5)\n"
+         "let ok : Bool = concealed_in_range(c, 24, 26)\n"
+         "ok\n",
+         "ok : Bool = true"),
         # Exhaustiveness must recognise coverage spread ACROSS arms via nested
         # patterns: the two Ok(...) arms together cover all of Box, so this is
         # total and must NOT be rejected (guards the recursive checker against

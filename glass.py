@@ -1,5 +1,5 @@
 """
-Glass v5.72.0 — reference implementation.
+Glass v5.73.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -1302,6 +1302,13 @@ def builtin_types() -> dict[str, Ty]:
         "poseidon_perm":  TyFn((TyList(TyInt()),), TyList(TyInt())),
         "ntt_lde":        TyFn((TyList(TyInt()), TyInt(), TyInt(), TyInt()), TyList(TyInt())),
         "poseidon2_perm": TyFn((TyList(TyInt()),), TyList(TyInt())),
+        # Tzimtzum (`Concealed<T>`): a value provable-about but never observable. `conceal`
+        # introduces it; `cmap` computes within concealment; `concealed_in_range` proves a
+        # property and returns a PUBLIC Bool. No reveal eliminator and no registered ctor,
+        # so a concealed value can never escape to an observable position — privacy by construction.
+        "conceal":        TyFn((T,), TyADT("Concealed", (T,))),
+        "cmap":           TyFn((TyADT("Concealed", (T,)), TyFn((T,), U)), TyADT("Concealed", (U,))),
+        "concealed_in_range": TyFn((TyADT("Concealed", (TyInt(),)), TyInt(), TyInt()), TyBool()),
         "to_vec":         TyFn((TyList(T),), TyList(T)),
         "vget":           TyFn((TyList(T), TyInt()), T),
         "string_length":  TyFn((TyString(),), TyInt()),
@@ -1673,6 +1680,11 @@ class TypeChecker:
         self.adt_registry: dict[str, tuple[list[str], list[Variant]]] = {}
         # ctor_name -> (adt_name, field_types, param_names).
         self.ctor_registry: dict[str, tuple[str, list[Ty], list[str]]] = {}
+        # Tzimtzum: `Concealed<a>` is a KNOWN parametric type (so `: Concealed<Int>` annotations
+        # validate) but OPAQUE — it has no registered constructor, so no pattern can ever open it.
+        # A concealed value is provable-about (concealed_in_range) and computable-within (cmap),
+        # but the type system has no eliminator returning the underlying value: privacy by construction.
+        self.adt_registry["Concealed"] = (["a"], [])
         # record_name -> (type_param_names, [(field_name, field_type)]).
         # Records use the same TyADT representation as sums; the registry
         # distinguishes them at construction/access sites.
@@ -2461,6 +2473,9 @@ class ADTValue(Value):
     ctor: str
     args: list[Value]
     def __str__(self):
+        # Tzimtzum: a concealed value never shows its contents, even in debug output.
+        if self.ctor == "Conceal":
+            return "<concealed>"
         if not self.args:
             return self.ctor
         return f"{self.ctor}(" + ", ".join(str(a) for a in self.args) + ")"
@@ -2699,6 +2714,13 @@ def builtin_values() -> dict[str, Value]:
         st = [(st[i] + _PARC[12 * rc + i]) % _GOLD_P for i in range(12)]
         st = [_psbox(x) for x in st] if isfull else [_psbox(st[0])] + st[1:]
         return _pmds(st)
+    # Tzimtzum: a concealed value is an ADTValue with the UNREGISTERED ctor "Conceal" — the
+    # checker has no ctor for Concealed, so no pattern can open it (privacy by construction).
+    def b_conceal(x): return ADTValue(ctor="Conceal", args=[x])
+    def b_cmap(c, f): return ADTValue(ctor="Conceal", args=[apply_fn(f, [c.args[0]])])
+    def b_concealed_in_range(c, lo, hi):
+        x = c.args[0].v
+        return BoolV(lo.v <= x < hi.v)
     def b_poseidon_perm(xs):
         st = ([_u64(l.v) % _GOLD_P for l in xs.items] + [0] * 12)[:12]
         for rc in range(0, 4):   st = _pround(st, rc, True)
@@ -2798,6 +2820,9 @@ def builtin_values() -> dict[str, Value]:
         "goldw_to_limbs":   BuiltinV("goldw_to_limbs", b_goldw_to_limbs),
         "limbs_to_goldw":   BuiltinV("limbs_to_goldw", b_limbs_to_goldw),
         "poseidon_perm":    BuiltinV("poseidon_perm", b_poseidon_perm),
+        "conceal":          BuiltinV("conceal", b_conceal),
+        "cmap":             BuiltinV("cmap", b_cmap),
+        "concealed_in_range": BuiltinV("concealed_in_range", b_concealed_in_range),
         "ntt_lde":          BuiltinV("ntt_lde", b_ntt_lde),
         "poseidon2_perm":   BuiltinV("poseidon2_perm", b_poseidon2_perm),
         "to_vec":           BuiltinV("to_vec", b_to_vec),
@@ -3797,7 +3822,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.72.0 — interactive REPL")
+    print("Glass v5.73.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3929,7 +3954,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.72.0")
+        print("Glass 5.73.0")
     elif sys.argv[1] == "prove":
         # `glass prove <file.glass> [name=value ...]` — compile the file's `main`
         # expression into a circuit and emit a succinct, zero-knowledge proof of
