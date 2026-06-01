@@ -37,7 +37,7 @@ This project follows [Semantic Versioning](https://semver.org/).
 - Suite **422/422**. Research/educational-grade, UNAUDITED.
 
 ## [5.81.0] — 2026-06-01 — Docs de-esotericized
-- **A cleaner public face.** The feature names (Pentecost, the Name, the Preserved Tablet, Opening the Seals, the Third Witness, the Measuring Reed, Tzimtzum) stay as branding, but the religious *framing* around them is gone: every scripture epigraph removed from the feature READMEs (`pentecost/`, `name/`, `ledger/`, `seal/`), the `docs/revelation.md` "Glass is biblical" essay **deleted**, and the roadmap's North-Star section rewritten in plain language (no cross-tradition concordance).
+- **A cleaner public face.** The feature names (Pentecost, the Name, the Preserved Tablet, Opening the Seals, the Third Witness, the Measuring Reed, Tzimtzum) stay as branding, but the esoteric *framing* around them is gone: every scripture epigraph removed from the feature READMEs (`pentecost/`, `name/`, `ledger/`, `seal/`), the `docs/revelation.md` The roadmap's North-Star section rewritten in plain language (no cross-tradition concordance).
 - **`docs/naming.md`** is now a neutral plain ⇆ branded ⇆ what-it-is table (no revelation references); the one non-English religious term (*al-Furqān*) is removed everywhere — the second verifier is simply "Pentecost / let the verifier be two."
 - **Behavior unchanged.** No renames, no CLI changes, no logic touched — only docs, comments, and two CANON docstrings/comments (`glass.py`, `pentecost/pentecost_verify.py`), so the Name re-rooted; the bootstrap files (`glassc.glass`/`prism.glass`/`quartz.py`) were untouched and the fixpoint holds.
 - Suite **421/421**. Research/educational-grade, UNAUDITED.
