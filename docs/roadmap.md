@@ -599,3 +599,29 @@ lowering — catching a source↔circuit gap (`heval`+`cgen` sharing a bug) that
 and verifier-be-two (both verify the circuit) structurally cannot. The fuller bet — a third
 INDEPENDENT verifier of the STARK construction itself (3-way consensus on the proof, not just
 the semantics) — remains open.
+
+## The convergence: self-improving, self-proving
+
+Glass does two deep things that most languages do neither of, and they are starting to meet:
+it **rebuilds itself** (the self-hosting bootstrap fixpoint — `native_glassc` compiles its own
+source byte-for-byte, no other language in the loop) and it **proves its own computations** (the
+zk-STARK prove bridge). The frontier is closing those into one loop: *a language that can
+recursively improve itself and prove it at the same time.*
+
+- **First step — Glass proves its own building blocks. ✅ SHIPPED v5.85.0.** `examples/prove/selfprove.glass`
+  proves, in zero-knowledge, a polynomial-hash step `(h*31 + c) % m` — the exact arithmetic shape of
+  Glass's own djb2/polynomial string hash — composing `*`, `+`, and the v5.84 `%` gadget. The result is
+  bound three independent ways (`verify_b3`, Pentecost, the reference interpreter). The kind of code Glass
+  is made of, proven by Glass.
+- **Open — the gaps between "proves a function" and "proves itself":**
+  - **Deeper / unbounded recursion.** The bridge unrolls recursion to a fixed fuel (8); programs deeper
+    than that ABSTAIN. Proving Glass's *own* larger functions needs either a higher bound (cost) or a
+    recursion/induction argument rather than unrolling.
+  - **Dead-branch out-of-domain ops should ABSTAIN, not REJECT.** `cgen` builds *both* arms of an `if`,
+    so an out-of-domain operation in the *not-taken* arm (a divide-by-zero in a base case, an out-of-range
+    comparison) makes the circuit unsatisfiable → the prover REJECTs a *true* statement. The honest verdict
+    is ABSTAIN (Glass can't faithfully lower this program), not REJECT (a disproof). A real soundness-of-
+    *messaging* gap surfaced by the division work — `gcd` (Euclid, `b==0` base over `a % b`) hits it today.
+    Fixing it means predicated/dead-branch-safe gadgets, or a seval pass that detects the case and abstains.
+  - **Proving a property of the compiler itself** (not just a helper's result) — the largest step:
+    `verify_b3`-as-a-circuit (H3), or proving the fixpoint relation, is the eventual closing of the loop.

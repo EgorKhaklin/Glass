@@ -1,0 +1,24 @@
+# Glass proving its own kind of computation.
+#
+# Glass already does two deep things: it REBUILDS ITSELF (the self-hosting bootstrap
+# fixpoint — native_glassc compiles its own source byte-for-byte), and it PROVES
+# RESULTS (the zk-STARK prove bridge). This example sits where the two meet: it proves,
+# in zero-knowledge, a function of exactly the shape Glass's OWN internals are built
+# from — a polynomial hash step `h' = (h * 31 + c) % m`, the core recurrence of a
+# djb2/polynomial string hash (Glass's prelude hashes strings this way).
+#
+# It exercises the full arithmetic the bridge now lowers faithfully: multiply, add, and
+# — as of v5.84 — integer modulo (`%`), proven via the identity a = m*q + r, 0 <= r < m.
+# The proven result is bound three independent ways: the witness-free verifier `verify_b3`,
+# the independent re-verifier Pentecost (`glass verify`), and the reference interpreter
+# (`glass prove --cross-check`). Three lineages, one answer.
+#
+#   glass prove examples/prove/selfprove.glass h=12345 c=67     # -> 382762, ACCEPT
+#   glass prove --cross-check examples/prove/selfprove.glass h=12345 c=67
+#
+# (Operands stay in [0, 2^32); the modulus 1000003 is a fixed nonzero prime. Larger
+#  inputs or a zero modulus ABSTAIN — refused, never silently proven.)
+
+fn step(h: Int, c: Int) : Int = (h * 31 + c) % 1000003
+
+step(h, c)

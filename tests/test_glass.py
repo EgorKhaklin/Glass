@@ -1359,6 +1359,7 @@ def main() -> int:
                "assert glass._witness3_eval('a < b', [('a',5),('b',3)]) == 0; "
                "assert glass._witness3_eval('a / b', [('a',17),('b',5)]) == 3; "
                "assert glass._witness3_eval('a % b', [('a',17),('b',5)]) == 2; "
+               "assert glass._witness3_eval('(h * 31 + c) % 1000003', [('h',12345),('c',67)]) == 382762; "
                "print('W3 OK')")
     _w3p = subprocess.run([sys.executable, "-c", _w3check], capture_output=True, text=True, cwd=_root)
     w3 = (_w3p.returncode == 0) and ("W3 OK" in _w3p.stdout)
