@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Pentecost — a SECOND, independent verifier of Glass's zk-STARK.
 
-"By the mouth of two or three witnesses shall a matter be established."
-
 Glass's compiler has two witnesses (glass.py <-> native_glassc); its cryptographic
 verifier `verify_b3` (in examples/prove/prove_source_goldilocks_zk.glass) stood
 ALONE. This is the second tongue: a from-scratch re-implementation of the SAME

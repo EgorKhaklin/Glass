@@ -1,4 +1,4 @@
-# Tzimtzum — "the withdrawal." A value provable-about but never observable, enforced by the
+# Tzimtzum-as-a-type. A value provable-about but never observable, enforced by the
 # TYPE SYSTEM at compile time. `conceal` introduces a Concealed<T>; `cmap` computes within
 # concealment (the result stays concealed); `concealed_in_range` proves a property and returns
 # a PUBLIC Bool. There is deliberately NO reveal eliminator and no constructor, so a concealed

@@ -1,5 +1,5 @@
 """
-Glass v5.80.0 — reference implementation.
+Glass v5.81.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -3822,7 +3822,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.80.0 — interactive REPL")
+    print("Glass v5.81.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3952,14 +3952,13 @@ def main() -> None:
     the `glass` command invokes. With no args it starts the REPL; with a
     filename it runs that file."""
     # Plain-name flag aliases. The public CLI uses neutral, professional names;
-    # the thematic names (drawn from the docs/revelation.md reading) remain as
-    # aliases so neither audience is forced on the other. See docs/naming.md.
-    # `--cross-check` is the plain name for the Third Witness's `--witness3`.
+    # the branded names remain as aliases so neither audience is forced on the
+    # other. See docs/naming.md. `--cross-check` aliases the Third Witness's `--witness3`.
     sys.argv = [("--witness3" if a == "--cross-check" else a) for a in sys.argv]
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.80.0")
+        print("Glass 5.81.0")
     elif sys.argv[1] in ("help", "--help", "-h"):
         # Plain, professional command listing. The thematic names are aliases
         # (docs/naming.md) — this surface keeps the esoteric layer optional.

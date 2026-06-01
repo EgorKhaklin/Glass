@@ -1,7 +1,5 @@
 # Pentecost — let the verifier be two
 
-> *"By the mouth of two or three witnesses shall every word be established."* — Deut 19:15
-
 Glass's **compiler** has two witnesses: the reference interpreter `glass.py` and the
 self-hosted `native_glassc`, forced to agree byte-for-byte (the bootstrap fixpoint).
 But its **cryptographic verifier** — `verify_b3` in
@@ -15,7 +13,7 @@ Glass prover. It reads a serialized proof + public gate list, re-derives every
 Fiat-Shamir challenge, re-checks the per-row gate identity, the PLONK grand product,
 the FRI low-degree test, and the Merkle openings — and returns ACCEPT / REJECT.
 Differential agreement with the in-Glass `verify_b3` on the proof corpus is what
-*"let the verifier be two"* means. (See [`../docs/revelation.md`](../docs/revelation.md).)
+*"let the verifier be two"* means.
 
 The independence is genuine, not cosmetic: Glass represents a Goldilocks element as a
 base-2¹⁶ limb list; Pentecost uses plain Python `int mod p`. Two different

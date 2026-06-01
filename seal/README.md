@@ -1,7 +1,5 @@
 # Opening the Seals — selective disclosure over a blinded commitment
 
-> *"Who is worthy to open the scroll and break its seals?"* — Revelation 5:2
-
 A `glass prove` proof reveals only its result. Opening the Seals does the dual: it lets you
 **commit a record of named fields and later reveal any subset**, proving the revealed fields
 are bound to the commitment while the rest stay hidden. This is the canonical ZK move —

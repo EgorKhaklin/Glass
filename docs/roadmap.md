@@ -496,15 +496,13 @@ current behavioural payoff, so it waits until a non-ASCII showcase needs it or a
 `glassc.glass` change already pays the fixpoint gate); plus the `--baby-bear`
 silent-truncation, the `glassc` TyInt fallback, and the `run_command` argv divergence.
 
-## North-Star directions (from the Revelation reading)
+## North-Star directions
 
-A bidirectional reading of Glass against Revelation, the Torah/Gospels, the Qur'an,
-the Kabbalah, and cross-tradition mysticism — *verification and revelation are the
-same problem* — surfaced a ranked set of directions. The full reading, concordance,
-and rationale live in [`revelation.md`](revelation.md). The buildable, sound ones,
-in priority order (the traditions push hardest on the first):
+The guiding idea behind these is that *verification and revelation are the same problem*:
+unveiling that something is true without exposing how. That framing surfaced a ranked set
+of directions; the buildable, sound ones, in priority order:
 
-- **The Furqān — let the verifier be two. ✅ LANDED v5.64.0.** `verify_b3` no longer stands
+- **Let the verifier be two. ✅ LANDED v5.64.0.** `verify_b3` no longer stands
   alone: an **independent, non-Glass re-verifier** (`pentecost/`, plain int mod p, from-scratch
   Poseidon, sharing no Glass code) now parses and checks a real Glass-emitted `ProofB3`. End-to-end
   differential ([`pentecost/difftest.sh`](../pentecost/difftest.sh)): **honest → both ACCEPT;
@@ -512,7 +510,7 @@ in priority order (the traditions push hardest on the first):
   honest-ledger caveat "reasoned, not machine-checked" for the B3 path. (Still UNAUDITED; the second
   verifier is from public specs, not a trusted third-party oracle — that is the Third Witness bet below.)
 - **Pentecost — `verify_b3` re-implemented in a second tongue. ✅ LANDED v5.64.0** (with the
-  Furqān above). `pentecost/pentecost_verify.py` (~355 LOC) re-implements the full verifier — FS
+  verifier-be-two direction above). `pentecost/pentecost_verify.py` (~355 LOC) re-implements the full verifier — FS
   transcript, INTT, OOD gate-identity, PLONK grand-product, FRI+Merkle, grind — in plain Python
   int-mod-p; a Glass-side serializer (`emit_proofb3`, byte-for-byte with `parse()`: fe as limb
   counts, digests as the 4 Poseidon lanes, the 16-field TOpenB order) feeds it. The fast prover
@@ -570,7 +568,7 @@ in priority order (the traditions push hardest on the first):
   `glass fingerprint`/`ledger`/`disclose` + `--cross-check` alias `name`/`tablet`/`seal`/`--witness3`.
   [`naming.md`](naming.md) maps plain ⇆ thematic ⇆ what-it-is. Additive (CLI aliases + docs, no rename —
   the dir names path-bind into the Name), so a newcomer can read Glass as a plain verifiable-computing
-  toolkit while the [`revelation.md`](revelation.md) framing stays the inner layer. Both names are suite-gated.
+  toolkit while the poetic names stay as branding. Both names are suite-gated.
 
 The research-scale bet, wearing its honest scope: **the Third Witness.** 🟡 **Semantic cut
 LANDED v5.71.0:** `glass prove --witness3` binds the proof's public result to the reference

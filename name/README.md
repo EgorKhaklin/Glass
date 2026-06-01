@@ -1,8 +1,5 @@
 # The Name — Glass's content-addressed canonical identity
 
-> *"To the one who conquers … I will give a white stone, and on the stone a new name
-> written, which no one knows except the one who receives it."* — Revelation 2:17
-
 The bootstrap fixpoint proves the **compiler** is the same in two tongues; the Pentecost
 differential proves the **verifier** is the same in two tongues. The Name binds *all of it*
 into one number: a single Poseidon-Merkle root over the artifacts that **are** Glass —

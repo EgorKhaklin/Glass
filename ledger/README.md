@@ -1,8 +1,5 @@
 # The Preserved Tablet — an append-only ledger of proof verdicts
 
-> *"Take a scroll … and write on it … that it may be there for the time to come,
-> as a witness forever."* — Isaiah 30:8
-
 A `glass prove` verdict is a moment in time. The Preserved Tablet makes it a **record**:
 each verdict is appended to `ledger/LEDGER` and committed into a Poseidon-Merkle root
 (`ledger/ROOT`). The root commits the whole history, so **no past entry can be altered,
