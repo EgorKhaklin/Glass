@@ -337,8 +337,43 @@ fn cpre_6(unused: Int) : String =
 # --- identifier mangling -----------------------------------------------------
 # Uniform "g_" prefix: sidesteps every C keyword collision and keeps proto,
 # definition, and call sites consistent without a reserved-word table.
+fn cpre_p2(unused: Int) : String =
+  "/* UNBOXED Poseidon2-over-Goldilocks permutation (Plonky3 instance A, t=12, R_F=8, R_P=22, x^7).\n" ++
+  "   External M_E = block-circulant M4 + cross-chunk column sums; internal M_I = diag*x + sum.\n" ++
+  "   Byte-exact to Plonky3 goldilocks/src/poseidon2.rs (anchor out12). All add/mul via __int128\n" ++
+  "   (Goldilocks p~2^64, so a+b overflows u64). Mirrors glass.py poseidon2_perm. */\n" ++
+  "static const unsigned long long Q_P2_EI[48] = {1431286215153372998ULL, 3509349009260703107ULL, 2289575380984896342ULL, 10625215922958251110ULL, 17137022507167291684ULL, 17143426961497010024ULL, 9589775313463224365ULL, 7736066733515538648ULL, 2217569167061322248ULL, 10394930802584583083ULL, 4612393375016695705ULL, 5332470884919453534ULL, 8724526834049581439ULL, 17673787971454860688ULL, 2519987773101056005ULL, 7999687124137420323ULL, 18312454652563306701ULL, 15136091233824155669ULL, 1257110570403430003ULL, 5665449074466664773ULL, 16178737609685266571ULL, 52855143527893348ULL, 8084454992943870230ULL, 2597062441266647183ULL, 3342624911463171251ULL, 6781356195391537436ULL, 4697929572322733707ULL, 4179687232228901671ULL, 17841073646522133059ULL, 18340176721233187897ULL, 13152929999122219197ULL, 6306257051437840427ULL, 4974451914008050921ULL, 11258703678970285201ULL, 581736081259960204ULL, 18323286026903235604ULL, 10250026231324330997ULL, 13321947507807660157ULL, 13020725208899496943ULL, 11416990495425192684ULL, 7221795794796219413ULL, 2607917872900632985ULL, 2591896057192169329ULL, 10485489452304998145ULL, 9480186048908910015ULL, 2645141845409940474ULL, 16242299839765162610ULL, 12203738590896308135ULL};\n" ++
+  "static const unsigned long long Q_P2_EF[48] = {14306783492963476045ULL, 12653264875831356889ULL, 10887434669785806501ULL, 7221072982690633460ULL, 9953585853856674407ULL, 13497620366078753434ULL, 18140292631504202243ULL, 17311934738088402529ULL, 6686302214424395771ULL, 11193071888943695519ULL, 10233795775801758543ULL, 3362219552562939863ULL, 8595401306696186761ULL, 7753411262943026561ULL, 12415218859476220947ULL, 12517451587026875834ULL, 3257008032900598499ULL, 2187469039578904770ULL, 657675168296710415ULL, 8659969869470208989ULL, 12526098871288378639ULL, 12525853395769009329ULL, 15388161689979551704ULL, 7880966905416338909ULL, 2911694411222711481ULL, 6420652251792580406ULL, 323544930728360053ULL, 11718666476052241225ULL, 2449132068789045592ULL, 17993014181992530560ULL, 15161788952257357966ULL, 3788504801066818367ULL, 1282111773460545571ULL, 8849495164481705550ULL, 8380852402060721190ULL, 2161980224591127360ULL, 2440151485689245146ULL, 17521895002090134367ULL, 13821005335130766955ULL, 17513705631114265826ULL, 17068447856797239529ULL, 17964439003977043993ULL, 5685000919538239429ULL, 11615940660682589106ULL, 2522854885180605258ULL, 12584118968072796115ULL, 17841258728624635591ULL, 10821564568873127316ULL};\n" ++
+  "static const unsigned long long Q_P2_IN[22] = {5395176197344543510ULL, 17941136338888340715ULL, 7559392505546762987ULL, 549633128904721280ULL, 15658455328409267684ULL, 10078371877170729592ULL, 2349868247408080783ULL, 13105911261634181239ULL, 12868653202234053626ULL, 9471330315555975806ULL, 4580289636625406680ULL, 13222733136951421572ULL, 4555032575628627551ULL, 7619130111929922899ULL, 4547848507246491777ULL, 5662043532568004632ULL, 15723873049665279492ULL, 13585630674756818185ULL, 6990417929677264473ULL, 6373257983538884779ULL, 1005856792729125863ULL, 17850970025369572891ULL};\n" ++
+  "static const unsigned long long Q_P2_DIAG[12] = {18446744069414584319ULL, 1ULL, 2ULL, 9223372034707292161ULL, 3ULL, 4ULL, 9223372034707292160ULL, 18446744069414584318ULL, 18446744069414584317ULL, 13835058052060938241ULL, 4611686017353646080ULL, 16140901060737761281ULL};\n" ++
+  "static unsigned long long q_p2add(unsigned long long a, unsigned long long b){ unsigned long long P=18446744069414584321ULL; return (unsigned long long)(((unsigned __int128)a+b)%P); }\n" ++
+  "static unsigned long long q_p2mul(unsigned long long a, unsigned long long b){ unsigned long long P=18446744069414584321ULL; return (unsigned long long)(((unsigned __int128)a*b)%P); }\n" ++
+  "static unsigned long long q_p2sb(unsigned long long x){ unsigned long long x2=q_p2mul(x,x),x4=q_p2mul(x2,x2),x3=q_p2mul(x,x2); return q_p2mul(x3,x4); }\n" ++
+  "static void q_p2_mext(unsigned long long* s){\n" ++
+  "  for(int c=0;c<3;c++){ unsigned long long* x=s+4*c;\n" ++
+  "    unsigned long long t01=q_p2add(x[0],x[1]),t23=q_p2add(x[2],x[3]),t0123=q_p2add(t01,t23);\n" ++
+  "    unsigned long long t01123=q_p2add(t0123,x[1]),t01233=q_p2add(t0123,x[3]);\n" ++
+  "    unsigned long long y0=q_p2add(t01123,t01),y1=q_p2add(t01123,q_p2add(x[2],x[2])),y2=q_p2add(t01233,t23),y3=q_p2add(t01233,q_p2add(x[0],x[0]));\n" ++
+  "    x[0]=y0;x[1]=y1;x[2]=y2;x[3]=y3; }\n" ++
+  "  unsigned long long sums[4];\n" ++
+  "  for(int m=0;m<4;m++){ unsigned long long a=0; for(int c=0;c<3;c++) a=q_p2add(a,s[4*c+m]); sums[m]=a; }\n" ++
+  "  for(int i=0;i<12;i++) s[i]=q_p2add(s[i],sums[i%4]);\n" ++
+  "}\n" ++
+  "static void q_p2_mint(unsigned long long* s){\n" ++
+  "  unsigned long long sum=0; for(int i=0;i<12;i++) sum=q_p2add(sum,s[i]);\n" ++
+  "  for(int i=0;i<12;i++) s[i]=q_p2add(q_p2mul(Q_P2_DIAG[i],s[i]),sum);\n" ++
+  "}\n" ++
+  "static long long q_poseidon2_perm(long long xs){\n" ++
+  "  unsigned long long s[12]; for(int i=0;i<12;i++) s[i]=0;\n" ++
+  "  { int n=0; long long p=xs; while(p){ q_value_t* v=(q_value_t*)(intptr_t)p; if(strcmp(v->ctor,\"Cons\")) break; if(n<12) s[n]=(unsigned long long)v->fields[0]; n++; p=v->fields[1]; } }\n" ++
+  "  q_p2_mext(s);\n" ++
+  "  for(int r=0;r<4;r++){ for(int i=0;i<12;i++) s[i]=q_p2add(s[i],Q_P2_EI[r*12+i]); for(int i=0;i<12;i++) s[i]=q_p2sb(s[i]); q_p2_mext(s); }\n" ++
+  "  for(int r=0;r<22;r++){ s[0]=q_p2sb(q_p2add(s[0],Q_P2_IN[r])); q_p2_mint(s); }\n" ++
+  "  for(int r=0;r<4;r++){ for(int i=0;i<12;i++) s[i]=q_p2add(s[i],Q_P2_EF[r*12+i]); for(int i=0;i<12;i++) s[i]=q_p2sb(s[i]); q_p2_mext(s); }\n" ++
+  "  long long lst=(long long)(intptr_t)q_alloc(\"Nil\",0); for(int i=11;i>=0;i--) lst=q_cons((long long)s[i], lst); return lst;\n" ++
+  "}\n"
 fn c_prelude_of(unused: Int) : String =
-  cpre_0(0) ++ cpre_1(0) ++ cpre_2(0) ++ cpre_3(0) ++ cpre_4(0) ++ cpre_5(0) ++ cpre_6(0)
+  cpre_0(0) ++ cpre_1(0) ++ cpre_2(0) ++ cpre_3(0) ++ cpre_4(0) ++ cpre_5(0) ++ cpre_6(0) ++ cpre_p2(0)
 fn cmangle(name: String) : String = "g_" ++ name
 
 # --- curried-form peeling ----------------------------------------------------
@@ -729,6 +764,8 @@ fn gen_builtin(name: String, args: List<Expr>, venv: List<Pair<String, String>>,
         Some(mk_builtin(sargs, tv, lifted, "q_gold_comb((long long)(" ++ a0 ++ "))"))
       else if name == "poseidon_perm" then
         Some(mk_builtin(sargs, tv, lifted, "q_poseidon_perm((long long)(" ++ a0 ++ "))"))
+      else if name == "poseidon2_perm" then
+        Some(mk_builtin(sargs, tv, lifted, "q_poseidon2_perm((long long)(" ++ a0 ++ "))"))
       else if name == "ntt_lde" then
         Some(mk_builtin(sargs, tv, lifted, "q_ntt_lde((long long)(" ++ a0 ++ "), (long long)(" ++ a1 ++ "), (long long)(" ++ a2 ++ "), (long long)(" ++ list_at(cs, 3) ++ "))"))
       else if name == "to_vec" then

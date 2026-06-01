@@ -1,0 +1,16 @@
+# poseidon2_perm difftest (Poseidon2/Plonky3 migration, STAGE 0): the native intrinsic
+# (q_poseidon2_perm / glass.py b_poseidon2_perm) must hit Plonky3's published t=12 permutation
+# vector (goldilocks/src/poseidon2.rs) on input [0..11], AND be byte-identical interp vs native.
+# A lane is ONE Int = the u64 bit-pattern (>=2^63 reads negative).
+fn nth(xs: List<Int>, i: Int) : Int = match xs { [] => 0; [h, ...t] => if i == 0 then h else nth(t, i - 1) }
+fn idn(n: Int, i: Int) : List<Int> = if i >= n then [] else [i] ++ idn(n, i + 1)
+fn eqlist(a: List<Int>, b: List<Int>) : Bool = match a { [] => (match b { [] => true; _ => false }); [ha, ...ta] => match b { [] => false; [hb, ...tb] => if ha == hb then eqlist(ta, tb) else false } }
+fn sb(b: Bool) : String = if b then "T" else "F"
+fn joinl(xs: List<Int>) : String = match xs { [] => ""; [h, ...t] => int_to_string(h) ++ "," ++ joinl(t) }
+let want12 : List<Int> = [-967522507824215293, 734915442301621324, 377283858163603678, 216052820910632955, 6347663762129472178, -5716736956127330056, -1653925025047626588, -803306273689880126, 2573527637616151148, -3300059270889881768, 5692450944251311406, 769909420564152678]
+let got12 : List<Int> = poseidon2_perm(idn(12, 0))
+let got_b : List<Int> = poseidon2_perm([goldw_mul(7, 7), 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+let _ : String = print("CHECK plonky3_anchor " ++ sb(eqlist(got12, want12)))
+let _ : String = print("P2 anchor " ++ joinl(got12))
+let _ : String = print("P2 in_b " ++ joinl(got_b))
+"done"

@@ -1250,6 +1250,16 @@ def main() -> int:
         print(f"        out: {out.strip()[-200:]}  err: {err.strip()[-150:]}")
         failures += 1
 
+    # The native Poseidon2 intrinsic (poseidon2_perm / q_poseidon2_perm — the Plonky3 hash,
+    # staged for the bridge migration) must hit Plonky3's published t=12 permutation vector.
+    rc, out, err = run_file(os.path.join(EX, "prove", "poseidon2_difftest.glass"))
+    p2_ok = (rc == 0) and ("CHECK plonky3_anchor T" in out) and (" F" not in out)
+    print(f"  {'OK ' if p2_ok else 'FAIL'}  poseidon2_perm == Plonky3 published t=12 vector")
+    if not p2_ok:
+        print(f"        rc={rc}; Plonky3 anchor mismatch")
+        print(f"        out: {out.strip()[-200:]}  err: {err.strip()[-150:]}")
+        failures += 1
+
     # The native coset-NTT / low-degree-extension intrinsic (ntt_lde / q_ntt_lde — the rope-2
     # cut that removes the O(n^2) polynomial LDE) must equal the naive goldw coset evaluation
     # (eval[k] = P(7*omega^k)) AND be byte-identical interp vs native.
@@ -1315,7 +1325,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 11)  # +11: stmt-binding + 2 baby-bear + goldw + poseidon + ntt + vget + measure + name + tablet + seal guards
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 12)  # +12: ... + poseidon2 guard
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

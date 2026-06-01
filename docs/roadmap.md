@@ -538,13 +538,11 @@ in priority order (the traditions push hardest on the first):
   reports ABSTAIN (refused to lower: `/`, `%`, strings, out-of-range comparison) distinctly
   from REJECT (`verify_b3` ran and the proof failed). Sound by construction — the refusal
   aborts before `verify_b3`, so ABSTAIN cannot swallow a real REJECT.
-- **Migrate the bridge hash Plonky2 → Poseidon2 (Plonky3).** The prove bridge's `hashg`
-  is still Plonky2-exact Poseidon v1; Frost already has **Poseidon2 byte-exact to
-  Plonky3** ([`../examples/frost/frost_goldilocks_poseidon2.glass`](../examples/frost/frost_goldilocks_poseidon2.glass),
-  v5.50) — cheaper linear layers, the modern Plonky3/Stwo hash. Swapping it speeds the
-  prover's dominant cost (hashing) and modernises the construction; the second verifier
-  (`pentecost/`) swaps and re-validates against Plonky3's vectors in lock-step.
-  *Primitive, medium.*
+- **Migrate the bridge hash Plonky2 → Poseidon2 (Plonky3). 🟡 STAGE 0 LANDED v5.69.0.** A
+  native `poseidon2_perm` intrinsic (Plonky3 instance A, t=12; M4 external + diagonal internal)
+  is byte-exact to Plonky3's published vectors (`poseidon2_difftest.glass`), in both backends,
+  fixpoint-verified. **Stage 1 (open):** swap the bridge's `hashg` Plonky2 → Poseidon2 and
+  re-validate `pentecost/` in lock-step — cheaper linear layers speed the prover's dominant cost.
 
 The research-scale bet, wearing its honest scope: **the Third Witness** — a reference
 oracle that does not descend from the source, turning the gate from a 2-way byte-match

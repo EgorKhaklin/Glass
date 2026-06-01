@@ -1,5 +1,5 @@
 """
-Glass v5.68.0 — reference implementation.
+Glass v5.69.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -1301,6 +1301,7 @@ def builtin_types() -> dict[str, Ty]:
         "limbs_to_goldw": TyFn((TyList(TyInt()),), TyInt()),
         "poseidon_perm":  TyFn((TyList(TyInt()),), TyList(TyInt())),
         "ntt_lde":        TyFn((TyList(TyInt()), TyInt(), TyInt(), TyInt()), TyList(TyInt())),
+        "poseidon2_perm": TyFn((TyList(TyInt()),), TyList(TyInt())),
         "to_vec":         TyFn((TyList(T),), TyList(T)),
         "vget":           TyFn((TyList(T), TyInt()), T),
         "string_length":  TyFn((TyString(),), TyInt()),
@@ -2704,6 +2705,41 @@ def builtin_values() -> dict[str, Value]:
         for rc in range(4, 26):  st = _pround(st, rc, False)
         for rc in range(26, 30): st = _pround(st, rc, True)
         return ListV([IntV(_s64(v)) for v in st])
+    # --- UNBOXED Poseidon2-over-Goldilocks (Plonky3 instance A, t=12, R_F=8, R_P=22, x^7).
+    # External M_E (block-circulant M4 + cross-chunk column sums) + internal M_I (diag*x + sum).
+    # Byte-exact to Plonky3 goldilocks/src/poseidon2.rs; ORACLE for native q_poseidon2_perm.
+    _P2_EI = [1431286215153372998, 3509349009260703107, 2289575380984896342, 10625215922958251110, 17137022507167291684, 17143426961497010024, 9589775313463224365, 7736066733515538648, 2217569167061322248, 10394930802584583083, 4612393375016695705, 5332470884919453534, 8724526834049581439, 17673787971454860688, 2519987773101056005, 7999687124137420323, 18312454652563306701, 15136091233824155669, 1257110570403430003, 5665449074466664773, 16178737609685266571, 52855143527893348, 8084454992943870230, 2597062441266647183, 3342624911463171251, 6781356195391537436, 4697929572322733707, 4179687232228901671, 17841073646522133059, 18340176721233187897, 13152929999122219197, 6306257051437840427, 4974451914008050921, 11258703678970285201, 581736081259960204, 18323286026903235604, 10250026231324330997, 13321947507807660157, 13020725208899496943, 11416990495425192684, 7221795794796219413, 2607917872900632985, 2591896057192169329, 10485489452304998145, 9480186048908910015, 2645141845409940474, 16242299839765162610, 12203738590896308135]
+    _P2_EF = [14306783492963476045, 12653264875831356889, 10887434669785806501, 7221072982690633460, 9953585853856674407, 13497620366078753434, 18140292631504202243, 17311934738088402529, 6686302214424395771, 11193071888943695519, 10233795775801758543, 3362219552562939863, 8595401306696186761, 7753411262943026561, 12415218859476220947, 12517451587026875834, 3257008032900598499, 2187469039578904770, 657675168296710415, 8659969869470208989, 12526098871288378639, 12525853395769009329, 15388161689979551704, 7880966905416338909, 2911694411222711481, 6420652251792580406, 323544930728360053, 11718666476052241225, 2449132068789045592, 17993014181992530560, 15161788952257357966, 3788504801066818367, 1282111773460545571, 8849495164481705550, 8380852402060721190, 2161980224591127360, 2440151485689245146, 17521895002090134367, 13821005335130766955, 17513705631114265826, 17068447856797239529, 17964439003977043993, 5685000919538239429, 11615940660682589106, 2522854885180605258, 12584118968072796115, 17841258728624635591, 10821564568873127316]
+    _P2_IN = [5395176197344543510, 17941136338888340715, 7559392505546762987, 549633128904721280, 15658455328409267684, 10078371877170729592, 2349868247408080783, 13105911261634181239, 12868653202234053626, 9471330315555975806, 4580289636625406680, 13222733136951421572, 4555032575628627551, 7619130111929922899, 4547848507246491777, 5662043532568004632, 15723873049665279492, 13585630674756818185, 6990417929677264473, 6373257983538884779, 1005856792729125863, 17850970025369572891]
+    _P2_DIAG = [18446744069414584319, 1, 2, 9223372034707292161, 3, 4, 9223372034707292160, 18446744069414584318, 18446744069414584317, 13835058052060938241, 4611686017353646080, 16140901060737761281]
+    def _p2_sb(x):
+        x2 = x * x % _GOLD_P; x4 = x2 * x2 % _GOLD_P; x3 = x * x2 % _GOLD_P
+        return x3 * x4 % _GOLD_P
+    def _p2_mat4(c):
+        x0, x1, x2, x3 = c
+        t01 = (x0 + x1) % _GOLD_P; t23 = (x2 + x3) % _GOLD_P; t0123 = (t01 + t23) % _GOLD_P
+        t01123 = (t0123 + x1) % _GOLD_P; t01233 = (t0123 + x3) % _GOLD_P
+        return [(t01123 + t01) % _GOLD_P, (t01123 + 2 * x2) % _GOLD_P, (t01233 + t23) % _GOLD_P, (t01233 + 2 * x0) % _GOLD_P]
+    def _p2_mext(st):
+        st = st[:]
+        for c in range(3):
+            ch = _p2_mat4(st[4 * c:4 * c + 4])
+            for j in range(4): st[4 * c + j] = ch[j]
+        sums = [sum(st[4 * c + m] for c in range(3)) % _GOLD_P for m in range(4)]
+        return [(st[i] + sums[i % 4]) % _GOLD_P for i in range(12)]
+    def _p2_mint(st):
+        ss = sum(st) % _GOLD_P
+        return [(_P2_DIAG[i] * st[i] + ss) % _GOLD_P for i in range(12)]
+    def b_poseidon2_perm(xs):
+        st = ([_u64(l.v) % _GOLD_P for l in xs.items] + [0] * 12)[:12]
+        st = _p2_mext(st)
+        for r in range(4):
+            st = [(st[i] + _P2_EI[r * 12 + i]) % _GOLD_P for i in range(12)]; st = [_p2_sb(x) for x in st]; st = _p2_mext(st)
+        for r in range(22):
+            st = st[:]; st[0] = _p2_sb((st[0] + _P2_IN[r]) % _GOLD_P); st = _p2_mint(st)
+        for r in range(4):
+            st = [(st[i] + _P2_EF[r * 12 + i]) % _GOLD_P for i in range(12)]; st = [_p2_sb(x) for x in st]; st = _p2_mext(st)
+        return ListV([IntV(_s64(v)) for v in st])
     # --- UNBOXED coset NTT / low-degree extension: eval_on_dom(coeffs, {shift*omega^k}) done as a
     # forward NTT after scaling coeff[j] *= shift^j. O(m log m) on unboxed words. ORACLE for native
     # q_ntt_lde; difftested == the naive Horner eval_on_dom byte-identical (examples/prove/ntt_difftest.glass).
@@ -2763,6 +2799,7 @@ def builtin_values() -> dict[str, Value]:
         "limbs_to_goldw":   BuiltinV("limbs_to_goldw", b_limbs_to_goldw),
         "poseidon_perm":    BuiltinV("poseidon_perm", b_poseidon_perm),
         "ntt_lde":          BuiltinV("ntt_lde", b_ntt_lde),
+        "poseidon2_perm":   BuiltinV("poseidon2_perm", b_poseidon2_perm),
         "to_vec":           BuiltinV("to_vec", b_to_vec),
         "vget":             BuiltinV("vget", b_vget),
         "string_length":    BuiltinV("string_length", b_string_length),
@@ -3760,7 +3797,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.68.0 — interactive REPL")
+    print("Glass v5.69.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3872,7 +3909,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.68.0")
+        print("Glass 5.69.0")
     elif sys.argv[1] == "prove":
         # `glass prove <file.glass> [name=value ...]` — compile the file's `main`
         # expression into a circuit and emit a succinct, zero-knowledge proof of
