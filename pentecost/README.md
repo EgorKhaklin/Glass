@@ -25,7 +25,9 @@ representations, two different languages, one verdict that must coincide.
 
 | Piece | State |
 |---|---|
+| **End-to-end differential** | ✅ **LANDED (v5.64.0).** Glass's native prover emits a real `ProofB3` as a token stream (`emit_proofb3`, byte-for-byte with `parse()`); this verifier checks it. **Honest → ACCEPT (agreeing with Glass's own `verify_b3`); tampered root / wrong claim / tampered opening → REJECT.** Reproduce: `bash pentecost/difftest.sh` (exits 0 iff honest ACCEPT and every tamper REJECTs). The deepest soundness caveat — "`verify_b3` is reasoned, not machine-checked" — is retired for the B3 path. |
 | **Poseidon (the cryptographic keystone)** | ✅ **byte-exact**, validated against Plonky2's published vector `perm([0..11])[0] == 0xd64e1e3efc5b8e9e` — the *same* vector Glass's `perm` is checked against. This is the hardest, riskiest part, and it is grounded against a third party (Plonky2). See `test_poseidon.py`. |
+| **Honest scope** | The second verifier is built from **public specs**, not a trusted third-party oracle — it catches implementation bugs in `verify_b3`, not a shared spec misreading. A truly independent oracle (the "Third Witness") and an external audit remain the standing boundary; *do not protect real value*. |
 
 > **Why Plonky2 and not the newer Plonky3/Poseidon2?** The bridge's `hashg` uses the
 > Plonky2-exact Poseidon **v1** (t=12). Pentecost must match *what the prover actually
@@ -69,10 +71,15 @@ either front end.
 ## Run
 
 ```bash
-python3 -m pentecost.test_poseidon          # the keystone gate (passes today)
-python3 -m pentecost.pentecost_verify <serialized_proof_file>   # once the emitter lands
+bash pentecost/difftest.sh                   # the FULL differential: emit a Glass proof, check it,
+                                             #   tamper it — exits 0 iff honest ACCEPT + every tamper REJECT
+python3 -m pentecost.test_poseidon           # the Poseidon keystone gate
+python3 -m pentecost.pentecost_verify <serialized_proof_file>   # verify a proof emitted by `emit_proofb3`
 ```
 
-Pentecost's verdict is **not yet a trusted second opinion** — only the Poseidon
-keystone is validated end-to-end. The README will say so until the full differential
-run is green. Honesty over a proof-shaped object that isn't yet a proof.
+The full differential is **green** (v5.64.0): the second, independent verifier ACCEPTs honest
+Glass proofs and REJECTs tampered ones. What it is *not* yet: a **trusted** second opinion in the
+audit sense — both verifiers are built from the same public specs, so a shared *spec* misreading
+would fool both. It catches implementation divergence in `verify_b3` (the bug class `gen1 == gen2`
+cannot), which is the deepest in-repo soundness upgrade available; a third witness that does **not**
+descend from the spec, plus an external audit, stay the standing boundary. *Do not protect real value.*

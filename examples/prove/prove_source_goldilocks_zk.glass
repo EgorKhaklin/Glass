@@ -1439,6 +1439,54 @@ fn build_claim_zk(src: String, inputs: List<Pair<String, Int>>, claimedR: List<I
     let k : Int = targetN - glen(gs) in
     Build(n + 3 * k, gs ++ zk_dummy_gates(n, k), w ++ zk_dummy_wit(seed, k, 1)) }
 
+# --- PENTECOST SERIALIZER (north-star "let the verifier be two", v5.64.0) --------
+# Emit a ProofB3 (+ its gates) as the exact whitespace-separated token stream the INDEPENDENT
+# Python re-verifier pentecost/pentecost_verify.py parse() consumes — so a second, non-Glass
+# tongue can check the same proof. Grammar (byte-for-byte with parse()): a field element fe =
+# `count limb0 limb1 ..` (base-2^16, trimmed); a hash digest = EXACTLY 4 fe (the 4 Poseidon
+# lanes via to_lanes — NOT one 16-limb fe); g2 = 2 fe; path = `count` then count hashes; etc.
+# NOTE: naive ++ string-building is O(N^2) in token count — fine for the round-trip alignment
+# gate on a small circuit; a string-builder / incremental emit is the follow-up for big proofs.
+fn emit_int(x: Int) : String = int_to_string(x) ++ " "
+fn emit_limbs(xs: List<Int>) : String = match xs { [] => ""; [h, ...t] => emit_int(h) ++ emit_limbs(t) }
+fn emit_fe(x: List<Int>) : String = let t : List<Int> = trim(x) in emit_int(len(t)) ++ emit_limbs(t)
+fn emit_lanes(ls: List<List<Int>>) : String = match ls { [] => ""; [h, ...t] => emit_fe(h) ++ emit_lanes(t) }
+fn emit_hash(h: List<Int>) : String = emit_lanes(to_lanes(h))                 # 16-limb hash -> 4 lane fe's
+fn emit_g2(g: G2) : String = match g { G2(a0, a1) => emit_fe(a0) ++ emit_fe(a1) }
+fn emit_hlist(p: List<List<Int>>) : String = match p { [] => ""; [h, ...t] => emit_hash(h) ++ emit_hlist(t) }
+fn emit_path(p: List<List<Int>>) : String = emit_int(len(p)) ++ emit_hlist(p)
+fn emit_qopen(q: QOpen) : String = match q { QOpen(lx, lmx, p1, p2) => emit_g2(lx) ++ emit_g2(lmx) ++ emit_path(p1) ++ emit_path(p2) }
+fn emit_qlist_go(qs: List<QOpen>) : String = match qs { [] => ""; [q, ...t] => emit_qopen(q) ++ emit_qlist_go(t) }
+fn emit_qlist(qs: List<QOpen>) : String = emit_int(len(qs)) ++ emit_qlist_go(qs)
+fn emit_bopen_go(b: List<List<QOpen>>) : String = match b { [] => ""; [ql, ...t] => emit_qlist(ql) ++ emit_bopen_go(t) }
+fn emit_bopen(b: List<List<QOpen>>) : String = emit_int(len(b)) ++ emit_bopen_go(b)
+fn emit_g2list_go(gs: List<G2>) : String = match gs { [] => ""; [g, ...t] => emit_g2(g) ++ emit_g2list_go(t) }
+fn emit_g2list(gs: List<G2>) : String = emit_int(len(gs)) ++ emit_g2list_go(gs)
+fn emit_topenb(tb: TOpenB) : String = match tb { TOpenB(lj, rj, oj, qj, zj, p1j, p3j, p2j, ljh, rjh, ojh, qjh, zjh, p1jh, p3jh, p2jh) =>
+  emit_fe(lj) ++ emit_fe(rj) ++ emit_fe(oj) ++ emit_g2(qj) ++ emit_g2(zj) ++ emit_path(p1j) ++ emit_path(p3j) ++ emit_path(p2j)
+  ++ emit_fe(ljh) ++ emit_fe(rjh) ++ emit_fe(ojh) ++ emit_g2(qjh) ++ emit_g2(zjh) ++ emit_path(p1jh) ++ emit_path(p3jh) ++ emit_path(p2jh) }
+fn emit_topen_go(ts: List<TOpenB>) : String = match ts { [] => ""; [tb, ...t] => emit_topenb(tb) ++ emit_topen_go(t) }
+fn emit_topen(ts: List<TOpenB>) : String = emit_int(len(ts)) ++ emit_topen_go(ts)
+fn emit_gate(g: Gate) : String = match g {
+  GConst(o, c) => emit_int(1) ++ emit_int(o) ++ emit_fe(c);
+  GAdd(o, a, b) => emit_int(2) ++ emit_int(o) ++ emit_int(a) ++ emit_int(b);
+  GSub(o, a, b) => emit_int(3) ++ emit_int(o) ++ emit_int(a) ++ emit_int(b);
+  GMul(o, a, b) => emit_int(4) ++ emit_int(o) ++ emit_int(a) ++ emit_int(b);
+  GHint(o) => emit_int(5) ++ emit_int(o);
+  GEqZero(a) => emit_int(6) ++ emit_int(a) }
+fn emit_gates_go(gs: List<Gate>) : String = match gs { [] => ""; [g, ...t] => emit_gate(g) ++ emit_gates_go(t) }
+fn emit_proofb3(gates: List<Gate>, p: ProofB3) : String =
+  match p { ProofB3(root1, root2, root3, lz, rz, oz, qz, zz, zwz, broots, bfinal, nonce, bopen, topen) =>
+  "GATES " ++ emit_int(len(gates)) ++ emit_gates_go(gates)
+  ++ "PROOF " ++ emit_hash(root1) ++ emit_hash(root2) ++ emit_hash(root3)
+  ++ emit_g2(lz) ++ emit_g2(rz) ++ emit_g2(oz) ++ emit_g2(qz) ++ emit_g2(zz) ++ emit_g2(zwz)
+  ++ emit_roots(broots) ++ emit_g2list(bfinal) ++ emit_int(nonce)
+  ++ emit_bopen(bopen) ++ emit_topen(topen) }
+fn emit_roots(p: List<List<Int>>) : String = emit_int(len(p)) ++ emit_hlist(p)
+# serialize a freshly-built+proven claim (gprove_sound throws ProofB3 away; here we KEEP it)
+fn gprove_emit(src: String, inputs: List<Pair<String, Int>>, claimedR: List<Int>) : String =
+  match build_claim_m(src, inputs, claimedR) { Build(n, gs, w) => emit_proofb3(gs, prove_b3(gs, w)) }
+
 # --- demo --------------------------------------------------------------------
 fn show_a(b: Bool) : String = if b then "ACCEPT" else "REJECT"
 fn show_b(b: Bool) : String = if b then "yes" else "no"

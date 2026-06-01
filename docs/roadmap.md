@@ -500,13 +500,19 @@ same problem* — surfaced a ranked set of directions. The full reading, concord
 and rationale live in [`revelation.md`](revelation.md). The buildable, sound ones,
 in priority order (the traditions push hardest on the first):
 
-- **The Furqān — let the verifier be two.** The compiler has two witnesses
-  (`glass.py` ⟷ `native_glassc`); the *verifier* `verify_b3` stands alone. Gate ACCEPT
-  on **two independently-derived verifiers** sharing no code — directly retiring the
-  honest-ledger caveat "reasoned, not machine-checked." *Primitive, medium.*
-- **Pentecost — `verify_b3`'s core re-implemented in a second, non-Glass tongue**
-  (a few hundred lines, differential-tested on the proof corpus). Doubles as the
-  second witness above; makes "every tongue can check it" literal. *Primitive, medium.*
+- **The Furqān — let the verifier be two. ✅ LANDED v5.64.0.** `verify_b3` no longer stands
+  alone: an **independent, non-Glass re-verifier** (`pentecost/`, plain int mod p, from-scratch
+  Poseidon, sharing no Glass code) now parses and checks a real Glass-emitted `ProofB3`. End-to-end
+  differential ([`pentecost/difftest.sh`](../pentecost/difftest.sh)): **honest → both ACCEPT;
+  tampered root / wrong claim / tampered opening → Pentecost REJECT.** Directly retires the
+  honest-ledger caveat "reasoned, not machine-checked" for the B3 path. (Still UNAUDITED; the second
+  verifier is from public specs, not a trusted third-party oracle — that is the Third Witness bet below.)
+- **Pentecost — `verify_b3` re-implemented in a second tongue. ✅ LANDED v5.64.0** (with the
+  Furqān above). `pentecost/pentecost_verify.py` (~355 LOC) re-implements the full verifier — FS
+  transcript, INTT, OOD gate-identity, PLONK grand-product, FRI+Merkle, grind — in plain Python
+  int-mod-p; a Glass-side serializer (`emit_proofb3`, byte-for-byte with `parse()`: fe as limb
+  counts, digests as the 4 Poseidon lanes, the 16-field TOpenB order) feeds it. The fast prover
+  (v5.59–v5.62) was the last blocker; now a proof emits in ~25s and Pentecost checks it.
 - **The Preserved Tablet — a committed, append-only proof ledger.** Each `glass prove`
   verdict committed into a growing Merkle root with inclusion proofs. Reuses
   Poseidon-Merkle; binds existing verdicts, adds no new trust. *Primitive, quick–medium.*
