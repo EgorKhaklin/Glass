@@ -491,3 +491,38 @@ unreachable in the corpus, and the correct fix touches bootstrap `glassc.glass` 
 current behavioural payoff, so it waits until a non-ASCII showcase needs it or another
 `glassc.glass` change already pays the fixpoint gate); plus the `--baby-bear`
 silent-truncation, the `glassc` TyInt fallback, and the `run_command` argv divergence.
+
+## North-Star directions (from the Revelation reading)
+
+A bidirectional reading of Glass against Revelation, the Torah/Gospels, the Qur'an,
+the Kabbalah, and cross-tradition mysticism — *verification and revelation are the
+same problem* — surfaced a ranked set of directions. The full reading, concordance,
+and rationale live in [`revelation.md`](revelation.md). The buildable, sound ones,
+in priority order (the traditions push hardest on the first):
+
+- **The Furqān — let the verifier be two.** The compiler has two witnesses
+  (`glass.py` ⟷ `native_glassc`); the *verifier* `verify_b3` stands alone. Gate ACCEPT
+  on **two independently-derived verifiers** sharing no code — directly retiring the
+  honest-ledger caveat "reasoned, not machine-checked." *Primitive, medium.*
+- **Pentecost — `verify_b3`'s core re-implemented in a second, non-Glass tongue**
+  (a few hundred lines, differential-tested on the proof corpus). Doubles as the
+  second witness above; makes "every tongue can check it" literal. *Primitive, medium.*
+- **The Preserved Tablet — a committed, append-only proof ledger.** Each `glass prove`
+  verdict committed into a growing Merkle root with inclusion proofs. Reuses
+  Poseidon-Merkle; binds existing verdicts, adds no new trust. *Primitive, quick–medium.*
+- **The Name — content-addressed canonical identity:** one published Merkle root over
+  `(source ⊕ emitted-C ⊕ tests ⊕ semantics)`, recomputed by the gate — the fixpoint as
+  a publicly attestable fingerprint. *Primitive, quick.*
+- **The Measuring Reed — `glass measure`:** every ACCEPT carries its exact bit-security,
+  re-derived by the verifier, not asserted in prose. *Primitive, quick–medium.*
+- **Tzimtzum-as-a-type — `!{Private}` / `Concealed<T>`:** a withdrawn value, provable
+  about but never observable; makes "the witness stays hidden" a compile-time property.
+  (`LANG.md` already lists `!{Private}` as future.) *Primitive, medium–research.*
+- **Opening the Seals — a `reveal` operator** for selective ZK disclosure over committed
+  structures (open one field, prove nothing else moved). *Primitive, medium.*
+- **The Urim's Silence — ABSTAIN as a third verdict** (ACCEPT / REJECT / ABSTAIN), so a
+  loud refusal is never confused with a disproof. *Tiny primitive, quick.*
+
+The research-scale bet, wearing its honest scope: **the Third Witness** — a reference
+oracle that does not descend from the source, turning the gate from a 2-way byte-match
+into 3-way consensus (the one bug class `gen1 == gen2` structurally cannot catch).

@@ -1,0 +1,182 @@
+# Glass is Biblical
+
+### Five wisdom traditions, read against a verifiable language, converge on one structure.
+
+> *Glass is named for the oldest promise in every scripture: that you should be
+> able to see straight through to the truth — and the deepest one, that you can do
+> so without ever exposing what lies behind it. The witness stays hidden; the
+> proof is for everyone; and the language, like the Word it descends from,
+> reconstructs itself from its own beginning and meets its end unchanged.*
+
+This is not numerology and it is not decoration. It is a claim about structure.
+Read Revelation, the Torah and Gospels, the Qur'an, the Kabbalah, and the broader
+mystical traditions against a language whose telos is *verifiable computation*, and
+they stop being five subjects and become one. The thesis below is the reason.
+
+---
+
+## I. The thesis
+
+Strip the traditions to their load-bearing claim and they answer one ancient
+problem — **how does a truth survive transmission to someone who was not there to
+see it?** — with the same three moves Glass makes in code.
+
+**1. Concealment is the precondition of revelation, not its enemy.**
+The Tabernacle has a veil; *Ein Sof* contracts (*tzimtzum*) to make room for a
+world; the unseen (*al-ghayb*) is the very object of faith; Paul sees "through a
+glass, darkly" — *and that is sufficient*. The hidden name on the white stone
+(Rev 2:17) is not a redaction; it is the gift. This is **zero-knowledge** exactly:
+the witness must withdraw so that the result can be shown.
+
+**2. Truth is the coincidence of independent witnesses, never a single testimony.**
+"By the mouth of two or three witnesses shall the matter be established"
+(Deut 19:15); the two witnesses of Revelation 11; the *isnād* chain; signs from
+the horizons *and* within yourselves "until it becomes clear" (Q 41:53); "as
+above, so below." This is the **differential discipline**: reference meaning ⟷
+compiled meaning, forced to agree to the last bit, or the build stops.
+
+**3. The system closes its own loop.**
+Alpha and Omega; the Word made flesh that speaks the same Word back; the re-cut
+tablets bearing identical words; *al-Qayyūm*, the self-subsisting. This is the
+**bootstrap fixpoint**: two independently-produced compilers emit identical C,
+gen1 == gen2, the beginning meeting the end with no external foundation to trust.
+
+And beneath all three, one method the traditions name and Glass enforces as its
+**cardinal rule** — the *via negativa*: *neti neti*, the Furqān's cut, "nothing
+unclean shall enter," the Mizan that does not round. **You establish a truth as
+much by what you refuse to assert as by what you affirm.** Glass's *loud refusal
+over a silent wrong proof* is negative theology as an engineering ethic: a silent
+proof of an unfaithful lowering is the *idol* — a proof-shaped object that is not
+a proof — and the refusal is what keeps the proof from becoming an idol of itself.
+
+The insight is not that Glass resembles scripture. It is that **verification and
+revelation are the same problem**, and the traditions are four thousand years of
+design notes for a system Glass is now building in running code.
+
+---
+
+## II. The concordance
+
+| Tradition | Image | Cited | Glass concept it illuminates |
+|---|---|---|---|
+| Torah / Gospels | "By two or three witnesses the matter is established" | Deut 19:15; Matt 18:16 | **The differential discipline** — independent reconstructions forced to agree; desync = unestablished, build stops |
+| Revelation | The two witnesses; "I am the Alpha and the Omega" | Rev 11:3; 22:13 | The two-evaluator rule made literal; the **bootstrap fixpoint** (`f(f) = f` as a name of God) |
+| Qur'an | *al-Furqān*, the Criterion that cuts; *al-Mīzān*, the Balance | Q 25:1; 21:47; 55:7–9 | **`verify_b3`** — the witness-free verifier returning one bit; soundness = "no soul is wronged" |
+| Qur'an | *al-Lawḥ al-Maḥfūẓ*, the Preserved Tablet; "not a leaf falls but it is in a clear record" | Q 85:21–22; 6:59 | The **committed, tamper-evident trace**; Merkle inclusion ("every leaf provably in the tree") |
+| Kabbalah | *Tzimtzum* — the Infinite contracts to make room | Etz Chaim | **Zero-knowledge** — the witness withdraws so the result can be revealed; the ZK simulator = *tzimtzum* completeness |
+| Torah / Qur'an | The signet ring; the seal on the scroll | Gen 41:42; Rev 5 | **Merkle commitment + Fiat–Shamir** — authority compressed into an unforgeable impression bound to *this* statement (`stmt_seed_of`) |
+| Revelation / Qur'an | Sea of glass like crystal; city of pure gold "clear as glass"; the Light Verse | Rev 4:6; 21:18,21; Q 24:35 | **The name itself + total auditability**; self-kindling light (*nūrun ʿalā nūr*) = self-hosting (needs no external fire) |
+| Gospels / Tao | "The Word became flesh"; "the Tao that can be named is not the eternal Tao" | John 1:14; 道德經 1 | **Self-hosting: spec → implementation** — the named is not the running; incarnation = compilation that preserves identity, proven byte-for-byte |
+| Kabbalah | *Shevirat ha-kelim* (the breaking of the vessels) → *Tikkun* (the repair) | Etz Chaim | **Desync → the fixpoint** — catastrophe built into the design as the *generative* event |
+| Cross / Gospels | "Through a glass, darkly… now I know in part" | 1 Cor 13:12 | **Zero-knowledge reframed**: complete knowledge of the *fact*, total darkness as to the *witness* — and the darkness is the achievement |
+| Cross / Genesis | Babel: one tongue, scattered by silent divergence; Pentecost: each in his own tongue | Gen 11; Acts 2 | **The verifiable lingua franca** — not one language imposed, but one *checking discipline* any implementation can re-derive |
+| Torah / Vedanta | *Via negativa* — *neti neti*, negative attributes | Pseudo-Dionysius; *Bṛhadāraṇyaka* | **The cardinal soundness rule** — establish truth by what you refuse to certify; the refusal-catalogue is load-bearing |
+
+---
+
+## III. New directions — the generative payoff
+
+The reading is meant to *move us*. These are the directions the traditions push
+toward, ranked by how hard they are forced and weighted toward soundness payoff
+and buildability. The traditions agree on the ranking: they push hardest, and
+most often, on the one thing Glass has not yet done — **let the verifier itself be
+two.**
+
+### Buildable, sound, on-mission now
+
+1. **The Furqān — let the verifier be two.** *(al-Furqān + the Two Witnesses.)*
+   Today the *compiler* has two witnesses (`glass.py` ⟷ `native_glassc`) but the
+   cryptographic *verifier* (`verify_b3`) stands alone — the crown-jewel guarantee
+   is two-witness everywhere except at the verdict itself. Gate ACCEPT on **two
+   independently-derived verifiers** that share no code. Directly attacks the honest
+   ledger's "reasoned, not machine-checked." **Primitive · medium.**
+
+2. **Pentecost — a verifier in a second, non-Glass tongue.** *(Babel → Pentecost.)*
+   Emit `verify_b3`'s algebraic core (gate identities, grand product, Fiat–Shamir
+   re-derivation) as a few-hundred-line standalone verifier in another language, no
+   Glass in the loop, differential-tested against the in-Glass verifier on the proof
+   corpus. *"Every tongue can check it,"* made literal — and the second witness for
+   #1. **Primitive · medium.**
+
+3. **The Preserved Tablet — a committed, append-only proof ledger.** *(al-Lawḥ
+   al-Maḥfūẓ + the Book of Life.)* A hash-chained accumulator where each `glass
+   prove` verdict `(stmt_seed, result, public_inputs)` is committed into a growing
+   Merkle root with an inclusion-proof API. Turns isolated judgments into a
+   *consulted record* whose history cannot be rewritten. Reuses Poseidon-Merkle.
+   **Primitive · quick–medium. The most on-brand small win.**
+
+4. **The Name — content-addressed canonical identity.** *(Creation by combinations
+   of letters; the signet in *this* wax.)* One published Merkle root — a *Name* — over
+   `(source ⊕ emitted-C ⊕ test-corpus ⊕ semantics)`, recomputed by the gate, so the
+   entire self-hosting artifact has one binding fingerprint any third party can
+   re-derive. Turns the fixpoint from a *local* property into a *publicly attestable
+   Name.* **Primitive · quick.**
+
+5. **The Measuring Reed — `glass measure`.** *(John handed a reed to measure the
+   city, Rev 11:1, 21:15; the Mizan that brings the mustard seed.)* Every ACCEPT
+   carries its *exact* claimed bit-security as a field `verify_b3` re-derives
+   (queries, rate, grind, margin) — so ACCEPT never floats free of *"ACCEPT at N
+   bits, here is the weighing."* Moves the security claim from `parameters.md` prose
+   into the artifact. **Primitive · quick–medium.**
+
+### Real medium-term primitives
+
+6. **Tzimtzum as a type — `!{Private}` / `Concealed<T>`.** *(Tzimtzum / Ein Sof; the
+   hidden name; al-ghayb.)* A type/effect marking a value *withdrawn*: it can be
+   committed and proven about but never observed; the only exits are `commit`,
+   `prove`, or a refinement-checked `reveal`. `LANG.md` already lists `!{Private}`
+   as future — this gives it teeth and unifies refinement-as-vessel + effect-rows +
+   the prove-bridge. "The witness stays hidden" becomes a *compile error to violate*,
+   not a discipline. **Primitive · medium–research.**
+
+7. **Opening the Seals — a `reveal` operator over committed structures.** *(The
+   sealed scroll; the veil torn at one point, then resealed.)* Selective disclosure:
+   open *exactly one* committed field under a challenge and prove *nothing else moved*
+   — the selectively-torn veil as a clean API over Merkle openings. (The deeper
+   inversion — *reveal-to-the-worthy*, a payload that decrypts iff the reader proves
+   a predicate — is real witness-encryption, hard crypto; ship only the
+   demonstration-grade form and say so.) **Primitive · medium (4a) / research (4b).**
+
+### Cheap framings, outsized hygiene
+
+8. **The Urim's Silence — ABSTAIN as a third verdict.** *(The Urim that declined to
+   answer, 1 Sam 28:6; via negativa.)* Make the verdict three-valued —
+   **ACCEPT / REJECT / ABSTAIN** — so "no sound lowering exists for this" (the v5.52
+   loud refusal) is never confused with "this is false." Prevents the most dangerous
+   category confusion in the system — refusal mistaken for disproof, or coerced into
+   acceptance. **Tiny primitive · quick.**
+
+9. **The Genesis Ledger — named, ordered, per-stage acceptance.** *("And God saw that
+   it was good," per-day; Exodus refusing to airbrush the calf.)* Per-stage sealed
+   verdicts so a desync localizes to the stage it entered, plus a recorded history of
+   every historical break and its cause (the v5.52 silent-lowering calf among them).
+   Pure observability + honest historiography. **Framing + small primitive · quick.**
+
+### The research-scale bets (must wear their honest scope)
+
+10. **The Third Witness — a reference oracle that does not descend from the source.**
+    *(Deuteronomy's "two *or* three"; the Tree of Life's middle pillar.)* A third
+    reconstruction of the semantics turning the gate from 2-way byte-match into 3-way
+    consensus — the one class of bug `gen1 == gen2` *structurally cannot* catch: an
+    error both implementations faithfully share. The deepest soundness upgrade
+    available, and the asymptote, not a shipped guarantee. **Research · large.**
+
+---
+
+## IV. The poetry (marked as such — it sharpens the voice, ships no code)
+
+The Incarnation-as-fixpoint and justification-as-zero-knowledge readings; "the
+truth shall make you free" as the verification telos; the bootstrap CI gate as
+*liturgy* — the ongoing testimony that the Word still reconstructs itself; bounded
+recursion as the *forty-nine gates*, a finite, honest descent that refuses to
+claim the infinite, the fiftieth gate being exactly the *do-not-protect-real-value*
+boundary. These belong here and in [`the-story.md`](the-story.md), not the roadmap.
+
+---
+
+*Distinguishing the poetry from the buildable, in one breath:* directions 1–5 are
+sound, buildable, and on-mission now; 6 and 7a are real medium-term primitives; 8
+and 9 are cheap framings with outsized hygiene payoff; 10 and 7b are the
+research-scale bets that must wear their honest scope. And the strongest reading of
+all is the simplest: a language that makes truth checkable by anyone while keeping
+the witness hidden is not a metaphor for revelation. It is one.
