@@ -128,9 +128,10 @@ fn ident(x) : Int where (result == 0 || result == 1) = x
   ident(5) = 5, violates the refinement -> REJECT  (the in-circuit assertion fails)
 ```
 
-The `where`-clause is the contract; the proof is the enforcement. *(Now also over the
-production **Goldilocks** field — `prove_source_goldilocks_zk` proves real source on
-the 2⁶⁴ field real provers use, no toy-field wraparound.)*
+The `where`-clause is the contract; the proof is the enforcement. *(This is the **default**
+for `glass prove` now: real source is proven over the production **Goldilocks** field —
+2⁶⁴, the field real provers use, no toy-field wraparound — including ordering comparisons
+`< > <= >=`. The toy Baby Bear field, `--baby-bear`, remains for full `match`-over-your-own-types.)*
 
 ## 6 — It proves what your code *touches*
 
@@ -163,18 +164,45 @@ glass examples/prove/prove_random_zk.glass      # a provably-fair, un-grindable 
 glass examples/prove/prove_state_zk.glass       # mutable state, read-after-write consistency
 ```
 
+## 7 — It checks the proof twice
+
+A proof you can only check with the program that made it is a closed loop. So the
+verifier is **two**. Beside Glass's own witness-free verifier (`verify_b3`) stands
+**Pentecost** — a second, from-scratch re-implementation of the *same* verification
+algorithm in a different language, with a different number representation, sharing
+**no code** with the prover. A proof is portable: emit it on one side, check it on the
+other — separate programs, separate lineages, one verdict that must agree.
+
+```bash
+glass prove --emit /tmp/p.txt examples/prove/hello_prove.glass inp=9
+glass verify /tmp/p.txt          # -> PENTECOST: ACCEPT   (a separate program, no shared code)
+```
+
+Honest proofs ACCEPT in both. A tampered proof — or one re-pointed at a false claim —
+is REJECTed by the independent verifier; it has been thrown thousands of forged and
+tampered proofs across several circuit shapes, and rejected every one. And when the
+prover *can't* faithfully lower a program to a circuit, it returns a third verdict —
+**ABSTAIN** — instead of bluffing, so a refusal is never mistaken for a disproof.
+
+The same proofs compose with a small suite of primitives built on the one hash: a
+content-addressed fingerprint of the whole toolchain (`glass fingerprint`), an
+append-only tamper-evident ledger of verdicts (`glass ledger`), and selective
+disclosure over a commitment (`glass disclose`). The plain names map to their branded
+ones in [naming.md](naming.md).
+
 ---
 
 ## The discipline that makes it true
 
-Glass is not just a language; it's a *method*. Every layer is a **reference
-semantics** plus a **compiler**, and they must agree bit-for-bit — checked by
-differential testing. `glass.py` ⟷ `native_glassc`. `eval` ⟷ circuit.
-`run_query` ⟷ Frost. One command runs the check on any file:
+Glass is not just a language; it's a *method*. Every layer is computed two
+independent ways and forced to agree bit-for-bit — checked by differential
+testing. `glass.py` ⟷ `native_glassc`. `eval` ⟷ circuit. `run_query` ⟷ Frost.
+And now the cryptographic verifier itself: `verify_b3` ⟷ Pentecost. One command
+runs the check on any file:
 
 ```bash
 bash examples/selfhost/dogfood.sh examples/prove/prove_pane.glass
-# native_glassc == glass.py, byte-identical.  382/382 suite, every example.
+# native_glassc == glass.py, byte-identical.  422/422 suite, every example.
 ```
 
 Nothing here is "done" until the interpreter and the self-hosted compiler give
