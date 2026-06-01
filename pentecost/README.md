@@ -26,6 +26,17 @@ representations, two different languages, one verdict that must coincide.
 | Piece | State |
 |---|---|
 | **Poseidon (the cryptographic keystone)** | ✅ **byte-exact**, validated against Plonky2's published vector `perm([0..11])[0] == 0xd64e1e3efc5b8e9e` — the *same* vector Glass's `perm` is checked against. This is the hardest, riskiest part, and it is grounded against a third party (Plonky2). See `test_poseidon.py`. |
+
+> **Why Plonky2 and not the newer Plonky3/Poseidon2?** The bridge's `hashg` uses the
+> Plonky2-exact Poseidon **v1** (t=12). Pentecost must match *what the prover actually
+> uses* — porting the newer Poseidon2 would make the two verifiers disagree and turn
+> the whole "two witnesses" exercise into a false alarm. So matching v1 is correct
+> *for Pentecost*. Separately, **migrating the bridge itself to Poseidon2** (cheaper
+> linear layers, the modern Plonky3/Stwo hash) is a clean, worthwhile upgrade — Frost
+> already has Poseidon2 byte-exact to Plonky3's vectors (v5.50,
+> [`../examples/frost/frost_goldilocks_poseidon2.glass`](../examples/frost/frost_goldilocks_poseidon2.glass)).
+> It is logged as a roadmap direction; when the bridge swaps, Pentecost swaps with it
+> (and re-validates against Plonky3's vectors instead of Plonky2's).
 | **Goldilocks field + F_{p²} extension** | ✅ written (plain `int mod p`; `u²=7`) |
 | **The full verifier** (`verify_b3`: FS transcript, INTT-interpolated public/permutation columns, out-of-domain gate identity, grand product, FRI fold + Merkle query check, query sampling, grind) | ✅ written, faithful to the verified port spec (`pentecost_verify.py`) |
 | **End-to-end differential validation** (honest proof → ACCEPT; tampered → REJECT; agrees with Glass) | ⏳ **the remaining step** — see below |
