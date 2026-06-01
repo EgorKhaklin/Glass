@@ -1324,8 +1324,19 @@ def main() -> int:
         print(f"        {(_sl.stdout + _sl.stderr).strip()[-220:]}")
         failures += 1
 
+    # The second verifier's hash must stay faithful to the third-party vector. Pentecost's
+    # keystone (independent Poseidon2 == Plonky3 t=12 out12) was NOT gated by the suite before
+    # (the v5.56.0 gate-coverage lesson) — a Pentecost-side constant/matrix error would be invisible.
+    _pk = subprocess.run([sys.executable, "-m", "pentecost.test_poseidon"],
+                         capture_output=True, text=True, cwd=_root)
+    pk_ok = (_pk.returncode == 0) and ("KEYSTONE OK" in _pk.stdout)
+    print(f"  {'OK ' if pk_ok else 'FAIL'}  Pentecost keystone: independent Poseidon2 == Plonky3 t=12 vector")
+    if not pk_ok:
+        print(f"        {(_pk.stdout + _pk.stderr).strip()[-220:]}")
+        failures += 1
+
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 12)  # +12: ... + poseidon2 guard
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 13)  # +13: ... + poseidon2 + pentecost-keystone guards
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

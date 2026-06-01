@@ -9,8 +9,11 @@
 # so it runs in seconds on the interpreter and dogfoods byte-identical. It mirrors
 # the inline demo of frost_grain.glass ("tamper -> beta changes").
 #
-# Self-contained: inlines only the field/Poseidon/digest functions needed (a trimmed
-# copy verified against prove_source_goldilocks_zk.glass — same hashg, same gate_dig).
+# Self-contained: inlines the field/digest functions + a FROZEN Plonky2-v1 Poseidon. As of
+# v5.70.0 the live bridge hashg uses Poseidon2 (Plonky3); this test is INTENTIONALLY decoupled
+# from the live hash — it is a deterministic check that the gate_dig / stmt_seed binding LOGIC
+# (every challenge depends on the statement) holds, which is hash-shape-agnostic. So the inlined
+# perm here is a frozen Plonky2 fixture, NOT a claim of equivalence with the live bridge hash.
 #
 # RUN ON THE INTERPRETER:  python3.12 glass.py examples/prove/prove_source_goldilocks_bind_test.glass
 # (This is a pure-determinism check; its hashg/gate_dig/circuit_digest are byte-identical

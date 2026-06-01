@@ -352,7 +352,13 @@ fn lane0(h: List<Int>) : List<Int> = first4(h)
 fn lanes_to_w(ls: List<List<Int>>) : List<Int> = match ls { [] => []; [h, ...t] => [limbs_to_goldw(h)] ++ lanes_to_w(t) }
 fn wnthw(xs: List<Int>, i: Int) : Int = match xs { [] => 0; [h, ...t] => if i == 0 then h else wnthw(t, i - 1) }
 fn from4w(w: List<Int>) : List<Int> = pad4l(goldw_to_limbs(wnthw(w, 0))) ++ pad4l(goldw_to_limbs(wnthw(w, 1))) ++ pad4l(goldw_to_limbs(wnthw(w, 2))) ++ pad4l(goldw_to_limbs(wnthw(w, 3)))
-fn hashg(a: List<Int>, b: List<Int>) : List<Int> = from4w(poseidon_perm(lanes_to_w(lanepad12(to_lanes(a) ++ to_lanes(b)))))
+# v5.70.0: the live hash is now Poseidon2 (Plonky3) — cheaper linear layers, the modern hash.
+# The sponge wrappers (to_lanes/lanepad12/lanes_to_w 12->12 words/from4w 4-lane squeeze, rate 8 /
+# cap 4) are permutation-agnostic and UNCHANGED; only the inner permutation changed (poseidon_perm
+# -> poseidon2_perm, both byte-exact to their respective published vectors). pentecost/poseidon.py
+# migrated to Poseidon2 in lock-step (the second verifier still checks the same hash). The pure-Glass
+# Plonky2 perm/mds_* below remain ONLY as the readable Plonky2 reference + poseidon_difftest spec.
+fn hashg(a: List<Int>, b: List<Int>) : List<Int> = from4w(poseidon2_perm(lanes_to_w(lanepad12(to_lanes(a) ++ to_lanes(b)))))
 fn rand_coeffs(seed: Int, i: Int, k: Int) : List<List<Int>> = if i >= k then [] else [lane0(hashg(glit(seed), glit(i + 1)))] ++ rand_coeffs(seed, i + 1, k)
 # --- ZK BLINDING (mechanism). T'(x) = T(x) + Z_H(x)*R(x): on H, Z_H=0 so T'=T (every gate
 # constraint preserved); off H (the coset, where queries open) the Z_H*R mask randomizes the

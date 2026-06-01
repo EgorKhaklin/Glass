@@ -538,11 +538,13 @@ in priority order (the traditions push hardest on the first):
   reports ABSTAIN (refused to lower: `/`, `%`, strings, out-of-range comparison) distinctly
   from REJECT (`verify_b3` ran and the proof failed). Sound by construction — the refusal
   aborts before `verify_b3`, so ABSTAIN cannot swallow a real REJECT.
-- **Migrate the bridge hash Plonky2 → Poseidon2 (Plonky3). 🟡 STAGE 0 LANDED v5.69.0.** A
-  native `poseidon2_perm` intrinsic (Plonky3 instance A, t=12; M4 external + diagonal internal)
-  is byte-exact to Plonky3's published vectors (`poseidon2_difftest.glass`), in both backends,
-  fixpoint-verified. **Stage 1 (open):** swap the bridge's `hashg` Plonky2 → Poseidon2 and
-  re-validate `pentecost/` in lock-step — cheaper linear layers speed the prover's dominant cost.
+- **Migrate the bridge hash Plonky2 → Poseidon2 (Plonky3). ✅ COMPLETE v5.70.0.** The live
+  bridge `hashg` is Poseidon2 (cheaper linear layers, the modern Plonky3/Stwo hash); the second
+  verifier (`pentecost/`) migrated in LOCK-STEP, re-implemented independently (plain int mod p,
+  general M4 form), matching only at Plonky3's vector. Full differential green on the new hash
+  (honest→both ACCEPT, tampers→REJECT); soundness gate 13/13; fixpoint holds; the Pentecost
+  keystone is now suite-gated (closed a v5.56-class coverage gap). The Name re-rooted (one Poseidon
+  everywhere). Stage 0 (v5.69.0) was the native intrinsic; stage 1 (v5.70.0) the lock-step swap.
 
 The research-scale bet, wearing its honest scope: **the Third Witness** — a reference
 oracle that does not descend from the source, turning the gate from a 2-way byte-match
