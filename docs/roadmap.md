@@ -532,8 +532,10 @@ in priority order (the traditions push hardest on the first):
   (`LANG.md` already lists `!{Private}` as future.) *Primitive, medium–research.*
 - **Opening the Seals — a `reveal` operator** for selective ZK disclosure over committed
   structures (open one field, prove nothing else moved). *Primitive, medium.*
-- **The Urim's Silence — ABSTAIN as a third verdict** (ACCEPT / REJECT / ABSTAIN), so a
-  loud refusal is never confused with a disproof. *Tiny primitive, quick.*
+- **The Urim's Silence — ABSTAIN as a third verdict. ✅ SHIPPED v5.67.0.** `glass prove`
+  reports ABSTAIN (refused to lower: `/`, `%`, strings, out-of-range comparison) distinctly
+  from REJECT (`verify_b3` ran and the proof failed). Sound by construction — the refusal
+  aborts before `verify_b3`, so ABSTAIN cannot swallow a real REJECT.
 - **Migrate the bridge hash Plonky2 → Poseidon2 (Plonky3).** The prove bridge's `hashg`
   is still Plonky2-exact Poseidon v1; Frost already has **Poseidon2 byte-exact to
   Plonky3** ([`../examples/frost/frost_goldilocks_poseidon2.glass`](../examples/frost/frost_goldilocks_poseidon2.glass),

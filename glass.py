@@ -1,5 +1,5 @@
 """
-Glass v5.66.0 — reference implementation.
+Glass v5.67.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -3760,7 +3760,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.66.0 — interactive REPL")
+    print("Glass v5.67.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3872,7 +3872,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.66.0")
+        print("Glass 5.67.0")
     elif sys.argv[1] == "prove":
         # `glass prove <file.glass> [name=value ...]` — compile the file's `main`
         # expression into a circuit and emit a succinct, zero-knowledge proof of
@@ -3964,9 +3964,15 @@ def main() -> None:
             _proc = subprocess.run(["bash", os.path.join(here, "examples", "selfhost", "run_native.sh"), _tmp],
                            check=False, env={**os.environ, "PYTHON": sys.executable})
             if _proc.returncode != 0:
-                # The native prover refused (e.g. the bridge's loud `error` on a
-                # parse/unroll failure) — propagate a nonzero exit and do NOT print
-                # the success footer that would imply a proof was produced.
+                # ABSTAIN — the third verdict. The native prover REFUSED before reaching a
+                # verdict (the bridge's loud `error`: an op with no faithful field lowering,
+                # an out-of-range comparison, a parse/unroll failure). This is categorically
+                # NOT a REJECT: a REJECT means `verify_b3` ran and the proof failed (a
+                # disproof of the claim); an ABSTAIN means Glass could not honestly form the
+                # claim at all. Because the refusal aborts *before* `prove_b3`/`verify_b3`,
+                # ABSTAIN can never swallow a real REJECT. (See pentecost/, ledger/.)
+                print("")
+                print("verdict: ABSTAIN  (Glass refused to lower this statement to a sound circuit — NOT a disproof; the reason is the 'glass prove:' line above. A statement Glass cannot faithfully lower is abstained, never silently proven.)")
                 sys.exit(_proc.returncode)
         else:
             run_source(driver, verbose=False, base_dir=bridge_dir)

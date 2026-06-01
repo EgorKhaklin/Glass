@@ -1069,22 +1069,22 @@ fn heval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, t
       let xa : List<Int> = vh(va) in let xb : List<Int> = vh(vb) in
       if cmp_ok_g(xa, xb) then let d : List<Int> = fadd(fsub(xa, xb), pow2_lit(32)) in
         ([if bn_cmp(trim(xa), trim(xb)) < 0 then glit(1) else glit(0)], ha ++ hb ++ cmp_bits_w(xa, 32) ++ cmp_bits_w(xb, 32) ++ cmp_bits_w(d, 33))
-      else error("glass prove: ordering comparison operand out of provable range [0,2^32) — REJECT, not a wrong ACCEPT") } };
+      else error("glass prove: ordering comparison operand out of provable range [0,2^32) — ABSTAIN (Glass cannot faithfully lower this comparison; abstaining, not disproving — and never a wrong ACCEPT)") } };
     EGt(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) =>
       let xa : List<Int> = vh(va) in let xb : List<Int> = vh(vb) in
       if cmp_ok_g(xa, xb) then let d : List<Int> = fadd(fsub(xb, xa), pow2_lit(32)) in
         ([if bn_cmp(trim(xb), trim(xa)) < 0 then glit(1) else glit(0)], ha ++ hb ++ cmp_bits_w(xb, 32) ++ cmp_bits_w(xa, 32) ++ cmp_bits_w(d, 33))
-      else error("glass prove: ordering comparison operand out of provable range [0,2^32) — REJECT") } };
+      else error("glass prove: ordering comparison operand out of provable range [0,2^32) — ABSTAIN (cannot lower; abstaining, not disproving)") } };
     ELe(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) =>
       let xa : List<Int> = vh(va) in let xb : List<Int> = vh(vb) in
       if cmp_ok_g(xa, xb) then let d : List<Int> = fadd(fsub(xb, xa), pow2_lit(32)) in
         ([if bn_cmp(trim(xb), trim(xa)) < 0 then glit(0) else glit(1)], ha ++ hb ++ cmp_bits_w(xb, 32) ++ cmp_bits_w(xa, 32) ++ cmp_bits_w(d, 33))
-      else error("glass prove: ordering comparison operand out of provable range [0,2^32) — REJECT") } };
+      else error("glass prove: ordering comparison operand out of provable range [0,2^32) — ABSTAIN (cannot lower; abstaining, not disproving)") } };
     EGe(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) =>
       let xa : List<Int> = vh(va) in let xb : List<Int> = vh(vb) in
       if cmp_ok_g(xa, xb) then let d : List<Int> = fadd(fsub(xa, xb), pow2_lit(32)) in
         ([if bn_cmp(trim(xa), trim(xb)) < 0 then glit(0) else glit(1)], ha ++ hb ++ cmp_bits_w(xa, 32) ++ cmp_bits_w(xb, 32) ++ cmp_bits_w(d, 33))
-      else error("glass prove: ordering comparison operand out of provable range [0,2^32) — REJECT") } };
+      else error("glass prove: ordering comparison operand out of provable range [0,2^32) — ABSTAIN (cannot lower; abstaining, not disproving)") } };
     _ => error("glass prove: unsupported expression in the prove bridge (heval) — only + - * == != && || ! and if/let/match/ADT/calls lower to the field circuit; / %, strings and records have no faithful field lowering and are refused, not silently proven as 0") }
 fn heval_fields(args: List<Expr>, tys: List<Type>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>) : (List<List<Int>>, List<List<Int>>) =
   match args { [] => ([], []); [a, ...arest] => match tys { [] => ([], []); [t, ...trest] =>
@@ -1157,13 +1157,13 @@ fn seval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, t
       _ => error("glass prove: unsupported call form (computed or higher-order callee) in the reference evaluator") } };
     EMatch(scrut, arms) => seval_match(seval(scrut, env, fns, types, fuel), arms, env, fns, types, fuel);
     ELt(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fuel)) in
-      if cmp_ok_g(xa, xb) then (if bn_cmp(trim(xa), trim(xb)) < 0 then [glit(1)] else [glit(0)]) else error("glass prove: ordering comparison operand out of provable range [0,2^32) — REJECT");
+      if cmp_ok_g(xa, xb) then (if bn_cmp(trim(xa), trim(xb)) < 0 then [glit(1)] else [glit(0)]) else error("glass prove: ordering comparison operand out of provable range [0,2^32) — ABSTAIN (cannot lower; abstaining, not disproving)");
     EGt(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fuel)) in
-      if cmp_ok_g(xa, xb) then (if bn_cmp(trim(xb), trim(xa)) < 0 then [glit(1)] else [glit(0)]) else error("glass prove: ordering comparison operand out of provable range [0,2^32) — REJECT");
+      if cmp_ok_g(xa, xb) then (if bn_cmp(trim(xb), trim(xa)) < 0 then [glit(1)] else [glit(0)]) else error("glass prove: ordering comparison operand out of provable range [0,2^32) — ABSTAIN (cannot lower; abstaining, not disproving)");
     ELe(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fuel)) in
-      if cmp_ok_g(xa, xb) then (if bn_cmp(trim(xb), trim(xa)) < 0 then [glit(0)] else [glit(1)]) else error("glass prove: ordering comparison operand out of provable range [0,2^32) — REJECT");
+      if cmp_ok_g(xa, xb) then (if bn_cmp(trim(xb), trim(xa)) < 0 then [glit(0)] else [glit(1)]) else error("glass prove: ordering comparison operand out of provable range [0,2^32) — ABSTAIN (cannot lower; abstaining, not disproving)");
     EGe(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fuel)) in
-      if cmp_ok_g(xa, xb) then (if bn_cmp(trim(xa), trim(xb)) < 0 then [glit(0)] else [glit(1)]) else error("glass prove: ordering comparison operand out of provable range [0,2^32) — REJECT");
+      if cmp_ok_g(xa, xb) then (if bn_cmp(trim(xa), trim(xb)) < 0 then [glit(0)] else [glit(1)]) else error("glass prove: ordering comparison operand out of provable range [0,2^32) — ABSTAIN (cannot lower; abstaining, not disproving)");
     _ => error("glass prove: unsupported expression in the prove bridge (seval guard) — only + - * == != && || ! and if/let/match/ADT/calls lower to the field circuit; / %, strings and records are refused, not silently proven as 0") }
 fn seval_fields(args: List<Expr>, tys: List<Type>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>, fuel: Int) : List<List<Int>> =
   match args { [] => []; [a, ...arest] => match tys { [] => []; [t, ...trest] =>
