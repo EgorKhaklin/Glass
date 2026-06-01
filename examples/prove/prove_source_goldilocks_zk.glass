@@ -555,7 +555,22 @@ fn sample_queries_g(seed: List<Int>, count: Int, dsize: Int) : List<Int> = sampl
 # query-phase soundness (the standard STARK trick; production uses 20-30 bits).
 # Two-level search keeps recursion depth bounded (~chunk + #chunks), so neither the
 # interpreter's limit nor the native C stack is at risk.
-fn pow_ok(h: List<Int>) : Bool = match trim(h) { [] => true; [x, ...t] => x % 4096 == 0 }   # 12-bit proof-of-work (2^12=4096): the FS query seed's low 12 bits must be 0
+# THE MEASURING REED (v5.63.0): the achieved bit-security is RE-DERIVED from the live proof
+# parameters here — never asserted in prose. grind_modulus is the SINGLE source for the PoW
+# target (pow_ok and grind_bits both read it, so the printed grind term can never drift from
+# the grinding the prover actually does). provable_bits/listdecode_bits are pinned integer
+# closed-forms at the construction's fixed rate ρ=4N/32N=1/8 (blowup = fri_dsize(1) = 32):
+# ~0.83 bit/query unique-decoding, 1.5 bit/query list-decoding, + the grind bits.
+fn grind_modulus(d: Int) : Int = 4096                       # 2^12 proof-of-work target
+fn grind_bits(d: Int) : Int = ilog2(grind_modulus(0))       # = 12, derived from the target above
+fn blowup(d: Int) : Int = fri_dsize(1)                      # coset = 32N -> blowup 32 -> ρ = 1/8
+fn provable_bits(gates: List<Gate>) : Int = (fri_queries(ng(gates)) * 83) / 100 + grind_bits(0)
+fn listdecode_bits(gates: List<Gate>) : Int = (fri_queries(ng(gates)) * 3) / 2 + grind_bits(0)
+fn measure_line(gates: List<Gate>) : String =
+  int_to_string(provable_bits(gates)) ++ " bits provable / " ++ int_to_string(listdecode_bits(gates))
+  ++ " bits list-decoding  (" ++ int_to_string(fri_queries(ng(gates))) ++ " queries, blowup "
+  ++ int_to_string(blowup(0)) ++ " => rate 1/8, " ++ int_to_string(grind_bits(0)) ++ "-bit grind, 4-lane ~128-bit hash)"
+fn pow_ok(h: List<Int>) : Bool = match trim(h) { [] => true; [x, ...t] => x % grind_modulus(0) == 0 }   # 12-bit proof-of-work: the FS query seed's low 12 bits must be 0
 fn grind_in(seed: List<Int>, base: Int, i: Int) : Int =
   if i >= 64 then 0 - 1 else (if pow_ok(hashg(seed, glit(base * 64 + i))) then base * 64 + i else grind_in(seed, base, i + 1))
 fn grind_out(seed: List<Int>, base: Int) : Int = let r : Int = grind_in(seed, base, 0) in if r >= 0 then r else grind_out(seed, base + 1)

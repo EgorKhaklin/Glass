@@ -1,5 +1,5 @@
 """
-Glass v5.62.0 — reference implementation.
+Glass v5.63.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -3760,7 +3760,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.62.0 — interactive REPL")
+    print("Glass v5.63.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3872,7 +3872,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.62.0")
+        print("Glass 5.63.0")
     elif sys.argv[1] == "prove":
         # `glass prove <file.glass> [name=value ...]` — compile the file's `main`
         # expression into a circuit and emit a succinct, zero-knowledge proof of
@@ -3931,6 +3931,10 @@ def main() -> None:
                 'let _rv : List<List<Int>> = gref_m_checked(_usrc, _inp)\n'
                 'let _r : List<Int> = vh(_rv)\n'
                 'let _ : String = print("result:  " ++ bn_dec(_r) ++ "  (over Goldilocks, p = 2^64-2^32+1)")\n'
+                # The Measuring Reed: every ACCEPT carries its bit-security, RE-DERIVED by the
+                # verifier from the live proof params (queries/blowup/grind) of the SAME circuit
+                # the verdict is for. Always printed (a property of the construction), after result.
+                'let _ : String = print("security: " ++ (match build_claim_m(_usrc, _inp, _r) { Build(_n, _gs, _w) => measure_line(_gs) }))\n'
                 'let _ : String = print("proof:   " ++ (if %s then "%s" else "REJECT"))\n'
                 '"glass prove --goldilocks"\n'
             ) % (esc, inp_glass, _prove_call, _prove_label)

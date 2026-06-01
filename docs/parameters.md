@@ -10,7 +10,7 @@ answer is "weak," it says so.
 > **Bottom line.** The *challenge space* is already cryptographic-width
 > (≈2¹²⁴–2¹²⁸). The historical weak link was the **FRI query phase** — too few
 > queries at too high a rate. The **Goldilocks path is now hardened**: a 1/8 rate
-> (blowup 8) + 64 queries + a 12-bit grind give **~65-bit provable / ~108-bit
+> (coset 32·n, blowup 32) + 82 queries + a 12-bit grind give **~80-bit provable / ~135-bit
 > list-decoding** query soundness (up from ~3–4 bits raw, ~25–28 after the first
 > pass). The **default Baby Bear path** is now **also ρ=1/8** (~53 provable / ~96
 > list-decoding bits, v5.43) — but its **2³¹ value space** (a secret is brute-forceable
@@ -27,10 +27,10 @@ answer is "weak," it says so.
 | Base field | Baby Bear, p = 2³¹−2²⁷+1 | Goldilocks, p = 2⁶⁴−2³²+1 |
 | **Value space** | **~2³¹ (secrets brute-forceable; wraps >2.1·10⁹)** | **~2⁶⁴** |
 | Trace domain | n (gate count) | 16 |
-| FRI domain (coset) | 16·n (blowup 8 over the degree-2n bound) | 256 (blowup 8 over the degree-32 bound) |
-| Tested degree | < 2n (deg-3 gate ÷ Z_H; fold stops at len 8) | < 32 (fold fixed at 5 rounds, stop at domain/32) |
+| FRI domain (coset) | 16·n (blowup 8 over the degree-2n bound) | 32·n (blowup 32 over the degree-<4n bound, N-parametric) |
+| Tested degree | < 2n (deg-3 gate ÷ Z_H; fold stops at len 8) | < 4n (B3 perm-quotient deg ~3n; fold stops at 32n/4n = 8) |
 | **Rate ρ = deg/domain** | **= 1/8** | **= 1/8** |
-| **FRI queries ℓ** | **64** | **64** |
+| **FRI queries ℓ** | **64** | **82** |
 | Fold challenge (Fiat-Shamir) | F_{p⁴} ≈ 2¹²⁴ | F_{p²} ≈ 2¹²⁸ |
 | Hash | MiMC, 16 rounds (x⁵) | MiMC, 4 rounds (x⁷) |
 | ZK blinding | random low-degree mask | degree-16 mask |
@@ -90,24 +90,24 @@ length 8, certifying degree < 2n at rate 2n/16n = **1/8**, and raised queries 24
   enumerated in ~2³¹ work, independent of the proof — so *that*, not the FRI, is now
   the binding weakness of the default path (→ the Goldilocks-ADT migration is the fix).
 
-**Goldilocks path — ρ = 1/8, ℓ = 64, + 12-bit grinding.**
-- Unique decoding: survival (1+ρ)/2 = 9/16 → (9/16)⁶⁴ ≈ 2⁻⁵³·¹; **+12 grind → ~2⁻⁶⁵**.
-- List decoding: survival √ρ = √(1/8) ≈ 0.354 → 0.354⁶⁴ = 2⁻⁹⁶; **+12 grind → ~2⁻¹⁰⁸**.
-- → **~65 bits provable / ~108 bits list-decoding** of query soundness, up from
+**Goldilocks path — ρ = 1/8, ℓ = 82, + 12-bit grinding (B3, N-parametric coset 32n).**
+- Unique decoding: survival (1+ρ)/2 = 9/16 → (9/16)⁸² ≈ 2⁻⁶⁸; **+12 grind → ~2⁻⁸⁰**.
+- List decoding: survival √ρ = √(1/8) ≈ 0.354 → 0.354⁸² = 2⁻¹²³; **+12 grind → ~2⁻¹³⁵**.
+- → **~80 bits provable / ~135 bits list-decoding** of query soundness (re-derived live by `glass prove` — the Measuring Reed, v5.63), up from
   ~25–28 (ρ=1/2, 32 q) and ~4 (8 q, no grind). This spends **two cheap levers
   together**: (1) a **lower rate** — the FRI coset grew 64 → 256 (blowup 8), with the
   fold fixed at 5 rounds stopping at domain/32 so the *tested degree stays 32* while
   ρ drops to 1/8 (folding all the way to length 2 would instead leave ρ pinned at
-  1/2 — no gain); and (2) **more queries** — 32 → 64, nearly free since v5.41
+  1/2 — no gain); and (2) **more queries** — 32 → 82, nearly free since v5.41
   **memoized** the FRI layer Merkle trees (built once in `commit_g`, paths read from
   the stored levels). The rate lever costs ~4× the quotient/commit work (the
   interpreter-dogfood gate); the query lever is the cheap one — which is why the
   conservative *provable* bound climbs fastest by spending queries.
 
 The **Goldilocks path now reaches a cryptographic target by the list-decoding
-standard** modern STARKs use: ρ=1/8 + 64 queries + 12-bit grind ≈ **2⁻¹⁰⁸**, past
-80 bits. By the conservative *provable* (unique-decoding) bound it is **~65 bits** —
-strong, not yet 80. The **default Baby Bear path is now also ρ=1/8** (~53 provable /
+standard** modern STARKs use: ρ=1/8 + 82 queries + 12-bit grind ≈ **2⁻¹³⁵**, well
+past 80 bits. By the conservative *provable* (unique-decoding) bound it is now **~80 bits** —
+at the target. The **default Baby Bear path is now also ρ=1/8** (~53 provable /
 ~96 list-decoding, v5.43); its remaining weakness is the **2³¹ value space**, not the
 FRI. The honest one-line summary: **both query phases are now hardened (ρ=1/8) — but the
 in-STARK hash is still educational MiMC, the default path's values are still 2³¹, and

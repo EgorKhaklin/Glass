@@ -1,0 +1,13 @@
+# The Measuring Reed difftest: the bit-security re-derivation must be exact integer arithmetic
+# tied to the live params — ilog2(grind_modulus)=12, and at the fixed rate rho=1/8 the pinned
+# per-query bounds give provable=(q*83)/100+grind, list-decoding=(q*3)/2+grind. For q=82: 80/135.
+# (Mirrors grind_bits/provable_bits/listdecode_bits in prove_source_goldilocks_zk.glass.)
+fn ilog2(n: Int) : Int = if n <= 1 then 0 else 1 + ilog2(n / 2)
+fn provable(q: Int, g: Int) : Int = (q * 83) / 100 + g
+fn listdec(q: Int, g: Int) : Int = (q * 3) / 2 + g
+fn sb(b: Bool) : String = if b then "T" else "F"
+let g : Int = ilog2(4096)
+let _ : String = print("CHECK grind12 " ++ sb(g == 12))
+let _ : String = print("CHECK provable80 " ++ sb(provable(82, g) == 80))
+let _ : String = print("CHECK listdec135 " ++ sb(listdec(82, g) == 135))
+"done"

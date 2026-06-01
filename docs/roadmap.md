@@ -513,8 +513,11 @@ in priority order (the traditions push hardest on the first):
 - **The Name — content-addressed canonical identity:** one published Merkle root over
   `(source ⊕ emitted-C ⊕ tests ⊕ semantics)`, recomputed by the gate — the fixpoint as
   a publicly attestable fingerprint. *Primitive, quick.*
-- **The Measuring Reed — `glass measure`:** every ACCEPT carries its exact bit-security,
-  re-derived by the verifier, not asserted in prose. *Primitive, quick–medium.*
+- **The Measuring Reed — bit-security on every ACCEPT. ✅ SHIPPED v5.63.0.** `glass prove`
+  (Goldilocks) prints `security: 80 bits provable / 135 bits list-decoding (82 queries,
+  blowup 32 => rate 1/8, 12-bit grind, 4-lane hash)`, re-derived by the prover from the
+  live params of the actual circuit (`fri_queries`/`fri_dsize`/`grind_modulus`), not asserted
+  in prose. One `grind_modulus` source feeds both `pow_ok` and the printed grind term.
 - **Tzimtzum-as-a-type — `!{Private}` / `Concealed<T>`:** a withdrawn value, provable
   about but never observable; makes "the witness stays hidden" a compile-time property.
   (`LANG.md` already lists `!{Private}` as future.) *Primitive, medium–research.*

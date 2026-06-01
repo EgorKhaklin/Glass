@@ -1271,8 +1271,19 @@ def main() -> int:
         print(f"        out: {out.strip()[-200:]}  err: {err.strip()[-150:]}")
         failures += 1
 
+    # The Measuring Reed: the bit-security re-derivation must be exact integer arithmetic tied to
+    # the live params (ilog2(grind_modulus)=12; q=82 -> 80 provable / 135 list-decoding). The
+    # end-to-end 'security:' line on a real Goldilocks ACCEPT is validated by the native prove path.
+    rc, out, err = run_file(os.path.join(EX, "prove", "measure_difftest.glass"))
+    mr_ok = (rc == 0) and ("CHECK provable80 T" in out) and (" F" not in out)
+    print(f"  {'OK ' if mr_ok else 'FAIL'}  measure: bit-security re-derivation (82q -> 80/135, grind=12)")
+    if not mr_ok:
+        print(f"        rc={rc}; a 'CHECK .. F' is a security re-derivation drift")
+        print(f"        out: {out.strip()[-200:]}  err: {err.strip()[-150:]}")
+        failures += 1
+
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 7)  # +7: stmt-binding + 2 baby-bear + goldw + poseidon + ntt + vget field guards
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 8)  # +8: stmt-binding + 2 baby-bear + goldw + poseidon + ntt + vget + measure field guards
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures
