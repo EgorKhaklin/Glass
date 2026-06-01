@@ -2,21 +2,24 @@
 
 The hand-picked soundness gate (13 cases) and the Pentecost differential check *specific*
 proofs. The fuzzer checks *random* ones: it generates small arithmetic Glass programs over
-private inputs, proves each with `glass prove --witness3`, and asserts the soundness invariants
-across the whole stack at once —
+private inputs, proves each with `glass prove --witness3`, and checks THE soundness invariant:
 
-1. **honest proof → ACCEPT** (`verify_b3` accepts a real proof), and
-2. **THIRD LINEAGE AGREES** — the bridge's circuit semantics equal the reference interpreter's,
-   reconciled modulo the Goldilocks prime (a lowering gap on *this* program would diverge).
+> **a wrong proof = an ACCEPT the independent reference interpreter does not confirm.**
 
-Inputs are small and expressions shallow, so results stay in the range where field and int64
-coincide (mod p) and a divergence is a *real* bug, not the documented domain difference.
+So a program PASSES unless it is ACCEPTed *and* the Third Witness disagrees (reconciled mod p).
+**ABSTAIN** (the gadget refusing an out-of-range/unlowerable program) and **REJECT** (a disproof)
+are *sound* outcomes, not failures — only a wrong ACCEPT is a violation. Two families are
+generated: arithmetic expressions, and comparison/boolean control flow (the gadget-bearing,
+least-fuzzed lowering). Inputs are small and shallow so results stay where field and int64
+coincide mod p — a divergence there is a *real* bug, not the documented domain difference.
 
 ```bash
 python3 fuzz/fuzz_soundness.py [N] [seed]     # N random programs (default 4), deterministic
 ```
 
 This is the testing that finds bugs the enumerated gate cannot. Its first run did exactly that —
-it surfaced an over-strict equality in the Third Witness (it compared a field element to an int64
-*exactly*, so a negative result like `-560` false-diverged from its field form `p-560`); the fix
-(reconcile modulo p) shipped in v5.75.0. Research/educational-grade, UNAUDITED.
+it surfaced an over-strict equality in the Third Witness (a negative result like `-560` false-
+diverged from its field form `p-560`; fixed by reconciling mod p, v5.75.0). Broadening it to the
+comparison gadget (v5.76.0) confirmed the gadget is sound under random operands — every ACCEPT
+reference-confirmed, out-of-range operands correctly ABSTAINed, zero wrong proofs.
+Research/educational-grade, UNAUDITED.
