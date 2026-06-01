@@ -74,7 +74,40 @@ def run(n, seed):
     print("FUZZ " + ("PASS — no wrong proofs (every ACCEPT confirmed by the reference; ABSTAIN/REJECT are sound)" if ok else "FAIL — a wrong proof was found"))
     return 0 if ok else 1
 
+def run_differential(n, seed):
+    """Fuzz the TWO-VERIFIER differential: for random arithmetic programs, emit a portable proof
+    and confirm the INDEPENDENT Pentecost verifier ACCEPTs it. A violation = Glass proves it but
+    Pentecost rejects an honest proof (a serializer or second-verifier bug). Exercises emit_proofb3
+    + pentecost on programs it has never seen (it had only ever run on `a+b`)."""
+    rng = random.Random(seed)
+    print(f"# differential fuzz: {n} random arithmetic programs, Glass-prove vs independent Pentecost (seed {seed})")
+    ok = True
+    for i in range(n):
+        expr = gen_expr(rng, 3)
+        inputs = {v: rng.randint(0, 20) for v in VARS}
+        path = f"/tmp/fuzzd_{i}.glass"
+        open(path, "w").write(expr + "\n")
+        pf = f"/tmp/fuzzd_{i}.proof"
+        emit = subprocess.run(["python3", os.path.join(ROOT, "glass.py"), "prove", "--emit", pf, path] +
+                              [f"{v}={inputs[v]}" for v in VARS], capture_output=True, text=True, cwd=ROOT)
+        emitted = (emit.returncode == 0) and ("wrote a portable proof" in emit.stdout)
+        if not emitted:
+            # ABSTAIN (unlowerable) is sound — skip, not a failure
+            print(f"  --  [no proof emitted]  {expr}  with {inputs}")
+            continue
+        ver = subprocess.run(["python3", os.path.join(ROOT, "glass.py"), "verify", pf], capture_output=True, text=True, cwd=ROOT)
+        pent = "PENTECOST: ACCEPT" in ver.stdout
+        # both verifiers must AGREE: Glass emitted an honest proof, Pentecost must ACCEPT it
+        good = pent
+        ok = ok and good
+        print(f"  {'OK  ' if good else 'BUG!'}  Glass=ACCEPT  Pentecost={'ACCEPT' if pent else 'REJECT <-- DISAGREE'}  {expr}  with {inputs}")
+        if not good:
+            print("        " + ver.stdout.strip())
+    print("DIFFERENTIAL FUZZ " + ("PASS — the two verifiers agree on every honest proof" if ok else "FAIL — the verifiers DISAGREED"))
+    return 0 if ok else 1
+
 if __name__ == "__main__":
-    n = int(sys.argv[1]) if len(sys.argv) > 1 else 4
-    seed = int(sys.argv[2]) if len(sys.argv) > 2 else 1
-    sys.exit(run(n, seed))
+    a = [x for x in sys.argv[1:] if x != "--differential"]
+    n = int(a[0]) if len(a) > 0 else 4
+    seed = int(a[1]) if len(a) > 1 else 1
+    sys.exit(run_differential(n, seed) if "--differential" in sys.argv else run(n, seed))

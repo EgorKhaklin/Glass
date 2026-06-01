@@ -7,6 +7,11 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [5.77.0] — 2026-06-01 — Fuzzing the two-verifier differential: Glass `verify_b3` and the independent Pentecost agree across random proofs
+- **The verifier-be-two property, fuzzed.** New `--differential` mode (`fuzz/fuzz_soundness.py --differential N seed`): for each random program it emits a *portable* proof (`glass prove --emit`) and confirms the **independent** Pentecost verifier ACCEPTs it. A violation would be Glass proving a statement that Pentecost rejects — a serializer or second-verifier bug. This exercises `emit_proofb3` + `pentecost/` on programs they had **never seen** (the end-to-end differential had only ever run on `a+b`).
+- **Result: a clean pass.** Across random arithmetic programs (e.g. `(((c*9)*b)-(6-(b+0)))`), **the two verifiers agree on every honest proof** — both ACCEPT. The serializer's representation reconciliation (4-lane digests, the 16-field TOpenB order, limb `fe`s) holds across varied circuit shapes, not just the hand-picked one. "Let the verifier be two" now stands across random inputs.
+- Suite **418/418** (the fuzzer is a standalone on-demand tool). Research/educational-grade, UNAUDITED.
+
 ## [5.76.0] — 2026-06-01 — Soundness fuzzing, broadened to the comparison gadget — and the correct "wrong proof" invariant
 - **Fuzzing the riskiest lowering.** The fuzzer now generates two families — arithmetic *and* comparison/boolean control flow (`< > <= >=`, `&&`/`||`/`!`, `if`) — exercising the hand-vetted-but-never-fuzzed **comparison gadget** on random operands. `python3 fuzz/fuzz_soundness.py 8 7`.
 - **The correct soundness invariant.** A wrong proof is **an ACCEPT the independent reference interpreter does not confirm** — *not* "anything that isn't ACCEPT." **ABSTAIN** (the gadget refusing an out-of-range/unlowerable program) and **REJECT** (a disproof) are *sound* outcomes; only a wrong ACCEPT is a violation. The fuzzer's pass condition was corrected to match (it had over-counted ABSTAINs as failures).

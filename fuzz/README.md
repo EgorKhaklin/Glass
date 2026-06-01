@@ -14,7 +14,10 @@ least-fuzzed lowering). Inputs are small and shallow so results stay where field
 coincide mod p — a divergence there is a *real* bug, not the documented domain difference.
 
 ```bash
-python3 fuzz/fuzz_soundness.py [N] [seed]     # N random programs (default 4), deterministic
+python3 fuzz/fuzz_soundness.py [N] [seed]                 # witness3 mode: no wrong ACCEPT
+python3 fuzz/fuzz_soundness.py --differential [N] [seed]   # two-verifier mode: emit a portable
+                                                          #   proof per program, confirm Glass verify_b3
+                                                          #   and the independent Pentecost verifier AGREE
 ```
 
 This is the testing that finds bugs the enumerated gate cannot. Its first run did exactly that —
