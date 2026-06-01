@@ -1,0 +1,31 @@
+# ntt_lde difftest (STAGE 2 / rope 2): the native coset-NTT intrinsic (q_ntt_lde / glass.py
+# b_ntt_lde) must equal the naive coset evaluation  eval[k] = P(shift * omega^k) = Sum_j coeff[j]*(shift*omega^k)^j
+# computed with goldw_* arithmetic — AND be byte-identical interp vs native. shift = 7 (the coset
+# generator the bridge uses); omega = 7^((p-1)/m), a primitive m-th root. No bridge import.
+#
+#   python3 glass.py -q examples/prove/ntt_difftest.glass     (interp)
+#   bash examples/selfhost/run_native.sh examples/prove/ntt_difftest.glass   (native)
+#   diff the program output -> empty, every CHECK T.
+
+fn nth(xs: List<Int>, i: Int) : Int = match xs { [] => 0; [h, ...t] => if i == 0 then h else nth(t, i - 1) }
+fn sb(b: Bool) : String = if b then "T" else "F"
+fn gpow(b: Int, e: Int) : Int = if e <= 0 then 1 else let h : Int = gpow(goldw_mul(b, b), e / 2) in if e % 2 == 1 then goldw_mul(b, h) else h
+fn horner(coeffs: List<Int>, x: Int) : Int = match coeffs { [] => 0; [c, ...r] => goldw_add(c, goldw_mul(x, horner(r, x))) }
+fn ref_lde(coeffs: List<Int>, shift: Int, omega: Int, m: Int, k: Int) : List<Int> =
+  if k >= m then [] else [horner(coeffs, goldw_mul(shift, gpow(omega, k)))] ++ ref_lde(coeffs, shift, omega, m, k + 1)
+fn eqlist(a: List<Int>, b: List<Int>) : Bool = match a { [] => (match b { [] => true; _ => false }); [ha, ...ta] => match b { [] => false; [hb, ...tb] => if goldw_sub(ha, hb) == 0 then eqlist(ta, tb) else false } }
+fn chk(coeffs: List<Int>, m: Int, omega: Int) : Bool = eqlist(ntt_lde(coeffs, m, 7, omega), ref_lde(coeffs, 7, omega, m, 0))
+fn joinl(xs: List<Int>) : String = match xs { [] => ""; [h, ...t] => int_to_string(h) ++ "," ++ joinl(t) }
+
+# coeff vectors (length <= m; ntt zero-pads). include large (>=2^63) field values via goldw ops.
+let c8 : List<Int> = [3, 1, 4, 1, 5, 9, 2, 6]
+let c8b : List<Int> = [goldw_sub(0, 1), 0, goldw_mul(123456789, 123456789), 7]
+let c16 : List<Int> = [2, 7, 1, 8, 2, 8, 1, 8, 0, 0, 0, 0, 0, 0, 0, 0]
+let c32 : List<Int> = [goldw_inv(5), 999, goldw_sub(0, 7), 1, 2, 3]
+let _ : String = print("CHECK ntt8  " ++ sb(chk(c8, 8, -4311744511)))
+let _ : String = print("CHECK ntt8b " ++ sb(chk(c8b, 8, -4311744511)))
+let _ : String = print("CHECK ntt16 " ++ sb(chk(c16, 16, -1152921508901814271)))
+let _ : String = print("CHECK ntt32 " ++ sb(chk(c32, 32, 70368744161280)))
+let _ : String = print("LDE8 " ++ joinl(ntt_lde(c8, 8, 7, -4311744511)))
+let _ : String = print("LDE32 " ++ joinl(ntt_lde(c32, 32, 7, 70368744161280)))
+"done"

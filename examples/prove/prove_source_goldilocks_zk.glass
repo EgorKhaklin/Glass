@@ -143,7 +143,11 @@ fn interp_go(ev: List<List<Int>>, k: Int, n: Int, wi: List<Int>, ni: List<Int>) 
 fn interp16(ev: List<List<Int>>) : List<List<Int>> = interp_go(ev, 0, 16, finv(root_pow2(4)), finv(glit(16)))
 # R1b: generic size-n inverse NTT (n a power of two) — the variable trace domain
 fn ilog2(n: Int) : Int = if n <= 1 then 0 else 1 + ilog2(n / 2)
-fn interp_n(ev: List<List<Int>>, n: Int) : List<List<Int>> = interp_go(ev, 0, n, finv(root_pow2(ilog2(n))), finv(glit(n)))
+fn scale_cols(sc: List<Int>, xs: List<List<Int>>) : List<List<Int>> = match xs { [] => []; [h, ...t] => [fmul(sc, h)] ++ scale_cols(sc, t) }
+# CUT THE ROPE 2: interpolation (inverse NTT) was O(n^2)+ (interp_go/intt_sum, fpow_bn per term).
+# An iNTT is the forward NTT at omega^-1 with no coset shift, scaled by 1/n -> reuse the native ntt_lde.
+fn interp_n(ev: List<List<Int>>, n: Int) : List<List<Int>> =
+  scale_cols(finv(glit(n)), w_to_limbs_list(ntt_lde(limbs_list_to_w(ev), n, 1, limbs_to_goldw(finv(root_pow2(ilog2(n)))))))
 fn eval_on_dom(c: List<List<Int>>, dom: List<List<Int>>) : List<List<Int>> = match dom { [] => []; [x, ...r] => [poly_eval_b(c, x)] ++ eval_on_dom(c, r) }
 
 # --- domains ------------------------------------------------------------------
@@ -158,11 +162,34 @@ fn gate_G_at(qa: List<List<Int>>, qm: List<List<Int>>, qs: List<List<Int>>, qc: 
   fadd(fmul(vs, fsub(vo, fsub(vl, vr))),
   fadd(fmul(vc, fsub(vo, vk)),
        fmul(vq, vl)))))
-fn quotient_cw(qa: List<List<Int>>, qm: List<List<Int>>, qs: List<List<Int>>, qc: List<List<Int>>, qe: List<List<Int>>, l: List<List<Int>>, r: List<List<Int>>, o: List<List<Int>>, c: List<List<Int>>, coset: List<List<Int>>, n: Int) : List<List<Int>> =
-  match coset { [] => []; [x, ...rest] =>
-    let g : List<Int> = gate_G_at(qa, qm, qs, qc, qe, l, r, o, c, x) in
+# gate_G evaluated pointwise on ALREADY-evaluated column values (no per-point poly_eval_b).
+fn gate_G_pt(va: List<Int>, vm: List<Int>, vs: List<Int>, vc: List<Int>, vq: List<Int>, vl: List<Int>, vr: List<Int>, vo: List<Int>, vk: List<Int>) : List<Int> =
+  fadd(fmul(va, fsub(vo, fadd(vl, vr))),
+  fadd(fmul(vm, fsub(vo, fmul(vl, vr))),
+  fadd(fmul(vs, fsub(vo, fsub(vl, vr))),
+  fadd(fmul(vc, fsub(vo, vk)),
+       fmul(vq, vl)))))
+# CUT THE ROPE 2 (v5.61.0): the OLD quotient_cw evaluated 9 coefficient-polynomials at EVERY one of
+# m=32n coset points via O(n) Horner (gate_G_at -> poly_eval_b) — O(9·n·m) = O(n²), the bottleneck the
+# moment circuits grow (the comparison gadget, n≈1024, ran >18 min, ~all here). Now each column is
+# low-degree-extended to the coset ONCE by the native NTT (`lde`, O(m log m)), and the quotient is a
+# single pointwise lock-step walk. BYTE-IDENTICAL to the old quotient (lde == eval_on_dom, difftested
+# in examples/prove/ntt_difftest.glass: NTT == naive coset-eval, interp == native).
+fn limbs_list_to_w(xs: List<List<Int>>) : List<Int> = match xs { [] => []; [h, ...t] => [limbs_to_goldw(h)] ++ limbs_list_to_w(t) }
+fn w_to_limbs_list(ws: List<Int>) : List<List<Int>> = match ws { [] => []; [h, ...t] => [goldw_to_limbs(h)] ++ w_to_limbs_list(t) }
+# low-degree extension: evaluate the coeff-poly `c` on the size-(32n) coset {7·ω^i}, ω = root_pow2(fri_log n).
+fn lde(c: List<List<Int>>, n: Int) : List<List<Int>> =
+  w_to_limbs_list(ntt_lde(limbs_list_to_w(c), fri_dsize(n), 7, limbs_to_goldw(root_pow2(fri_log(n)))))
+fn quo_combine(eqa: List<List<Int>>, eqm: List<List<Int>>, eqs: List<List<Int>>, eqc: List<List<Int>>, eqe: List<List<Int>>, el: List<List<Int>>, er: List<List<Int>>, eo: List<List<Int>>, ec: List<List<Int>>, coset: List<List<Int>>, n: Int) : List<List<Int>> =
+  match coset { [] => []; [x, ...crest] =>
+  match eqa { [] => []; [va, ...qar] => match eqm { [] => []; [vm, ...qmr] => match eqs { [] => []; [vs, ...qsr] =>
+  match eqc { [] => []; [vc, ...qcr] => match eqe { [] => []; [vq, ...qer] => match el { [] => []; [vl, ...elr] =>
+  match er { [] => []; [vr, ...err] => match eo { [] => []; [vo, ...eor] => match ec { [] => []; [vk, ...ecr] =>
+    let g : List<Int> = gate_G_pt(va, vm, vs, vc, vq, vl, vr, vo, vk) in
     let zh : List<Int> = fsub(fpow_bn(x, glit(n)), [1]) in
-    [fmul(g, finv(zh))] ++ quotient_cw(qa, qm, qs, qc, qe, l, r, o, c, rest, n) }
+    [fmul(g, finv(zh))] ++ quo_combine(qar, qmr, qsr, qcr, qer, elr, err, eor, ecr, crest, n) }}}}}}}}} }
+fn quotient_cw(qa: List<List<Int>>, qm: List<List<Int>>, qs: List<List<Int>>, qc: List<List<Int>>, qe: List<List<Int>>, l: List<List<Int>>, r: List<List<Int>>, o: List<List<Int>>, c: List<List<Int>>, coset: List<List<Int>>, n: Int) : List<List<Int>> =
+  quo_combine(lde(qa, n), lde(qm, n), lde(qs, n), lde(qc, n), lde(qe, n), lde(l, n), lde(r, n), lde(o, n), lde(c, n), coset, n)
 
 # --- FRI low-degree test (base-field fold; Stage B lifts to F_{p^2}) ----------
 fn fold_at_b(cw: List<List<Int>>, dom: List<List<Int>>, beta: List<Int>, finv2: List<Int>, i: Int, half: Int) : List<List<Int>> =
@@ -340,7 +367,7 @@ fn blind_col(cw: List<List<Int>>, coset: List<List<Int>>, rco: List<List<Int>>, 
 fn zk_hiding(seed1: Int, seed2: Int) : Bool =
   let n : Int = 8 in let coset : List<List<Int>> = fri_coset(n) in let m : Int = fri_dsize(n) in
   let lvals : List<List<Int>> = [glit(2), glit(3), glit(5), glit(7), glit(11), glit(13), glit(17), glit(19)] in
-  let lcw : List<List<Int>> = eval_on_dom(interp_n(lvals, n), coset) in
+  let lcw : List<List<Int>> = lde(interp_n(lvals, n), n) in
   let b1 : List<List<Int>> = blind_col(lcw, coset, rand_coeffs(seed1, 0, 16), n, 0, m) in
   let b2 : List<List<Int>> = blind_col(lcw, coset, rand_coeffs(seed2, 0, 16), n, 0, m) in
   let masked : Bool = if bn_eq(wnth(b1, 5), wnth(lcw, 5)) then false else true in
@@ -687,7 +714,7 @@ fn prove_sound(gates: List<Gate>, w: List<List<Int>>) : ProofS =
   let stmt : List<Int> = stmt_seed_of(gates) in
   let pc : List<List<List<Int>>> = public_cols(gates, n) in let tc : List<List<List<Int>>> = trace_cols(gates, w, n) in
   let ll : List<List<Int>> = wnth3(tc, 0) in let rr : List<List<Int>> = wnth3(tc, 1) in let oo : List<List<Int>> = wnth3(tc, 2) in
-  let lcw : List<List<Int>> = eval_on_dom(ll, coset) in let rcw : List<List<Int>> = eval_on_dom(rr, coset) in let ocw : List<List<Int>> = eval_on_dom(oo, coset) in
+  let lcw : List<List<Int>> = lde(ll, n) in let rcw : List<List<Int>> = lde(rr, n) in let ocw : List<List<Int>> = lde(oo, n) in
   let qcw : List<List<Int>> = q_cw(gates, w) in
   let tlevels : List<List<List<Int>>> = build_levels_g(pad_pow2_g(trace_leaf_list(lcw, rcw, ocw, qcw, 0, m)), []) in
   let trace_root : List<Int> = root_of_levels(tlevels) in
@@ -813,7 +840,7 @@ fn prove_b3(gates: List<Gate>, w: List<List<Int>>) : ProofB3 =
   let cells : List<Pair<Int, Int>> = all_cells(gates, 0, n) in
   let lvals : List<List<Int>> = lpad(c_l(gates, w), n) in let rvals : List<List<Int>> = lpad(c_r(gates, w), n) in let ovals : List<List<Int>> = lpad(c_o(gates, w), n) in
   let ll : List<List<Int>> = icol(c_l(gates, w), n) in let rr : List<List<Int>> = icol(c_r(gates, w), n) in let oo : List<List<Int>> = icol(c_o(gates, w), n) in
-  let lcw : List<List<Int>> = eval_on_dom(ll, coset) in let rcw : List<List<Int>> = eval_on_dom(rr, coset) in let ocw : List<List<Int>> = eval_on_dom(oo, coset) in
+  let lcw : List<List<Int>> = lde(ll, n) in let rcw : List<List<Int>> = lde(rr, n) in let ocw : List<List<Int>> = lde(oo, n) in
   let qgatecw : List<List<Int>> = q_cw(gates, w) in
   let lev1 : List<List<List<Int>>> = build_levels_g(pad_pow2_g(trace_leaf_lro(lcw, rcw, ocw, 0, m)), []) in let root1 : List<Int> = root_of_levels(lev1) in
   let ts1 : List<Int> = hashg(stmt, root1) in let beta : G2 = beta_p_of(ts1) in let gamp : G2 = gam_p_of(ts1) in
@@ -875,7 +902,7 @@ fn prove_b3_cols(gates: List<Gate>, lvals: List<List<Int>>, rvals: List<List<Int
   let stmt : List<Int> = stmt_seed_of(gates) in let pc : List<List<List<Int>>> = public_cols(gates, n) in let pm : List<List<List<Int>>> = perm_cols(gates, n) in
   let cells : List<Pair<Int, Int>> = all_cells(gates, 0, n) in
   let ll : List<List<Int>> = interp_n(lvals, n) in let rr : List<List<Int>> = interp_n(rvals, n) in let oo : List<List<Int>> = interp_n(ovals, n) in
-  let lcw : List<List<Int>> = eval_on_dom(ll, coset) in let rcw : List<List<Int>> = eval_on_dom(rr, coset) in let ocw : List<List<Int>> = eval_on_dom(oo, coset) in
+  let lcw : List<List<Int>> = lde(ll, n) in let rcw : List<List<Int>> = lde(rr, n) in let ocw : List<List<Int>> = lde(oo, n) in
   let qgatecw : List<List<Int>> = q_cw_cols(pc, ll, rr, oo, coset, n) in
   let lev1 : List<List<List<Int>>> = build_levels_g(pad_pow2_g(trace_leaf_lro(lcw, rcw, ocw, 0, m)), []) in let root1 : List<Int> = root_of_levels(lev1) in
   let ts1 : List<Int> = hashg(stmt, root1) in let beta : G2 = beta_p_of(ts1) in let gamp : G2 = gam_p_of(ts1) in

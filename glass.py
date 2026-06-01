@@ -1,5 +1,5 @@
 """
-Glass v5.60.0 — reference implementation.
+Glass v5.61.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -1300,6 +1300,7 @@ def builtin_types() -> dict[str, Ty]:
         "goldw_to_limbs": TyFn((TyInt(),), TyList(TyInt())),
         "limbs_to_goldw": TyFn((TyList(TyInt()),), TyInt()),
         "poseidon_perm":  TyFn((TyList(TyInt()),), TyList(TyInt())),
+        "ntt_lde":        TyFn((TyList(TyInt()), TyInt(), TyInt(), TyInt()), TyList(TyInt())),
         "string_length":  TyFn((TyString(),), TyInt()),
         "substring":      TyFn((TyString(), TyInt(), TyInt()), TyString()),
         # Loud, both-sides abort: stderr message + nonzero exit (native q_error
@@ -2701,6 +2702,37 @@ def builtin_values() -> dict[str, Value]:
         for rc in range(4, 26):  st = _pround(st, rc, False)
         for rc in range(26, 30): st = _pround(st, rc, True)
         return ListV([IntV(_s64(v)) for v in st])
+    # --- UNBOXED coset NTT / low-degree extension: eval_on_dom(coeffs, {shift*omega^k}) done as a
+    # forward NTT after scaling coeff[j] *= shift^j. O(m log m) on unboxed words. ORACLE for native
+    # q_ntt_lde; difftested == the naive Horner eval_on_dom byte-identical (examples/prove/ntt_difftest.glass).
+    def b_ntt_lde(coeffs, m, shift, omega):
+        mm = m.v
+        a = [_u64(x.v) for x in coeffs.items][:mm]
+        a = a + [0] * (mm - len(a))
+        sh = _u64(shift.v); sp = 1
+        for i in range(mm):
+            a[i] = (a[i] * sp) % _GOLD_P; sp = (sp * sh) % _GOLD_P
+        j = 0
+        for i in range(1, mm):
+            bit = mm >> 1
+            while j & bit:
+                j ^= bit; bit >>= 1
+            j ^= bit
+            if i < j: a[i], a[j] = a[j], a[i]
+        w = _u64(omega.v)
+        ln = 2
+        while ln <= mm:
+            wlen = pow(w, mm // ln, _GOLD_P)
+            half = ln >> 1
+            for i in range(0, mm, ln):
+                wcur = 1
+                for k in range(half):
+                    u = a[i + k]; t = (a[i + k + half] * wcur) % _GOLD_P
+                    a[i + k] = (u + t) % _GOLD_P
+                    a[i + k + half] = (u - t) % _GOLD_P
+                    wcur = (wcur * wlen) % _GOLD_P
+            ln <<= 1
+        return ListV([IntV(_s64(v)) for v in a])
     return {
         "print":            BuiltinV("print", b_print),
         "error":            BuiltinV("error", b_error),
@@ -2724,6 +2756,7 @@ def builtin_values() -> dict[str, Value]:
         "goldw_to_limbs":   BuiltinV("goldw_to_limbs", b_goldw_to_limbs),
         "limbs_to_goldw":   BuiltinV("limbs_to_goldw", b_limbs_to_goldw),
         "poseidon_perm":    BuiltinV("poseidon_perm", b_poseidon_perm),
+        "ntt_lde":          BuiltinV("ntt_lde", b_ntt_lde),
         "string_length":    BuiltinV("string_length", b_string_length),
         "string_to_upper":  BuiltinV("string_to_upper", b_string_to_upper),
         "string_to_lower":  BuiltinV("string_to_lower", b_string_to_lower),
@@ -3719,7 +3752,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.60.0 — interactive REPL")
+    print("Glass v5.61.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3831,7 +3864,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.60.0")
+        print("Glass 5.61.0")
     elif sys.argv[1] == "prove":
         # `glass prove <file.glass> [name=value ...]` — compile the file's `main`
         # expression into a circuit and emit a succinct, zero-knowledge proof of

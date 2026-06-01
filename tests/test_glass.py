@@ -1250,8 +1250,19 @@ def main() -> int:
         print(f"        out: {out.strip()[-200:]}  err: {err.strip()[-150:]}")
         failures += 1
 
+    # The native coset-NTT / low-degree-extension intrinsic (ntt_lde / q_ntt_lde — the rope-2
+    # cut that removes the O(n^2) polynomial LDE) must equal the naive goldw coset evaluation
+    # (eval[k] = P(7*omega^k)) AND be byte-identical interp vs native.
+    rc, out, err = run_file(os.path.join(EX, "prove", "ntt_difftest.glass"))
+    nt_ok = (rc == 0) and ("CHECK ntt8  T" in out) and (" F" not in out)
+    print(f"  {'OK ' if nt_ok else 'FAIL'}  ntt_lde coset-NTT == naive goldw eval_on_dom (LDE)")
+    if not nt_ok:
+        print(f"        rc={rc}; an 'ntt.. F' is an NTT/eval mismatch")
+        print(f"        out: {out.strip()[-200:]}  err: {err.strip()[-150:]}")
+        failures += 1
+
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 5)  # +5: stmt-binding + 2 baby-bear + goldw + poseidon field guards
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 6)  # +6: stmt-binding + 2 baby-bear + goldw + poseidon + ntt field guards
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

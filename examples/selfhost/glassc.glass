@@ -245,6 +245,37 @@ fn c_prelude_of(unused: Int) : String =
   "  for(int i=11;i>=0;i--) lst=q_cons((long long)st[i], lst);\n" ++
   "  return lst;\n" ++
   "}\n" ++
+  "/* UNBOXED coset NTT / low-degree extension. eval_on_dom(coeffs, coset) — evaluating an\n" ++
+  "   interpolated poly at every one of m=32n coset points via Horner — was O(n*m) and, called\n" ++
+  "   9x per point inside quotient_cw, the O(n^2) bottleneck once circuits grow (the comparison\n" ++
+  "   gadget). coset[k] = shift * omega^k, so eval = forward NTT after scaling coeff[j] *= shift^j.\n" ++
+  "   Runs on UNBOXED words (raw u64 in a long long) over a GC_malloc'd buffer — O(m log m), zero\n" ++
+  "   per-op alloc. Mirrors glass.py's ntt_lde; difftested == eval_on_dom byte-identical. */\n" ++
+  "static long long q_ntt_lde(long long coeffs_xs, long long m, long long shift_w, long long omega_w) {\n" ++
+  "  unsigned long long P = 18446744069414584321ULL; long long mm = m;\n" ++
+  "  unsigned long long* a = (unsigned long long*)GC_malloc((size_t)mm * sizeof(unsigned long long));\n" ++
+  "  for (long long i=0;i<mm;i++) a[i]=0ULL;\n" ++
+  "  { long long p = coeffs_xs; long long jj = 0;\n" ++
+  "    while (p) { q_value_t* v=(q_value_t*)(intptr_t)p; if (strcmp(v->ctor,\"Cons\")) break; if (jj<mm) a[jj]=(unsigned long long)v->fields[0]; jj++; p=v->fields[1]; } }\n" ++
+  "  { unsigned long long sh=(unsigned long long)shift_w, sp=1ULL;\n" ++
+  "    for (long long i=0;i<mm;i++){ a[i]=(unsigned long long)(((unsigned __int128)a[i]*sp)%P); sp=(unsigned long long)(((unsigned __int128)sp*sh)%P); } }\n" ++
+  "  for (long long i=1,j=0;i<mm;i++){ long long bit=mm>>1; for(;j&bit;bit>>=1) j^=bit; j^=bit; if(i<j){ unsigned long long t=a[i]; a[i]=a[j]; a[j]=t; } }\n" ++
+  "  { unsigned long long w=(unsigned long long)omega_w;\n" ++
+  "    for (long long len=2; len<=mm; len<<=1){\n" ++
+  "      unsigned long long wlen=1ULL, base=w; long long e=mm/len;\n" ++
+  "      while(e>0){ if(e&1) wlen=(unsigned long long)(((unsigned __int128)wlen*base)%P); base=(unsigned long long)(((unsigned __int128)base*base)%P); e>>=1; }\n" ++
+  "      for (long long i=0;i<mm;i+=len){\n" ++
+  "        unsigned long long wcur=1ULL;\n" ++
+  "        for (long long k=0;k<(len>>1);k++){\n" ++
+  "          unsigned long long u=a[i+k];\n" ++
+  "          unsigned long long t=(unsigned long long)(((unsigned __int128)a[i+k+(len>>1)]*wcur)%P);\n" ++
+  "          a[i+k]=(unsigned long long)(((unsigned __int128)u+t)%P);\n" ++
+  "          a[i+k+(len>>1)]=(unsigned long long)(((unsigned __int128)u+(unsigned __int128)P-t)%P);\n" ++
+  "          wcur=(unsigned long long)(((unsigned __int128)wcur*wlen)%P);\n" ++
+  "        } } } }\n" ++
+  "  { long long lst=(long long)(intptr_t)q_alloc(\"Nil\",0);\n" ++
+  "    for (long long i=mm-1;i>=0;i--) lst=q_cons((long long)a[i], lst); return lst; }\n" ++
+  "}\n" ++
   "/* polymorphic ++: a list is a q_value (magic tag in first word); a string\n" ++
   "   is a char* whose first bytes are ASCII != magic. ++ operands are always\n" ++
   "   pointers (never raw ints), so reading the first word is safe. */\n" ++
@@ -679,6 +710,8 @@ fn gen_builtin(name: String, args: List<Expr>, venv: List<Pair<String, String>>,
         Some(mk_builtin(sargs, tv, lifted, "q_gold_comb((long long)(" ++ a0 ++ "))"))
       else if name == "poseidon_perm" then
         Some(mk_builtin(sargs, tv, lifted, "q_poseidon_perm((long long)(" ++ a0 ++ "))"))
+      else if name == "ntt_lde" then
+        Some(mk_builtin(sargs, tv, lifted, "q_ntt_lde((long long)(" ++ a0 ++ "), (long long)(" ++ a1 ++ "), (long long)(" ++ a2 ++ "), (long long)(" ++ list_at(cs, 3) ++ "))"))
       else if name == "string_index_of" then
         Some(mk_builtin(sargs, tv, lifted, "q_str_index_of((char*)(intptr_t)(" ++ a0 ++
                 "), (char*)(intptr_t)(" ++ a1 ++ "))"))
