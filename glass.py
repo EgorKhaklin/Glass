@@ -1,5 +1,5 @@
 """
-Glass v5.67.0 — reference implementation.
+Glass v5.68.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -3760,7 +3760,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.67.0 — interactive REPL")
+    print("Glass v5.68.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3872,7 +3872,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.67.0")
+        print("Glass 5.68.0")
     elif sys.argv[1] == "prove":
         # `glass prove <file.glass> [name=value ...]` — compile the file's `main`
         # expression into a circuit and emit a succinct, zero-knowledge proof of
@@ -3997,6 +3997,11 @@ def main() -> None:
         # proof verdicts (append | root | list | prove <i> | verify <i> | --selftest).
         here = os.path.dirname(os.path.abspath(__file__))
         sys.exit(subprocess.run([sys.executable, os.path.join(here, "ledger", "tablet.py"), *sys.argv[2:]]).returncode)
+    elif sys.argv[1] == "seal":
+        # Opening the Seals — selective disclosure over a blinded Poseidon commitment
+        # (commit k=v… | reveal <sealed> f… | verify <pres> | --selftest).
+        here = os.path.dirname(os.path.abspath(__file__))
+        sys.exit(subprocess.run([sys.executable, os.path.join(here, "seal", "reveal.py"), *sys.argv[2:]]).returncode)
     else:
         # -q/--quiet: run a file printing only its output (no type-signature
         # echoes) — handy for diffing against the self-hosted compiler.

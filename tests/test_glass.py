@@ -1304,8 +1304,18 @@ def main() -> int:
         print(f"        {(_tab.stdout + _tab.stderr).strip()[-220:]}")
         failures += 1
 
+    # Opening the Seals — selective disclosure over a blinded Poseidon commitment: a revealed
+    # field binds to the root, a tampered value/path does not, a hidden change moves the root.
+    _sl = subprocess.run([sys.executable, os.path.join(_root, "seal", "reveal.py"), "--selftest"],
+                         capture_output=True, text=True)
+    sl_ok = (_sl.returncode == 0) and ("CHECK seal T" in _sl.stdout)
+    print(f"  {'OK ' if sl_ok else 'FAIL'}  Opening the Seals: selective disclosure (bind + hide + tamper-evidence)")
+    if not sl_ok:
+        print(f"        {(_sl.stdout + _sl.stderr).strip()[-220:]}")
+        failures += 1
+
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 10)  # +10: stmt-binding + 2 baby-bear + goldw + poseidon + ntt + vget + measure + name + tablet guards
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 11)  # +11: stmt-binding + 2 baby-bear + goldw + poseidon + ntt + vget + measure + name + tablet + seal guards
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

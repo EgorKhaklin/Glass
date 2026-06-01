@@ -7,6 +7,12 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [5.68.0] — 2026-06-01 — Opening the Seals: selective disclosure over a blinded Poseidon commitment (north-star direction, shipped)
+- **Reveal one field, hide the rest.** New `glass seal` ([`seal/`](seal/)) commits a record of named fields — each a **blinded** leaf `Poseidon(field ‖ value ‖ nonce)`, nonce derived from a secret seed — into a Poseidon-Merkle root. A *presentation* discloses any chosen subset with inclusion proofs; a verifier confirms the revealed fields **bind to the root** while the unrevealed fields never leave the seal. The canonical ZK move — *prove you're over 21 without revealing your birthdate* — generalized to arbitrary records.
+- **Same Poseidon, composes with the suite.** Built on `pentecost/poseidon.py` (Plonky2-exact), the same hash behind the prover, the second verifier, the Name, and the Preserved Tablet. `glass seal commit … / reveal … / verify …`.
+- **Gated.** `glass seal --selftest` (run by the suite) checks: a revealed field binds to the root; a tampered value or inclusion path does **not** verify; changing a hidden field moves the root; a different seed re-blinds. Suite **411/411**.
+- **Honest scope.** Binding is the Merkle root; **hiding rests on Poseidon** (UNAUDITED) — this demonstrates the selective-disclosure shape, not a hardened credential system. Research/educational-grade — *do not protect real value*.
+
 ## [5.67.0] — 2026-06-01 — The Urim's Silence: ABSTAIN as a third verdict — a refusal is never a disproof (north-star direction, shipped)
 - **ACCEPT / REJECT / ABSTAIN.** `glass prove` now reports a distinct **ABSTAIN** when the prover *refuses to lower* a statement (an op with no faithful field lowering — `/`, `%`, strings; an out-of-range comparison; a parse/unroll failure) instead of conflating it with REJECT. A **REJECT** means `verify_b3` ran and the proof failed — a disproof of the claim. An **ABSTAIN** means Glass could not honestly form the claim at all. Conflating them is a real soundness-communication hazard ("REJECT" reads as "your statement is false"); the third verdict removes it.
 - **Sound by construction.** The refusal aborts (the bridge's loud `error`) *before* `prove_b3`/`verify_b3` runs, so ABSTAIN structurally **cannot swallow a real REJECT** (different code path; REJECT is an exit-0 `proof: REJECT`, ABSTAIN is the refusal path). The out-of-range comparison messages are reworded `REJECT → ABSTAIN (cannot lower; not disproving)` to match.

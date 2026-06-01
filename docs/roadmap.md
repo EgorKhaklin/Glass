@@ -530,8 +530,10 @@ in priority order (the traditions push hardest on the first):
 - **Tzimtzum-as-a-type — `!{Private}` / `Concealed<T>`:** a withdrawn value, provable
   about but never observable; makes "the witness stays hidden" a compile-time property.
   (`LANG.md` already lists `!{Private}` as future.) *Primitive, medium–research.*
-- **Opening the Seals — a `reveal` operator** for selective ZK disclosure over committed
-  structures (open one field, prove nothing else moved). *Primitive, medium.*
+- **Opening the Seals — selective disclosure. ✅ SHIPPED v5.68.0.** `glass seal` ([`../seal/`](../seal/))
+  commits a record as blinded Poseidon leaves and reveals any subset with inclusion proofs —
+  revealed fields bind to the root, the rest stay hidden (*prove you're over 21 without your
+  birthdate*, generalized). Binding from the Merkle root; hiding rests on Poseidon (UNAUDITED).
 - **The Urim's Silence — ABSTAIN as a third verdict. ✅ SHIPPED v5.67.0.** `glass prove`
   reports ABSTAIN (refused to lower: `/`, `%`, strings, out-of-range comparison) distinctly
   from REJECT (`verify_b3` ran and the proof failed). Sound by construction — the refusal
