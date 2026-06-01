@@ -23,6 +23,8 @@ python3 fuzz/tamper_pentecost.py [seed] [M] [proof]       # adversarial mode: fo
                                                           #   Pentecost verifier REJECTs every one
 python3 fuzz/tamper_pentecost.py [seed] [M] --claim       # statement-binding: tamper the PUBLIC CLAIM
                                                           #   (gate list + claimed result), confirm REJECT
+python3 fuzz/corpus_check.py                              # multi-shape: every committed proof fixture
+                                                          #   ACCEPTs honest + REJECTs proof/claim tampers
 ```
 
 ## Adversarial mode — attacking the second witness
@@ -46,6 +48,11 @@ tampered claim `a+b==9` or an altered gate. A break here is the most dangerous k
 passed off as proving a false statement), so it is fuzzed too — a 640-tamper/8-seed campaign was clean.
 (A "tamper" that doesn't change the token — e.g. setting an already-`0` token to `0` — is forced to a
 real change, so a no-op is never miscounted as a wrong-ACCEPT; this also hardened the proof-region mode.)
+
+**`corpus_check.py` (v5.82.0)** runs the differential + tamper checks across every committed proof
+fixture in `pentecost/corpus/` (`a+b`, `a*b`, `a*a+b`), not just one — honest must ACCEPT, a proof-region
+or claim-region tamper must REJECT. This catches a `verify_b3` bug that only manifests on certain circuit
+shapes (more gates, different gate kinds), which a single-fixture gate would miss. Suite-gated.
 
 This is the testing that finds bugs the enumerated gate cannot. Its first run did exactly that —
 it surfaced an over-strict equality in the Third Witness (a negative result like `-560` false-

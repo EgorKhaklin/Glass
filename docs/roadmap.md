@@ -563,6 +563,9 @@ of directions; the buildable, sound ones, in priority order:
   result) rather than the proof — a valid proof of `a+b==8` must not verify against `a+b==9`. 640
   claim-tampers across 8 seeds → 0 wrong-ACCEPTs; suite-gated. (Both campaigns surfaced *fuzzer* bugs,
   never prover-soundness bugs — a no-op "tamper" miscount, now forced to a real change.)
+  **Multi-shape corpus (v5.82.0):** the differential + tamper checks now run across committed proof
+  fixtures of several circuit shapes (`a+b`, `a*b`, `a*a+b`), not just one — `fuzz/corpus_check.py`,
+  suite-gated — catching a `verify_b3` bug that only manifests on certain gate kinds.
 - **A plain-name surface — the thematic layer made optional. ✅ SHIPPED v5.79.0.** Every feature
   above now has a neutral public name beside its thematic one: `glass help` lists them, and
   `glass fingerprint`/`ledger`/`disclose` + `--cross-check` alias `name`/`tablet`/`seal`/`--witness3`.

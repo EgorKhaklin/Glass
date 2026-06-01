@@ -7,6 +7,12 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [5.82.0] — 2026-06-01 — A multi-shape proof corpus: the two-verifier agreement broadened beyond `a+b`
+- **The differential's blind spot, closed.** Every second-verifier guarantee so far — the end-to-end differential, the tamper fuzz, the statement-binding fuzz — ran on a single circuit shape, `a+b`. A `verify_b3` bug that only manifests on a *different* shape (more gates, a multiply, a compound expression) would have been invisible to the gate.
+- **Three committed fixtures.** `pentecost/corpus/` now holds honest portable proofs of `a+b` (8), `a*b` (15), and `a*a+b` (14 — a 192k-token circuit with more gates). New `fuzz/corpus_check.py` asserts, for **every** fixture, that the independent Pentecost verifier ACCEPTs the honest proof and REJECTs a tamper in *both* the proof region and the public-claim region.
+- **All clean, and suite-gated.** 3 fixtures × (honest ACCEPT + proof-tamper REJECT + claim-tamper REJECT) → 0 failures. The suite runs it on every push (`proof corpus: two verifiers agree + tamper-rejected across shapes`), so the two-verifier property now holds across circuit shapes, not one.
+- Suite **422/422**. Research/educational-grade, UNAUDITED.
+
 ## [5.81.0] — 2026-06-01 — Docs de-esotericized: the scripture quotes and religious framing removed
 - **A cleaner public face.** The feature names (Pentecost, the Name, the Preserved Tablet, Opening the Seals, the Third Witness, the Measuring Reed, Tzimtzum) stay as branding, but the religious *framing* around them is gone: every scripture epigraph removed from the feature READMEs (`pentecost/`, `name/`, `ledger/`, `seal/`), the `docs/revelation.md` "Glass is biblical" essay **deleted**, and the roadmap's North-Star section rewritten in plain language (no cross-tradition concordance).
 - **`docs/naming.md`** is now a neutral plain ⇆ branded ⇆ what-it-is table (no revelation references); the one non-English religious term (*al-Furqān*) is removed everywhere — the second verifier is simply "Pentecost / let the verifier be two."

@@ -1405,6 +1405,19 @@ def main() -> int:
         print(f"        {(_tc.stdout + _tc.stderr).strip()[-220:]}")
         failures += 1
 
+    # Multi-shape corpus: the differential + tamper guarantees, broadened beyond the single a+b
+    # shape they originally ran on. For every committed proof fixture (a+b, a*b, a*a+b) the
+    # independent Pentecost verifier must ACCEPT the honest proof and REJECT a tamper in either the
+    # proof region or the public-claim region. Catches a verify_b3 bug that only manifests on some
+    # circuit shapes (more gates, different gate kinds) — invisible to a single-fixture gate.
+    _cc = subprocess.run([sys.executable, os.path.join("fuzz", "corpus_check.py")],
+                         capture_output=True, text=True, cwd=_root)
+    cc_ok = (_cc.returncode == 0) and ("0 failures" in _cc.stdout)
+    print(f"  {'OK ' if cc_ok else 'FAIL'}  proof corpus: two verifiers agree + tamper-rejected across shapes")
+    if not cc_ok:
+        print(f"        {(_cc.stdout + _cc.stderr).strip()[-220:]}")
+        failures += 1
+
     # Plain-name surface (docs/naming.md): the public CLI exposes neutral names; the thematic
     # names remain as aliases. `glass help` must list the plain names, and each plain alias must
     # be identical to its thematic counterpart (so neither audience drifts out of test coverage).
@@ -1423,7 +1436,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 18)  # +18: ... + witness3 + h3-merkle + tamper-fuzz + plain-name-surface + statement-binding guards
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 19)  # +19: ... + witness3 + h3-merkle + tamper-fuzz + plain-name-surface + statement-binding + proof-corpus guards
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures
