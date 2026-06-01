@@ -1238,8 +1238,20 @@ def main() -> int:
         print(f"        out: {out.strip()[-200:]}  err: {err.strip()[-150:]}")
         failures += 1
 
+    # The native Poseidon-permutation intrinsic (poseidon_perm / q_poseidon_perm — the
+    # "cut the rope" hash speed-up) must hit the Plonky2 known-answer anchor AND match a
+    # hand-written Glass goldw_* reference permutation. (Interpreter check; the native half
+    # + the bootstrap fixpoint are run separately; full byte-identity is in the difftest doc.)
+    rc, out, err = run_file(os.path.join(EX, "prove", "poseidon_difftest.glass"))
+    pp_ok = (rc == 0) and ("CHECK anchor T" in out) and (" F" not in out)
+    print(f"  {'OK ' if pp_ok else 'FAIL'}  poseidon_perm == Plonky2 anchor + Glass goldw reference perm")
+    if not pp_ok:
+        print(f"        rc={rc}; anchor or reference-perm mismatch")
+        print(f"        out: {out.strip()[-200:]}  err: {err.strip()[-150:]}")
+        failures += 1
+
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 4)  # +4: stmt-binding + 2 baby-bear + goldw field guards
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 5)  # +5: stmt-binding + 2 baby-bear + goldw + poseidon field guards
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

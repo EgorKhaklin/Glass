@@ -73,7 +73,13 @@ fn fpow_bn(base: List<Int>, e: List<Int>) : List<Int> =
   if bn_is_zero(e) then [1]
   else let h : List<Int> = fpow_bn(fmul(base, base), bn_half(e)) in
        if bn_is_odd(e) then fmul(base, h) else h
-fn finv(a: List<Int>) : List<Int> = fpow_bn(a, bn_sub(pg(0), [2]))
+# CUT THE ROPE (v5.60.0): the field inverse was fpow_bn — ~64 list-rebuilding fmul/bn_half per
+# call, and finv runs once PER quotient-codeword element / grand-product row (tens of thousands
+# of times per proof). It was 100% of the >11-min proof. The inverse is now one unboxed Fermat
+# inverse in C (`goldw_inv` = 64 __int128 squarings in registers, zero allocation); we round-trip
+# limbs<->u64 at the boundary and `trim` to gold-canonical form. Soundness-neutral (same field,
+# same value); difftested goldw_inv == limb inverse over large values + inv0 (examples/prove/goldw_difftest.glass).
+fn finv(a: List<Int>) : List<Int> = trim(goldw_to_limbs(goldw_inv(limbs_to_goldw(a))))
 fn halve_k(e: List<Int>, k: Int) : List<Int> = if k <= 0 then e else halve_k(bn_half(e), k - 1)
 fn root_pow2(k: Int) : List<Int> = fpow_bn([7], halve_k(bn_sub(pg(0), [1]), k))
 fn glit(c: Int) : List<Int> = trim([c % 65536, (c / 65536) % 65536, c / 4294967296])
@@ -306,7 +312,19 @@ fn to_lanes(x: List<Int>) : List<List<Int>> = if lcnt(x) <= 4 then [pad4l(x)] el
 fn lanepad12(ls: List<List<Int>>) : List<List<Int>> = if llen(ls) >= 12 then ls else lanepad12(ls ++ [[0, 0, 0, 0]])
 fn from4(st: List<List<Int>>) : List<Int> = pad4l(wnth(st, 0)) ++ pad4l(wnth(st, 1)) ++ pad4l(wnth(st, 2)) ++ pad4l(wnth(st, 3))
 fn lane0(h: List<Int>) : List<Int> = first4(h)
-fn hashg(a: List<Int>, b: List<Int>) : List<Int> = from4(perm(p_arc(0), p_circ(0), lanepad12(to_lanes(a) ++ to_lanes(b))))
+# CUT THE ROPE (v5.60.0): the Poseidon MDS layer was THE proof bottleneck — 144 boxed fmul per
+# round (each a wnth cons-walk + glit alloc + comb/split), x 30 rounds, x every Merkle/transcript
+# hash. `poseidon_perm` is a single native intrinsic (q_poseidon_perm) running the whole
+# permutation in registers over a u64[12] — zero alloc, O(1) indexing. We convert the 12 lane
+# field-elements to unboxed words (limbs_to_goldw) at the boundary, permute, and expand the first
+# 4 output lanes back to the SAME 16-limb digest (goldw_to_limbs + pad4l) — so hashg is BYTE-FOR-BYTE
+# what `from4(perm(...))` produced, just ~100x faster. Validated: examples/prove/poseidon_difftest.glass
+# (Plonky2 anchor + Glass goldw reference perm + interp==native byte-identical). The pure-Glass
+# perm/full_round/mds_* below stay as the readable reference (and the difftest's spec).
+fn lanes_to_w(ls: List<List<Int>>) : List<Int> = match ls { [] => []; [h, ...t] => [limbs_to_goldw(h)] ++ lanes_to_w(t) }
+fn wnthw(xs: List<Int>, i: Int) : Int = match xs { [] => 0; [h, ...t] => if i == 0 then h else wnthw(t, i - 1) }
+fn from4w(w: List<Int>) : List<Int> = pad4l(goldw_to_limbs(wnthw(w, 0))) ++ pad4l(goldw_to_limbs(wnthw(w, 1))) ++ pad4l(goldw_to_limbs(wnthw(w, 2))) ++ pad4l(goldw_to_limbs(wnthw(w, 3)))
+fn hashg(a: List<Int>, b: List<Int>) : List<Int> = from4w(poseidon_perm(lanes_to_w(lanepad12(to_lanes(a) ++ to_lanes(b)))))
 fn rand_coeffs(seed: Int, i: Int, k: Int) : List<List<Int>> = if i >= k then [] else [lane0(hashg(glit(seed), glit(i + 1)))] ++ rand_coeffs(seed, i + 1, k)
 # --- ZK BLINDING (mechanism). T'(x) = T(x) + Z_H(x)*R(x): on H, Z_H=0 so T'=T (every gate
 # constraint preserved); off H (the coset, where queries open) the Z_H*R mask randomizes the
