@@ -1,5 +1,5 @@
 """
-Glass v5.61.0 — reference implementation.
+Glass v5.62.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -1301,6 +1301,8 @@ def builtin_types() -> dict[str, Ty]:
         "limbs_to_goldw": TyFn((TyList(TyInt()),), TyInt()),
         "poseidon_perm":  TyFn((TyList(TyInt()),), TyList(TyInt())),
         "ntt_lde":        TyFn((TyList(TyInt()), TyInt(), TyInt(), TyInt()), TyList(TyInt())),
+        "to_vec":         TyFn((TyList(T),), TyList(T)),
+        "vget":           TyFn((TyList(T), TyInt()), T),
         "string_length":  TyFn((TyString(),), TyInt()),
         "substring":      TyFn((TyString(), TyInt(), TyInt()), TyString()),
         # Loud, both-sides abort: stderr message + nonzero exit (native q_error
@@ -2733,6 +2735,10 @@ def builtin_values() -> dict[str, Value]:
                     wcur = (wcur * wlen) % _GOLD_P
             ln <<= 1
         return ListV([IntV(_s64(v)) for v in a])
+    # O(1)-indexable vector. ListV.items is already a Python list (O(1)), so to_vec is identity
+    # in the interpreter; vget reads by index. Native q_to_vec/q_vget back it with a flat array.
+    def b_to_vec(xs): return xs
+    def b_vget(v, i): return v.items[i.v]
     return {
         "print":            BuiltinV("print", b_print),
         "error":            BuiltinV("error", b_error),
@@ -2757,6 +2763,8 @@ def builtin_values() -> dict[str, Value]:
         "limbs_to_goldw":   BuiltinV("limbs_to_goldw", b_limbs_to_goldw),
         "poseidon_perm":    BuiltinV("poseidon_perm", b_poseidon_perm),
         "ntt_lde":          BuiltinV("ntt_lde", b_ntt_lde),
+        "to_vec":           BuiltinV("to_vec", b_to_vec),
+        "vget":             BuiltinV("vget", b_vget),
         "string_length":    BuiltinV("string_length", b_string_length),
         "string_to_upper":  BuiltinV("string_to_upper", b_string_to_upper),
         "string_to_lower":  BuiltinV("string_to_lower", b_string_to_lower),
@@ -3752,7 +3760,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.61.0 — interactive REPL")
+    print("Glass v5.62.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3864,7 +3872,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.61.0")
+        print("Glass 5.62.0")
     elif sys.argv[1] == "prove":
         # `glass prove <file.glass> [name=value ...]` — compile the file's `main`
         # expression into a circuit and emit a succinct, zero-knowledge proof of

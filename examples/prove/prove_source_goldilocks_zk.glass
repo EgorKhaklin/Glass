@@ -197,8 +197,9 @@ fn fold_at_b(cw: List<List<Int>>, dom: List<List<Int>>, beta: List<Int>, finv2: 
   else let fx : List<Int> = wnth(cw, i) in let fmx : List<Int> = wnth(cw, i + half) in let x : List<Int> = wnth(dom, i) in
     let fe : List<Int> = fmul(fadd(fx, fmx), finv2) in let fo : List<Int> = fmul(fsub(fx, fmx), finv(fmul([2], x))) in
     [fadd(fe, fmul(beta, fo))] ++ fold_at_b(cw, dom, beta, finv2, i + 1, half)
+# CUT THE ROPE 3: was O(m^2) (wnth(dom,i) per element). Lock-step walk of the first `half` points.
 fn sqd(dom: List<List<Int>>, i: Int, half: Int) : List<List<Int>> =
-  if i >= half then [] else [fmul(wnth(dom, i), wnth(dom, i))] ++ sqd(dom, i + 1, half)
+  if i >= half then [] else match dom { [] => []; [h, ...t] => [fmul(h, h)] ++ sqd(t, i + 1, half) }
 fn fold_all_b(cw: List<List<Int>>, dom: List<List<Int>>, finv2: List<Int>, round: Int) : List<List<Int>> =
   if llen(cw) <= fri_final(0) then cw
   else let half : Int = llen(cw) / 2 in fold_all_b(fold_at_b(cw, dom, glit(round * 7919 + 12345), finv2, 0, half), sqd(dom, 0, half), finv2, round + 1)
@@ -412,8 +413,13 @@ fn reals(zs: List<G2>) : List<List<Int>> = match zs { [] => []; [G2(a0, a1), ...
 fn imags(zs: List<G2>) : List<List<Int>> = match zs { [] => []; [G2(a0, a1), ...r] => [a1] ++ imags(r) }
 fn poly_eval_g2(zr: List<List<Int>>, zi: List<List<Int>>, z: G2) : G2 =
   match zr { [] => G2([], []); [cr, ...rr] => match zi { [] => G2([], []); [ci, ...ri] => gadd2(G2(cr, ci), gmul2(z, poly_eval_g2(rr, ri, z))) } }
+# CUT THE ROPE 3: was O(n*m) — poly_eval_b (Horner) per coset point for both real and imag parts
+# of the grand-product z-poly. Now two native NTT low-degree extensions, zipped into G2. (dom is
+# always the size-32n coset, so n = |dom|/32.)
+fn zip_g2(rs: List<List<Int>>, iss: List<List<Int>>) : List<G2> =
+  match rs { [] => []; [rh, ...rt] => match iss { [] => []; [ih, ...it] => [G2(rh, ih)] ++ zip_g2(rt, it) } }
 fn eval_g2_on_dom(zr: List<List<Int>>, zi: List<List<Int>>, dom: List<List<Int>>) : List<G2> =
-  match dom { [] => []; [x, ...r] => [G2(poly_eval_b(zr, x), poly_eval_b(zi, x))] ++ eval_g2_on_dom(zr, zi, r) }
+  let nn : Int = lcnt(dom) / 32 in zip_g2(lde(zr, nn), lde(zi, nn))
 fn perm_factor(val: List<Int>, idv: List<Int>, beta: G2, gam: G2) : G2 = gadd2(gadd2(emb(val), gmul2(beta, emb(idv))), gam)
 fn perm_num(lv: List<Int>, rv: List<Int>, ov: List<Int>, i: Int, n: Int, beta: G2, gam: G2) : G2 =
   gmul2(perm_factor(lv, glit(i), beta, gam), gmul2(perm_factor(rv, glit(n + i), beta, gam), perm_factor(ov, glit(2 * n + i), beta, gam)))
@@ -450,8 +456,11 @@ fn fold_path_g(h: List<Int>, index: Int, path: List<List<Int>>) : List<Int> = ma
 fn merkle_verify_g(leaf: G2, index: Int, path: List<List<Int>>, root: List<Int>) : Bool = bn_eq(fold_path_g(lhash(leaf), index, path), root)
 fn fold_pair2(fx: G2, fmx: G2, x: List<Int>, beta: G2, finv2: List<Int>) : G2 =
   let even : G2 = gscale2(gadd2(fx, fmx), finv2) in let odd : G2 = gscale2(gsub2(fx, fmx), finv(fmul([2], x))) in gadd2(even, gmul2(beta, odd))
+# CUT THE ROPE 3: was O(m^2) — nth2(cw,i)/nth2(cw,i+half)/wnth(dom,i) per pair. to_vec once (O(m)), vget O(1).
+fn fold_at2_go(cwv: List<G2>, domv: List<List<Int>>, beta: G2, finv2: List<Int>, i: Int, half: Int) : List<G2> =
+  if i >= half then [] else [fold_pair2(vget(cwv, i), vget(cwv, i + half), vget(domv, i), beta, finv2)] ++ fold_at2_go(cwv, domv, beta, finv2, i + 1, half)
 fn fold_at2(cw: List<G2>, dom: List<List<Int>>, beta: G2, finv2: List<Int>, i: Int, half: Int) : List<G2> =
-  if i >= half then [] else [fold_pair2(nth2(cw, i), nth2(cw, i + half), wnth(dom, i), beta, finv2)] ++ fold_at2(cw, dom, beta, finv2, i + 1, half)
+  fold_at2_go(to_vec(cw), to_vec(dom), beta, finv2, 0, half)
 # --- statement binding: a Poseidon digest over the gate list ------------------
 # The FS transcript is SEEDED by this digest, so every FS challenge (the FRI fold
 # betas and the query positions) is a deterministic function of the statement.
@@ -791,7 +800,11 @@ fn tamper_strace(proof: ProofS) : ProofS = match proof { ProofS(tr, lz, rz, oz, 
 type TOpenB = | TOpenB(List<Int>, List<Int>, List<Int>, G2, G2, List<List<Int>>, List<List<Int>>, List<List<Int>>, List<Int>, List<Int>, List<Int>, G2, G2, List<List<Int>>, List<List<Int>>, List<List<Int>>)
 type ProofB3 = | ProofB3(List<Int>, List<Int>, List<Int>, G2, G2, G2, G2, G2, G2, List<List<Int>>, List<G2>, Int, List<List<QOpen>>, List<TOpenB>)
 fn comb_lro(l: List<Int>, r: List<Int>, o: List<Int>) : List<Int> = hashg(hashg(l, r), o)
-fn trace_leaf_lro(lcw: List<List<Int>>, rcw: List<List<Int>>, ocw: List<List<Int>>, i: Int, m: Int) : List<List<Int>> = if i >= m then [] else [comb_lro(wnth(lcw, i), wnth(rcw, i), wnth(ocw, i))] ++ trace_leaf_lro(lcw, rcw, ocw, i + 1, m)
+# CUT THE ROPE 3: was O(m²) — wnth(lcw,i)/wnth(rcw,i)/wnth(ocw,i) each an O(i) cons-walk per leaf,
+# x m=32n leaves. Now a single lock-step walk of the three codewords (O(m), no indexing).
+fn trace_leaf_lro(lcw: List<List<Int>>, rcw: List<List<Int>>, ocw: List<List<Int>>, i: Int, m: Int) : List<List<Int>> =
+  match lcw { [] => []; [lh, ...lt] => match rcw { [] => []; [rh, ...rt] => match ocw { [] => []; [oh, ...ot] =>
+    [comb_lro(lh, rh, oh)] ++ trace_leaf_lro(lt, rt, ot, i + 1, m) } } }
 fn tblen(xs: List<TOpenB>) : Int = match xs { [] => 0; [x, ...r] => 1 + tblen(r) }
 fn absorb6(ts: List<Int>, a: G2, b: G2, c: G2, d: G2, e: G2, f: G2) : List<Int> = absorb_g2(absorb_g2(absorb_g2(absorb_g2(absorb_g2(absorb_g2(ts, a), b), c), d), e), f)
 # absorb the final folded codeword into the transcript BEFORE sampling queries
@@ -810,24 +823,35 @@ fn qcombined_z(pc: List<List<List<Int>>>, pm: List<List<List<Int>>>, lz: G2, rz:
   let qrec : G2 = gmul2(recur_at_z(pm, lz, rz, oz, zz, zwz, beta, gamp, z), izh) in
   let qbnd : G2 = gmul2(gsub2(zz, G2([1], [])), ginv2(gsub2(z, G2([1], [])))) in
   gadd2(qgate, gadd2(gmul2(alpha, qrec), gmul2(gmul2(alpha, alpha), qbnd)))
-fn build_q_b3(pc: List<List<List<Int>>>, pm: List<List<List<Int>>>, qgatecw: List<List<Int>>, lcw: List<List<Int>>, rcw: List<List<Int>>, ocw: List<List<Int>>, zcw: List<G2>, coset: List<List<Int>>, alpha: G2, beta: G2, gamp: G2, n: Int, rot: Int, m: Int, i: Int) : List<G2> =
+# CUT THE ROPE 3: was O(m^2) (wnth/nth2 per row, incl. zcw at (i+rot)%m) PLUS O(n*m) — six
+# poly_eval_b of the perm columns per coset point. Now: LDE the 6 perm cols ONCE (native NTT),
+# to_vec every codeword (incl. zcw for both i and (i+rot)%m), and vget O(1) in the row walk.
+fn build_q_b3_go(qgv: List<List<Int>>, lv: List<List<Int>>, rv: List<List<Int>>, ov: List<List<Int>>, zv: List<G2>, cv: List<List<Int>>, s0: List<List<Int>>, s1: List<List<Int>>, s2: List<List<Int>>, s3: List<List<Int>>, s4: List<List<Int>>, s5: List<List<Int>>, alpha: G2, beta: G2, gamp: G2, n: Int, rot: Int, m: Int, i: Int) : List<G2> =
   if i >= m then [] else
-    let x : List<Int> = wnth(coset, i) in let zhx : List<Int> = fsub(fpow_bn(x, glit(n)), [1]) in
-    let lx : List<Int> = wnth(lcw, i) in let rx : List<Int> = wnth(rcw, i) in let ox : List<Int> = wnth(ocw, i) in
-    let zx : G2 = nth2(zcw, i) in let zwx : G2 = nth2(zcw, (i + rot) % m) in
-    let numx : G2 = gmul2(pf(emb(lx), emb(poly_eval_b(wnth3(pm, 0), x)), beta, gamp), gmul2(pf(emb(rx), emb(poly_eval_b(wnth3(pm, 1), x)), beta, gamp), pf(emb(ox), emb(poly_eval_b(wnth3(pm, 2), x)), beta, gamp))) in
-    let denx : G2 = gmul2(pf(emb(lx), emb(poly_eval_b(wnth3(pm, 3), x)), beta, gamp), gmul2(pf(emb(rx), emb(poly_eval_b(wnth3(pm, 4), x)), beta, gamp), pf(emb(ox), emb(poly_eval_b(wnth3(pm, 5), x)), beta, gamp))) in
+    let x : List<Int> = vget(cv, i) in let zhx : List<Int> = fsub(fpow_bn(x, glit(n)), [1]) in
+    let lx : List<Int> = vget(lv, i) in let rx : List<Int> = vget(rv, i) in let ox : List<Int> = vget(ov, i) in
+    let zx : G2 = vget(zv, i) in let zwx : G2 = vget(zv, (i + rot) % m) in
+    let numx : G2 = gmul2(pf(emb(lx), emb(vget(s0, i)), beta, gamp), gmul2(pf(emb(rx), emb(vget(s1, i)), beta, gamp), pf(emb(ox), emb(vget(s2, i)), beta, gamp))) in
+    let denx : G2 = gmul2(pf(emb(lx), emb(vget(s3, i)), beta, gamp), gmul2(pf(emb(rx), emb(vget(s4, i)), beta, gamp), pf(emb(ox), emb(vget(s5, i)), beta, gamp))) in
     let qrecur : G2 = gscale2(gsub2(gmul2(zwx, denx), gmul2(zx, numx)), finv(zhx)) in
     let qbound : G2 = gmul2(gsub2(zx, G2([1], [])), ginv2(gsub2(emb(x), G2([1], [])))) in
-    [gadd2(emb(wnth(qgatecw, i)), gadd2(gmul2(alpha, qrecur), gmul2(gmul2(alpha, alpha), qbound)))] ++ build_q_b3(pc, pm, qgatecw, lcw, rcw, ocw, zcw, coset, alpha, beta, gamp, n, rot, m, i + 1)
+    [gadd2(emb(vget(qgv, i)), gadd2(gmul2(alpha, qrecur), gmul2(gmul2(alpha, alpha), qbound)))] ++ build_q_b3_go(qgv, lv, rv, ov, zv, cv, s0, s1, s2, s3, s4, s5, alpha, beta, gamp, n, rot, m, i + 1)
+fn build_q_b3(pc: List<List<List<Int>>>, pm: List<List<List<Int>>>, qgatecw: List<List<Int>>, lcw: List<List<Int>>, rcw: List<List<Int>>, ocw: List<List<Int>>, zcw: List<G2>, coset: List<List<Int>>, alpha: G2, beta: G2, gamp: G2, n: Int, rot: Int, m: Int, i: Int) : List<G2> =
+  build_q_b3_go(to_vec(qgatecw), to_vec(lcw), to_vec(rcw), to_vec(ocw), to_vec(zcw), to_vec(coset),
+    to_vec(lde(wnth3(pm, 0), n)), to_vec(lde(wnth3(pm, 1), n)), to_vec(lde(wnth3(pm, 2), n)),
+    to_vec(lde(wnth3(pm, 3), n)), to_vec(lde(wnth3(pm, 4), n)), to_vec(lde(wnth3(pm, 5), n)),
+    alpha, beta, gamp, n, rot, m, 0)
 fn deep_batch_b3(lj: List<Int>, rj: List<Int>, oj: List<Int>, qj: G2, zj: G2, xi: List<Int>, lz: G2, rz: G2, oz: G2, qz: G2, zz: G2, zwz: G2, z: G2, wz: G2, gam: G2) : G2 =
   let invz : G2 = ginv2(gsub2(emb(xi), z)) in let invwz : G2 = ginv2(gsub2(emb(xi), wz)) in
   let dq : G2 = gmul2(gsub2(qj, qz), invz) in let dl : G2 = gmul2(gsub2(emb(lj), lz), invz) in let dr : G2 = gmul2(gsub2(emb(rj), rz), invz) in
   let dlo : G2 = gmul2(gsub2(emb(oj), oz), invz) in let dz : G2 = gmul2(gsub2(zj, zz), invz) in let dzw : G2 = gmul2(gsub2(zj, zwz), invwz) in
   let g2 : G2 = gmul2(gam, gam) in let g3 : G2 = gmul2(g2, gam) in let g4 : G2 = gmul2(g3, gam) in let g5 : G2 = gmul2(g4, gam) in
   gadd2(dq, gadd2(gmul2(gam, dl), gadd2(gmul2(g2, dr), gadd2(gmul2(g3, dlo), gadd2(gmul2(g4, dz), gmul2(g5, dzw))))))
+# CUT THE ROPE 3: was O(m^2) (wnth/nth2 x6 per row). to_vec the 6 codewords once (O(m)), vget O(1).
+fn build_b_b3_go(lv: List<List<Int>>, rv: List<List<Int>>, ov: List<List<Int>>, qv: List<G2>, zv: List<G2>, cv: List<List<Int>>, lz: G2, rz: G2, oz: G2, qz: G2, zz: G2, zwz: G2, z: G2, wz: G2, gam: G2, i: Int, m: Int) : List<G2> =
+  if i >= m then [] else [deep_batch_b3(vget(lv, i), vget(rv, i), vget(ov, i), vget(qv, i), vget(zv, i), vget(cv, i), lz, rz, oz, qz, zz, zwz, z, wz, gam)] ++ build_b_b3_go(lv, rv, ov, qv, zv, cv, lz, rz, oz, qz, zz, zwz, z, wz, gam, i + 1, m)
 fn build_b_b3(lcw: List<List<Int>>, rcw: List<List<Int>>, ocw: List<List<Int>>, qcw: List<G2>, zcw: List<G2>, coset: List<List<Int>>, lz: G2, rz: G2, oz: G2, qz: G2, zz: G2, zwz: G2, z: G2, wz: G2, gam: G2, i: Int, m: Int) : List<G2> =
-  if i >= m then [] else [deep_batch_b3(wnth(lcw, i), wnth(rcw, i), wnth(ocw, i), nth2(qcw, i), nth2(zcw, i), wnth(coset, i), lz, rz, oz, qz, zz, zwz, z, wz, gam)] ++ build_b_b3(lcw, rcw, ocw, qcw, zcw, coset, lz, rz, oz, qz, zz, zwz, z, wz, gam, i + 1, m)
+  build_b_b3_go(to_vec(lcw), to_vec(rcw), to_vec(ocw), to_vec(qcw), to_vec(zcw), to_vec(coset), lz, rz, oz, qz, zz, zwz, z, wz, gam, 0, m)
 fn extract_tb1(lcw: List<List<Int>>, rcw: List<List<Int>>, ocw: List<List<Int>>, qcw: List<G2>, zcw: List<G2>, lev1: List<List<List<Int>>>, lev2: List<List<List<Int>>>, lev3: List<List<List<Int>>>, p: Int, m: Int) : TOpenB =
   let half : Int = m / 2 in let j : Int = p % half in
   TOpenB(wnth(lcw, j), wnth(rcw, j), wnth(ocw, j), nth2(qcw, j), nth2(zcw, j), merkle_path_levels(lev1, j), merkle_path_levels(lev3, j), merkle_path_levels(lev2, j),
@@ -970,6 +994,10 @@ fn unroll(e: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: In
     EMatch(scrut, arms) => EMatch(unroll(scrut, fns, fenv, fuel), unroll_arms(arms, fns, fenv, fuel));
     ECtor(name, args) => ECtor(name, unroll_args(args, fns, fenv, fuel));
     ETuple(elems) => ETuple(unroll_args(elems, fns, fenv, fuel));
+    ELt(x, y) => ELt(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
+    EGt(x, y) => EGt(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
+    ELe(x, y) => ELe(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
+    EGe(x, y) => EGe(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
     _ => e }
 
 fn env_get2(env: List<Pair<String, Int>>, name: String) : Int = match env { [] => 0 - 1; [Pair(k, v), ...r] => if k == name then v else env_get2(r, name) }
@@ -1022,7 +1050,27 @@ fn heval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, t
     ETuple(elems) => heval_fields(elems, scalar_types_e(elems), env, fns, types);
     EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => heval_call(fn_body_of(fns, fname), args, [], env, fns, types); _ => error("glass prove: unsupported call form (computed or higher-order callee) in the reference evaluator — refusing rather than silently proving 0") } };
     EMatch(scrut, arms) => match heval(scrut, env, fns, types) { (sv, hs) => match heval_match(sv, arms, env, fns, types) { (rv, ha) => (rv, hs ++ ha) } };
-    _ => error("glass prove: unsupported expression in the prove bridge (heval) — only + - * == != && || ! and if/let/match/ADT/calls lower to the field circuit; comparisons (< > <= >=), / %, strings and records have no faithful field lowering and are refused, not silently proven as 0") }
+    ELt(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) =>
+      let xa : List<Int> = vh(va) in let xb : List<Int> = vh(vb) in
+      if cmp_ok_g(xa, xb) then let d : List<Int> = fadd(fsub(xa, xb), pow2_lit(32)) in
+        ([if bn_cmp(trim(xa), trim(xb)) < 0 then glit(1) else glit(0)], ha ++ hb ++ cmp_bits_w(xa, 32) ++ cmp_bits_w(xb, 32) ++ cmp_bits_w(d, 33))
+      else error("glass prove: ordering comparison operand out of provable range [0,2^32) — REJECT, not a wrong ACCEPT") } };
+    EGt(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) =>
+      let xa : List<Int> = vh(va) in let xb : List<Int> = vh(vb) in
+      if cmp_ok_g(xa, xb) then let d : List<Int> = fadd(fsub(xb, xa), pow2_lit(32)) in
+        ([if bn_cmp(trim(xb), trim(xa)) < 0 then glit(1) else glit(0)], ha ++ hb ++ cmp_bits_w(xb, 32) ++ cmp_bits_w(xa, 32) ++ cmp_bits_w(d, 33))
+      else error("glass prove: ordering comparison operand out of provable range [0,2^32) — REJECT") } };
+    ELe(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) =>
+      let xa : List<Int> = vh(va) in let xb : List<Int> = vh(vb) in
+      if cmp_ok_g(xa, xb) then let d : List<Int> = fadd(fsub(xb, xa), pow2_lit(32)) in
+        ([if bn_cmp(trim(xb), trim(xa)) < 0 then glit(0) else glit(1)], ha ++ hb ++ cmp_bits_w(xb, 32) ++ cmp_bits_w(xa, 32) ++ cmp_bits_w(d, 33))
+      else error("glass prove: ordering comparison operand out of provable range [0,2^32) — REJECT") } };
+    EGe(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) =>
+      let xa : List<Int> = vh(va) in let xb : List<Int> = vh(vb) in
+      if cmp_ok_g(xa, xb) then let d : List<Int> = fadd(fsub(xa, xb), pow2_lit(32)) in
+        ([if bn_cmp(trim(xa), trim(xb)) < 0 then glit(0) else glit(1)], ha ++ hb ++ cmp_bits_w(xa, 32) ++ cmp_bits_w(xb, 32) ++ cmp_bits_w(d, 33))
+      else error("glass prove: ordering comparison operand out of provable range [0,2^32) — REJECT") } };
+    _ => error("glass prove: unsupported expression in the prove bridge (heval) — only + - * == != && || ! and if/let/match/ADT/calls lower to the field circuit; / %, strings and records have no faithful field lowering and are refused, not silently proven as 0") }
 fn heval_fields(args: List<Expr>, tys: List<Type>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>) : (List<List<Int>>, List<List<Int>>) =
   match args { [] => ([], []); [a, ...arest] => match tys { [] => ([], []); [t, ...trest] =>
     match heval(a, env, fns, types) { (va, ha) => match heval_fields(arest, trest, env, fns, types) { (vr, hr) =>
@@ -1093,7 +1141,15 @@ fn seval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, t
       EVar(fname) => if fuel <= 0 then error("glass prove: recursion depth exceeds the unroll bound (" ++ int_to_string(unroll_fuel(0)) ++ "); refusing to prove a depth-truncated result — it would otherwise be a silently wrong value with a valid-looking proof (the program needs statically-bounded, shallower recursion)") else (let tgt : String = resolve_fn(fname, fns, []) in if tgt == "" then error("glass prove: unresolved call to '" ++ fname ++ "' in the reference evaluator") else seval_call(fn_body_of(fns, tgt), args, [], env, fns, types, fuel));
       _ => error("glass prove: unsupported call form (computed or higher-order callee) in the reference evaluator") } };
     EMatch(scrut, arms) => seval_match(seval(scrut, env, fns, types, fuel), arms, env, fns, types, fuel);
-    _ => error("glass prove: unsupported expression in the prove bridge (seval guard) — only + - * == != && || ! and if/let/match/ADT/calls lower to the field circuit; comparisons (< > <= >=), / %, strings and records are refused, not silently proven as 0") }
+    ELt(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fuel)) in
+      if cmp_ok_g(xa, xb) then (if bn_cmp(trim(xa), trim(xb)) < 0 then [glit(1)] else [glit(0)]) else error("glass prove: ordering comparison operand out of provable range [0,2^32) — REJECT");
+    EGt(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fuel)) in
+      if cmp_ok_g(xa, xb) then (if bn_cmp(trim(xb), trim(xa)) < 0 then [glit(1)] else [glit(0)]) else error("glass prove: ordering comparison operand out of provable range [0,2^32) — REJECT");
+    ELe(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fuel)) in
+      if cmp_ok_g(xa, xb) then (if bn_cmp(trim(xb), trim(xa)) < 0 then [glit(0)] else [glit(1)]) else error("glass prove: ordering comparison operand out of provable range [0,2^32) — REJECT");
+    EGe(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fuel)) in
+      if cmp_ok_g(xa, xb) then (if bn_cmp(trim(xa), trim(xb)) < 0 then [glit(0)] else [glit(1)]) else error("glass prove: ordering comparison operand out of provable range [0,2^32) — REJECT");
+    _ => error("glass prove: unsupported expression in the prove bridge (seval guard) — only + - * == != && || ! and if/let/match/ADT/calls lower to the field circuit; / %, strings and records are refused, not silently proven as 0") }
 fn seval_fields(args: List<Expr>, tys: List<Type>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>, fuel: Int) : List<List<Int>> =
   match args { [] => []; [a, ...arest] => match tys { [] => []; [t, ...trest] =>
     padw(seval(a, env, fns, types, fuel), twidth(t, types, 12)) ++ seval_fields(arest, trest, env, fns, types, fuel) } }
@@ -1122,6 +1178,55 @@ fn muxw(wc: Int, vt: List<Int>, vf: List<Int>, b: Build) : (List<Int>, Build) =
   match vt { [] => ([], b); [t, ...tr] => match vf { [] => ([], b); [f, ...fr] =>
     match mks(t, f, b) { (wd, b1) => match mkm(wc, wd, b1) { (wcd, b2) => match mka(f, wcd, b2) { (wo, b3) =>
     match muxw(wc, tr, fr, b3) { (rest, b4) => ([wo] ++ rest, b4) } } } } } }
+
+# --- ordering comparisons (< > <= >=) — sound, range-bounded gadget --------
+# A field comparison a<b is meaningful only if BOTH operands are PROVABLY in
+# [0, 2^k) with 2^(k+1) < p, so d = a - b + 2^k never wraps mod p (Goldilocks
+# p = 2^64-2^32+1; k=32 => 2^33 << p). cmp_bits_loop allocates k INLINE hint
+# bits (mkh reads the operand's runtime value via bwire), constrains each
+# boolean (wb*wb - wb == 0 via mke), and binds Σ bitᵢ·2ⁱ to the operand (range_k)
+# or returns the captured sign bit (decompose_capture). An operand outside
+# [0,2^k) makes the weighted-sum binding UNSATISFIABLE => honest REJECT, never a
+# wrong ACCEPT. This NARROWS the v5.52 loud refusal, never replaces it with a
+# silent wrong proof. (verify_b3 enforces every gate, so the bound is real.)
+fn ipow2(i: Int) : Int = if i <= 0 then 1 else 2 * ipow2(i - 1)
+fn pow2_lit(i: Int) : List<Int> = glit(ipow2(i))
+fn bn_bit(v: List<Int>, i: Int) : Int = (nthI(v, i / 16) / ipow2(i % 16)) % 2
+fn in_range_k(v: List<Int>, k: Int) : Bool = bn_cmp(trim(v), glit(ipow2(k))) < 0
+fn cmp_ok_g(xa: List<Int>, xb: List<Int>) : Bool = if in_range_k(xa, 32) then in_range_k(xb, 32) else false
+fn fnot01(v: List<Int>) : List<Int> = fsub(glit(1), v)
+fn cmp_bits_w_go(v: List<Int>, i: Int, k: Int) : List<List<Int>> = if i >= k then [] else [if bn_bit(v, i) == 1 then glit(1) else glit(0)] ++ cmp_bits_w_go(v, i + 1, k)
+fn cmp_bits_w(v: List<Int>, k: Int) : List<List<Int>> = cmp_bits_w_go(v, 0, k)
+fn cmp_bits_loop(w: Int, i: Int, k: Int, capIdx: Int, acc: Int, cap: Int, b: Build) : (Int, Int, Build) =
+  if i >= k then (acc, cap, b)
+  else let bv : List<Int> = if bn_bit(bwire(b, w), i) == 1 then glit(1) else glit(0) in
+    match mkh(bv, b) { (wb, b1) =>
+    match mkm(wb, wb, b1) { (wsq, b2) =>
+    match mks(wsq, wb, b2) { (wbm, b3) => let b4 : Build = mke(wbm, b3) in
+    match mkc(pow2_lit(i), b4) { (wpow, b5) =>
+    match mkm(wpow, wb, b5) { (wterm, b6) =>
+    match mka(acc, wterm, b6) { (wacc, b7) =>
+      let cap2 : Int = if i == capIdx then wb else cap in
+      cmp_bits_loop(w, i + 1, k, capIdx, wacc, cap2, b7) } } } } } }
+fn range_k(w: Int, k: Int, b: Build) : Build =
+  match mkc(glit(0), b) { (wzero, b0) =>
+  match cmp_bits_loop(w, 0, k, 0 - 1, wzero, 0 - 1, b0) { (wsum, ucap, b1) =>
+  match mks(wsum, w, b1) { (wdiff, b2) => mke(wdiff, b2) } } }
+fn decompose_capture(w: Int, kk: Int, capIdx: Int, b: Build) : (Int, Build) =
+  match mkc(glit(0), b) { (wzero, b0) =>
+  match cmp_bits_loop(w, 0, kk, capIdx, wzero, 0 - 1, b0) { (wsum, wcap, b1) =>
+  match mks(wsum, w, b1) { (wdiff, b2) => let b3 : Build = mke(wdiff, b2) in (wcap, b3) } } }
+# lt_build: a 0/1 wire = (value(wx) < value(wy)), after PROVING both ∈ [0,2^k).
+fn lt_build(wx: Int, wy: Int, b: Build) : (Int, Build) =
+  let b1 : Build = range_k(wx, 32, b) in
+  let b2 : Build = range_k(wy, 32, b1) in
+  match mks(wx, wy, b2) { (wxy, b3) =>
+  match mkc(pow2_lit(32), b3) { (wk, b4) =>
+  match mka(wxy, wk, b4) { (wd, b5) =>
+  match decompose_capture(wd, 33, 32, b5) { (wbitk, b6) =>
+  match mkc(glit(1), b6) { (wone, b7) =>
+  match mks(wone, wbitk, b7) { (wlt, b8) => (wlt, b8) } } } } } }
+
 fn cgen(e: Expr, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: List<TypeDecl>, b: Build) : (List<Int>, Build) =
   match e {
     EInt(n) => match mkc(glit(n), b) { (w, b1) => ([w], b1) };
@@ -1141,7 +1246,11 @@ fn cgen(e: Expr, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: 
     ETuple(elems) => cgen_fields(elems, scalar_types_e(elems), cenv, fns, types, b);
     EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => cgen_call(fn_body_of(fns, fname), args, [], cenv, fns, types, b); _ => error("glass prove: unsupported call form (computed or higher-order callee) in cgen — refusing rather than silently building a 0 circuit") } };
     EMatch(scrut, arms) => match cgen(scrut, cenv, fns, types, b) { (sv, b1) => match mkc(glit(0), b1) { (zm, b2) => cgen_match(arms, sv, cenv, fns, types, zm, [], b2) } };
-    _ => error("glass prove: unsupported expression in the prove bridge (cgen) — only + - * == != && || ! and if/let/match/ADT/calls lower to the field circuit; comparisons (< > <= >=), / %, strings and records are refused, not silently built as a 0 circuit") }
+    ELt(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match lt_build(vhi(vx), vhi(vy), b2) { (wlt, b3) => ([wlt], b3) } } };
+    EGt(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match lt_build(vhi(vy), vhi(vx), b2) { (wlt, b3) => ([wlt], b3) } } };
+    ELe(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match lt_build(vhi(vy), vhi(vx), b2) { (wlt, b3) => match mkc(glit(1), b3) { (wone, b4) => match mks(wone, wlt, b4) { (wo, b5) => ([wo], b5) } } } } };
+    EGe(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match lt_build(vhi(vx), vhi(vy), b2) { (wlt, b3) => match mkc(glit(1), b3) { (wone, b4) => match mks(wone, wlt, b4) { (wo, b5) => ([wo], b5) } } } } };
+    _ => error("glass prove: unsupported expression in the prove bridge (cgen) — only + - * == != && || ! and if/let/match/ADT/calls lower to the field circuit; / %, strings and records are refused, not silently built as a 0 circuit") }
 fn cgen_fields(args: List<Expr>, tys: List<Type>, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: List<TypeDecl>, b: Build) : (List<Int>, Build) =
   match args { [] => ([], b); [a, ...arest] => match tys { [] => ([], b); [t, ...trest] =>
     match cgen(a, cenv, fns, types, b) { (va, b1) => match padv_g(va, twidth(t, types, 12), b1) { (pva, b2) =>

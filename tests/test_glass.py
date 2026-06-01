@@ -1261,8 +1261,18 @@ def main() -> int:
         print(f"        out: {out.strip()[-200:]}  err: {err.strip()[-150:]}")
         failures += 1
 
+    # The O(1)-indexable vector (to_vec/vget — the rope-3 cut that removes the prover's
+    # pervasive O(n^2) wnth indexing) must agree with positional list indexing for every index.
+    rc, out, err = run_file(os.path.join(EX, "prove", "vget_difftest.glass"))
+    vg_ok = (rc == 0) and ("CHECK vget_all T" in out) and (" F" not in out)
+    print(f"  {'OK ' if vg_ok else 'FAIL'}  vget/to_vec O(1) index == positional list index")
+    if not vg_ok:
+        print(f"        rc={rc}; a 'vget.. F' is an index mismatch")
+        print(f"        out: {out.strip()[-200:]}  err: {err.strip()[-150:]}")
+        failures += 1
+
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 6)  # +6: stmt-binding + 2 baby-bear + goldw + poseidon + ntt field guards
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 7)  # +7: stmt-binding + 2 baby-bear + goldw + poseidon + ntt + vget field guards
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

@@ -1,0 +1,12 @@
+# vget/to_vec difftest (rope-3 cut): the O(1)-indexable vector must match positional list
+# indexing (nth) for every index, byte-identical interp vs native. to_vec converts a cons-list
+# to a flat array once; vget reads in O(1) — this is what removes the prover's O(n^2) wnth loops.
+fn nth(xs: List<Int>, i: Int) : Int = match xs { [] => 0 - 999; [h, ...t] => if i == 0 then h else nth(t, i - 1) }
+fn chk(xs: List<Int>, v: List<Int>, i: Int, m: Int) : Bool = if i >= m then true else (if vget(v, i) == nth(xs, i) then chk(xs, v, i + 1, m) else false)
+fn idn(n: Int, i: Int) : List<Int> = if i >= n then [] else [i * 7 + 1] ++ idn(n, i + 1)
+let xs : List<Int> = idn(64, 0)
+let v : List<Int> = to_vec(xs)
+let _ : String = print("CHECK vget_all " ++ (if chk(xs, v, 0, 64) then "T" else "F"))
+let _ : String = print("CHECK vget_first " ++ (if vget(v, 0) == 1 then "T" else "F"))
+let _ : String = print("CHECK vget_last " ++ (if vget(v, 63) == 442 then "T" else "F"))
+"done"

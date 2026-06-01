@@ -1,0 +1,2 @@
+# Native ordering comparison in zero-knowledge over Goldilocks. a<b -> 1, else 0.
+a < b
