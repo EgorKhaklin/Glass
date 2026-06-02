@@ -94,9 +94,14 @@ glass prove examples/prove/hello_prove.glass inp=9
 #   proof:   ACCEPT  (SOUND — independent witness-free verify_b3; not zero-knowledge)
 ```
 
-The proof reveals only the result (`86`), not `inp`. Supported today: arithmetic,
-`let`, function calls, `==`/`if`, and `match` over (nested) algebraic data types.
-The prover is written in Glass itself — see [the prove bridge](../examples/prove/).
+The proof reveals only the result (`86`), not `inp`. Supported today: arithmetic
+(`+ - *`), integer division and modulo (`/ %`), unsigned comparison (`< > <= >=`),
+boolean logic, `let`, function calls, `==`/`if`, and `match` over (nested) algebraic
+data types — plus **signed integers** in `[-2³¹, 2³¹)`: `slt`/`sle`/`sgt`/`sge`
+(signed comparison) and `sdiv`/`smod` (C99 truncated division), with negative results
+shown signed. Anything Glass cannot lower faithfully *abstains* loudly — it is never
+silently proven. The prover is written in Glass itself — see
+[the prove bridge](../examples/prove/).
 
 ## The shape of a Glass program
 
