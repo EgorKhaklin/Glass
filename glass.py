@@ -1,5 +1,5 @@
 """
-Glass v5.97.0 — reference implementation.
+Glass v5.98.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -3855,7 +3855,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.97.0 — interactive REPL")
+    print("Glass v5.98.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3960,6 +3960,26 @@ def _save_history(path: str) -> None:
         pass
 
 
+def _prove_typecheck(usrc, inputs):
+    """Typecheck the prove source under glass.py's checker (inputs bound as Int lets). Returns an
+    error string if the program is ILL-TYPED, else None. The native prove bridge does NOT typecheck
+    — it loosely lowers e.g. `!`-on-Int to `1 - x` — so an ill-typed program would "prove" a
+    meaningless field result the reference interpreter rejects (a source<->circuit desync that
+    soundness fuzzing surfaced as a witness3-SKIP). Gating here refuses ill-typed programs (ABSTAIN),
+    matching the reference. ONLY type errors gate; parse / other issues fall through to the bridge's
+    own loud refusals. Every valid prove program is runnable Glass, so it typechecks and passes."""
+    try:
+        binds = "".join("let %s : Int = %d\n" % (k, v) for k, v in inputs)
+        checker, _env = make_runtime()
+        decls = Parser(tokenize(binds + usrc)).parse_program()
+        checker.check_program(decls)
+        return None
+    except TypeError_ as e:
+        return str(e)
+    except Exception:
+        return None
+
+
 def _witness3_eval(usrc, inputs):
     """Third Witness: evaluate the proven source under the reference INTERPRETER (glass.py) —
     a lineage independent of the bridge's Glass-level `heval` AND its `cgen` circuit lowering.
@@ -3991,7 +4011,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.97.0")
+        print("Glass 5.98.0")
     elif sys.argv[1] in ("help", "--help", "-h"):
         # Plain, professional command listing. The thematic names are aliases
         # (docs/naming.md) — this surface keeps the esoteric layer optional.
@@ -4061,6 +4081,17 @@ def main() -> None:
                 inputs.append((k.strip(), int(v.strip())))
         with open(upath) as f:
             usrc = f.read()
+        # Typecheck gate: refuse ILL-TYPED source (ABSTAIN) before lowering. The native bridge does
+        # not typecheck and would loosely lower an ill-typed program (e.g. `!`-on-Int -> 1-x) to a
+        # meaningless field result — a source<->circuit desync (soundness-fuzzed). A statement Glass
+        # cannot even type has no meaning to prove; refuse it loudly, never lower it.
+        _tc_err = _prove_typecheck(usrc, inputs)
+        if _tc_err is not None:
+            field = "Goldilocks (2^64)" if goldilocks else "Baby Bear (2^31)"
+            print("Glass prove — %s  [field: %s]" % (upath, field))
+            print("glass prove: the source is ILL-TYPED (%s) — cannot lower an untypeable program to a sound circuit" % _tc_err)
+            print("verdict: ABSTAIN  (the type checker rejects this program, so it has no well-typed meaning to prove — refused, NOT lowered as a loose field expression and never silently proven)")
+            return
         here = os.path.dirname(os.path.abspath(__file__))
         bridge_dir = os.path.join(here, "examples", "prove")
         esc = usrc.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
