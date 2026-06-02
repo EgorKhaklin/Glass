@@ -493,6 +493,27 @@ horizon; 4 is prose; the rest are deferred/known.
      one argument makes a whole family of gadgets cheap.
    - **Wider provable range.** `[0, 2^32)` is chosen so `q·b < p`; a tighter per-operand analysis (or
      the lookup argument above) could push the bound toward the field's natural width.
+
+   **Audit findings (v5.89, 7-agent investigation of the v5.88 predication):**
+   - **v5.88 division predication is SOUND** (adversarially verified). The `b≠0` bit is rigidly pinned
+     by prime-field invertibility (`wnz=0` iff `b=0`, uncheatable); the unconstrained-`q`-when-`b=0` is
+     killed by the mux; a live `b=0` hard-ABSTAINs at `seval`; the proven `R` is `cgen`'s own output.
+     `--claim <R>` now makes this testable end-to-end (a false division claim → `verify_b3` REJECT).
+   - **Range-predication: REJECTED (likely permanently in this gate model).** A soft `in_range_bit`
+     *is* the range problem — any non-failing 0/1 answer for an arbitrary field element must canonicalize
+     against `p`, which is unsound via 64-bit decomposition near the prime (the `v` vs `v+p` canonical-form
+     attack reproduces the crown-jewel silent-wrong-ACCEPT class). Keep the **hard `range_k` + `heval`
+     ABSTAIN guard**; do NOT retire it. So the **lookup/LogUp range argument above is THE prioritized next
+     frontier** — a dedicated, multi-session build (a new gate family touching `verify_b3` AND Pentecost in
+     lockstep; LogUp multiplicity/boundary footguns), explicitly not tail-of-context work.
+   - **Deferred (orthogonal, not a hole):** the prove path doesn't run the typechecker on `usrc`, so an
+     ill-typed non-`Bool` `if` condition desyncs `seval` from the `cgen` mux. Ill-typed input only (the
+     real typechecker rejects `if Int`), `q` stays pinned, never a wrong-ACCEPT of a well-typed statement.
+     Cheap later fix: a Bool-condition pre-pass in `unroll`.
+   - **Euclid's GCD expressed (v5.89):** `examples/prove/gcd_prove.glass` composes recursion + `%` + the
+     v5.88 predication; semantics confirmed by the interpreter (`gcd(48,18)=6`). Native STARK is large
+     (~5,400 gates from the fuel-8 unroll × a modulo gadget per level), so it is semantics-gated, not
+     routinely proven natively — the lookup-range argument is what would make deep recursive divmod fast.
 2. **Substrate performance (P)** — highest raw value, but *large*. No bytecode/closure
    compiler exists; the interpreter dogfood (multi-hour for heavy Goldilocks/Poseidon
    STARKs) is the bottleneck gating heavy Track E/R demos under the routine gate.

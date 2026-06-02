@@ -1,5 +1,5 @@
 """
-Glass v5.88.0 — reference implementation.
+Glass v5.89.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -3822,7 +3822,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.88.0 — interactive REPL")
+    print("Glass v5.89.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3958,7 +3958,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.88.0")
+        print("Glass 5.89.0")
     elif sys.argv[1] in ("help", "--help", "-h"):
         # Plain, professional command listing. The thematic names are aliases
         # (docs/naming.md) — this surface keeps the esoteric layer optional.
@@ -3969,6 +3969,7 @@ def main() -> None:
             "  glass prove <file> [k=v ...]  generate a zero-knowledge proof of its result\n"
             "      --cross-check             also re-execute under the reference interpreter\n"
             "      --emit <path>             write a portable proof instead of self-checking\n"
+            "      --claim <R>               prove a SPECIFIC claimed result (ACCEPT iff R is true)\n"
             "  glass verify <proof>          check a portable proof with the independent verifier\n"
             "  glass fingerprint [--check]   print/verify the content-addressed project identity\n"
             "  glass ledger <cmd>            append-only, tamper-evident proof-verdict ledger\n"
@@ -3993,6 +3994,18 @@ def main() -> None:
             _ei = _argv2.index("--emit")
             emit_path = _argv2[_ei + 1] if _ei + 1 < len(_argv2) else None
             _argv2 = _argv2[:_ei] + _argv2[_ei + 2:]   # drop --emit and its path argument
+        # --claim <R>: assert a SPECIFIC result instead of proving the computed one. The claimed R is
+        # bound into the circuit (build_claim_m asserts output == R); a FALSE claim makes the circuit
+        # unsatisfiable, so the independent verify_b3 REJECTs — the soundness property, made testable.
+        claim_val = None
+        if "--claim" in _argv2:
+            _ci = _argv2.index("--claim")
+            if _ci + 1 < len(_argv2):
+                try:
+                    claim_val = int(_argv2[_ci + 1])
+                except ValueError:
+                    print("glass prove --claim: expected an integer result"); return
+            _argv2 = _argv2[:_ci] + _argv2[_ci + 2:]   # drop --claim and its value
         args = [a for a in _argv2 if a not in ("--goldilocks", "--baby-bear", "--zk", "--fast", "--witness3")]
         # Default is now Goldilocks (2^64, ADTs) — off the toy 2^31 Baby Bear field.
         # `--baby-bear` opts back into the educational small-field prover.
@@ -4005,7 +4018,7 @@ def main() -> None:
         zk_mode = "--zk" in sys.argv[2:]
         fast_mode = "--fast" in sys.argv[2:]
         if len(args) < 1:
-            print("usage: glass prove [--baby-bear] [--zk | --fast] <file.glass> [name=value ...]")
+            print("usage: glass prove [--baby-bear] [--zk | --fast] [--claim R] <file.glass> [name=value ...]")
             return
         upath = args[0]
         inputs = []
@@ -4064,16 +4077,25 @@ def main() -> None:
             else:
                 _prove_call = "gprove_sound(_usrc, _inp, _r)"
                 _prove_label = "ACCEPT  (SOUND — independent witness-free verify_b3; not zero-knowledge)"
+            # --claim binds a SPECIFIED result (forged or honest) instead of gref_m_checked's; the guard
+            # `_rv` still runs (so out-of-domain ABSTAINs), but the proof is for the claim — a false claim
+            # makes the circuit unsatisfiable and verify_b3 REJECTs.
+            if claim_val is not None:
+                _r_line = 'let _r : List<Int> = glit(%d)\n' % claim_val
+                _result_print = ('let _ : String = print("claim:   " ++ bn_dec(_r) ++ "  (asserted; the proof verifies iff this is the true result over Goldilocks)")\n')
+            else:
+                _r_line = 'let _r : List<Int> = vh(_rv)\n'
+                _result_print = ('let _ : String = print("result:  " ++ bn_dec(_r) ++ "  (over Goldilocks, p = 2^64-2^32+1)")\n')
             driver = machinery + (
                 '\nlet _usrc : String = "%s"\n'
                 'let _inp : List<Pair<String, Int>> = %s\n'
                 'let _rv : List<List<Int>> = gref_m_checked(_usrc, _inp)\n'
-                'let _r : List<Int> = vh(_rv)\n'
-                'let _ : String = print("result:  " ++ bn_dec(_r) ++ "  (over Goldilocks, p = 2^64-2^32+1)")\n'
+                + _r_line
+                + _result_print
                 # The Measuring Reed: every ACCEPT carries its bit-security, RE-DERIVED by the
                 # verifier from the live proof params (queries/blowup/grind) of the SAME circuit
                 # the verdict is for. Always printed (a property of the construction), after result.
-                'let _ : String = print("security: " ++ (match build_claim_m(_usrc, _inp, _r) { Build(_n, _gs, _w) => measure_line(_gs) }))\n'
+                + 'let _ : String = print("security: " ++ (match build_claim_m(_usrc, _inp, _r) { Build(_n, _gs, _w) => measure_line(_gs) }))\n'
                 'let _ : String = print("proof:   " ++ (if %s then "%s" else "REJECT"))\n'
                 '"glass prove --goldilocks"\n'
             ) % (esc, inp_glass, _prove_call, _prove_label)

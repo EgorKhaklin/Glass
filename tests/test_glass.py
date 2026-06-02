@@ -1265,6 +1265,20 @@ def main() -> int:
     if not lv_ok:
         print(f"        rc={_lv.returncode}  out: {_lv.stdout.strip()[-150:]}  err: {_lv.stderr.strip()[-150:]}")
         failures += 1
+    # WRONG-CLAIM REJECT for the divmod path (v5.89, audit-recommended): the v5.88 soundness rests on
+    # the proven R being the circuit's OWN divmod output (build_claim_m pins output==claimedR). This
+    # proves a FALSE division claim is REJECTed: `a/b` with a=17,b=5 claiming 4 (true is 3) -> verify_b3
+    # REJECT — the prover cannot forge a verifying proof of a wrong quotient. (Goldilocks native, ~55s.)
+    with tempfile.NamedTemporaryFile("w", suffix=".glass", delete=False) as _wf:
+        _wf.write("a / b\n"); _wc_path = _wf.name
+    _wc = subprocess.run([sys.executable, GLASS, "prove", "--claim", "4", _wc_path, "a=17", "b=5"],
+                         capture_output=True, text=True, cwd=ROOT)
+    os.unlink(_wc_path)
+    wc_ok = ("proof:   REJECT" in _wc.stdout) and ("proof:   ACCEPT" not in _wc.stdout)
+    print(f"  {'OK ' if wc_ok else 'FAIL'}  wrong divmod claim REJECTs (claim 17/5=4; true is 3 — no proof of a false quotient)")
+    if not wc_ok:
+        print(f"        rc={_wc.returncode}  out: {_wc.stdout.strip()[-200:]}  err: {_wc.stderr.strip()[-150:]}")
+        failures += 1
 
     # Higher-order proving (v5.87): the seval guard resolves function-valued parameters via fenv
     # (mirroring unroll), so a higher-order program — `map(inc, xs)` — is GUARDED and PROVEN instead
@@ -1398,6 +1412,8 @@ def main() -> int:
                "assert glass._witness3_eval('a / b', [('a',17),('b',5)]) == 3; "
                "assert glass._witness3_eval('a % b', [('a',17),('b',5)]) == 2; "
                "assert glass._witness3_eval('(h * 31 + c) % 1000003', [('h',12345),('c',67)]) == 382762; "
+               "assert glass._witness3_eval(open('examples/prove/gcd_prove.glass').read(), [('x',48),('y',18)]) == 6; "
+               "assert glass._witness3_eval(open('examples/prove/gcd_prove.glass').read(), [('x',48),('y',36)]) == 12; "
                "print('W3 OK')")
     _w3p = subprocess.run([sys.executable, "-c", _w3check], capture_output=True, text=True, cwd=_root)
     w3 = (_w3p.returncode == 0) and ("W3 OK" in _w3p.stdout)
@@ -1477,7 +1493,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 22)  # +22: ... + witness3 + h3-merkle + tamper-fuzz + plain-name-surface + statement-binding + proof-corpus + dead-branch-predication + live-div0-ABSTAIN + higher-order guards
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 23)  # +23: ... + witness3 + h3-merkle + tamper-fuzz + plain-name-surface + statement-binding + proof-corpus + dead-branch-predication + live-div0-ABSTAIN + wrong-divmod-claim-REJECT + higher-order guards
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures
