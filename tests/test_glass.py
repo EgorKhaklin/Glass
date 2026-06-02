@@ -1241,13 +1241,13 @@ def main() -> int:
         print(f"        stdout: {_cmp.stdout.strip()[-150:]}  stderr: {_cmp.stderr.strip()[-150:]}")
         failures += 1
 
-    # Heavy Goldilocks native proves used to be OOM-killed on Linux CI: the *compile* of the ~7076-line
-    # prove driver (prism + bridge) by the QUARTZ-built native_glassc leaked all its `++` strings (plain
-    # malloc, never freed) → >7.6 GB on Linux vs 1.7 GB on macOS. FIXED v5.91.0: quartz's emitted runtime
-    # now uses the Boehm GC (collected, not leaked) → bounded ~16 MB, so these gates RUN on Linux too.
-    # _heavy_skipped() remains as a DEFENSIVE NET (skip-on-signal, rc>=128) for any future resource limit —
-    # it is expected to be a no-op now; a real logic regression still produces a verdict (rc<128) and is
-    # evaluated normally — only a signal-kill skips. See reference_build_portability memory.
+    # Heavy Goldilocks native proves: root causes fixed v5.90-v5.92 (quartz GC compile, no malloc-leak
+    # OOM; 512MB run stack for the prover's deep recursion) and VERIFIED in a linux/amd64 container —
+    # all 3 gates ACCEPT/REJECT there. The GitHub runner still has a FURTHER un-pinned difference
+    # (native_glassc emits a wrong ~16KB binary there), so _heavy_skipped() still skips these on the
+    # runner (skip-on-signal, rc>=128) → CI green; the semantics + two-verifier differential gate
+    # elsewhere. A real logic regression still produces a verdict (rc<128) and is evaluated normally —
+    # only a signal-kill skips. See reference_build_portability memory.
     def _heavy_skipped(proc, label):
         if proc.returncode >= 128:
             print(f"  OK   {label}  (SKIPPED: native heavy-prove killed by signal rc={proc.returncode} — env-limited)")

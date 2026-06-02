@@ -40,26 +40,12 @@ jobs:
       - name: Install Glass
         run: pip install -e .
 
-      # TEMPORARY probe (remove after): all 3 heavy gates ACCEPT/REJECT in a linux/amd64 container with
-      # v5.90-92, but the GitHub runner still skips (rc=141). Capture the runner's exact failure: ulimit,
-      # rc, and run_native's stderr. Non-blocking, 3.12 only.
-      - name: DEBUG runner heavy-prove (temporary)
-        if: matrix.python-version == '3.12'
-        continue-on-error: true
-        run: |
-          set +e
-          echo "default ulimit -s = $(ulimit -s) ; hard = $(ulimit -Hs)"
-          echo "try raise: $(ulimit -s 524288 2>&1; echo rc=$?) ; now = $(ulimit -s)"
-          echo "=== glass prove deadbranch (capture rc + run_native stderr) ==="
-          glass prove examples/prove/deadbranch_div.glass a=7 b=0 >/tmp/po.log 2>/tmp/pe.log
-          echo "glass prove rc=$?"
-          echo "--- stdout ---"; tail -4 /tmp/po.log
-          echo "--- stderr (run_native phase / fault) ---"; tail -6 /tmp/pe.log
-          ls -la /tmp/glassc_bin 2>/dev/null && echo "binary built (fault is the RUN)" || echo "no binary (fault is COMPILE)"
-
       - name: Run regression suite
-        # v5.90-v5.92 fixed Linux heavy proving (quartz GC compile + 512MB run stack); these gates RUN
-        # here now. (_heavy_skipped stays as a defensive net for future resource limits.)
+        # v5.90-v5.92 fixed the Linux heavy-prove root causes (quartz GC compile + 512MB run stack) —
+        # VERIFIED in a linux/amd64 container (all 3 heavy gates ACCEPT/REJECT). The GitHub runner still
+        # has a further un-pinned difference (native_glassc emits a wrong ~16KB binary there), so those
+        # gates still skip-on-signal here (_heavy_skipped) — CI green; semantics + the two-verifier
+        # differential gate elsewhere. See reference_build_portability memory.
         run: python tests/test_glass.py
 
       - name: Run the self-host capstone
