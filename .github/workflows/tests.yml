@@ -66,7 +66,7 @@ jobs:
           echo "run_native.sh rc=$?"
           echo "binary it built: $(wc -c </tmp/glassc_bin 2>/dev/null || echo MISSING) bytes"
           echo "--- run_native stdout (last 3) ---"; tail -3 /tmp/rn.log
-          echo "--- run_native stderr (last 5) ---"; tail -5 /tmp/rn.err
+          echo "--- run_native stderr (FULL) ---"; cat /tmp/rn.err
 
       - name: Run regression suite
         # v5.90-v5.92 fixed the Linux heavy-prove root causes (quartz GC compile + 512MB run stack) —

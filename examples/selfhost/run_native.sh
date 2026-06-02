@@ -35,7 +35,11 @@ fi
 # 2. assemble the program (inline prism if the file imports it — the native
 #    compiler reads /tmp/in.glass with no runtime import expansion)
 if grep -q '^import ' "$FILE"; then
-  firstlet=$(grep -n '^let ' "$PRISM" | head -1 | cut -d: -f1)
+  # `grep -m1` (stop after the first match) instead of `grep | head -1`: under `set -o pipefail`,
+  # `head -1` closing the pipe early makes grep fail with EPIPE on hosts where SIGPIPE is ignored
+  # (GitHub-Actions runners) — "grep: write error: Broken pipe", exit 2 — which aborted run_native
+  # (rc=2, no binary built) ONLY on CI, so heavy native proves skipped there. grep -m1 exits cleanly.
+  firstlet=$(grep -m1 -n '^let ' "$PRISM" | cut -d: -f1)
   head -n $((firstlet - 1)) "$PRISM" > /tmp/in.glass
   grep -v '^import ' "$FILE" >> /tmp/in.glass
 else
