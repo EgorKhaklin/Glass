@@ -40,6 +40,27 @@ jobs:
       - name: Install Glass
         run: pip install -e .
 
+      # TEMPORARY probe (remove after): the GitHub runner emits a ~16KB stub binary for the prove driver
+      # (works in a linux/amd64 container). Bypass run_native's stderr suppression: build native_glassc,
+      # inline prism+driver, run native_glassc with stderr VISIBLE, and measure the emitted C — pins
+      # whether native_glassc emits a stub or cc truncates. Non-blocking, 3.12 only.
+      - name: DEBUG runner native_glassc compile (temporary)
+        if: matrix.python-version == '3.12'
+        continue-on-error: true
+        run: |
+          set +e
+          # materialize the prove driver (glass prove writes it even when its run fails)
+          glass prove examples/prove/deadbranch_div.glass a=7 b=0 >/dev/null 2>&1
+          ls -la /tmp/glass_prove_driver.glass /tmp/glass-native/native_glassc 2>/dev/null
+          # replicate run_native's prism-inline -> /tmp/in.glass
+          PRISM=examples/selfhost/prism.glass; fl=$(grep -n '^let ' "$PRISM"|head -1|cut -d: -f1)
+          head -n $((fl-1)) "$PRISM" > /tmp/in.glass; grep -v '^import ' /tmp/glass_prove_driver.glass >> /tmp/in.glass
+          echo "in.glass = $(wc -l </tmp/in.glass) lines"
+          rm -f /tmp/glassc_bin /tmp/glassc_out.c
+          echo "=== native_glassc WITH stderr visible ==="
+          /tmp/glass-native/native_glassc 2>&1 | tail -15; echo "native_glassc rc=${PIPESTATUS[0]}"
+          echo "emitted C: $(wc -c </tmp/glassc_out.c 2>/dev/null || echo MISSING) bytes ; binary: $(wc -c </tmp/glassc_bin 2>/dev/null || echo MISSING) bytes"
+
       - name: Run regression suite
         # v5.90-v5.92 fixed the Linux heavy-prove root causes (quartz GC compile + 512MB run stack) —
         # VERIFIED in a linux/amd64 container (all 3 heavy gates ACCEPT/REJECT). The GitHub runner still
