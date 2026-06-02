@@ -1367,7 +1367,7 @@ def main() -> int:
     _sd = subprocess.run([sys.executable, GLASS, "prove", _sd_path, "a=-17", "b=5", "--cross-check"],
                          capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_sd, "signed division: sdiv(-17,5) = -3 ACCEPT (C99 trunc; Third Witness confirms -3)"):
-        sd_ok = (_sd.returncode == 0) and ("ACCEPT" in _sd.stdout) and ("f(inputs) = -3" in _sd.stdout) and ("DIVERGENCE" not in _sd.stdout)
+        sd_ok = (_sd.returncode == 0) and ("ACCEPT" in _sd.stdout) and ("result:  -3" in _sd.stdout) and ("f(inputs) = -3" in _sd.stdout) and ("DIVERGENCE" not in _sd.stdout)
         print(f"  {'OK ' if sd_ok else 'FAIL'}  signed division: sdiv(-17,5) = -3 ACCEPT (C99 trunc; Third Witness confirms -3)")
         if not sd_ok:
             print(f"        rc={_sd.returncode}  out: {_sd.stdout.strip()[-220:]}  err: {_sd.stderr.strip()[-150:]}")

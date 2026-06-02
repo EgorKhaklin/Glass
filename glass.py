@@ -1,5 +1,5 @@
 """
-Glass v5.96.0 — reference implementation.
+Glass v5.97.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -3855,7 +3855,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.96.0 — interactive REPL")
+    print("Glass v5.97.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3991,7 +3991,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.96.0")
+        print("Glass 5.97.0")
     elif sys.argv[1] in ("help", "--help", "-h"):
         # Plain, professional command listing. The thematic names are aliases
         # (docs/naming.md) — this surface keeps the esoteric layer optional.
@@ -4114,11 +4114,18 @@ def main() -> None:
             # `_rv` still runs (so out-of-domain ABSTAINs), but the proof is for the claim — a false claim
             # makes the circuit unsatisfiable and verify_b3 REJECTs.
             if claim_val is not None:
-                _r_line = 'let _r : List<Int> = glit(%d)\n' % claim_val
-                _result_print = ('let _ : String = print("claim:   " ++ bn_dec(_r) ++ "  (asserted; the proof verifies iff this is the true result over Goldilocks)")\n')
+                # A negative claim binds canonically as p-|claim| (fsub from 0), matching how inputs
+                # (gin) and signed results are represented — so `--claim -3` is the true field element.
+                if claim_val < 0:
+                    _r_line = 'let _r : List<Int> = fsub(glit4(0), glit4(%d))\n' % (-claim_val)
+                else:
+                    _r_line = 'let _r : List<Int> = glit(%d)\n' % claim_val
+                _result_print = ('let _ : String = print("claim:   " ++ bn_dec_signed(_r) ++ "  (asserted; the proof verifies iff this is the true result over Goldilocks)")\n')
             else:
                 _r_line = 'let _r : List<Int> = vh(_rv)\n'
-                _result_print = ('let _ : String = print("result:  " ++ bn_dec(_r) ++ "  (over Goldilocks, p = 2^64-2^32+1)")\n')
+                # bn_dec_signed renders an upper-half field element as the negative it represents, so
+                # signed comparison/division/arithmetic results display as -3, not the canonical p-3.
+                _result_print = ('let _ : String = print("result:  " ++ bn_dec_signed(_r) ++ "  (over Goldilocks, p = 2^64-2^32+1)")\n')
             driver = machinery + (
                 '\nlet _usrc : String = "%s"\n'
                 'let _inp : List<Pair<String, Int>> = %s\n'

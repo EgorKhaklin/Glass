@@ -91,6 +91,14 @@ fn bn_dm10_go(hi: List<Int>, q: List<Int>, rem: Int) : (List<Int>, Int) =
 fn bn_dm10(x: List<Int>) : (List<Int>, Int) = match bn_dm10_go(rev(trim(x)), [], 0) { (qhi, r) => (trim(rev(qhi)), r) }
 fn bn_dec_go(x: List<Int>, acc: String) : String = match trim(x) { [] => acc; _ => match bn_dm10(x) { (q, r) => bn_dec_go(q, int_to_string(r) ++ acc) } }
 fn bn_dec(x: List<Int>) : String = match trim(x) { [] => "0"; _ => bn_dec_go(x, "") }
+# Signed-aware decimal: a field element in the upper half (> p/2 = 9223372034707292160) is the
+# canonical form of a NEGATIVE signed integer (a signed -k in [-2^31,2^31) is bound as p-k, far
+# above p/2), so render it as "-(p-x)" = the negative it represents. Values <= p/2 print as-is.
+# Used for the result/claim display so signed comparison/division/arithmetic show -3, not p-3.
+# (A genuine large unsigned value in (p/2, p) would also show negative — rare; the field is the
+# same element either way, and the Third Witness reports the reconciled value.)
+fn bn_dec_signed(x: List<Int>) : String =
+  if bn_cmp(trim(x), glit4(9223372034707292160)) > 0 then "-" ++ bn_dec(fsub(glit4(0), x)) else bn_dec(x)
 
 # --- list-of-bignum helpers ---------------------------------------------------
 fn wnth(xs: List<List<Int>>, i: Int) : List<Int> = match xs { [] => []; [x, ...r] => if i == 0 then x else wnth(r, i - 1) }
