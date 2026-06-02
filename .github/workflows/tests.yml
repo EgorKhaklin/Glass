@@ -39,10 +39,12 @@ jobs:
         run: pip install -e .
 
       - name: Run regression suite
-        # Raise the stack limit so heavy Goldilocks native proofs (the prover links a 512MB stack on
-        # macOS — a flag GNU ld ignores) don't overflow Linux's ~8MB default. If a heavy prove is still
-        # killed by signal, the suite SKIPS that gate (_heavy_skipped) so CI stays green while the gate
-        # runs fully wherever heavy native proving works.
+        # Heavy Goldilocks native proofs OOM on this runner: the self-hosted native_glassc COMPILING the
+        # ~7076-line prove driver (prism + bridge inlined) uses >7.6 GB on Linux vs 1.7 GB on macOS (its
+        # Boehm GC reclaims the compile garbage on macOS but not on Linux). The suite SKIPS those gates
+        # on signal-kill (_heavy_skipped) so CI stays green; they run fully on macOS where they ship.
+        # (ulimit is a harmless leftover — the limit is RAM, not stack; a real fix is emit-level GC
+        # reclamation in glassc.glass, or a bigger-RAM runner.)
         run: |
           ulimit -s unlimited || ulimit -s 524288 || true
           python tests/test_glass.py

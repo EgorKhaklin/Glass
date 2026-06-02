@@ -1241,8 +1241,14 @@ def main() -> int:
         print(f"        stdout: {_cmp.stdout.strip()[-150:]}  stderr: {_cmp.stderr.strip()[-150:]}")
         failures += 1
 
-    # Heavy Goldilocks native proofs are killed by signal (rc>=128) in resource-limited CI (the 512MB
-    # stack the prover links is macOS-only; Linux runners default to ~8MB), while completing locally.
+    # Heavy Goldilocks native proofs are killed by signal (rc>=128, OOM) on resource-limited Linux CI
+    # while completing locally on macOS. ROOT CAUSE (root-caused in a linux/amd64 container, 2026-06-02):
+    # the *compile* of the prove driver by the self-hosted native_glassc — the driver inlines prism
+    # (~5500 lines) + the bridge (~1500), ~7076 lines total — uses >7.6 GB on Linux vs only 1.7 GB on
+    # macOS (the Boehm GC reclaims the compile's intermediate garbage on macOS but not on Linux), so it
+    # OOM-kills before producing a binary. NOT the stack, NOT a parse error, and no runtime env tuning
+    # (GC heap/divisor/markers, MALLOC_ARENA_MAX) caps it — the fix is emit-level GC reclamation in
+    # glassc.glass (bootstrap-gated) or a bigger-RAM runner. See reference_build_portability memory.
     # _heavy_skipped() lets these gates SKIP-on-signal so CI stays green, while they run fully wherever
     # heavy native proving works (the place these features are actually shipped from). A real logic
     # regression still produces a verdict (rc<128) and is evaluated normally — only a signal-kill skips.
