@@ -56,6 +56,27 @@ jobs:
           glass examples/showcase/prover.glass | grep -E "⟶" | head
           glass examples/showcase/nash.glass | grep -E "Nash equilibria" | head
 
+      # TEMPORARY (remove after root-cause): the heavy Goldilocks native proves are killed by
+      # signal (rc=141) ONLY on the Linux runner — not the stack (ulimit didn't help), not the
+      # sed pipeline (run_native now writes to a file). This strace's the binary's TRUE fatal
+      # signal on the actual runner. Non-blocking (continue-on-error) + 3.12 only.
+      - name: DEBUG heavy-prove fault on Linux (temporary, non-blocking)
+        if: matrix.python-version == '3.12'
+        continue-on-error: true
+        run: |
+          sudo apt-get install -y strace || true
+          echo "=== limits ==="; ulimit -s -v; echo; free -m
+          ulimit -s unlimited || true
+          echo "=== build the deadbranch native binary (prove will skip; it compiles /tmp/glassc_bin) ==="
+          glass prove examples/prove/deadbranch_div.glass a=7 b=0 || echo "(glass prove rc=$?)"
+          ls -la /tmp/glassc_bin 2>/dev/null || { echo "NO /tmp/glassc_bin built"; exit 0; }
+          echo "=== run the binary DIRECTLY under strace -f -e signal=all (catch the fatal signal) ==="
+          ( strace -f -e signal=all /tmp/glassc_bin >/tmp/dbg_o.txt 2>/tmp/dbg_strace.txt; echo "DIRECT binary exit=$?" )
+          echo "--- last 30 strace signal/exit lines ---"; grep -E "SIG|--- |\+\+\+ " /tmp/dbg_strace.txt | tail -30
+          echo "--- binary stdout bytes ---"; wc -c /tmp/dbg_o.txt
+          echo "=== mem after / dmesg OOM? ==="; free -m
+          sudo dmesg 2>/dev/null | tail -25 | grep -iE "oom|kill|glassc|segfault" || echo "(no dmesg oom/kill)"
+
   # The project's defining invariant: native_glassc (the Glass-written compiler)
   # reproduces ITSELF and prism byte-identically, and its output matches the
   # reference interpreter. Until now this was enforced only by a human remembering
