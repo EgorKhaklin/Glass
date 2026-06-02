@@ -1312,6 +1312,32 @@ def main() -> int:
             print(f"        rc={_ho.returncode}  out: {_ho.stdout.strip()[-200:]}  err: {_ho.stderr.strip()[-150:]}")
             failures += 1
 
+    # Signed comparison (v5.94): slt/sle/sgt/sge prove ordering over SIGNED integers in
+    # [-2^31, 2^31) — negatives included. They desugar to the existing unsigned range gadget
+    # via a monotonic +2^31 offset (no new gate, no verifier change), and a negative input is
+    # now bound CANONICALLY (gin: p-|v|, not the non-canonical two's-complement limbs glit4(-5)
+    # would give). slt(-5, 3) -> result 1, ACCEPT. Goldilocks native path (~30s).
+    _sc_path = os.path.join(EX, "prove", "signed_cmp.glass")
+    _sc = subprocess.run([sys.executable, GLASS, "prove", _sc_path, "a=-5", "b=3"],
+                         capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_sc, "signed comparison: slt(-5, 3) = 1 ACCEPT (negatives, canonical binding)"):
+        sc_ok = (_sc.returncode == 0) and ("ACCEPT" in _sc.stdout) and ("result:  1" in _sc.stdout)
+        print(f"  {'OK ' if sc_ok else 'FAIL'}  signed comparison: slt(-5, 3) = 1 ACCEPT (negatives, canonical binding)")
+        if not sc_ok:
+            print(f"        rc={_sc.returncode}  out: {_sc.stdout.strip()[-200:]}  err: {_sc.stderr.strip()[-150:]}")
+            failures += 1
+
+    # ...and a FALSE signed-comparison claim must REJECT: slt(-5, 3) is 1 (true), so claiming 0
+    # is unsatisfiable — the independent verify_b3 proves no false signed ordering. Goldilocks native.
+    _scf = subprocess.run([sys.executable, GLASS, "prove", _sc_path, "a=-5", "b=3", "--claim", "0"],
+                          capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_scf, "wrong signed-comparison claim REJECTs (slt(-5,3)=1; claim 0 is false)"):
+        scf_ok = ("proof:   REJECT" in _scf.stdout) and ("proof:   ACCEPT" not in _scf.stdout)
+        print(f"  {'OK ' if scf_ok else 'FAIL'}  wrong signed-comparison claim REJECTs (slt(-5,3)=1; claim 0 is false)")
+        if not scf_ok:
+            print(f"        rc={_scf.returncode}  out: {_scf.stdout.strip()[-200:]}  err: {_scf.stderr.strip()[-150:]}")
+            failures += 1
+
     # The unboxed single-Int Goldilocks field (goldw_*) must agree with the trusted
     # base-2^16 limb field (gold_*) and obey the field laws — the load-bearing
     # correctness of the "unbox the field" speed cut. (Interpreter check; the native
@@ -1430,6 +1456,11 @@ def main() -> int:
                "assert glass._witness3_eval('a < b', [('a',5),('b',3)]) == 0; "
                "assert glass._witness3_eval('a / b', [('a',17),('b',5)]) == 3; "
                "assert glass._witness3_eval('a % b', [('a',17),('b',5)]) == 2; "
+               "assert glass._witness3_eval('slt(a, b)', [('a',-5),('b',3)]) == 1; "
+               "assert glass._witness3_eval('slt(a, b)', [('a',3),('b',-5)]) == 0; "
+               "assert glass._witness3_eval('sgt(a, b)', [('a',-5),('b',-9)]) == 1; "
+               "assert glass._witness3_eval('sle(a, b)', [('a',-5),('b',-5)]) == 1; "
+               "assert glass._witness3_eval('sge(a, b)', [('a',-9),('b',-5)]) == 0; "
                "assert glass._witness3_eval('(h * 31 + c) % 1000003', [('h',12345),('c',67)]) == 382762; "
                "assert glass._witness3_eval(open('examples/prove/gcd_prove.glass').read(), [('x',48),('y',18)]) == 6; "
                "assert glass._witness3_eval(open('examples/prove/gcd_prove.glass').read(), [('x',48),('y',36)]) == 12; "
@@ -1438,7 +1469,7 @@ def main() -> int:
     w3 = (_w3p.returncode == 0) and ("W3 OK" in _w3p.stdout)
     if not w3:
         print(f"        {(_w3p.stdout + _w3p.stderr).strip()[-200:]}")
-    print(f"  {'OK ' if w3 else 'FAIL'}  the Third Witness: reference-interpreter re-execution (a+b=8, 3<5=1, 5<3=0, 17/5=3, 17%5=2)")
+    print(f"  {'OK ' if w3 else 'FAIL'}  the Third Witness: reference-interpreter re-execution (a+b=8, 3<5=1, 5<3=0, 17/5=3, 17%5=2, slt(-5,3)=1, sge(-9,-5)=0)")
     if not w3:
         failures += 1
 
@@ -1512,7 +1543,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 23)  # +23: ... + witness3 + h3-merkle + tamper-fuzz + plain-name-surface + statement-binding + proof-corpus + dead-branch-predication + live-div0-ABSTAIN + wrong-divmod-claim-REJECT + higher-order guards
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 25)  # +25: ... + witness3 + h3-merkle + tamper-fuzz + plain-name-surface + statement-binding + proof-corpus + dead-branch-predication + live-div0-ABSTAIN + wrong-divmod-claim-REJECT + higher-order guards + signed-cmp-ACCEPT + wrong-signed-claim-REJECT
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

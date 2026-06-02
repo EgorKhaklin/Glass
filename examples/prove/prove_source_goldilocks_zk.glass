@@ -990,6 +990,23 @@ fn inline_fn(body: Expr, args: List<Expr>, fns: List<FnDecl>, fenv: List<Pair<St
         then inline_fn(inner, rest, fns, [Pair(p, arg_fn_name(a, fns, fenv))] ++ fenv, fuel)
         else ELet(p, unroll(a, fns, fenv, fuel), inline_fn(inner, rest, fns, fenv, fuel)) };
     _ => unroll(body, fns, fenv, fuel - 1) }
+# Signed comparison intrinsics. slt/sle/sgt/sge(a,b) compare a,b as SIGNED integers in
+# [-2^31, 2^31). They DESUGAR to the existing unsigned ordering gadget with a +2^31 offset:
+# the monotonic shift maps the signed range into [0,2^32) (a negative a = p-|a| becomes
+# p-|a|+2^31 = 2^31-|a| in-field), where the existing lt_build range-proof BOTH gives the
+# correct signed order AND enforces signedness (an out-of-signed-range operand lands >= 2^32
+# and range_k fails -> ABSTAIN). One SHARED desugar, called from unroll (feeds heval+cgen) AND
+# seval — so the guard and the circuit can never disagree on the lowering. No gate/verifier
+# change: pure reuse of ELt/ELe/EGt/EGe (slt/sle/sgt/sge are reserved intrinsic names).
+fn is_scmp(fname: String) : Bool =
+  if fname == "slt" then true else if fname == "sle" then true else if fname == "sgt" then true else if fname == "sge" then true else false
+fn scmp_desugar(fname: String, a: Expr, b: Expr) : Expr =
+  let ao : Expr = EAdd(a, EInt(2147483648)) in
+  let bo : Expr = EAdd(b, EInt(2147483648)) in
+  if fname == "slt" then ELt(ao, bo)
+  else if fname == "sgt" then EGt(ao, bo)
+  else if fname == "sle" then ELe(ao, bo)
+  else EGe(ao, bo)
 fn unroll(e: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: Int) : Expr =
   match e {
     # fuel <= 0 => EInt(0) is the TERMINATOR of bounded symbolic unrolling, NOT an error:
@@ -1000,7 +1017,7 @@ fn unroll(e: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: In
     # here without breaking every recursive program. The genuine-error fallbacks below DO
     # refuse loudly (unresolved / higher-order callee — programs the bridge cannot lower).
     EApp(f, a) => if fuel <= 0 then EInt(0) else match unwind_app(EApp(f, a), []) { (hd, args) => match hd {
-      EVar(fname) => let tgt : String = resolve_fn(fname, fns, fenv) in if tgt == "" then error("glass prove: unresolved call to '" ++ fname ++ "' — the prove bridge cannot lower this construct to a gate circuit (a silent proven-0 is refused)") else inline_fn(fn_body_of(fns, tgt), args, fns, fenv, fuel);
+      EVar(fname) => if is_scmp(fname) then (match args { [sa, sb] => unroll(scmp_desugar(fname, sa, sb), fns, fenv, fuel); _ => error("glass prove: signed comparison '" ++ fname ++ "' expects exactly 2 arguments") }) else (let tgt : String = resolve_fn(fname, fns, fenv) in if tgt == "" then error("glass prove: unresolved call to '" ++ fname ++ "' — the prove bridge cannot lower this construct to a gate circuit (a silent proven-0 is refused)") else inline_fn(fn_body_of(fns, tgt), args, fns, fenv, fuel));
       _ => error("glass prove: unsupported call form (computed or higher-order callee) — cannot lower to a gate circuit (a silent proven-0 is refused)") } };
     EAdd(x, y) => EAdd(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
     ESub(x, y) => ESub(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
@@ -1174,7 +1191,7 @@ fn seval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, t
     ECtor(name, args) => [glit(ctag(types, name))] ++ seval_fields(args, ctor_argtypes(types, name), env, fns, types, fenv, fuel);
     ETuple(elems) => seval_fields(elems, scalar_types_e(elems), env, fns, types, fenv, fuel);
     EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd {
-      EVar(fname) => if fuel <= 0 then error("glass prove: recursion depth exceeds the unroll bound (" ++ int_to_string(unroll_fuel(0)) ++ "); refusing to prove a depth-truncated result — it would otherwise be a silently wrong value with a valid-looking proof (the program needs statically-bounded, shallower recursion)") else (let tgt : String = resolve_fn(fname, fns, fenv) in if tgt == "" then error("glass prove: unresolved call to '" ++ fname ++ "' in the reference evaluator") else seval_call(fn_body_of(fns, tgt), args, [], env, [], fenv, fns, types, fuel));
+      EVar(fname) => if is_scmp(fname) then (match args { [sa, sb] => seval(scmp_desugar(fname, sa, sb), env, fns, types, fenv, fuel); _ => error("glass prove: signed comparison '" ++ fname ++ "' expects exactly 2 arguments") }) else if fuel <= 0 then error("glass prove: recursion depth exceeds the unroll bound (" ++ int_to_string(unroll_fuel(0)) ++ "); refusing to prove a depth-truncated result — it would otherwise be a silently wrong value with a valid-looking proof (the program needs statically-bounded, shallower recursion)") else (let tgt : String = resolve_fn(fname, fns, fenv) in if tgt == "" then error("glass prove: unresolved call to '" ++ fname ++ "' in the reference evaluator") else seval_call(fn_body_of(fns, tgt), args, [], env, [], fenv, fns, types, fuel));
       _ => error("glass prove: unsupported call form (computed or higher-order callee) in the reference evaluator") } };
     EMatch(scrut, arms) => seval_match(seval(scrut, env, fns, types, fenv, fuel), arms, env, fns, types, fenv, fuel);
     ELt(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fenv, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fenv, fuel)) in
@@ -1432,8 +1449,16 @@ fn src_result(src: String, inpv: List<Int>) : List<Int> =
 # (for proving) we assert output == the claimed result so a wrong claim is rejected.
 fn in_cenv_g(inputs: List<Pair<String, Int>>, i: Int) : List<Pair<String, Int>> =
   match inputs { [] => []; [Pair(nm, v), ...r] => [Pair(nm, i)] ++ in_cenv_g(r, i + 1) }
+# gin: bind a CLI input Int as a CANONICAL Goldilocks field element. A negative v is the
+# field element p + v (= p - |v|), built in-field as 0 - |v| (gold_sub from zero), NOT the
+# raw two's-complement limbs glit4(-5)=[-5] would give — those are non-canonical and break
+# field arithmetic (a=-5; a+1000 used to REJECT instead of proving 995). Non-negative v is
+# unchanged (glit4), so every existing non-negative prove is byte-identical. This is the
+# prerequisite for signed comparison (slt/sle/sgt/sge): a negative operand is now p-|v|, which
+# the +2^31 offset maps back into [0,2^32) for the existing range gadget.
+fn gin(v: Int) : List<Int> = if v < 0 then fsub(glit4(0), glit4(0 - v)) else glit4(v)
 fn in_vals_g(inputs: List<Pair<String, Int>>) : List<List<Int>> =
-  match inputs { [] => []; [Pair(nm, v), ...r] => [glit4(v)] ++ in_vals_g(r) }
+  match inputs { [] => []; [Pair(nm, v), ...r] => [gin(v)] ++ in_vals_g(r) }
 fn iplen(xs: List<Pair<String, Int>>) : Int = match xs { [] => 0; [x, ...r] => 1 + iplen(r) }
 fn build_multi(src: String, inputs: List<Pair<String, Int>>) : (Int, Build) =
   match parse_prog(src) { Program(types, fns, main) =>
@@ -1455,10 +1480,11 @@ fn build_multi_m(src: String, inputs: List<Pair<String, Int>>) : (List<Int>, Bui
     cgen(unroll(main, fns, [], unroll_fuel(0)), in_cenv_m(inputs, 0), fns, types, Build(iplen(inputs), [], in_vals_g(inputs))) }
 fn gref_m(src: String, inputs: List<Pair<String, Int>>) : List<List<Int>> =
   match build_multi_m(src, inputs) { (outws, b) => match b { Build(n, gs, w) => wmap(outws, w) } }
-# seval's initial env from CLI inputs, matching in_vals_g's VALUE (glit4 full-width, NOT glit)
-# so seval agrees with the circuit on large inputs (else a spurious refusal/REJECT near 2^48).
+# seval's initial env from CLI inputs, matching in_vals_g's VALUE (gin: glit4 full-width for
+# v>=0, canonical p-|v| for v<0) so seval/heval agree with the circuit on large AND negative
+# inputs (else a spurious refusal/REJECT near 2^48, or a desync on signed operands).
 fn in_cenv_seval(inputs: List<Pair<String, Int>>) : List<Pair<String, List<List<Int>>>> =
-  match inputs { [] => []; [Pair(nm, v), ...r] => [Pair(nm, [glit4(v)])] ++ in_cenv_seval(r) }
+  match inputs { [] => []; [Pair(nm, v), ...r] => [Pair(nm, [gin(v)])] ++ in_cenv_seval(r) }
 # gref_m_checked: the GUARDED result-computation for the CLI prove path. It forces `seval` as a
 # fail-closed guard (seval `error`s + exits on over-deep recursion BEFORE any proof is built —
 # the let is forced in both interp and native), then returns gref_m's OWN R (the circuit's

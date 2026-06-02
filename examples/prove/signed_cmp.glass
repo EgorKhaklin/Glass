@@ -1,0 +1,14 @@
+# Signed comparison in zero-knowledge over Goldilocks. slt/sle/sgt/sge(a,b) compare a and b
+# as SIGNED integers in [-2^31, 2^31) — negatives included, unlike the unsigned `<` `>` `<=`
+# `>=` which require operands in [0, 2^32). They lower to the EXISTING unsigned range gadget
+# via a monotonic +2^31 offset (a negative a = p-|a| becomes 2^31-|a| in-field), so there is
+# no new gate type and no verifier change — the same lt_build range-proof both orders the
+# values and enforces that each operand is genuinely in signed range (else it ABSTAINs).
+#
+#   glass prove examples/prove/signed_cmp.glass a=-5 b=3     # -> result: 1, ACCEPT  (-5 < 3)
+#   glass prove examples/prove/signed_cmp.glass a=3  b=-5    # -> result: 0, ACCEPT  (3 not < -5)
+#   glass prove examples/prove/signed_cmp.glass a=-5 b=3 --claim 0   # -> REJECT (false claim)
+#
+# (v5.94 — signed ordering intrinsics + canonical negative-input binding. slt/sle/sgt/sge are
+#  reserved names; the proof reveals only the 0/1 result, with a,b kept private in the witness.)
+slt(a, b)

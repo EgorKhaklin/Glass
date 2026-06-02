@@ -1,5 +1,5 @@
 """
-Glass v5.93.0 — reference implementation.
+Glass v5.94.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -1343,6 +1343,14 @@ def builtin_types() -> dict[str, Ty]:
         "bit_not": TyFn((TyInt(),),          TyInt()),
         "bit_shl": TyFn((TyInt(), TyInt()), TyInt()),
         "bit_shr": TyFn((TyInt(), TyInt()), TyInt()),
+        # Signed ordering intrinsics over [-2^31, 2^31). The prove bridge lowers these to a
+        # zero-knowledge circuit (offset +2^31 into the existing unsigned range gadget); here
+        # they are ordinary signed comparisons so the reference interpreter (and the Third
+        # Witness re-execution) agree with the proven result. See prove_source_goldilocks_zk.glass.
+        "slt": TyFn((TyInt(), TyInt()), TyBool()),
+        "sle": TyFn((TyInt(), TyInt()), TyBool()),
+        "sgt": TyFn((TyInt(), TyInt()), TyBool()),
+        "sge": TyFn((TyInt(), TyInt()), TyBool()),
         # v4.43: explicit int64 wrap. On host this applies the same
         # _to_int64 mask the bitwise ops use; on Quartz it's a no-op
         # (values are already int64_t natively). Gives users a knob
@@ -2578,6 +2586,13 @@ def builtin_values() -> dict[str, Value]:
     # keeps out-of-range counts well-defined and identical to the emitted C.
     def b_bit_shr(a, b): return IntV(a.v >> (b.v & 63))
     def b_wrap_int64(n): return IntV(_to_int64(n.v))
+    # Signed ordering intrinsics (mirror the prove bridge's slt/sle/sgt/sge). Ordinary signed
+    # comparison on Python ints; the bridge lowers the SAME call to a circuit via a +2^31 offset
+    # into the unsigned range gadget, so this reference result matches the proven 1/0.
+    def b_slt(a, b): return BoolV(a.v <  b.v)
+    def b_sle(a, b): return BoolV(a.v <= b.v)
+    def b_sgt(a, b): return BoolV(a.v >  b.v)
+    def b_sge(a, b): return BoolV(a.v >= b.v)
     def b_substring(s, start, end):
         # Clamp to string bounds; raise on inverted indices to keep semantics
         # honest. Negative indices are not Python-style — that's a footgun.
@@ -2838,6 +2853,10 @@ def builtin_values() -> dict[str, Value]:
         "bit_shl":          BuiltinV("bit_shl", b_bit_shl),
         "bit_shr":          BuiltinV("bit_shr", b_bit_shr),
         "wrap_int64":       BuiltinV("wrap_int64", b_wrap_int64),
+        "slt":              BuiltinV("slt", b_slt),
+        "sle":              BuiltinV("sle", b_sle),
+        "sgt":              BuiltinV("sgt", b_sgt),
+        "sge":              BuiltinV("sge", b_sge),
         "substring":        BuiltinV("substring", b_substring),
         "string_index_of":  BuiltinV("string_index_of", b_string_index_of),
         "read_file":        BuiltinV("read_file", b_read_file),
@@ -3822,7 +3841,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.93.0 — interactive REPL")
+    print("Glass v5.94.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3958,7 +3977,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.93.0")
+        print("Glass 5.94.0")
     elif sys.argv[1] in ("help", "--help", "-h"):
         # Plain, professional command listing. The thematic names are aliases
         # (docs/naming.md) — this surface keeps the esoteric layer optional.

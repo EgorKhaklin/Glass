@@ -480,11 +480,16 @@ horizon; 4 is prose; the rest are deferred/known.
      named fn passed as an argument). Each needs its own faithful gadget or a principled refusal.
 
    **New frontiers identified while landing division (v5.84):**
-   - **Signed / negative-aware arithmetic gadgets.** Comparison and division currently require
-     operands in `[0, 2^32)` and ABSTAIN otherwise — so negative inputs and large results are
-     refused. A signed encoding (offset-binary, or sign + magnitude proven in-circuit) would let
-     the gadgets prove over a symmetric range. Soundness-delicate (the field has no native order),
-     so it follows the same adversarial-hardening + differential discipline.
+   - **Signed / negative-aware comparison gadgets. ✅ LANDED v5.94.0** — `slt/sle/sgt/sge` prove
+     ordering over signed integers in `[-2^31, 2^31)`. The offset-binary encoding called for here:
+     a signed compare desugars to the existing unsigned range gadget with a monotonic `+2^31` shift
+     (a negative `a = p-|a|` becomes `2^31-|a|` in-field), so the same `lt_build` range-proof both
+     orders the values and enforces signedness (out-of-range → ABSTAIN). No new gate, no verifier
+     change; one shared desugar in `unroll`+`seval` (no guard/circuit desync); negative CLI inputs
+     now bind canonically (`gin`: `p-|v|`), fixing a latent arithmetic bug (`a=-5; a+1000` REJECTed
+     `995`, now ACCEPTs). Adversarially soundness-checked + Third-Witness + ACCEPT/REJECT gated.
+     Still ABSTAINing: signed *division/modulo* (the `r < b` identity needs a signed remainder
+     convention) and a wider symmetric range (gated on the lookup-range argument below).
    - **A lookup-based range argument (the cheap-range unblock).** Both comparison and division pay
      ~32 range gates per operand via bit-decomposition, which is what makes their proofs ~600k
      tokens (vs ~150k for pure arithmetic). A plookup-style table range argument would replace the
