@@ -118,16 +118,25 @@ def run(n, seed, boundary=False):
     return 0 if ok else 1
 
 def run_differential(n, seed):
-    """Fuzz the TWO-VERIFIER differential: for random arithmetic programs, emit a portable proof
-    and confirm the INDEPENDENT Pentecost verifier ACCEPTs it. A violation = Glass proves it but
-    Pentecost rejects an honest proof (a serializer or second-verifier bug). Exercises emit_proofb3
-    + pentecost on programs it has never seen (it had only ever run on `a+b`)."""
+    """Fuzz the TWO-VERIFIER differential: for random programs, emit a portable proof and confirm the
+    INDEPENDENT Pentecost verifier ACCEPTs it. A violation = Glass proves it but Pentecost rejects an
+    honest proof (a serializer or second-verifier bug). Cycles three families — arithmetic, unsigned
+    comparison/boolean, and SIGNED (slt/sle/sgt/sge, sdiv/smod over negatives) — so the two-verifier
+    guarantee is fuzzed across the gadget-bearing lowerings, not just `a+b`. (A signed proof is large,
+    ~550k tokens, so emit is the slow step; keep N modest.)"""
     rng = random.Random(seed)
-    print(f"# differential fuzz: {n} random arithmetic programs, Glass-prove vs independent Pentecost (seed {seed})")
+    print(f"# differential fuzz: {n} programs (arithmetic + comparison + signed), Glass-prove vs independent Pentecost (seed {seed})")
     ok = True
     for i in range(n):
-        expr = gen_expr(rng, 3)
-        inputs = {v: rng.randint(0, 20) for v in VARS}
+        fam = i % 3
+        if fam == 0:
+            expr = gen_expr(rng, 3)
+        elif fam == 1:
+            expr = gen_bool(rng, 2)
+        else:
+            expr = gen_signed(rng, 1)
+        lo = -20 if fam == 2 else 0
+        inputs = {v: rng.randint(lo, 20) for v in VARS}
         path = f"/tmp/fuzzd_{i}.glass"
         open(path, "w").write(expr + "\n")
         pf = f"/tmp/fuzzd_{i}.proof"

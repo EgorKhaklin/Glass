@@ -25,6 +25,9 @@ python3 fuzz/fuzz_soundness.py --boundary [N] [seed]      # boundary mode: input
 python3 fuzz/fuzz_soundness.py --differential [N] [seed]   # two-verifier mode: emit a portable
                                                           #   proof per program, confirm Glass verify_b3
                                                           #   and the independent Pentecost verifier AGREE
+                                                          #   (cycles arithmetic + comparison + SIGNED
+                                                          #    slt/sdiv proofs; a signed proof is ~550k
+                                                          #    tokens so emit is the slow step — keep N small)
 python3 fuzz/tamper_pentecost.py [seed] [M] [proof]       # adversarial mode: forge M proofs by random
                                                           #   single-token tampers, confirm the independent
                                                           #   Pentecost verifier REJECTs every one
