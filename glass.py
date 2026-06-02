@@ -1,5 +1,5 @@
 """
-Glass v5.95.0 — reference implementation.
+Glass v5.96.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -1347,6 +1347,8 @@ def builtin_types() -> dict[str, Ty]:
         # zero-knowledge circuit (offset +2^31 into the existing unsigned range gadget); here
         # they are ordinary signed comparisons so the reference interpreter (and the Third
         # Witness re-execution) agree with the proven result. See prove_source_goldilocks_zk.glass.
+        "sdiv": TyFn((TyInt(), TyInt()), TyInt()),
+        "smod": TyFn((TyInt(), TyInt()), TyInt()),
         "slt": TyFn((TyInt(), TyInt()), TyBool()),
         "sle": TyFn((TyInt(), TyInt()), TyBool()),
         "sgt": TyFn((TyInt(), TyInt()), TyBool()),
@@ -2593,6 +2595,16 @@ def builtin_values() -> dict[str, Value]:
     def b_sle(a, b): return BoolV(a.v <= b.v)
     def b_sgt(a, b): return BoolV(a.v >  b.v)
     def b_sge(a, b): return BoolV(a.v >= b.v)
+    # Signed division/modulo intrinsics (mirror the prove bridge's sdiv/smod). C99 truncated
+    # division: quotient toward zero, remainder with the sign of the dividend (via _c_div/_c_mod).
+    # The bridge lowers the SAME call to a circuit (sign-magnitude over the unsigned divmod gadget),
+    # so this reference result matches the proven one; the Third Witness reconciles mod the prime.
+    def b_sdiv(a, b):
+        if b.v == 0: raise RuntimeError("signed division by zero")
+        return IntV(_c_div(a.v, b.v))
+    def b_smod(a, b):
+        if b.v == 0: raise RuntimeError("signed modulo by zero")
+        return IntV(_c_mod(a.v, b.v))
     def b_substring(s, start, end):
         # Clamp to string bounds; raise on inverted indices to keep semantics
         # honest. Negative indices are not Python-style — that's a footgun.
@@ -2853,6 +2865,8 @@ def builtin_values() -> dict[str, Value]:
         "bit_shl":          BuiltinV("bit_shl", b_bit_shl),
         "bit_shr":          BuiltinV("bit_shr", b_bit_shr),
         "wrap_int64":       BuiltinV("wrap_int64", b_wrap_int64),
+        "sdiv":             BuiltinV("sdiv", b_sdiv),
+        "smod":             BuiltinV("smod", b_smod),
         "slt":              BuiltinV("slt", b_slt),
         "sle":              BuiltinV("sle", b_sle),
         "sgt":              BuiltinV("sgt", b_sgt),
@@ -3841,7 +3855,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.95.0 — interactive REPL")
+    print("Glass v5.96.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3977,7 +3991,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.95.0")
+        print("Glass 5.96.0")
     elif sys.argv[1] in ("help", "--help", "-h"):
         # Plain, professional command listing. The thematic names are aliases
         # (docs/naming.md) — this surface keeps the esoteric layer optional.

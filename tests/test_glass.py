@@ -1355,6 +1355,35 @@ def main() -> int:
             print(f"        rc={_sb.returncode}  out: {_sb.stdout.strip()[-200:]}  err: {_sb.stderr.strip()[-150:]}")
             failures += 1
 
+    # Signed division/modulo (v5.96): sdiv/smod prove C99 truncated division (q toward zero, r with
+    # the dividend's sign) over signed [-2^31, 2^31). The +2^31 offset that makes signed COMPARISON
+    # free does NOT compose for division, so sdiv/smod are built by SIGN-MAGNITUDE — but soundly, by
+    # composing already-lowered primitives (slt for the proven canonical sign, if/then/else for
+    # magnitude+post-negate, the unsigned divmod_build core), NOT a sign-bit gadget (an adversarial
+    # design failed exactly there; the Third Witness catches such a wrong lowering). The result is the
+    # canonical field element p-|r| for negatives; --cross-check confirms the signed value. Goldilocks
+    # native (~2x divmod). ACCEPT: sdiv(-17,5) = -3 with witness3 AGREEing on the signed -3.
+    _sd_path = os.path.join(EX, "prove", "signed_div.glass")
+    _sd = subprocess.run([sys.executable, GLASS, "prove", _sd_path, "a=-17", "b=5", "--cross-check"],
+                         capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_sd, "signed division: sdiv(-17,5) = -3 ACCEPT (C99 trunc; Third Witness confirms -3)"):
+        sd_ok = (_sd.returncode == 0) and ("ACCEPT" in _sd.stdout) and ("f(inputs) = -3" in _sd.stdout) and ("DIVERGENCE" not in _sd.stdout)
+        print(f"  {'OK ' if sd_ok else 'FAIL'}  signed division: sdiv(-17,5) = -3 ACCEPT (C99 trunc; Third Witness confirms -3)")
+        if not sd_ok:
+            print(f"        rc={_sd.returncode}  out: {_sd.stdout.strip()[-220:]}  err: {_sd.stderr.strip()[-150:]}")
+            failures += 1
+
+    # ...and a FALSE signed-division claim must REJECT: sdiv(-17,5) is -3 (canonical p-3); claiming 3
+    # is unsatisfiable, so the independent verify_b3 REJECTs (no proof of a wrong signed quotient).
+    _sdf = subprocess.run([sys.executable, GLASS, "prove", _sd_path, "a=-17", "b=5", "--claim", "3"],
+                          capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_sdf, "wrong signed-division claim REJECTs (sdiv(-17,5)=-3; claim 3 is false)"):
+        sdf_ok = ("proof:   REJECT" in _sdf.stdout) and ("proof:   ACCEPT" not in _sdf.stdout)
+        print(f"  {'OK ' if sdf_ok else 'FAIL'}  wrong signed-division claim REJECTs (sdiv(-17,5)=-3; claim 3 is false)")
+        if not sdf_ok:
+            print(f"        rc={_sdf.returncode}  out: {_sdf.stdout.strip()[-200:]}  err: {_sdf.stderr.strip()[-150:]}")
+            failures += 1
+
     # The unboxed single-Int Goldilocks field (goldw_*) must agree with the trusted
     # base-2^16 limb field (gold_*) and obey the field laws — the load-bearing
     # correctness of the "unbox the field" speed cut. (Interpreter check; the native
@@ -1478,6 +1507,10 @@ def main() -> int:
                "assert glass._witness3_eval('sgt(a, b)', [('a',-5),('b',-9)]) == 1; "
                "assert glass._witness3_eval('sle(a, b)', [('a',-5),('b',-5)]) == 1; "
                "assert glass._witness3_eval('sge(a, b)', [('a',-9),('b',-5)]) == 0; "
+               "assert glass._witness3_eval('sdiv(a, b)', [('a',-17),('b',5)]) == -3; "
+               "assert glass._witness3_eval('smod(a, b)', [('a',-17),('b',5)]) == -2; "
+               "assert glass._witness3_eval('sdiv(a, b)', [('a',17),('b',-5)]) == -3; "
+               "assert glass._witness3_eval('smod(a, b)', [('a',-17),('b',-5)]) == -2; "
                "assert glass._witness3_eval('(h * 31 + c) % 1000003', [('h',12345),('c',67)]) == 382762; "
                "assert glass._witness3_eval(open('examples/prove/gcd_prove.glass').read(), [('x',48),('y',18)]) == 6; "
                "assert glass._witness3_eval(open('examples/prove/gcd_prove.glass').read(), [('x',48),('y',36)]) == 12; "
@@ -1560,7 +1593,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 26)  # +26: ... + witness3 + h3-merkle + tamper-fuzz + plain-name-surface + statement-binding + proof-corpus + dead-branch-predication + live-div0-ABSTAIN + wrong-divmod-claim-REJECT + higher-order guards + signed-cmp-ACCEPT + wrong-signed-claim-REJECT + signed-band-membership
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 28)  # +28: ... + witness3 + h3-merkle + tamper-fuzz + plain-name-surface + statement-binding + proof-corpus + dead-branch-predication + live-div0-ABSTAIN + wrong-divmod-claim-REJECT + higher-order guards + signed-cmp-ACCEPT + wrong-signed-claim-REJECT + signed-band-membership + signed-div-ACCEPT + wrong-signed-div-claim-REJECT
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

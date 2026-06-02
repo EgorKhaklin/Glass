@@ -488,8 +488,12 @@ horizon; 4 is prose; the rest are deferred/known.
      change; one shared desugar in `unroll`+`seval` (no guard/circuit desync); negative CLI inputs
      now bind canonically (`gin`: `p-|v|`), fixing a latent arithmetic bug (`a=-5; a+1000` REJECTed
      `995`, now ACCEPTs). Adversarially soundness-checked + Third-Witness + ACCEPT/REJECT gated.
-     Still ABSTAINing: signed *division/modulo* (the `r < b` identity needs a signed remainder
-     convention) and a wider symmetric range (gated on the lookup-range argument below).
+     **Signed division/modulo `sdiv`/`smod` ✅ LANDED v5.96.0** — C99 truncated division over
+     `[-2^31, 2^31)`. The offset trick doesn't compose for division, so it's sign-magnitude — but
+     built by *composing already-lowered primitives* (`slt` for the proven canonical sign, `if` for
+     magnitude+post-negate, the unsigned `divmod_build` core), NOT a sign-bit gadget (an adversarial
+     panel proved the naive sign-bit design unsound; the sound version needs no new gate/verifier).
+     Still ABSTAINing: a wider symmetric range (gated on the lookup-range argument below).
    - **A lookup-based range argument (the cheap-range unblock).** Both comparison and division pay
      ~32 range gates per operand via bit-decomposition, which is what makes their proofs ~600k
      tokens (vs ~150k for pure arithmetic). A plookup-style table range argument would replace the
