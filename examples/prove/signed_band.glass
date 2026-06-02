@@ -1,0 +1,12 @@
+# Prove a PRIVATE value lies within a signed band [lo, hi] — revealing only the 0/1 verdict,
+# never the value. This is the zero-knowledge range-membership pattern: a sensor reading is
+# within spec, an age is in a bracket, a balance is within bounds — proven without disclosure.
+#
+# Uses the signed comparison intrinsics (slt/sle/sgt/sge, v5.94) so the band may include
+# NEGATIVE bounds, and the literal bounds below (-40, 125) lower canonically (v5.95 — a
+# negative literal previously mis-lowered to a wrong comparison, caught by the Third Witness).
+#
+#   glass prove examples/prove/signed_band.glass t=20     # -> result: 1, ACCEPT   (-40 <= 20 <= 125)
+#   glass prove examples/prove/signed_band.glass t=-50    # -> result: 0, ACCEPT   (below the band)
+#   glass prove examples/prove/signed_band.glass t=200    # -> result: 0, ACCEPT   (above the band)
+sge(t, -40) && sle(t, 125)

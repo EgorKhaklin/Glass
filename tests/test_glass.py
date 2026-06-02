@@ -1338,6 +1338,23 @@ def main() -> int:
             print(f"        rc={_scf.returncode}  out: {_scf.stdout.strip()[-200:]}  err: {_scf.stderr.strip()[-150:]}")
             failures += 1
 
+    # Signed band membership (v5.95): the ZK range-membership pattern — prove a private value t is
+    # within a signed band [-40, 125] without revealing it. Exercises a compound `sge(t,-40) && sle(t,125)`
+    # AND the canonical NEGATIVE-LITERAL lowering fixed in v5.95 (a `-40` literal previously lowered via
+    # the non-canonical glit(-40)=[-40] to a WRONG comparison — sge(20,-40) proved 0 instead of 1, a
+    # silent wrong result the Third Witness flagged as a source<->circuit DIVERGENCE). Now EInt(n<0) binds
+    # canonically (gin), so the band proves the right verdict. t=20 is in band -> result 1 ACCEPT; if the
+    # negative-literal fix regressed, sge(20,-40) would be 0 and this gate would see result 0. Goldilocks native.
+    _sb_path = os.path.join(EX, "prove", "signed_band.glass")
+    _sb = subprocess.run([sys.executable, GLASS, "prove", _sb_path, "t=20"],
+                         capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_sb, "signed band: -40 <= 20 <= 125 proves 1 ACCEPT (negative literal lowers canonically)"):
+        sb_ok = (_sb.returncode == 0) and ("ACCEPT" in _sb.stdout) and ("result:  1" in _sb.stdout)
+        print(f"  {'OK ' if sb_ok else 'FAIL'}  signed band: -40 <= 20 <= 125 proves 1 ACCEPT (negative literal lowers canonically)")
+        if not sb_ok:
+            print(f"        rc={_sb.returncode}  out: {_sb.stdout.strip()[-200:]}  err: {_sb.stderr.strip()[-150:]}")
+            failures += 1
+
     # The unboxed single-Int Goldilocks field (goldw_*) must agree with the trusted
     # base-2^16 limb field (gold_*) and obey the field laws — the load-bearing
     # correctness of the "unbox the field" speed cut. (Interpreter check; the native
@@ -1543,7 +1560,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 25)  # +25: ... + witness3 + h3-merkle + tamper-fuzz + plain-name-surface + statement-binding + proof-corpus + dead-branch-predication + live-div0-ABSTAIN + wrong-divmod-claim-REJECT + higher-order guards + signed-cmp-ACCEPT + wrong-signed-claim-REJECT
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 26)  # +26: ... + witness3 + h3-merkle + tamper-fuzz + plain-name-surface + statement-binding + proof-corpus + dead-branch-predication + live-div0-ABSTAIN + wrong-divmod-claim-REJECT + higher-order guards + signed-cmp-ACCEPT + wrong-signed-claim-REJECT + signed-band-membership
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

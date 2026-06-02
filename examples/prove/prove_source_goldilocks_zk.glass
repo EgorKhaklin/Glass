@@ -1071,7 +1071,7 @@ fn scalar_types_p(xs: List<Pattern>) : List<Type> = match xs { [] => []; [x, ...
 fn heg(env: List<Pair<String, List<List<Int>>>>, name: String) : List<List<Int>> = match env { [] => [glit(0)]; [Pair(k, v), ...r] => if k == name then v else heg(r, name) }
 fn heval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>) : (List<List<Int>>, List<List<Int>>) =
   match e {
-    EInt(n) => ([glit(n)], []);
+    EInt(n) => ([gin(n)], []);
     EBool(tf) => ([if tf then glit(1) else glit(0)], []);
     EVar(x) => (heg(env, x), []);
     EAdd(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) => ([fadd(vh(va), vh(vb))], ha ++ hb) } };
@@ -1175,7 +1175,7 @@ fn unroll_fuel(d: Int) : Int = 8
 # the circuit-faithful set because the resolution now MATCHES unroll's.
 fn seval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>, fenv: List<Pair<String, String>>, fuel: Int) : List<List<Int>> =
   match e {
-    EInt(n) => [glit(n)];
+    EInt(n) => [gin(n)];
     EBool(tf) => [if tf then glit(1) else glit(0)];
     EVar(x) => heg(env, x);
     EAdd(a, b) => [fadd(vh(seval(a, env, fns, types, fenv, fuel)), vh(seval(b, env, fns, types, fenv, fuel)))];
@@ -1335,7 +1335,7 @@ fn divmod_build(wa: Int, wb: Int, b: Build) : (Int, Int, Build) =
 
 fn cgen(e: Expr, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: List<TypeDecl>, b: Build) : (List<Int>, Build) =
   match e {
-    EInt(n) => match mkc(glit(n), b) { (w, b1) => ([w], b1) };
+    EInt(n) => match mkc(gin(n), b) { (w, b1) => ([w], b1) };
     EBool(tf) => match mkc(if tf then glit(1) else glit(0), b) { (w, b1) => ([w], b1) };
     EVar(x) => (cenv_get(cenv, x), b);
     EAdd(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match mka(vhi(vx), vhi(vy), b2) { (wo, b3) => ([wo], b3) } } };
@@ -1398,7 +1398,7 @@ fn cref(src: String) : List<List<Int>> = match parse_prog(src) { Program(types, 
 # lower a call-free arithmetic Expr to gates; returns (output wire index, Build)
 fn cg(e: Expr, env: List<Pair<String, Int>>, b: Build) : (Int, Build) =
   match e {
-    EInt(n) => mkc(glit(n), b);
+    EInt(n) => mkc(gin(n), b);
     EVar(x) => (env_get2(env, x), b);
     EAdd(x, y) => match cg(x, env, b) { (wx, b1) => match cg(y, env, b1) { (wy, b2) => mka(wx, wy, b2) } };
     ESub(x, y) => match cg(x, env, b) { (wx, b1) => match cg(y, env, b1) { (wy, b2) => mks(wx, wy, b2) } };
@@ -1449,13 +1449,16 @@ fn src_result(src: String, inpv: List<Int>) : List<Int> =
 # (for proving) we assert output == the claimed result so a wrong claim is rejected.
 fn in_cenv_g(inputs: List<Pair<String, Int>>, i: Int) : List<Pair<String, Int>> =
   match inputs { [] => []; [Pair(nm, v), ...r] => [Pair(nm, i)] ++ in_cenv_g(r, i + 1) }
-# gin: bind a CLI input Int as a CANONICAL Goldilocks field element. A negative v is the
-# field element p + v (= p - |v|), built in-field as 0 - |v| (gold_sub from zero), NOT the
-# raw two's-complement limbs glit4(-5)=[-5] would give — those are non-canonical and break
-# field arithmetic (a=-5; a+1000 used to REJECT instead of proving 995). Non-negative v is
-# unchanged (glit4), so every existing non-negative prove is byte-identical. This is the
-# prerequisite for signed comparison (slt/sle/sgt/sge): a negative operand is now p-|v|, which
-# the +2^31 offset maps back into [0,2^32) for the existing range gadget.
+# gin: bind a machine Int (a CLI input OR an in-program literal) as a CANONICAL Goldilocks field
+# element. A negative v is the field element p + v (= p - |v|), built in-field as 0 - |v|
+# (gold_sub from zero), NOT the raw two's-complement limbs glit4(-5)=[-5] would give — those are
+# non-canonical and break field arithmetic (a=-5; a+1000 used to REJECT instead of proving 995;
+# a negative LITERAL like `-40` used to lower to a WRONG comparison — caught by the Third Witness
+# as a source<->circuit DIVERGENCE). Non-negative v is unchanged (glit4 == glit on the small
+# literals in use), so every existing non-negative prove is byte-identical. This is what lets the
+# signed comparison gadget (slt/sle/sgt/sge) take a negative operand: p-|v| + 2^31 lands back in
+# [0,2^32) for the existing range gadget. Used by EInt lowering in heval/seval/cgen/cg AND input
+# binding in in_vals_g/in_cenv_seval, so all four evaluators agree on the field value of any Int.
 fn gin(v: Int) : List<Int> = if v < 0 then fsub(glit4(0), glit4(0 - v)) else glit4(v)
 fn in_vals_g(inputs: List<Pair<String, Int>>) : List<List<Int>> =
   match inputs { [] => []; [Pair(nm, v), ...r] => [gin(v)] ++ in_vals_g(r) }
