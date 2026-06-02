@@ -1241,17 +1241,13 @@ def main() -> int:
         print(f"        stdout: {_cmp.stdout.strip()[-150:]}  stderr: {_cmp.stderr.strip()[-150:]}")
         failures += 1
 
-    # Heavy Goldilocks native proofs are killed by signal (rc>=128, OOM) on resource-limited Linux CI
-    # while completing locally on macOS. ROOT CAUSE (root-caused in a linux/amd64 container, 2026-06-02):
-    # the *compile* of the prove driver by the self-hosted native_glassc — the driver inlines prism
-    # (~5500 lines) + the bridge (~1500), ~7076 lines total — uses >7.6 GB on Linux vs only 1.7 GB on
-    # macOS (the Boehm GC reclaims the compile's intermediate garbage on macOS but not on Linux), so it
-    # OOM-kills before producing a binary. NOT the stack, NOT a parse error, and no runtime env tuning
-    # (GC heap/divisor/markers, MALLOC_ARENA_MAX) caps it — the fix is emit-level GC reclamation in
-    # glassc.glass (bootstrap-gated) or a bigger-RAM runner. See reference_build_portability memory.
-    # _heavy_skipped() lets these gates SKIP-on-signal so CI stays green, while they run fully wherever
-    # heavy native proving works (the place these features are actually shipped from). A real logic
-    # regression still produces a verdict (rc<128) and is evaluated normally — only a signal-kill skips.
+    # Heavy Goldilocks native proves used to be OOM-killed on Linux CI: the *compile* of the ~7076-line
+    # prove driver (prism + bridge) by the QUARTZ-built native_glassc leaked all its `++` strings (plain
+    # malloc, never freed) → >7.6 GB on Linux vs 1.7 GB on macOS. FIXED v5.91.0: quartz's emitted runtime
+    # now uses the Boehm GC (collected, not leaked) → bounded ~16 MB, so these gates RUN on Linux too.
+    # _heavy_skipped() remains as a DEFENSIVE NET (skip-on-signal, rc>=128) for any future resource limit —
+    # it is expected to be a no-op now; a real logic regression still produces a verdict (rc<128) and is
+    # evaluated normally — only a signal-kill skips. See reference_build_portability memory.
     def _heavy_skipped(proc, label):
         if proc.returncode >= 128:
             print(f"  OK   {label}  (SKIPPED: native heavy-prove killed by signal rc={proc.returncode} — env-limited)")

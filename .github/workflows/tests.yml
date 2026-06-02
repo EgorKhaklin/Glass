@@ -23,15 +23,17 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install clang and route cc through it
+      - name: Install clang + libgc and route cc through clang
         # Quartz / glassc try `cc` with -fbracket-depth=100000 (a Clang-only flag
         # that raises the nesting limit for the deeply-nested C they emit) and
         # FALL BACK without it when cc rejects it — so GCC works too (its default
         # nesting limit is higher). Clang is installed here only to also exercise
         # the with-flag path; it is no longer required (GCC is supported).
+        # libgc-dev: since v5.91 BOTH the native compiler (quartz-built native_glassc)
+        # and the programs it emits allocate via the Boehm GC and link -lgc.
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang
+          sudo apt-get install -y clang libgc-dev
           sudo update-alternatives --install /usr/bin/cc cc /usr/bin/clang 100
           cc --version
 
@@ -39,15 +41,10 @@ jobs:
         run: pip install -e .
 
       - name: Run regression suite
-        # Heavy Goldilocks native proofs OOM on this runner: the self-hosted native_glassc COMPILING the
-        # ~7076-line prove driver (prism + bridge inlined) uses >7.6 GB on Linux vs 1.7 GB on macOS (its
-        # Boehm GC reclaims the compile garbage on macOS but not on Linux). The suite SKIPS those gates
-        # on signal-kill (_heavy_skipped) so CI stays green; they run fully on macOS where they ship.
-        # (ulimit is a harmless leftover — the limit is RAM, not stack; a real fix is emit-level GC
-        # reclamation in glassc.glass, or a bigger-RAM runner.)
-        run: |
-          ulimit -s unlimited || ulimit -s 524288 || true
-          python tests/test_glass.py
+        # v5.91 fixed the Linux heavy-prove OOM (quartz's native_glassc runtime now uses the Boehm GC
+        # instead of leaking every `++` string), so the heavy Goldilocks-prove gates now RUN here, not
+        # skip. (_heavy_skipped stays as a defensive net for future resource limits.)
+        run: python tests/test_glass.py
 
       - name: Run the self-host capstone
         run: glass examples/selfhost/prism.glass | tail -5

@@ -2165,6 +2165,7 @@ def compile_program(decls: list, checker=None) -> str:
         "#include <string.h>",
         "#include <stdbool.h>",
         "#include <unistd.h>",
+        "#include <gc.h>",
         "",
         "/* Quartz runtime — algebraic values, string concat. */",
         "typedef struct q_value {",
@@ -2174,7 +2175,7 @@ def compile_program(decls: list, checker=None) -> str:
         "} q_value_t;",
         "",
         "static q_value_t* q_ctor_alloc(int tag, int num_fields, ...) {",
-        "    q_value_t* v = (q_value_t*)malloc(",
+        "    q_value_t* v = (q_value_t*)GC_malloc(",
         "        sizeof(q_value_t) + (size_t)num_fields * sizeof(int64_t));",
         "    if (!v) { fprintf(stderr, \"quartz: out of memory\\n\"); exit(1); }",
         "    v->tag = tag;",
@@ -2190,7 +2191,7 @@ def compile_program(decls: list, checker=None) -> str:
         "",
         "static const char* quartz_str_concat(const char* a, const char* b) {",
         "    size_t la = strlen(a), lb = strlen(b);",
-        "    char* r = (char*)malloc(la + lb + 1);",
+        "    char* r = (char*)GC_malloc(la + lb + 1);",
         "    if (!r) { fprintf(stderr, \"quartz: out of memory\\n\"); exit(1); }",
         "    memcpy(r, a, la);",
         "    memcpy(r + la, b, lb);",
@@ -2226,7 +2227,7 @@ def compile_program(decls: list, checker=None) -> str:
         "    size_t a = (size_t)start; if (a > n) a = n;",
         "    size_t b = (size_t)end;   if (b > n) b = n;",
         "    size_t len = b - a;",
-        "    char* r = (char*)malloc(len + 1);",
+        "    char* r = (char*)GC_malloc(len + 1);",
         "    if (!r) { fprintf(stderr, \"quartz: out of memory\\n\"); "
         "exit(1); }",
         "    memcpy(r, s + a, len);",
@@ -2237,7 +2238,7 @@ def compile_program(decls: list, checker=None) -> str:
         # v4.38: int_to_string(n). 20 digits fits any int64 + sign +
         # null terminator, but 32 leaves room.
         "static const char* quartz_int_to_string(int64_t n) {",
-        "    char* r = (char*)malloc(32);",
+        "    char* r = (char*)GC_malloc(32);",
         "    if (!r) { fprintf(stderr, \"quartz: out of memory\\n\"); "
         "exit(1); }",
         "    snprintf(r, 32, \"%lld\", (long long)n);",
@@ -2259,7 +2260,7 @@ def compile_program(decls: list, checker=None) -> str:
         "    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);",
         "    if (sz < 0) { fclose(f); return q_ctor_alloc(err_tag, 1, "
         "(int64_t)(intptr_t)\"read error: cannot size file\"); }",
-        "    char* buf = (char*)malloc((size_t)sz + 1);",
+        "    char* buf = (char*)GC_malloc((size_t)sz + 1);",
         "    if (!buf) { fclose(f); fprintf(stderr, \"quartz: out of "
         "memory\\n\"); exit(1); }",
         "    size_t got = fread(buf, 1, (size_t)sz, f);",
@@ -2286,10 +2287,10 @@ def compile_program(decls: list, checker=None) -> str:
         # Mirrors glass.py's run_command (separate stdout/stderr + code).
         "static char* quartz__slurp(const char* path) {",
         "    FILE* f = fopen(path, \"rb\");",
-        "    if (!f) { char* e = (char*)malloc(1); e[0] = 0; return e; }",
+        "    if (!f) { char* e = (char*)GC_malloc(1); e[0] = 0; return e; }",
         "    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);",
         "    if (sz < 0) sz = 0;",
-        "    char* buf = (char*)malloc((size_t)sz + 1);",
+        "    char* buf = (char*)GC_malloc((size_t)sz + 1);",
         "    size_t got = fread(buf, 1, (size_t)sz, f);",
         "    buf[got] = 0; fclose(f); return buf;",
         "}",
@@ -2333,7 +2334,7 @@ def compile_program(decls: list, checker=None) -> str:
         "static q_value_t* quartz_list_reverse(q_value_t* xs) {",
         "    q_value_t* result = q_ctor_alloc(0, 0);",
         "    while (xs->num_fields > 0) {",
-        "        q_value_t* cell = (q_value_t*)malloc(",
+        "        q_value_t* cell = (q_value_t*)GC_malloc(",
         "            sizeof(q_value_t) + 2 * sizeof(int64_t));",
         "        if (!cell) { fprintf(stderr, "
         "\"quartz: out of memory\\n\"); exit(1); }",
@@ -2386,7 +2387,7 @@ def compile_program(decls: list, checker=None) -> str:
         # b_string_to_lower exactly.
         "static const char* quartz_string_to_upper(const char* s) {",
         "    size_t n = strlen(s);",
-        "    char* r = (char*)malloc(n + 1);",
+        "    char* r = (char*)GC_malloc(n + 1);",
         "    if (!r) { fprintf(stderr, "
         "\"quartz: out of memory\\n\"); exit(1); }",
         "    for (size_t i = 0; i < n; i++) {",
@@ -2400,7 +2401,7 @@ def compile_program(decls: list, checker=None) -> str:
         "",
         "static const char* quartz_string_to_lower(const char* s) {",
         "    size_t n = strlen(s);",
-        "    char* r = (char*)malloc(n + 1);",
+        "    char* r = (char*)GC_malloc(n + 1);",
         "    if (!r) { fprintf(stderr, "
         "\"quartz: out of memory\\n\"); exit(1); }",
         "    for (size_t i = 0; i < n; i++) {",
@@ -2418,7 +2419,7 @@ def compile_program(decls: list, checker=None) -> str:
         "static q_value_t* quartz_range(int64_t lo, int64_t hi) {",
         "    q_value_t* result = q_ctor_alloc(0, 0);",
         "    for (int64_t i = hi - 1; i >= lo; i--) {",
-        "        q_value_t* cell = (q_value_t*)malloc(",
+        "        q_value_t* cell = (q_value_t*)GC_malloc(",
         "            sizeof(q_value_t) + 2 * sizeof(int64_t));",
         "        if (!cell) { fprintf(stderr, "
         "\"quartz: out of memory\\n\"); exit(1); }",
@@ -2449,7 +2450,7 @@ def compile_program(decls: list, checker=None) -> str:
         "        p = (q_value_t*)(intptr_t)p->fields[1];",
         "    }",
         "    int64_t* mapped = "
-        "(int64_t*)malloc((size_t)n * sizeof(int64_t));",
+        "(int64_t*)GC_malloc((size_t)n * sizeof(int64_t));",
         "    if (n > 0 && !mapped) { fprintf(stderr, "
         "\"quartz: out of memory\\n\"); exit(1); }",
         "    p = xs;",
@@ -2459,7 +2460,7 @@ def compile_program(decls: list, checker=None) -> str:
         "    }",
         "    q_value_t* result = q_ctor_alloc(0, 0);",
         "    for (int64_t i = n - 1; i >= 0; i--) {",
-        "        q_value_t* cell = (q_value_t*)malloc(",
+        "        q_value_t* cell = (q_value_t*)GC_malloc(",
         "            sizeof(q_value_t) + 2 * sizeof(int64_t));",
         "        if (!cell) { fprintf(stderr, \"quartz: out of "
         "memory\\n\"); exit(1); }",
@@ -2469,7 +2470,7 @@ def compile_program(decls: list, checker=None) -> str:
         "        cell->fields[1] = (int64_t)(intptr_t)result;",
         "        result = cell;",
         "    }",
-        "    free(mapped);",
+        "    /* GC reclaims `mapped` (GC_malloc'd) — no free() (would be an invalid free). */",
         "    return result;",
         "}",
         "",
@@ -2487,7 +2488,7 @@ def compile_program(decls: list, checker=None) -> str:
         "        p = (q_value_t*)(intptr_t)p->fields[1];",
         "    }",
         "    int64_t* kept = "
-        "(int64_t*)malloc((size_t)n * sizeof(int64_t));",
+        "(int64_t*)GC_malloc((size_t)n * sizeof(int64_t));",
         "    if (n > 0 && !kept) { fprintf(stderr, "
         "\"quartz: out of memory\\n\"); exit(1); }",
         "    int64_t k = 0;",
@@ -2499,7 +2500,7 @@ def compile_program(decls: list, checker=None) -> str:
         "    }",
         "    q_value_t* result = q_ctor_alloc(0, 0);",
         "    for (int64_t i = k - 1; i >= 0; i--) {",
-        "        q_value_t* cell = (q_value_t*)malloc(",
+        "        q_value_t* cell = (q_value_t*)GC_malloc(",
         "            sizeof(q_value_t) + 2 * sizeof(int64_t));",
         "        if (!cell) { fprintf(stderr, \"quartz: out of "
         "memory\\n\"); exit(1); }",
@@ -2509,7 +2510,7 @@ def compile_program(decls: list, checker=None) -> str:
         "        cell->fields[1] = (int64_t)(intptr_t)result;",
         "        result = cell;",
         "    }",
-        "    free(kept);",
+        "    /* GC reclaims `kept` (GC_malloc'd) — no free() (would be an invalid free). */",
         "    return result;",
         "}",
         "",
@@ -2566,7 +2567,7 @@ def compile_program(decls: list, checker=None) -> str:
         "    /* Collect heads into a small stack array (n is bounded by",
         "       the source list's length, which the type-checker bounds",
         "       statically). */",
-        "    int64_t* heads = (int64_t*)malloc(n * sizeof(int64_t));",
+        "    int64_t* heads = (int64_t*)GC_malloc(n * sizeof(int64_t));",
         "    if (n > 0 && !heads) {",
         "        fprintf(stderr, \"quartz: out of memory\\n\"); exit(1);",
         "    }",
@@ -2578,7 +2579,7 @@ def compile_program(decls: list, checker=None) -> str:
         "    /* Build the result right-to-left, starting from `b`. */",
         "    q_value_t* result = b;",
         "    for (size_t i = n; i > 0; i--) {",
-        "        q_value_t* cell = (q_value_t*)malloc(",
+        "        q_value_t* cell = (q_value_t*)GC_malloc(",
         "            sizeof(q_value_t) + 2 * sizeof(int64_t));",
         "        if (!cell) { fprintf(stderr, \"quartz: out of memory\\n\"); exit(1); }",
         "        cell->tag = 0;",
@@ -2587,7 +2588,7 @@ def compile_program(decls: list, checker=None) -> str:
         "        cell->fields[1] = (int64_t)(intptr_t)result;",
         "        result = cell;",
         "    }",
-        "    free(heads);",
+        "    /* GC reclaims `heads` (GC_malloc'd) — no free() (would be an invalid free). */",
         "    return result;",
         "}",
         "",
@@ -2627,6 +2628,7 @@ def compile_program(decls: list, checker=None) -> str:
         sections.extend(fn_definitions)
         sections.append("")
     sections.append("int main(void) {")
+    sections.append("    GC_INIT();")
     sections.append(f"    {main_body}")
     sections.append("    return 0;")
     sections.append("}")
@@ -2709,7 +2711,7 @@ def build(source_file: str, output_binary: str,
         # as errors by default; -Wno-int-conversion tells it these are
         # deliberate (the same rationale as the intptr_t casts). This is
         # what lets large erasure-heavy programs (prism) link.
-        base = [cc, c_file, "-o", output_binary, "-O2", "-Wno-int-conversion"]
+        base = [cc, c_file, "-o", output_binary, "-O2", "-Wno-int-conversion", "-I/opt/homebrew/include", "-L/opt/homebrew/lib", "-lgc"]
         # -fbracket-depth raises Clang's expression-nesting limit (the erasure-heavy
         # output nests deep). It is Clang-only — GCC rejects it — so try with the flag,
         # then fall back without it (GCC's default nesting limit is higher).
