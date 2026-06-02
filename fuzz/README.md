@@ -15,6 +15,13 @@ coincide mod p — a divergence there is a *real* bug, not the documented domain
 
 ```bash
 python3 fuzz/fuzz_soundness.py [N] [seed]                 # witness3 mode: no wrong ACCEPT
+                                                          #   (arithmetic + unsigned comparison + SIGNED
+                                                          #    slt/sle/sgt/sge/sdiv/smod over negatives)
+python3 fuzz/fuzz_soundness.py --boundary [N] [seed]      # boundary mode: inputs at the 2^31/2^32
+                                                          #   range-gadget seams (the canonical-form
+                                                          #   crown-jewel class) — in-range ACCEPTs must
+                                                          #   AGREE, out-of-range must ABSTAIN, never a
+                                                          #   wrong ACCEPT at the edge
 python3 fuzz/fuzz_soundness.py --differential [N] [seed]   # two-verifier mode: emit a portable
                                                           #   proof per program, confirm Glass verify_b3
                                                           #   and the independent Pentecost verifier AGREE

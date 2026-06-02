@@ -20,6 +20,14 @@ import sys, os, subprocess, random
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VARS = ["a", "b", "c"]
+# Boundary inputs (--boundary mode): values right at the range-gadget edges, where a
+# canonical-form wrong-ACCEPT would be catastrophic (the crown-jewel class). Unsigned gadgets
+# admit [0, 2^32); signed admit [-2^31, 2^31). Each of 2^31 and 2^32 is probed at -1/0/+1 so the
+# fuzzer hits "just in range" (must ACCEPT-and-AGREE) and "just over" (must ABSTAIN), never a
+# wrong ACCEPT at the seam. Includes a small value so divisors aren't all huge.
+P31, P32 = 1 << 31, 1 << 32
+BOUNDARY = [0, 1, 5, P31 - 1, P31, P31 + 1, P32 - 1, P32, P32 + 1,
+            -1, -5, -P31, -P31 + 1, -P31 - 1]
 
 def gen_expr(rng, depth):
     if depth <= 0 or rng.random() < 0.35:
@@ -53,24 +61,33 @@ def gen_signed(rng, depth):
     f = rng.choice(["sdiv", "smod"])
     return "%s(%s, %s)" % (f, gen_expr(rng, depth), gen_expr(rng, depth))
 
-def run(n, seed):
+def run(n, seed, boundary=False):
     rng = random.Random(seed)
-    print(f"# soundness fuzz: {n} random programs (arithmetic + comparison/boolean + signed, seed {seed})")
+    mode = "BOUNDARY (inputs at the 2^31/2^32 range-gadget seams)" if boundary else "random (inputs 0..20 / -20..20)"
+    print(f"# soundness fuzz: {n} programs, {mode} (arithmetic + comparison/boolean + signed, seed {seed})")
     ok = True
     for i in range(n):
         # cycle 3 families so each batch exercises the arithmetic lowering, the unsigned
         # comparison-gadget + boolean control-flow, AND the signed gadgets (slt/sdiv, the newest,
         # riskiest). Signed inputs may be negative (-20..20); the others stay non-negative so the
         # unsigned [0,2^32) gadget doesn't spuriously abstain.
-        fam = i % 3
+        # In boundary mode only the GADGET-bearing families (comparison + signed), whose operands
+        # are range-guarded — a raw arithmetic product over near-2^32 inputs is a benign int64-vs-
+        # field wrap (documented), not a soundness bug, so the arithmetic family is excluded there.
+        fam = (1 + (i % 2)) if boundary else (i % 3)
         if fam == 0:
             expr = gen_expr(rng, 3)
         elif fam == 1:
             expr = gen_bool(rng, 2)
         else:
             expr = gen_signed(rng, 1)
-        lo = -20 if fam == 2 else 0
-        inputs = {v: rng.randint(lo, 20) for v in VARS}
+        if boundary:
+            # signed family may use negatives; unsigned families draw from the non-negative seams.
+            pool = BOUNDARY if fam == 2 else [x for x in BOUNDARY if x >= 0]
+            inputs = {v: rng.choice(pool) for v in VARS}
+        else:
+            lo = -20 if fam == 2 else 0
+            inputs = {v: rng.randint(lo, 20) for v in VARS}
         src = expr + "\n"
         path = f"/tmp/fuzz_{i}.glass"
         open(path, "w").write(src)
@@ -133,7 +150,10 @@ def run_differential(n, seed):
     return 0 if ok else 1
 
 if __name__ == "__main__":
-    a = [x for x in sys.argv[1:] if x != "--differential"]
+    flags = {"--differential", "--boundary"}
+    a = [x for x in sys.argv[1:] if x not in flags]
     n = int(a[0]) if len(a) > 0 else 4
     seed = int(a[1]) if len(a) > 1 else 1
-    sys.exit(run_differential(n, seed) if "--differential" in sys.argv else run(n, seed))
+    if "--differential" in sys.argv:
+        sys.exit(run_differential(n, seed))
+    sys.exit(run(n, seed, boundary="--boundary" in sys.argv))
