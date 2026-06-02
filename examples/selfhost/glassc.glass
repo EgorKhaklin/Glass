@@ -41,7 +41,7 @@ fn cpre_0(unused: Int) : String =
   "#include <gc.h>\n" ++
   "static char* q_str_concat(char* a, char* b) {\n" ++
   "  long long la = (long long)strlen(a); long long lb = (long long)strlen(b);\n" ++
-  "  char* r = (char*)GC_malloc(la + lb + 1);\n" ++
+  "  char* r = (char*)GC_malloc_atomic(la + lb + 1);\n" ++
   "  memcpy(r, a, la); memcpy(r + la, b, lb); r[la + lb] = 0; return r;\n" ++
   "}\n" ++
   "typedef struct q_value { long long magic; char* ctor; long long nf; long long* fields; char** fnames; } q_value_t;\n" ++
@@ -71,14 +71,14 @@ fn cpre_0(unused: Int) : String =
   "  return 0;\n" ++
   "}\n" ++
   "static char* q_itos(long long n) {\n" ++
-  "  char* r = (char*)GC_malloc(24); snprintf(r, 24, \"%lld\", n); return r;\n" ++
+  "  char* r = (char*)GC_malloc_atomic(24); snprintf(r, 24, \"%lld\", n); return r;\n" ++
   "}\n" ++
   "static char* q_substring(char* s, long long a, long long b) {\n" ++
   "  if (a < 0 || b < 0) { fprintf(stderr, \"glassc: substring: negative index" ++ ("\\" ++ "n") ++ "\"); exit(1); }\n" ++
   "  if (a > b) { fprintf(stderr, \"glassc: substring: start > end" ++ ("\\" ++ "n") ++ "\"); exit(1); }\n" ++
   "  long long n = (long long)strlen(s);\n" ++
   "  if (a > n) a = n; if (b > n) b = n;\n" ++
-  "  long long len = b - a; char* r = (char*)GC_malloc(len + 1);\n"
+  "  long long len = b - a; char* r = (char*)GC_malloc_atomic(len + 1);\n"
 fn cpre_1(unused: Int) : String =
   "  memcpy(r, s + a, len); r[len] = 0; return r;\n" ++
   "}\n" ++
@@ -111,7 +111,7 @@ fn cpre_1(unused: Int) : String =
   "  FILE* f = fopen(path, \"rb\");\n" ++
   "  if (!f) { q_value_t* e = q_alloc(\"Err\", 1); e->fields[0] = (long long)(intptr_t)\"read error: cannot open file\"; return (long long)(intptr_t)e; }\n" ++
   "  fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET); if (sz < 0) sz = 0;\n" ++
-  "  char* buf = (char*)GC_malloc((size_t)sz + 1); size_t got = fread(buf, 1, (size_t)sz, f); buf[got] = 0; fclose(f);\n" ++
+  "  char* buf = (char*)GC_malloc_atomic((size_t)sz + 1); size_t got = fread(buf, 1, (size_t)sz, f); buf[got] = 0; fclose(f);\n" ++
   "  q_value_t* ok = q_alloc(\"Ok\", 1); ok->fields[0] = (long long)(intptr_t)buf; return (long long)(intptr_t)ok;\n" ++
   "}\n" ++
   "static long long q_apply1(long long clo, long long arg) {\n" ++
@@ -312,9 +312,9 @@ fn cpre_5(unused: Int) : String =
 fn cpre_6(unused: Int) : String =
   "}\n" ++
   "static char* q_slurp(char* path) {\n" ++
-  "  FILE* f = fopen(path, \"rb\"); if (!f) { char* e=(char*)GC_malloc(1); e[0]=0; return e; }\n" ++
+  "  FILE* f = fopen(path, \"rb\"); if (!f) { char* e=(char*)GC_malloc_atomic(1); e[0]=0; return e; }\n" ++
   "  fseek(f,0,SEEK_END); long sz=ftell(f); fseek(f,0,SEEK_SET); if (sz<0) sz=0;\n" ++
-  "  char* b=(char*)GC_malloc((size_t)sz+1); size_t g=fread(b,1,(size_t)sz,f); b[g]=0; fclose(f); return b;\n" ++
+  "  char* b=(char*)GC_malloc_atomic((size_t)sz+1); size_t g=fread(b,1,(size_t)sz,f); b[g]=0; fclose(f); return b;\n" ++
   "}\n" ++
   "static long long q_write_file(char* path, char* content) {\n" ++
   "  FILE* f = fopen(path, \"wb\");\n" ++
