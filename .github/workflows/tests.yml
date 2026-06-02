@@ -58,8 +58,13 @@ jobs:
           echo "in.glass = $(wc -l </tmp/in.glass) lines"
           rm -f /tmp/glassc_bin /tmp/glassc_out.c
           echo "=== native_glassc WITH stderr visible ==="
-          /tmp/glass-native/native_glassc 2>&1 | tail -15; echo "native_glassc rc=${PIPESTATUS[0]}"
+          /tmp/glass-native/native_glassc >/tmp/cc.log 2>&1; echo "native_glassc rc=$?"
           echo "emitted C: $(wc -c </tmp/glassc_out.c 2>/dev/null || echo MISSING) bytes ; binary: $(wc -c </tmp/glassc_bin 2>/dev/null || echo MISSING) bytes"
+          echo "=== now RUN the 967KB binary with ulimit -s 524288 (same shell — does the run succeed?) ==="
+          echo "default ulimit -s = $(ulimit -s)"
+          ulimit -s 524288 2>&1; echo "after set, ulimit -s = $(ulimit -s)"
+          /tmp/glassc_bin >/tmp/run.log 2>/tmp/run.err; echo "binary run rc=$?"
+          echo "--- binary stdout ---"; tail -3 /tmp/run.log; echo "--- stderr ---"; tail -3 /tmp/run.err
 
       - name: Run regression suite
         # v5.90-v5.92 fixed the Linux heavy-prove root causes (quartz GC compile + 512MB run stack) —
