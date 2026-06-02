@@ -49,6 +49,13 @@ else "$GLASSC" >/dev/null 2>&1 || true; fi
 [ -x /tmp/glassc_bin ] || { echo "run_native: native compile error (run $GLASSC on /tmp/in.glass to see cc errors)" >&2; exit 1; }
 
 # 4. run it (drop the binary's auto-printed final return value, like dogfood).
+#    512MB stack for the prover's deep m=32768 codeword recursion. macOS links it
+#    (-Wl,-stack_size,0x20000000), a flag GNU ld IGNORES — so on Linux the prover
+#    overflows the 8MB default stack and SIGSEGVs. Set it explicitly here (524288 KB =
+#    512MB, matching the macOS link). NB: an explicit value, not `unlimited`, which is
+#    unreliable for deep recursion on Linux. `|| true` so macOS (hard ulimit < 512MB,
+#    but the link already provides the stack) is unaffected.
+ulimit -s 524288 2>/dev/null || true
 #    Run to a temp file and capture the binary's TRUE exit code FIRST, then strip the last line —
 #    piping straight into `sed '$d'` lets `sed` exit before a slow/crashing binary finishes, which
 #    raises SIGPIPE on the binary and (under `set -o pipefail`) reports the pipeline as rc=141,
