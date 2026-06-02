@@ -48,6 +48,13 @@ if [ "$TIMEIT" = "--time" ]; then echo "[compile]" >&2; time "$GLASSC" >/dev/nul
 else "$GLASSC" >/dev/null 2>&1 || true; fi
 [ -x /tmp/glassc_bin ] || { echo "run_native: native compile error (run $GLASSC on /tmp/in.glass to see cc errors)" >&2; exit 1; }
 
-# 4. run it (drop the binary's auto-printed final return value, like dogfood)
-if [ "$TIMEIT" = "--time" ]; then echo "[run]" >&2; time /tmp/glassc_bin | sed '$d'
-else /tmp/glassc_bin | sed '$d'; fi
+# 4. run it (drop the binary's auto-printed final return value, like dogfood).
+#    Run to a temp file and capture the binary's TRUE exit code FIRST, then strip the last line —
+#    piping straight into `sed '$d'` lets `sed` exit before a slow/crashing binary finishes, which
+#    raises SIGPIPE on the binary and (under `set -o pipefail`) reports the pipeline as rc=141,
+#    masking the real exit. Decoupling makes the status honest on every platform (Linux included).
+RUNOUT=/tmp/glassc_run.out
+if [ "$TIMEIT" = "--time" ]; then echo "[run]" >&2; time "/tmp/glassc_bin" > "$RUNOUT"; rc=$?
+else "/tmp/glassc_bin" > "$RUNOUT"; rc=$?; fi
+sed '$d' "$RUNOUT"
+exit $rc
