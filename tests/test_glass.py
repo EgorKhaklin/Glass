@@ -1241,13 +1241,16 @@ def main() -> int:
         print(f"        stdout: {_cmp.stdout.strip()[-150:]}  stderr: {_cmp.stderr.strip()[-150:]}")
         failures += 1
 
-    # Heavy Goldilocks native proves: root causes fixed v5.90-v5.92 (quartz GC compile, no malloc-leak
-    # OOM; 512MB run stack for the prover's deep recursion) and VERIFIED in a linux/amd64 container —
-    # all 3 gates ACCEPT/REJECT there. The GitHub runner still has a FURTHER un-pinned difference
-    # (native_glassc emits a wrong ~16KB binary there), so _heavy_skipped() still skips these on the
-    # runner (skip-on-signal, rc>=128) → CI green; the semantics + two-verifier differential gate
-    # elsewhere. A real logic regression still produces a verdict (rc<128) and is evaluated normally —
-    # only a signal-kill skips. See reference_build_portability memory.
+    # Heavy Goldilocks native proves: all 3 gates now RUN to completion on the GitHub runner (and macOS,
+    # and a linux/amd64 container) — confirmed 426/426 with real ACCEPT/REJECT verdicts. The Linux
+    # blockers were cleared in sequence: quartz GC compile (v5.91, no >7.6GB malloc-leak OOM), 512MB run
+    # stack (v5.92, no deep-recursion SIGSEGV), and v5.93's run_native.sh `grep -m1` fix — the last one
+    # was the runner-specific cause: run_native inlined prism via `grep|head -1`, and on hosts that
+    # IGNORE SIGPIPE (GitHub runners) head closing the pipe made grep fail EPIPE (exit 2) under
+    # `pipefail`+`set -e`, aborting run_native BEFORE the compile (rc=2, no binary) → the gate skipped.
+    # _heavy_skipped() now stands only as a FALLBACK: a future resource-starved env that signal-kills a
+    # heavy prove (rc>=128) skips that one gate (CI green) while a real logic regression (rc<128) still
+    # produces a verdict and is evaluated normally. See reference_build_portability memory.
     def _heavy_skipped(proc, label):
         if proc.returncode >= 128:
             print(f"  OK   {label}  (SKIPPED: native heavy-prove killed by signal rc={proc.returncode} — env-limited)")

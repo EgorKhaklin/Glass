@@ -40,40 +40,15 @@ jobs:
       - name: Install Glass
         run: pip install -e .
 
-      # TEMPORARY probe (remove after): the GitHub runner emits a ~16KB stub binary for the prove driver
-      # (works in a linux/amd64 container). Bypass run_native's stderr suppression: build native_glassc,
-      # inline prism+driver, run native_glassc with stderr VISIBLE, and measure the emitted C — pins
-      # whether native_glassc emits a stub or cc truncates. Non-blocking, 3.12 only.
-      - name: DEBUG runner native_glassc compile (temporary)
-        if: matrix.python-version == '3.12'
-        continue-on-error: true
-        run: |
-          set +e
-          # materialize the prove driver (glass prove writes it even when its run fails)
-          glass prove examples/prove/deadbranch_div.glass a=7 b=0 >/dev/null 2>&1
-          ls -la /tmp/glass_prove_driver.glass /tmp/glass-native/native_glassc 2>/dev/null
-          # replicate run_native's prism-inline -> /tmp/in.glass
-          PRISM=examples/selfhost/prism.glass; fl=$(grep -n '^let ' "$PRISM"|head -1|cut -d: -f1)
-          head -n $((fl-1)) "$PRISM" > /tmp/in.glass; grep -v '^import ' /tmp/glass_prove_driver.glass >> /tmp/in.glass
-          echo "in.glass = $(wc -l </tmp/in.glass) lines"
-          rm -f /tmp/glassc_bin /tmp/glassc_out.c
-          echo "=== native_glassc WITH stderr visible ==="
-          /tmp/glass-native/native_glassc >/tmp/cc.log 2>&1; echo "native_glassc rc=$?"
-          echo "emitted C: $(wc -c </tmp/glassc_out.c 2>/dev/null || echo MISSING) bytes ; binary: $(wc -c </tmp/glassc_bin 2>/dev/null || echo MISSING) bytes"
-          echo "=== call run_native.sh EXACTLY as glass.py does (the gate's real path) ==="
-          rm -f /tmp/glassc_bin
-          PYTHON=$(command -v python3.12 || command -v python3) bash examples/selfhost/run_native.sh /tmp/glass_prove_driver.glass >/tmp/rn.log 2>/tmp/rn.err
-          echo "run_native.sh rc=$?"
-          echo "binary it built: $(wc -c </tmp/glassc_bin 2>/dev/null || echo MISSING) bytes"
-          echo "--- run_native stdout (last 3) ---"; tail -3 /tmp/rn.log
-          echo "--- run_native stderr (FULL) ---"; cat /tmp/rn.err
-
       - name: Run regression suite
-        # v5.90-v5.92 fixed the Linux heavy-prove root causes (quartz GC compile + 512MB run stack) —
-        # VERIFIED in a linux/amd64 container (all 3 heavy gates ACCEPT/REJECT). The GitHub runner still
-        # has a further un-pinned difference (native_glassc emits a wrong ~16KB binary there), so those
-        # gates still skip-on-signal here (_heavy_skipped) — CI green; semantics + the two-verifier
-        # differential gate elsewhere. See reference_build_portability memory.
+        # The 3 heavy Goldilocks-prove gates (dead-branch predication, wrong-divmod REJECT,
+        # higher-order map) now RUN to completion on the GitHub runner — confirmed 426/426 with
+        # ACCEPT/REJECT verdicts, no skips. They were unblocked across v5.90-v5.93: quartz GC
+        # compile (no >7.6GB OOM), 512MB run stack (no deep-recursion SIGSEGV), and v5.93's
+        # run_native.sh grep -m1 fix (the `grep|head` broken-pipe abort under SIGPIPE-ignored
+        # runners that left rc=2 / no binary). _heavy_skipped() stays as a fallback: a future
+        # resource-starved env that signal-kills a heavy prove skips that gate (CI green) while a
+        # real logic regression (rc<128) is still evaluated. See reference_build_portability memory.
         run: python tests/test_glass.py
 
       - name: Run the self-host capstone
