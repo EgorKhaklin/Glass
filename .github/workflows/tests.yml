@@ -56,32 +56,6 @@ jobs:
           glass examples/showcase/prover.glass | grep -E "⟶" | head
           glass examples/showcase/nash.glass | grep -E "Nash equilibria" | head
 
-      # TEMPORARY (remove after root-cause): the heavy Goldilocks native proves are killed by
-      # signal (rc=141) ONLY on the Linux runner — not the stack (ulimit didn't help), not the
-      # sed pipeline (run_native now writes to a file). This strace's the binary's TRUE fatal
-      # signal on the actual runner. Non-blocking (continue-on-error) + 3.12 only.
-      - name: DEBUG heavy-prove fault on Linux (temporary, non-blocking)
-        if: matrix.python-version == '3.12'
-        continue-on-error: true
-        run: |
-          set +e
-          sudo apt-get install -y strace >/dev/null 2>&1 || true
-          echo "=== limits ==="; ulimit -s -v; echo; free -m
-          # glass prove writes the full driver to /tmp/glass_prove_driver.glass even when its native run fails.
-          echo "=== 1) glass prove (to materialize the driver + build native_glassc) ==="
-          glass prove examples/prove/deadbranch_div.glass a=7 b=0 >/dev/null 2>&1; echo "glass prove rc=$?"
-          ls -la /tmp/glass_prove_driver.glass /tmp/glass-native/native_glassc 2>/dev/null
-          echo "=== 2) compile the driver EXPLICITLY (separate compile from run) ==="
-          cp /tmp/glass_prove_driver.glass /tmp/in.glass
-          rm -f /tmp/glassc_bin
-          /tmp/glass-native/native_glassc; echo "native_glassc(driver) rc=$?"
-          ls -la /tmp/glassc_bin 2>/dev/null || { echo "DRIVER DID NOT COMPILE -> the fault is the COMPILE, not the run"; exit 0; }
-          echo "=== 3) run the binary under strace -f -e signal=all (catch the fatal signal) ==="
-          strace -f -e signal=all /tmp/glassc_bin >/tmp/dbg_o.txt 2>/tmp/dbg_strace.txt; echo "RUN exit=$?"
-          echo "--- strace signal/exit lines ---"; grep -E "SIG|--- |\+\+\+ " /tmp/dbg_strace.txt | tail -25
-          echo "--- binary stdout bytes ---"; wc -c /tmp/dbg_o.txt; tail -3 /tmp/dbg_o.txt
-          echo "=== mem after / dmesg ==="; free -m
-          sudo dmesg 2>/dev/null | tail -25 | grep -iE "oom|kill|glassc|segfault|stack" || echo "(no dmesg oom/kill)"
 
   # The project's defining invariant: native_glassc (the Glass-written compiler)
   # reproduces ITSELF and prism byte-identically, and its output matches the
