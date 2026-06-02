@@ -60,11 +60,13 @@ jobs:
           echo "=== native_glassc WITH stderr visible ==="
           /tmp/glass-native/native_glassc >/tmp/cc.log 2>&1; echo "native_glassc rc=$?"
           echo "emitted C: $(wc -c </tmp/glassc_out.c 2>/dev/null || echo MISSING) bytes ; binary: $(wc -c </tmp/glassc_bin 2>/dev/null || echo MISSING) bytes"
-          echo "=== now RUN the 967KB binary with ulimit -s 524288 (same shell — does the run succeed?) ==="
-          echo "default ulimit -s = $(ulimit -s)"
-          ulimit -s 524288 2>&1; echo "after set, ulimit -s = $(ulimit -s)"
-          /tmp/glassc_bin >/tmp/run.log 2>/tmp/run.err; echo "binary run rc=$?"
-          echo "--- binary stdout ---"; tail -3 /tmp/run.log; echo "--- stderr ---"; tail -3 /tmp/run.err
+          echo "=== call run_native.sh EXACTLY as glass.py does (the gate's real path) ==="
+          rm -f /tmp/glassc_bin
+          PYTHON=$(command -v python3.12 || command -v python3) bash examples/selfhost/run_native.sh /tmp/glass_prove_driver.glass >/tmp/rn.log 2>/tmp/rn.err
+          echo "run_native.sh rc=$?"
+          echo "binary it built: $(wc -c </tmp/glassc_bin 2>/dev/null || echo MISSING) bytes"
+          echo "--- run_native stdout (last 3) ---"; tail -3 /tmp/rn.log
+          echo "--- run_native stderr (last 5) ---"; tail -5 /tmp/rn.err
 
       - name: Run regression suite
         # v5.90-v5.92 fixed the Linux heavy-prove root causes (quartz GC compile + 512MB run stack) —
