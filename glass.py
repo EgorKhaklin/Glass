@@ -4120,6 +4120,12 @@ def main() -> None:
             # Goldilocks is bignum-heavy — run natively (the interpreter is ~hours).
             # run_native.sh builds native_glassc once, then compiles + runs the driver.
             _tmp = "/tmp/glass_prove_driver.glass"
+            # native_glassc's byte tokenizer can mis-lex high bytes (>127) on platforms where C `char`
+            # is signed (x86 Linux) but not where it's unsigned (arm64 macOS) — the prove bridge carries
+            # non-ASCII only in COMMENTS (², ω, ·, →, §), so replacing them with ASCII is semantics-
+            # preserving and keeps the generated driver portable. (Fixes a Linux-only parse error on the
+            # driver; the proper fix is unsigned-byte lexing in glassc.glass, a bootstrap-gated follow-up.)
+            driver = driver.encode("ascii", "ignore").decode("ascii")
             with open(_tmp, "w") as _f:
                 _f.write(driver)
             _w3 = "--witness3" in sys.argv[2:]
