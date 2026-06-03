@@ -488,11 +488,17 @@ horizon; 4 is prose; the rest are deferred/known.
      [`private_email.glass`](../examples/prove/private_email.glass), [`string_eq.glass`](../examples/prove/string_eq.glass).
    - **Still refused (the remaining bridge frontier):** **records & field access** (`ERec`/`ENamedRec`/`EField` —
      a multi-wire layout like tuples, but `EField` needs name→index resolution across function/input
-     boundaries via the `RecordDecl` field order); a **string-VALUED result** (a function *returning* a
-     string — multi-wire claim binding + a multi-wire result display, not just a scalar Bool/Int); **string
-     `match` / `PStr`** (a literal pattern selector via multi-wire equality, currently always-false); and
+     boundaries via the `RecordDecl` field order — tractably via a desugar-to-tuple-match pre-pass that
+     tracks record types through `let`s and rewrites `e.f` to `match e { (…) => f }`, plus extending
+     `twidth`/`find_type` to handle `RecordDecl`); a **string-VALUED result** (a function *returning* a
+     string — multi-wire claim binding + a multi-wire result display, not just a scalar Bool/Int); and
      *computed* higher-order callees (a function value chosen at runtime, not a named fn passed as an
      argument). Each needs its own faithful gadget or a principled refusal.
+   - **String `match` / `PStr`. ✅ LANDED v5.102.0.** `match s { "deploy" => 1; "status" => 2; _ => 0 }`
+     over a *private* string — provable allowlist membership / dispatch without revealing the string. The
+     cut reuses v5.101 entirely: `cgen`'s `psel(PStr)` selects via `mk_eq_wide` (the multi-wire per-codepoint
+     is-zero gadget) against the literal's codepoint wires (`estr_c`), and `heval`/`seval` decide the arm via
+     `vals_eq` — two arms changed, no new gate, no verifier change. Showcase [`private_allowlist.glass`](../examples/prove/private_allowlist.glass).
 
    **New frontiers identified while landing division (v5.84):**
    - **Signed / negative-aware comparison gadgets. ✅ LANDED v5.94.0** — `slt/sle/sgt/sge` prove

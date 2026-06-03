@@ -1444,6 +1444,38 @@ def main() -> int:
             print(f"        rc={_se.returncode}  out: {_se.stdout.strip()[-220:]}  err: {_se.stderr.strip()[-150:]}")
             failures += 1
 
+    # String `match` / PStr (v5.102): a string-literal pattern selects via the v5.101 multi-wire
+    # per-codepoint equality gadget — provable allowlist membership / dispatch over a PRIVATE string.
+    # `match cmd { "deploy" => 1; "rollback" => 2; "status" => 3; _ => 0 }`: cmd="deploy" -> 1 ACCEPT,
+    # witness3 AGREES (the command stays a private witness). Goldilocks native path.
+    _al_path = os.path.join(EX, "prove", "private_allowlist.glass")
+    _al = subprocess.run([sys.executable, GLASS, "prove", _al_path, 'cmd=deploy', "--cross-check"],
+                         capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_al, "string match: private cmd 'deploy' -> action 1 ACCEPT (allowlist dispatch, cmd hidden)"):
+        al_ok = (_al.returncode == 0) and ("result:  1" in _al.stdout) and ("ACCEPT" in _al.stdout) and ("THIRD LINEAGE AGREES" in _al.stdout)
+        print(f"  {'OK ' if al_ok else 'FAIL'}  string match: private cmd 'deploy' -> action 1 ACCEPT (allowlist dispatch, cmd hidden)")
+        if not al_ok:
+            print(f"        rc={_al.returncode}  out: {_al.stdout.strip()[-220:]}  err: {_al.stderr.strip()[-150:]}")
+            failures += 1
+    # Non-member falls through `_` to 0 (the per-codepoint compare discriminates; no string matches it).
+    _aln = subprocess.run([sys.executable, GLASS, "prove", _al_path, 'cmd=hack', "--cross-check"],
+                          capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_aln, "string match: non-member cmd 'hack' -> 0 (falls through _; no arm matches)"):
+        aln_ok = (_aln.returncode == 0) and ("result:  0" in _aln.stdout) and ("THIRD LINEAGE AGREES" in _aln.stdout)
+        print(f"  {'OK ' if aln_ok else 'FAIL'}  string match: non-member cmd 'hack' -> 0 (falls through _; no arm matches)")
+        if not aln_ok:
+            print(f"        rc={_aln.returncode}  out: {_aln.stdout.strip()[-220:]}  err: {_aln.stderr.strip()[-150:]}")
+            failures += 1
+    # Soundness: a false dispatch claim REJECTs. action("deploy") is 1, so claiming 2 is unsatisfiable.
+    _alf = subprocess.run([sys.executable, GLASS, "prove", "--claim", "2", _al_path, 'cmd=deploy'],
+                          capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_alf, "string match: false dispatch claim REJECTs (action 'deploy'=1; claim 2 is false)"):
+        alf_ok = ("proof:   REJECT" in _alf.stdout) and ("proof:   ACCEPT" not in _alf.stdout)
+        print(f"  {'OK ' if alf_ok else 'FAIL'}  string match: false dispatch claim REJECTs (action 'deploy'=1; claim 2 is false)")
+        if not alf_ok:
+            print(f"        rc={_alf.returncode}  out: {_alf.stdout.strip()[-220:]}  err: {_alf.stderr.strip()[-150:]}")
+            failures += 1
+
     # The unboxed single-Int Goldilocks field (goldw_*) must agree with the trusted
     # base-2^16 limb field (gold_*) and obey the field laws — the load-bearing
     # correctness of the "unbox the field" speed cut. (Interpreter check; the native
@@ -1657,7 +1689,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 33)  # +33: ... + witness3 + h3-merkle + tamper-fuzz + plain-name-surface + statement-binding + proof-corpus + dead-branch-predication + live-div0-ABSTAIN + wrong-divmod-claim-REJECT + higher-order guards + signed-cmp-ACCEPT + wrong-signed-claim-REJECT + signed-band-membership + signed-div-ACCEPT + wrong-signed-div-claim-REJECT + private-distance-sabs + string-prefix-ACCEPT + string-nonmatch-0 + string-false-claim-REJECT + string-email-suffix-ACCEPT
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 36)  # +36: ... + wrong-signed-div-claim-REJECT + private-distance-sabs + string-prefix-ACCEPT + string-nonmatch-0 + string-false-claim-REJECT + string-email-suffix-ACCEPT + strmatch-deploy-ACCEPT + strmatch-nonmember-0 + strmatch-false-claim-REJECT
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

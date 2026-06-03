@@ -1189,7 +1189,7 @@ fn heval_call(body: Expr, args: List<Expr>, ccenv: List<Pair<String, List<List<I
     ELam(p, inner) => match args { [] => heval(body, ccenv, fns, types); [a, ...rest] => match heval(a, fcenv, fns, types) { (va, ha) => match heval_call(inner, rest, [Pair(p, va)] ++ ccenv, fcenv, fns, types) { (vr, hr) => (vr, ha ++ hr) } } };
     _ => heval(body, ccenv, fns, types) }
 fn pmatch(p: Pattern, sv: List<List<Int>>, types: List<TypeDecl>) : Bool =
-  match p { PWild => true; PVar(x) => true; PInt(n) => bn_eq(vh(sv), glit(n)); PBool(bb) => bn_eq(vh(sv), if bb then glit(1) else glit(0)); PCtor(nm, ps) => if bn_eq(vh(sv), glit(ctag(types, nm))) then pmatch_fields(ps, ctor_argtypes(types, nm), sv, 1, types) else false; PTuple(ps) => pmatch_fields(ps, scalar_types_p(ps), sv, 0, types); PStr(s) => false; PRecord(nm, fs) => false }
+  match p { PWild => true; PVar(x) => true; PInt(n) => bn_eq(vh(sv), glit(n)); PBool(bb) => bn_eq(vh(sv), if bb then glit(1) else glit(0)); PCtor(nm, ps) => if bn_eq(vh(sv), glit(ctag(types, nm))) then pmatch_fields(ps, ctor_argtypes(types, nm), sv, 1, types) else false; PTuple(ps) => pmatch_fields(ps, scalar_types_p(ps), sv, 0, types); PStr(s) => vals_eq(sv, estr_v(s)); PRecord(nm, fs) => false }
 fn pmatch_fields(ps: List<Pattern>, tys: List<Type>, sv: List<List<Int>>, off: Int, types: List<TypeDecl>) : Bool =
   match ps { [] => true; [p, ...prest] => match tys { [] => true; [t, ...trest] =>
     let wt : Int = twidth(t, types, 12) in if pmatch(p, slw(sv, off, wt), types) then pmatch_fields(prest, trest, sv, off + wt, types) else false } }
@@ -1500,7 +1500,8 @@ fn psel(p: Pattern, sv: List<Int>, types: List<TypeDecl>, b: Build) : (Int, Buil
     PBool(bb) => match mkc(if bb then glit(1) else glit(0), b) { (wn, b1) => mk_eq_g(vhi(sv), wn, b1) };
     PCtor(nm, ps) => match mkc(glit(ctag(types, nm)), b) { (wn, b1) => match mk_eq_g(vhi(sv), wn, b1) { (s0, b2) => psel_fields(ps, ctor_argtypes(types, nm), sv, 1, types, s0, b2) } };
     PTuple(ps) => match mkc(glit(1), b) { (one, b1) => psel_fields(ps, scalar_types_p(ps), sv, 0, types, one, b1) };
-    PStr(s) => mkc(glit(0), b); PRecord(nm, fs) => mkc(glit(0), b) }
+    PStr(s) => match estr_c(str_codes(s), b) { (litws, b1) => mk_eq_wide(sv, litws, b1) };   # v5.102: string-literal arm selects by multi-wire codepoint equality
+    PRecord(nm, fs) => mkc(glit(0), b) }
 fn psel_fields(ps: List<Pattern>, tys: List<Type>, sv: List<Int>, off: Int, types: List<TypeDecl>, acc: Int, b: Build) : (Int, Build) =
   match ps { [] => (acc, b); [p, ...prest] => match tys { [] => (acc, b); [t, ...trest] =>
     let wt : Int = twidth(t, types, 12) in match psel(p, slwi(sv, off, wt), types, b) { (s, b1) => match mkm(acc, s, b1) { (acc2, b2) => psel_fields(prest, trest, sv, off + wt, types, acc2, b2) } } } }
