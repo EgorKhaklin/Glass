@@ -1,0 +1,19 @@
+# Prove a PRIVATE email belongs to an organization's domain — revealing only that it does.
+#
+#   glass prove examples/prove/private_email.glass email="ekhaklin@setonhill.edu"  # -> 1, ACCEPT
+#   glass prove examples/prove/private_email.glass email="someone@gmail.com"       # -> 0, ACCEPT
+#
+# `email` is a PRIVATE string (its codepoints live in the witness). The proof reveals the
+# public domain literal "@setonhill.edu" and the 0/1 verdict — not the address, not even its
+# local part. The verifier learns "this person is at Seton Hill" and nothing more: the
+# zero-knowledge org-membership credential.
+#
+# The suffix is a STATIC wire slice: `string_length(email)` is the (build-time-known) codepoint
+# count, so `substring(email, string_length(email) - 14, string_length(email))` selects the
+# last 14 codepoint wires (the bound is constant-folded at lowering), and `==` compares them to
+# the 14 wires of "@setonhill.edu" via the per-codepoint is-zero gadget. A different domain =>
+# the comparison is 0. No length leak beyond the public suffix, no value leak.
+fn at_org(email: String) : Bool =
+  substring(email, string_length(email) - 14, string_length(email)) == "@setonhill.edu"
+
+at_org(email)

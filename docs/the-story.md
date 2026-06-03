@@ -131,7 +131,22 @@ fn ident(x) : Int where (result == 0 || result == 1) = x
 The `where`-clause is the contract; the proof is the enforcement. *(This is the **default**
 for `glass prove` now: real source is proven over the production **Goldilocks** field —
 2⁶⁴, the field real provers use, no toy-field wraparound — including ordering comparisons
-`< > <= >=`. The toy Baby Bear field, `--baby-bear`, remains for full `match`-over-your-own-types.)*
+`< > <= >=`, integer and signed division, and **strings**. The toy Baby Bear field,
+`--baby-bear`, remains for full `match`-over-your-own-types.)*
+
+And it proves predicates over **private strings**. A string lowers as a sequence of
+codepoint wires — the same multi-wire shape as a tuple — so `++` is wire concatenation,
+`==` a per-character equality gadget, and `substring` a static slice; no new gate, no
+change to either verifier. The point is what that buys: prove a fact about a secret
+string without revealing it.
+
+```bash
+glass prove examples/prove/private_prefix.glass key="sk-live-9f3a2c7e1b"
+# substring(key, 0, 8) == "sk-live-"  ->  result 1, ACCEPT
+# the key is a private witness; only the prefix "sk-live-" and the verdict are public.
+glass prove examples/prove/private_email.glass email="ekhaklin@setonhill.edu"
+# the address is at the org domain "@setonhill.edu"  ->  1, ACCEPT, address hidden.
+```
 
 ## 6 — It proves what your code *touches*
 

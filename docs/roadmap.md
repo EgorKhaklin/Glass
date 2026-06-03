@@ -475,9 +475,24 @@ horizon; 4 is prose; the rest are deferred/known.
      function as an argument now prove: `unroll` already beta-reduced them to a first-order circuit,
      and the guard `seval` now resolves function-valued parameters via `fenv` (mirroring `unroll`'s
      `inline_fn`) instead of spuriously refusing them. `map(inc, [5,2,3])` → sum 13, ACCEPT.
-   - **Still refused (the remaining bridge frontier):** string `++` / string ops, records &
-     field access, and *computed* higher-order callees (a function value chosen at runtime, not a
-     named fn passed as an argument). Each needs its own faithful gadget or a principled refusal.
+   - **Strings. ✅ LANDED v5.101.0.** Prove a predicate over a **private string** in zero-knowledge —
+     `substring(key, 0, 8) == "sk-live-"` proves a private API key's prefix without revealing the key.
+     The cut: a string is already a **multi-wire value** (one codepoint wire per char, reusing the
+     ADT/tuple layout), so `++` is structural concat (no gate), `==`/`!=` the per-codepoint is-zero
+     gadget AND-folded to one 0/1 wire (unequal lengths → constant 0), `string_length` the static wire
+     count, `substring` a static wire slice (literal or computed-static bounds). **No new gate, no
+     `verify_b3`/Pentecost change** — the scalar `==` path stays byte-identical. Private string inputs
+     ride a unified multi-wire input model (an Int is the 1-wire case). Gated: ACCEPT + non-match→0 +
+     false-claim REJECT + Third-Witness AGREES + the independent Pentecost verifier ACCEPTs an emitted
+     string proof. Showcases: [`private_prefix.glass`](../examples/prove/private_prefix.glass),
+     [`private_email.glass`](../examples/prove/private_email.glass), [`string_eq.glass`](../examples/prove/string_eq.glass).
+   - **Still refused (the remaining bridge frontier):** **records & field access** (`ERec`/`ENamedRec`/`EField` —
+     a multi-wire layout like tuples, but `EField` needs name→index resolution across function/input
+     boundaries via the `RecordDecl` field order); a **string-VALUED result** (a function *returning* a
+     string — multi-wire claim binding + a multi-wire result display, not just a scalar Bool/Int); **string
+     `match` / `PStr`** (a literal pattern selector via multi-wire equality, currently always-false); and
+     *computed* higher-order callees (a function value chosen at runtime, not a named fn passed as an
+     argument). Each needs its own faithful gadget or a principled refusal.
 
    **New frontiers identified while landing division (v5.84):**
    - **Signed / negative-aware comparison gadgets. ✅ LANDED v5.94.0** — `slt/sle/sgt/sge` prove

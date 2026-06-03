@@ -99,7 +99,10 @@ The proof reveals only the result (`86`), not `inp`. Supported today: arithmetic
 boolean logic, `let`, function calls, `==`/`if`, and `match` over (nested) algebraic
 data types — plus **signed integers** in `[-2³¹, 2³¹)`: `slt`/`sle`/`sgt`/`sge`
 (signed comparison) and `sdiv`/`smod` (C99 truncated division), with negative results
-shown signed. Anything Glass cannot lower faithfully *abstains* loudly — it is never
+shown signed — and **strings**: `++` (concat), `==`/`!=`, `string_length`, and `substring`,
+so you can prove a predicate over a *private* string (e.g. `substring(key,0,8)=="sk-live-"` —
+prove a credential's prefix without revealing the key; pass a string input as `name="..."`).
+Anything Glass cannot lower faithfully *abstains* loudly — it is never
 silently proven. The prover is written in Glass itself — see
 [the prove bridge](../examples/prove/).
 

@@ -1,0 +1,18 @@
+# Prove a PRIVATE credential is a "live" key — revealing only that it is, never the key.
+#
+#   glass prove examples/prove/private_prefix.glass key="sk-live-9f3a2c7e1b"   # -> result: 1, ACCEPT
+#   glass prove examples/prove/private_prefix.glass key="sk-test-0000000000"   # -> result: 0, ACCEPT
+#
+# The zero-knowledge string predicate. `key` is a PRIVATE string input (kept in the
+# witness as a sequence of codepoint wires); only the public prefix "sk-live-" and the
+# 0/1 verdict are revealed. The verifier learns the key is a live key — and nothing else
+# about it.
+#
+# `substring(key, 0, 8)` slices the first 8 codepoint wires (a static circuit slice), and
+# `==` compares them to the 8 wires of the literal "sk-live-" via the per-codepoint is-zero
+# gadget. A key with a different prefix makes the comparison 0 — no length leak, no value
+# leak. The same shape proves "this token is for the prod environment", "this account id is
+# in the admin namespace", etc., without disclosure.
+fn is_live(key: String) : Bool = substring(key, 0, 8) == "sk-live-"
+
+is_live(key)

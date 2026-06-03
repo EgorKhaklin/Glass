@@ -1,0 +1,15 @@
+# Strings in zero-knowledge — the simplest case: a string equality, proven.
+#
+#   glass prove examples/prove/string_eq.glass        # -> result: 1, ACCEPT
+#
+# A string is not a field element, so "strings can't be proven" was the long-standing
+# refusal. The cut: a string IS a value — a fixed-width sequence of codepoint wires,
+# exactly the multi-wire layout ADTs and tuples already use. `++` is structural wire
+# concatenation (no gate); `==` is the per-codepoint is-zero gadget, AND-folded into one
+# 0/1 wire (different lengths => not equal, decided at circuit-build time). No new gate
+# type, no verifier change — the existing Goldilocks gate model proves it.
+#
+# Here `"Hello, " ++ "World"` lowers to 12 codepoint wires and `==` compares them to the
+# 12 wires of "Hello, World": equal => R = 1. (See private_prefix.glass / private_email.glass
+# for the zero-knowledge payoff: the same machinery over a PRIVATE string input.)
+("Hello, " ++ "World") == "Hello, World"

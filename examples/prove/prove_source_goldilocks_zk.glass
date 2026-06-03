@@ -1067,7 +1067,7 @@ fn unroll(e: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: In
     # here without breaking every recursive program. The genuine-error fallbacks below DO
     # refuse loudly (unresolved / higher-order callee — programs the bridge cannot lower).
     EApp(f, a) => if fuel <= 0 then EInt(0) else match unwind_app(EApp(f, a), []) { (hd, args) => match hd {
-      EVar(fname) => if is_scmp(fname) then (match args { [sa, sb] => unroll(scmp_desugar(fname, sa, sb), fns, fenv, fuel); _ => error("glass prove: signed comparison '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sdiv(fname) then (match args { [da, db] => unroll(sdiv_desugar(fname, da, db), fns, fenv, fuel); _ => error("glass prove: signed division '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sabs(fname) then (match args { [za] => unroll(sabs_desugar(za), fns, fenv, fuel); _ => error("glass prove: 'sabs' expects exactly 1 argument") }) else if is_sutil2(fname) then (match args { [ua, ub] => unroll(sutil2_desugar(fname, ua, ub), fns, fenv, fuel); _ => error("glass prove: signed '" ++ fname ++ "' expects exactly 2 arguments") }) else (let tgt : String = resolve_fn(fname, fns, fenv) in if tgt == "" then error("glass prove: unresolved call to '" ++ fname ++ "' — the prove bridge cannot lower this construct to a gate circuit (a silent proven-0 is refused)") else inline_fn(fn_body_of(fns, tgt), args, fns, fenv, fuel));
+      EVar(fname) => if is_scmp(fname) then (match args { [sa, sb] => unroll(scmp_desugar(fname, sa, sb), fns, fenv, fuel); _ => error("glass prove: signed comparison '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sdiv(fname) then (match args { [da, db] => unroll(sdiv_desugar(fname, da, db), fns, fenv, fuel); _ => error("glass prove: signed division '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sabs(fname) then (match args { [za] => unroll(sabs_desugar(za), fns, fenv, fuel); _ => error("glass prove: 'sabs' expects exactly 1 argument") }) else if is_sutil2(fname) then (match args { [ua, ub] => unroll(sutil2_desugar(fname, ua, ub), fns, fenv, fuel); _ => error("glass prove: signed '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_strfn(fname) then app_of(EVar(fname), unroll_args(args, fns, fenv, fuel)) else (let tgt : String = resolve_fn(fname, fns, fenv) in if tgt == "" then error("glass prove: unresolved call to '" ++ fname ++ "' — the prove bridge cannot lower this construct to a gate circuit (a silent proven-0 is refused)") else inline_fn(fn_body_of(fns, tgt), args, fns, fenv, fuel));
       _ => error("glass prove: unsupported call form (computed or higher-order callee) — cannot lower to a gate circuit (a silent proven-0 is refused)") } };
     EAdd(x, y) => EAdd(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
     ESub(x, y) => ESub(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
@@ -1088,6 +1088,7 @@ fn unroll(e: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: In
     EGe(x, y) => EGe(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
     EDiv(x, y) => EDiv(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
     EMod(x, y) => EMod(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
+    EConcat(x, y) => EConcat(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
     _ => e }
 
 fn env_get2(env: List<Pair<String, Int>>, name: String) : Int = match env { [] => 0 - 1; [Pair(k, v), ...r] => if k == name then v else env_get2(r, name) }
@@ -1128,9 +1129,11 @@ fn heval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, t
     ESub(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) => ([fsub(vh(va), vh(vb))], ha ++ hb) } };
     EMul(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) => ([fmul(vh(va), vh(vb))], ha ++ hb) } };
     EEq(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) =>
-      let d : List<Int> = fsub(vh(va), vh(vb)) in ([if bn_is_zero(d) then glit(1) else glit(0)], ha ++ hb ++ [if bn_is_zero(d) then glit(0) else finv(d)]) } };
+      if (llen(va) == 1) && (llen(vb) == 1) then (let d : List<Int> = fsub(vh(va), vh(vb)) in ([if bn_is_zero(d) then glit(1) else glit(0)], ha ++ hb ++ [if bn_is_zero(d) then glit(0) else finv(d)]))
+      else ([if vals_eq(va, vb) then glit(1) else glit(0)], ha ++ hb) } };
     ENeq(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) =>
-      let d : List<Int> = fsub(vh(va), vh(vb)) in ([if bn_is_zero(d) then glit(0) else glit(1)], ha ++ hb ++ [if bn_is_zero(d) then glit(0) else finv(d)]) } };
+      if (llen(va) == 1) && (llen(vb) == 1) then (let d : List<Int> = fsub(vh(va), vh(vb)) in ([if bn_is_zero(d) then glit(0) else glit(1)], ha ++ hb ++ [if bn_is_zero(d) then glit(0) else finv(d)]))
+      else ([if vals_eq(va, vb) then glit(0) else glit(1)], ha ++ hb) } };
     EAnd(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) => ([fmul(vh(va), vh(vb))], ha ++ hb) } };
     EOr(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) => ([fsub(fadd(vh(va), vh(vb)), fmul(vh(va), vh(vb)))], ha ++ hb) } };
     EUNot(a) => match heval(a, env, fns, types) { (va, ha) => ([fsub(glit(1), vh(va))], ha) };
@@ -1138,7 +1141,9 @@ fn heval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, t
     ELet(nm, v, body) => match heval(v, env, fns, types) { (vv, hv) => match heval(body, [Pair(nm, vv)] ++ env, fns, types) { (vb, hb) => (vb, hv ++ hb) } };
     ECtor(name, args) => match heval_fields(args, ctor_argtypes(types, name), env, fns, types) { (vals, hs) => ([glit(ctag(types, name))] ++ vals, hs) };
     ETuple(elems) => heval_fields(elems, scalar_types_e(elems), env, fns, types);
-    EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => heval_call(fn_body_of(fns, fname), args, [], env, fns, types); _ => error("glass prove: unsupported call form (computed or higher-order callee) in the reference evaluator — refusing rather than silently proving 0") } };
+    EStr(s) => (estr_v(s), []);
+    EConcat(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) => (va ++ vb, ha ++ hb) } };
+    EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => if is_strfn(fname) then heval_strfn(fname, args, env, fns, types) else heval_call(fn_body_of(fns, fname), args, [], env, fns, types); _ => error("glass prove: unsupported call form (computed or higher-order callee) in the reference evaluator — refusing rather than silently proving 0") } };
     EMatch(scrut, arms) => match heval(scrut, env, fns, types) { (sv, hs) => match heval_match(sv, arms, env, fns, types) { (rv, ha) => (rv, hs ++ ha) } };
     ELt(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) =>
       let xa : List<Int> = vh(va) in let xb : List<Int> = vh(vb) in
@@ -1173,6 +1178,12 @@ fn heval_fields(args: List<Expr>, tys: List<Type>, env: List<Pair<String, List<L
   match args { [] => ([], []); [a, ...arest] => match tys { [] => ([], []); [t, ...trest] =>
     match heval(a, env, fns, types) { (va, ha) => match heval_fields(arest, trest, env, fns, types) { (vr, hr) =>
       (padw(va, twidth(t, types, 12)) ++ vr, ha ++ hr) } } } }
+# string intrinsics in the reference evaluator: string_length -> the (static) wire count; substring
+# -> a static wire slice (bounds via cval_h). Both structural — they read the multi-wire value.
+fn heval_strfn(fname: String, args: List<Expr>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>) : (List<List<Int>>, List<List<Int>>) =
+  if fname == "string_length"
+  then (match args { [s] => match heval(s, env, fns, types) { (sv, hs) => ([glit(llen(sv))], hs) }; _ => error("glass prove: string_length expects exactly 1 argument") })
+  else (match args { [s, lo, hi] => match heval(s, env, fns, types) { (sv, hs) => let l : Int = cval_h(lo, env) in (slw(sv, l, cval_h(hi, env) - l), hs) }; _ => error("glass prove: substring expects exactly 3 arguments") })
 fn heval_call(body: Expr, args: List<Expr>, ccenv: List<Pair<String, List<List<Int>>>>, fcenv: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>) : (List<List<Int>>, List<List<Int>>) =
   match body {
     ELam(p, inner) => match args { [] => heval(body, ccenv, fns, types); [a, ...rest] => match heval(a, fcenv, fns, types) { (va, ha) => match heval_call(inner, rest, [Pair(p, va)] ++ ccenv, fcenv, fns, types) { (vr, hr) => (vr, ha ++ hr) } } };
@@ -1231,8 +1242,10 @@ fn seval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, t
     EAdd(a, b) => [fadd(vh(seval(a, env, fns, types, fenv, fuel)), vh(seval(b, env, fns, types, fenv, fuel)))];
     ESub(a, b) => [fsub(vh(seval(a, env, fns, types, fenv, fuel)), vh(seval(b, env, fns, types, fenv, fuel)))];
     EMul(a, b) => [fmul(vh(seval(a, env, fns, types, fenv, fuel)), vh(seval(b, env, fns, types, fenv, fuel)))];
-    EEq(a, b) => let d : List<Int> = fsub(vh(seval(a, env, fns, types, fenv, fuel)), vh(seval(b, env, fns, types, fenv, fuel))) in [if bn_is_zero(d) then glit(1) else glit(0)];
-    ENeq(a, b) => let d : List<Int> = fsub(vh(seval(a, env, fns, types, fenv, fuel)), vh(seval(b, env, fns, types, fenv, fuel))) in [if bn_is_zero(d) then glit(0) else glit(1)];
+    EEq(a, b) => let va : List<List<Int>> = seval(a, env, fns, types, fenv, fuel) in let vb : List<List<Int>> = seval(b, env, fns, types, fenv, fuel) in
+      if (llen(va) == 1) && (llen(vb) == 1) then (let d : List<Int> = fsub(vh(va), vh(vb)) in [if bn_is_zero(d) then glit(1) else glit(0)]) else [if vals_eq(va, vb) then glit(1) else glit(0)];
+    ENeq(a, b) => let va : List<List<Int>> = seval(a, env, fns, types, fenv, fuel) in let vb : List<List<Int>> = seval(b, env, fns, types, fenv, fuel) in
+      if (llen(va) == 1) && (llen(vb) == 1) then (let d : List<Int> = fsub(vh(va), vh(vb)) in [if bn_is_zero(d) then glit(0) else glit(1)]) else [if vals_eq(va, vb) then glit(0) else glit(1)];
     EAnd(a, b) => [fmul(vh(seval(a, env, fns, types, fenv, fuel)), vh(seval(b, env, fns, types, fenv, fuel)))];
     EOr(a, b) => let va : List<Int> = vh(seval(a, env, fns, types, fenv, fuel)) in let vb : List<Int> = vh(seval(b, env, fns, types, fenv, fuel)) in [fsub(fadd(va, vb), fmul(va, vb))];
     EUNot(a) => [fsub(glit(1), vh(seval(a, env, fns, types, fenv, fuel)))];
@@ -1240,8 +1253,10 @@ fn seval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, t
     ELet(nm, v, body) => seval(body, [Pair(nm, seval(v, env, fns, types, fenv, fuel))] ++ env, fns, types, fenv, fuel);
     ECtor(name, args) => [glit(ctag(types, name))] ++ seval_fields(args, ctor_argtypes(types, name), env, fns, types, fenv, fuel);
     ETuple(elems) => seval_fields(elems, scalar_types_e(elems), env, fns, types, fenv, fuel);
+    EStr(s) => estr_v(s);
+    EConcat(a, b) => seval(a, env, fns, types, fenv, fuel) ++ seval(b, env, fns, types, fenv, fuel);
     EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd {
-      EVar(fname) => if is_scmp(fname) then (match args { [sa, sb] => seval(scmp_desugar(fname, sa, sb), env, fns, types, fenv, fuel); _ => error("glass prove: signed comparison '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sdiv(fname) then (match args { [da, db] => seval(sdiv_desugar(fname, da, db), env, fns, types, fenv, fuel); _ => error("glass prove: signed division '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sabs(fname) then (match args { [za] => seval(sabs_desugar(za), env, fns, types, fenv, fuel); _ => error("glass prove: 'sabs' expects exactly 1 argument") }) else if is_sutil2(fname) then (match args { [ua, ub] => seval(sutil2_desugar(fname, ua, ub), env, fns, types, fenv, fuel); _ => error("glass prove: signed '" ++ fname ++ "' expects exactly 2 arguments") }) else if fuel <= 0 then error("glass prove: recursion depth exceeds the unroll bound (" ++ int_to_string(unroll_fuel(0)) ++ "); refusing to prove a depth-truncated result — it would otherwise be a silently wrong value with a valid-looking proof (the program needs statically-bounded, shallower recursion)") else (let tgt : String = resolve_fn(fname, fns, fenv) in if tgt == "" then error("glass prove: unresolved call to '" ++ fname ++ "' in the reference evaluator") else seval_call(fn_body_of(fns, tgt), args, [], env, [], fenv, fns, types, fuel));
+      EVar(fname) => if is_scmp(fname) then (match args { [sa, sb] => seval(scmp_desugar(fname, sa, sb), env, fns, types, fenv, fuel); _ => error("glass prove: signed comparison '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sdiv(fname) then (match args { [da, db] => seval(sdiv_desugar(fname, da, db), env, fns, types, fenv, fuel); _ => error("glass prove: signed division '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sabs(fname) then (match args { [za] => seval(sabs_desugar(za), env, fns, types, fenv, fuel); _ => error("glass prove: 'sabs' expects exactly 1 argument") }) else if is_sutil2(fname) then (match args { [ua, ub] => seval(sutil2_desugar(fname, ua, ub), env, fns, types, fenv, fuel); _ => error("glass prove: signed '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_strfn(fname) then seval_strfn(fname, args, env, fns, types, fenv, fuel) else if fuel <= 0 then error("glass prove: recursion depth exceeds the unroll bound (" ++ int_to_string(unroll_fuel(0)) ++ "); refusing to prove a depth-truncated result — it would otherwise be a silently wrong value with a valid-looking proof (the program needs statically-bounded, shallower recursion)") else (let tgt : String = resolve_fn(fname, fns, fenv) in if tgt == "" then error("glass prove: unresolved call to '" ++ fname ++ "' in the reference evaluator") else seval_call(fn_body_of(fns, tgt), args, [], env, [], fenv, fns, types, fuel));
       _ => error("glass prove: unsupported call form (computed or higher-order callee) in the reference evaluator") } };
     EMatch(scrut, arms) => seval_match(seval(scrut, env, fns, types, fenv, fuel), arms, env, fns, types, fenv, fuel);
     ELt(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fenv, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fenv, fuel)) in
@@ -1260,6 +1275,11 @@ fn seval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, t
 fn seval_fields(args: List<Expr>, tys: List<Type>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>, fenv: List<Pair<String, String>>, fuel: Int) : List<List<Int>> =
   match args { [] => []; [a, ...arest] => match tys { [] => []; [t, ...trest] =>
     padw(seval(a, env, fns, types, fenv, fuel), twidth(t, types, 12)) ++ seval_fields(arest, trest, env, fns, types, fenv, fuel) } }
+# string intrinsics in the guard evaluator (mirrors heval_strfn so the guard's value matches).
+fn seval_strfn(fname: String, args: List<Expr>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>, fenv: List<Pair<String, String>>, fuel: Int) : List<List<Int>> =
+  if fname == "string_length"
+  then (match args { [s] => [glit(llen(seval(s, env, fns, types, fenv, fuel)))]; _ => error("glass prove: string_length expects exactly 1 argument") })
+  else (match args { [s, lo, hi] => let sv : List<List<Int>> = seval(s, env, fns, types, fenv, fuel) in let l : Int = cval_h(lo, env) in slw(sv, l, cval_h(hi, env) - l); _ => error("glass prove: substring expects exactly 3 arguments") })
 # seval_call mirrors inline_fn: a fn-valued arg (resolvable in the CALLER's f_fenv) binds the param
 # into the CALLEE's c_fenv (no fuel decrement); a value arg is seval'd in the caller's env and binds
 # into ccenv. ccenv/c_fenv start empty (fresh callee scope); fcenv/f_fenv are the caller's.
@@ -1292,6 +1312,57 @@ fn muxw(wc: Int, vt: List<Int>, vf: List<Int>, b: Build) : (List<Int>, Build) =
   match vt { [] => ([], b); [t, ...tr] => match vf { [] => ([], b); [f, ...fr] =>
     match mks(t, f, b) { (wd, b1) => match mkm(wc, wd, b1) { (wcd, b2) => match mka(f, wcd, b2) { (wo, b3) =>
     match muxw(wc, tr, fr, b3) { (rest, b4) => ([wo] ++ rest, b4) } } } } } }
+
+# --- strings as multi-wire codepoint values (v5.101) -------------------------
+# "strings can't be field-proven" was the long-standing refusal. The cut: a string IS a value,
+# and the value model is ALREADY multi-wire (scalar [v]; ADT [tag,..]; tuple [a,b]). So a string
+# is just a tuple of codepoints — one wire per character. "ab" -> [glit(97), glit(98)]. `++`
+# concatenates wire lists (structural, NO gate); `==` is the per-codepoint is-zero gadget
+# AND-folded to one 0/1 wire (unequal lengths -> a constant 0, decided at build time);
+# `string_length` is the (static) wire count; `substring` a static wire slice. No new gate type,
+# no verify_b3 / Pentecost change — the SAME Goldilocks gate model proves it. Bridge-only (not
+# bootstrap-critical). The native dialect has no `ord`, so a literal's codepoints come from
+# string_index_of into the printable-ASCII table (a char outside 32..126 ABSTAINs, never a wrong
+# proof). The scalar (width-1) `==` path is preserved byte-for-byte, so every prior arithmetic /
+# comparison proof, the corpus fixtures, and the Name are unchanged.
+fn is_strfn(n: String) : Bool = (n == "string_length") || (n == "substring")
+fn ascii_tbl(u: Int) : String = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+fn char_code(c: String) : Int = match string_index_of(ascii_tbl(0), c) { Some(idx) => 32 + idx; None => error("glass prove: a proven string has a non-printable / non-ASCII character (only codepoints 32..126 lower to the field) — ABSTAIN, not a wrong proof") }
+fn str_cps(s: String, i: Int, n: Int) : List<Int> = if i >= n then [] else [char_code(substring(s, i, i + 1))] ++ str_cps(s, i + 1, n)
+fn str_codes(s: String) : List<Int> = str_cps(s, 0, string_length(s))
+fn app_of(hd: Expr, args: List<Expr>) : Expr = match args { [] => hd; [a, ...r] => app_of(EApp(hd, a), r) }
+# heval/seval values are List<List<Int>> (a wire = a bignum); cgen values are List<Int> (wire indices).
+fn str_wires_v(cps: List<Int>) : List<List<Int>> = match cps { [] => []; [c, ...r] => [glit(c)] ++ str_wires_v(r) }
+fn estr_v(s: String) : List<List<Int>> = str_wires_v(str_codes(s))
+fn estr_c(cps: List<Int>, b: Build) : (List<Int>, Build) = match cps { [] => ([], b); [c, ...r] => match mkc(glit(c), b) { (w, b1) => match estr_c(r, b1) { (ws, b2) => ([w] ++ ws, b2) } } }
+# multi-wire structural equality -> ONE 0/1 wire. Width-1 stays the EXACT scalar mk_eq_g path
+# (byte-identical); only multi-wire (string/ADT/tuple) operands AND-fold; unequal lengths -> 0.
+fn eqfold_g(vx: List<Int>, vy: List<Int>, acc: Int, b: Build) : (Int, Build) =
+  match vx { [] => (acc, b); [x, ...xr] => match vy { [] => (acc, b); [y, ...yr] =>
+    match mk_eq_g(x, y, b) { (e, b1) => match mkm(acc, e, b1) { (acc2, b2) => eqfold_g(xr, yr, acc2, b2) } } } }
+fn mk_eq_wide(vx: List<Int>, vy: List<Int>, b: Build) : (Int, Build) =
+  if ilenI(vx) == ilenI(vy)
+  then (if ilenI(vx) == 1 then mk_eq_g(vhi(vx), vhi(vy), b)
+        else match mkc(glit(1), b) { (one, b1) => eqfold_g(vx, vy, one, b1) })
+  else mkc(glit(0), b)
+# reference (heval/seval) structural equality on bignum-wire values, matching mk_eq_wide.
+fn alleq_v(vx: List<List<Int>>, vy: List<List<Int>>) : Bool =
+  match vx { [] => true; [x, ...xr] => match vy { [] => true; [y, ...yr] => if bn_is_zero(fsub(x, y)) then alleq_v(xr, yr) else false } }
+fn vals_eq(vx: List<List<Int>>, vy: List<List<Int>>) : Bool = if llen(vx) == llen(vy) then alleq_v(vx, vy) else false
+# substring bounds must be STATIC (literals, +,-,*, string_length of a var/literal) — the circuit
+# slice offset is build-time. cval_h evaluates a bound from heval/seval values; cval_c from cgen wires.
+fn cg_width_c(s: Expr, cenv: List<Pair<String, List<Int>>>) : Int = match s { EVar(x) => ilenI(cenv_get(cenv, x)); EStr(t) => string_length(t); _ => error("glass prove: string_length expects a string variable or literal in a substring bound") }
+fn cval_c(e: Expr, cenv: List<Pair<String, List<Int>>>) : Int =
+  match e { EInt(n) => n;
+    EAdd(a, b) => cval_c(a, cenv) + cval_c(b, cenv); ESub(a, b) => cval_c(a, cenv) - cval_c(b, cenv); EMul(a, b) => cval_c(a, cenv) * cval_c(b, cenv);
+    EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(nm) => if nm == "string_length" then (match args { [s] => cg_width_c(s, cenv); _ => error("glass prove: string_length expects 1 argument") }) else error("glass prove: a substring bound may only use literals, + - *, and string_length"); _ => error("glass prove: a substring bound may only use literals, + - *, and string_length") } };
+    _ => error("glass prove: a substring bound must be a STATIC expression (literals, + - *, string_length) — a witness-dependent slice cannot lower to a fixed circuit") }
+fn cg_width_h(s: Expr, env: List<Pair<String, List<List<Int>>>>) : Int = match s { EVar(x) => llen(heg(env, x)); EStr(t) => string_length(t); _ => error("glass prove: string_length expects a string variable or literal in a substring bound") }
+fn cval_h(e: Expr, env: List<Pair<String, List<List<Int>>>>) : Int =
+  match e { EInt(n) => n;
+    EAdd(a, b) => cval_h(a, env) + cval_h(b, env); ESub(a, b) => cval_h(a, env) - cval_h(b, env); EMul(a, b) => cval_h(a, env) * cval_h(b, env);
+    EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(nm) => if nm == "string_length" then (match args { [s] => cg_width_h(s, env); _ => error("glass prove: string_length expects 1 argument") }) else error("glass prove: a substring bound may only use literals, + - *, and string_length"); _ => error("glass prove: a substring bound may only use literals, + - *, and string_length") } };
+    _ => error("glass prove: a substring bound must be a STATIC expression (literals, + - *, string_length) — a witness-dependent slice cannot lower to a fixed circuit") }
 
 # --- ordering comparisons (< > <= >=) — sound, range-bounded gadget --------
 # A field comparison a<b is meaningful only if BOTH operands are PROVABLY in
@@ -1391,8 +1462,8 @@ fn cgen(e: Expr, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: 
     EAdd(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match mka(vhi(vx), vhi(vy), b2) { (wo, b3) => ([wo], b3) } } };
     ESub(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match mks(vhi(vx), vhi(vy), b2) { (wo, b3) => ([wo], b3) } } };
     EMul(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match mkm(vhi(vx), vhi(vy), b2) { (wo, b3) => ([wo], b3) } } };
-    EEq(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match mk_eq_g(vhi(vx), vhi(vy), b2) { (wo, b3) => ([wo], b3) } } };
-    ENeq(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match mk_eq_g(vhi(vx), vhi(vy), b2) { (weq, b3) => match mkc(glit(1), b3) { (wone, b4) => match mks(wone, weq, b4) { (wo, b5) => ([wo], b5) } } } } };
+    EEq(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match mk_eq_wide(vx, vy, b2) { (wo, b3) => ([wo], b3) } } };
+    ENeq(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match mk_eq_wide(vx, vy, b2) { (weq, b3) => match mkc(glit(1), b3) { (wone, b4) => match mks(wone, weq, b4) { (wo, b5) => ([wo], b5) } } } } };
     EAnd(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match mkm(vhi(vx), vhi(vy), b2) { (wo, b3) => ([wo], b3) } } };
     EOr(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match mka(vhi(vx), vhi(vy), b2) { (ws, b3) => match mkm(vhi(vx), vhi(vy), b3) { (wp, b4) => match mks(ws, wp, b4) { (wo, b5) => ([wo], b5) } } } } };
     EUNot(x) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match mkc(glit(1), b1) { (wone, b2) => match mks(wone, vhi(vx), b2) { (wo, b3) => ([wo], b3) } } };
@@ -1400,7 +1471,9 @@ fn cgen(e: Expr, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: 
     ELet(nm, v, body) => match cgen(v, cenv, fns, types, b) { (vv, b1) => cgen(body, [Pair(nm, vv)] ++ cenv, fns, types, b1) };
     ECtor(name, args) => match mkc(glit(ctag(types, name)), b) { (wtag, b1) => match cgen_fields(args, ctor_argtypes(types, name), cenv, fns, types, b1) { (fws, b2) => ([wtag] ++ fws, b2) } };
     ETuple(elems) => cgen_fields(elems, scalar_types_e(elems), cenv, fns, types, b);
-    EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => cgen_call(fn_body_of(fns, fname), args, [], cenv, fns, types, b); _ => error("glass prove: unsupported call form (computed or higher-order callee) in cgen — refusing rather than silently building a 0 circuit") } };
+    EStr(s) => estr_c(str_codes(s), b);
+    EConcat(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => (vx ++ vy, b2) } };
+    EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => if is_strfn(fname) then cgen_strfn(fname, args, cenv, fns, types, b) else cgen_call(fn_body_of(fns, fname), args, [], cenv, fns, types, b); _ => error("glass prove: unsupported call form (computed or higher-order callee) in cgen — refusing rather than silently building a 0 circuit") } };
     EMatch(scrut, arms) => match cgen(scrut, cenv, fns, types, b) { (sv, b1) => match mkc(glit(0), b1) { (zm, b2) => cgen_match(arms, sv, cenv, fns, types, zm, [], b2) } };
     ELt(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match lt_build(vhi(vx), vhi(vy), b2) { (wlt, b3) => ([wlt], b3) } } };
     EGt(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match lt_build(vhi(vy), vhi(vx), b2) { (wlt, b3) => ([wlt], b3) } } };
@@ -1415,6 +1488,12 @@ fn cgen_fields(args: List<Expr>, tys: List<Type>, cenv: List<Pair<String, List<I
     match cgen_fields(arest, trest, cenv, fns, types, b2) { (vr, b3) => (pva ++ vr, b3) } } } } }
 fn cgen_call(body: Expr, args: List<Expr>, ccenv: List<Pair<String, List<Int>>>, fcenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: List<TypeDecl>, b: Build) : (List<Int>, Build) =
   match body { ELam(p, inner) => match args { [] => cgen(body, ccenv, fns, types, b); [a, ...rest] => match cgen(a, fcenv, fns, types, b) { (va, b1) => cgen_call(inner, rest, [Pair(p, va)] ++ ccenv, fcenv, fns, types, b1) } }; _ => cgen(body, ccenv, fns, types, b) }
+# string intrinsics in the circuit generator: string_length -> a GConst of the (static) wire count;
+# substring -> a static slice of the operand's wire indices (no gate, the wires already exist).
+fn cgen_strfn(fname: String, args: List<Expr>, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: List<TypeDecl>, b: Build) : (List<Int>, Build) =
+  if fname == "string_length"
+  then (match args { [s] => match cgen(s, cenv, fns, types, b) { (sv, b1) => match mkc(glit(ilenI(sv)), b1) { (w, b2) => ([w], b2) } }; _ => error("glass prove: string_length expects exactly 1 argument") })
+  else (match args { [s, lo, hi] => match cgen(s, cenv, fns, types, b) { (sv, b1) => let l : Int = cval_c(lo, cenv) in (slwi(sv, l, cval_c(hi, cenv) - l), b1) }; _ => error("glass prove: substring expects exactly 3 arguments") })
 fn psel(p: Pattern, sv: List<Int>, types: List<TypeDecl>, b: Build) : (Int, Build) =
   match p { PWild => mkc(glit(1), b); PVar(x) => mkc(glit(1), b);
     PInt(n) => match mkc(glit(n), b) { (wn, b1) => mk_eq_g(vhi(sv), wn, b1) };
@@ -1524,20 +1603,32 @@ fn build_claim(src: String, inputs: List<Pair<String, Int>>, claimedR: List<Int>
     match mkc(claimedR, b) { (wR, b1) => match mks(out, wR, b1) { (wd, b2) => mke(wd, b2) } } }
 fn gprove(src: String, inputs: List<Pair<String, Int>>, claimedR: List<Int>, seed: Int) : Bool =
   match build_claim(src, inputs, claimedR) { Build(n, gs, w) => prove_stark(gs, w, seed) }
-# --- R1b stage 3: multi-wire prove path (cgen) — proves programs that USE ADTs ---
-# scalar inputs sit on low wires [0..n); each binds to a single-wire value [i].
-fn in_cenv_m(inputs: List<Pair<String, Int>>, i: Int) : List<Pair<String, List<Int>>> =
-  match inputs { [] => []; [Pair(nm, v), ...r] => [Pair(nm, [i])] ++ in_cenv_m(r, i + 1) }
-fn build_multi_m(src: String, inputs: List<Pair<String, Int>>) : (List<Int>, Build) =
+# --- R1b stage 3: multi-wire prove path (cgen) — proves programs that USE ADTs / STRINGS ---
+# v5.101: an input is a MULTI-WIRE value. An Int is the 1-wire case [v]; a STRING is its codepoints
+# [c0, c1, ..] (one private wire per character). Each input occupies CONSECUTIVE low wires; ints stay
+# 1 wire each, so the wire layout for any all-int program is IDENTICAL to pre-v5.101 (every prior proof
+# byte-identical). Codepoints (>= 0) lower via the SAME gin as ints (gin(c) == glit(c)), so one rule
+# binds both. ints_to_minput lifts a legacy int-input list into this representation (for the demo).
+fn span_w(base: Int, k: Int) : List<Int> = if k <= 0 then [] else [base] ++ span_w(base + 1, k - 1)
+fn in_cenv_m(inputs: List<Pair<String, List<Int>>>, base: Int) : List<Pair<String, List<Int>>> =
+  match inputs { [] => []; [Pair(nm, vs), ...r] => let k : Int = ilenI(vs) in [Pair(nm, span_w(base, k))] ++ in_cenv_m(r, base + k) }
+fn map_gin(vs: List<Int>) : List<List<Int>> = match vs { [] => []; [v, ...r] => [gin(v)] ++ map_gin(r) }
+fn min_vals(inputs: List<Pair<String, List<Int>>>) : List<List<Int>> =
+  match inputs { [] => []; [Pair(nm, vs), ...r] => map_gin(vs) ++ min_vals(r) }
+fn min_iplen(inputs: List<Pair<String, List<Int>>>) : Int = match inputs { [] => 0; [Pair(nm, vs), ...r] => ilenI(vs) + min_iplen(r) }
+fn ints_to_minput(xs: List<Pair<String, Int>>) : List<Pair<String, List<Int>>> =
+  match xs { [] => []; [Pair(nm, v), ...r] => [Pair(nm, [v])] ++ ints_to_minput(r) }
+fn build_multi_m(src: String, inputs: List<Pair<String, List<Int>>>) : (List<Int>, Build) =
   match parse_prog(src) { Program(types, fns, main) =>
-    cgen(unroll(main, fns, [], unroll_fuel(0)), in_cenv_m(inputs, 0), fns, types, Build(iplen(inputs), [], in_vals_g(inputs))) }
-fn gref_m(src: String, inputs: List<Pair<String, Int>>) : List<List<Int>> =
+    cgen(unroll(main, fns, [], unroll_fuel(0)), in_cenv_m(inputs, 0), fns, types, Build(min_iplen(inputs), [], min_vals(inputs))) }
+fn gref_m(src: String, inputs: List<Pair<String, List<Int>>>) : List<List<Int>> =
   match build_multi_m(src, inputs) { (outws, b) => match b { Build(n, gs, w) => wmap(outws, w) } }
-# seval's initial env from CLI inputs, matching in_vals_g's VALUE (gin: glit4 full-width for
+# seval's initial env from CLI inputs, matching min_vals's VALUE (gin: glit4 full-width for
 # v>=0, canonical p-|v| for v<0) so seval/heval agree with the circuit on large AND negative
-# inputs (else a spurious refusal/REJECT near 2^48, or a desync on signed operands).
-fn in_cenv_seval(inputs: List<Pair<String, Int>>) : List<Pair<String, List<List<Int>>>> =
-  match inputs { [] => []; [Pair(nm, v), ...r] => [Pair(nm, [gin(v)])] ++ in_cenv_seval(r) }
+# inputs (else a spurious refusal/REJECT near 2^48, or a desync on signed operands). A string
+# input binds to its multi-wire codepoint value, so string ops in the guard see the same value.
+fn in_cenv_seval(inputs: List<Pair<String, List<Int>>>) : List<Pair<String, List<List<Int>>>> =
+  match inputs { [] => []; [Pair(nm, vs), ...r] => [Pair(nm, map_gin(vs))] ++ in_cenv_seval(r) }
 # gref_m_checked: the GUARDED result-computation for the CLI prove path. It forces `seval` as a
 # fail-closed guard (seval `error`s + exits on over-deep recursion BEFORE any proof is built —
 # the let is forced in both interp and native), then returns gref_m's OWN R (the circuit's
@@ -1557,16 +1648,16 @@ fn in_cenv_seval(inputs: List<Pair<String, Int>>) : List<Pair<String, List<List<
 # unsatisfiable. heval is O(unrolled-AST-size), the same order as cgen, so it adds no complexity class.
 # (It does NOT rescue gcd-class programs — a compound recursive arg makes the UNROLL itself exponential,
 # so both cgen and heval are slow there regardless; that is a separate frontier, see the roadmap.)
-fn gref_m_checked(src: String, inputs: List<Pair<String, Int>>) : List<List<Int>> =
+fn gref_m_checked(src: String, inputs: List<Pair<String, List<Int>>>) : List<List<Int>> =
   match parse_prog(src) { Program(types, fns, main) =>
     let _guard : List<List<Int>> = seval(main, in_cenv_seval(inputs), fns, types, [], unroll_fuel(0)) in
     match heval(unroll(main, fns, [], unroll_fuel(0)), in_cenv_seval(inputs), fns, types) { (_hv, _hh) =>
     gref_m(src, inputs) } }
 # claim-bind the scalar result (first output component) to claimedR
-fn build_claim_m(src: String, inputs: List<Pair<String, Int>>, claimedR: List<Int>) : Build =
+fn build_claim_m(src: String, inputs: List<Pair<String, List<Int>>>, claimedR: List<Int>) : Build =
   match build_multi_m(src, inputs) { (outws, b) =>
     match mkc(claimedR, b) { (wR, b1) => match mks(vhi(outws), wR, b1) { (wd, b2) => mke(wd, b2) } } }
-fn gprove_m(src: String, inputs: List<Pair<String, Int>>, claimedR: List<Int>, seed: Int) : Bool =
+fn gprove_m(src: String, inputs: List<Pair<String, List<Int>>>, claimedR: List<Int>, seed: Int) : Bool =
   match build_claim_m(src, inputs, claimedR) { Build(n, gs, w) => prove_stark(gs, w, seed) }
 # --- SOUND path: prove via prove_b3, then verify with the INDEPENDENT witness-free
 # verify_b3 (per-row gate soundness + PLONK grand-product wire consistency). Unlike
@@ -1574,12 +1665,12 @@ fn gprove_m(src: String, inputs: List<Pair<String, Int>>, claimedR: List<Int>, s
 # round-trips through the real verifier — accept ==> the committed trace is a consistent
 # satisfying assignment with output == claimedR. NOT zero-knowledge here (the witness is
 # opened in the clear); use gprove_zk for hiding. Research-grade + UNAUDITED (see soundness.md).
-fn gprove_sound(src: String, inputs: List<Pair<String, Int>>, claimedR: List<Int>) : Bool =
+fn gprove_sound(src: String, inputs: List<Pair<String, List<Int>>>, claimedR: List<Int>) : Bool =
   match build_claim_m(src, inputs, claimedR) { Build(n, gs, w) => verify_b3(gs, prove_b3(gs, w)) }
 # --- SOUND + ZERO-KNOWLEDGE: randomized-trace ZK (build_claim_zk pads to targetN with
 # random dummy rows that hide the openings) then the same sound verify_b3. Heavy (targetN
 # is large so the random rows exceed the ~170 query openings) — opt-in via `--zk`.
-fn gprove_zk(src: String, inputs: List<Pair<String, Int>>, claimedR: List<Int>, seed: Int, targetN: Int) : Bool =
+fn gprove_zk(src: String, inputs: List<Pair<String, List<Int>>>, claimedR: List<Int>, seed: Int, targetN: Int) : Bool =
   match build_claim_zk(src, inputs, claimedR, seed, targetN) { Build(n, gs, w) => verify_b3(gs, prove_b3(gs, w)) }
 # --- PUBLIC INPUTS: pin a chosen input wire to a PUBLIC value, via the same is-zero
 # gadget (mkc+mks+mke = assert wire - value == 0). The value lands in a GConst gate, so
@@ -1590,7 +1681,7 @@ fn bind_input(wire: Int, value: List<Int>, b: Build) : Build =
   match mkc(value, b) { (wv, b1) => match mks(wire, wv, b1) { (wd, b2) => mke(wd, b2) } }
 fn bind_inputs(pubs: List<Pair<Int, List<Int>>>, b: Build) : Build =
   match pubs { [] => b; [Pair(wire, value), ...rest] => bind_inputs(rest, bind_input(wire, value, b)) }
-fn build_claim_pub(src: String, inputs: List<Pair<String, Int>>, pubs: List<Pair<Int, List<Int>>>, claimedR: List<Int>) : Build =
+fn build_claim_pub(src: String, inputs: List<Pair<String, List<Int>>>, pubs: List<Pair<Int, List<Int>>>, claimedR: List<Int>) : Build =
   match build_multi_m(src, inputs) { (outws, b) =>
     match mkc(claimedR, b) { (wR, b1) => match mks(vhi(outws), wR, b1) { (wd, b2) => bind_inputs(pubs, mke(wd, b2)) } } }
 # --- ZK via RANDOMIZED TRACE (full integration, the cleaner route): append k dummy
@@ -1603,7 +1694,7 @@ fn build_claim_pub(src: String, inputs: List<Pair<String, Int>>, pubs: List<Pair
 fn zk_dummy_gates(base: Int, k: Int) : List<Gate> = if k <= 0 then [] else [GAdd(base + 2, base, base + 1)] ++ zk_dummy_gates(base + 3, k - 1)
 fn zk_dummy_wit(seed: Int, k: Int, i: Int) : List<List<Int>> =
   if k <= 0 then [] else let a : List<Int> = lane0(hashg(glit(seed), glit(2 * i))) in let b : List<Int> = lane0(hashg(glit(seed), glit(2 * i + 1))) in [a, b, fadd(a, b)] ++ zk_dummy_wit(seed, k - 1, i + 1)
-fn build_claim_zk(src: String, inputs: List<Pair<String, Int>>, claimedR: List<Int>, seed: Int, targetN: Int) : Build =
+fn build_claim_zk(src: String, inputs: List<Pair<String, List<Int>>>, claimedR: List<Int>, seed: Int, targetN: Int) : Build =
   match build_claim_m(src, inputs, claimedR) { Build(n, gs, w) =>
     let k : Int = targetN - glen(gs) in
     Build(n + 3 * k, gs ++ zk_dummy_gates(n, k), w ++ zk_dummy_wit(seed, k, 1)) }
@@ -1653,7 +1744,7 @@ fn emit_proofb3(gates: List<Gate>, p: ProofB3) : String =
   ++ emit_bopen(bopen) ++ emit_topen(topen) }
 fn emit_roots(p: List<List<Int>>) : String = emit_int(len(p)) ++ emit_hlist(p)
 # serialize a freshly-built+proven claim (gprove_sound throws ProofB3 away; here we KEEP it)
-fn gprove_emit(src: String, inputs: List<Pair<String, Int>>, claimedR: List<Int>) : String =
+fn gprove_emit(src: String, inputs: List<Pair<String, List<Int>>>, claimedR: List<Int>) : String =
   match build_claim_m(src, inputs, claimedR) { Build(n, gs, w) => emit_proofb3(gs, prove_b3(gs, w)) }
 
 # --- demo --------------------------------------------------------------------
@@ -1670,6 +1761,7 @@ fn expect_reject(label: String, got: Bool) : String = if got then error("SOUNDNE
 fn show(xs: List<Int>) : String = match trim(xs) { [] => "0"; [h, ...t] => match t { [] => int_to_string(h); _ => int_to_string(h) ++ " (low limb of " ++ int_to_string(len(trim(xs))) ++ ")" } }
 let msrc : String = "fn f(a: Int, b: Int, c: Int) : Int = a * b + c\nf(a, b, c)"
 let mins : List<Pair<String, Int>> = [Pair("a", 100000), Pair("b", 100000), Pair("c", 99)]
+let mins_m : List<Pair<String, List<Int>>> = ints_to_minput(mins)   # v5.101: lift to the multi-wire input model
 let mres : List<Int> = gref(msrc, mins)                       # the true result, over Goldilocks
 let zk_hide : Bool = zk_hiding(777, 888)                       # ZK blinding hides the witness at openings (fast, no FRI)
 let _ : String = print("ZK BLINDING (mechanism): a blinded opening differs from the raw witness AND between masks (hiding): " ++ show_b(zk_hide))
@@ -1692,12 +1784,12 @@ let _ : String = print("Fiat-Shamir now SEEDS the transcript with a digest of th
 let _ : String = print("only for now; an independent verifier that re-derives the challenges is the next step. (digest-sensitivity: prove_source_goldilocks_bind_test.glass)")
 
 # --- TIER-1 (WIP) independent-verify scaffolding: round-trip + tamper + the gap ---
-let t1b : Build = build_claim_m(msrc, mins, mres)
+let t1b : Build = build_claim_m(msrc, mins_m, mres)
 let t1gs : List<Gate> = build_gates(t1b)
 let t1w : List<List<Int>> = build_wit(t1b)
 let t1pp : Proof = prove_to_proof(t1gs, t1w, 11111)
 let t1honest : Bool = verify(t1gs, t1pp)                                      # round-trip: expect ACCEPT
-let t1bgs : List<Gate> = build_gates(build_claim_m(msrc, mins, glit(12345)))  # a DIFFERENT statement (wrong R)
+let t1bgs : List<Gate> = build_gates(build_claim_m(msrc, mins_m, glit(12345)))  # a DIFFERENT statement (wrong R)
 let t1cross : Bool = verify(t1bgs, t1pp)                                      # proof for t1gs, verified vs t1bgs: expect REJECT
 let t1nonce : Bool = verify(t1gs, tamper_nonce(t1pp))                         # tampered nonce: expect REJECT
 let t1evil : Bool = verify(t1gs, prove_evil(t1gs))                            # P=0, no witness: ACCEPT = the known gap

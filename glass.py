@@ -1,5 +1,5 @@
 """
-Glass v5.100.0 — reference implementation.
+Glass v5.101.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -3866,7 +3866,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.100.0 — interactive REPL")
+    print("Glass v5.101.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3980,7 +3980,10 @@ def _prove_typecheck(usrc, inputs):
     matching the reference. ONLY type errors gate; parse / other issues fall through to the bridge's
     own loud refusals. Every valid prove program is runnable Glass, so it typechecks and passes."""
     try:
-        binds = "".join("let %s : Int = %d\n" % (k, v) for k, v in inputs)
+        binds = "".join(
+            ('let %s : String = "%s"\n' % (k, v.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n"))
+             if isinstance(v, str) else "let %s : Int = %d\n" % (k, v))
+            for k, v in inputs)
         checker, _env = make_runtime()
         decls = Parser(tokenize(binds + usrc)).parse_program()
         checker.check_program(decls)
@@ -3997,7 +4000,10 @@ def _witness3_eval(usrc, inputs):
     Binds the inputs as top-level lets so the final bare expression (-> env["_"]) is the result.
     Returns an int (Bool -> 1/0), or None if it can't be evaluated (then the witness abstains)."""
     try:
-        binds = "".join("let %s : Int = %d\n" % (k, v) for k, v in inputs)
+        binds = "".join(
+            ('let %s : String = "%s"\n' % (k, v.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n"))
+             if isinstance(v, str) else "let %s : Int = %d\n" % (k, v))
+            for k, v in inputs)
         checker, env = make_runtime()
         decls = Parser(tokenize(binds + usrc)).parse_program()
         install_program(decls, checker, env, verbose=False)
@@ -4022,7 +4028,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.100.0")
+        print("Glass 5.101.0")
     elif sys.argv[1] in ("help", "--help", "-h"):
         # Plain, professional command listing. The thematic names are aliases
         # (docs/naming.md) — this surface keeps the esoteric layer optional.
@@ -4085,11 +4091,25 @@ def main() -> None:
             print("usage: glass prove [--baby-bear] [--zk | --fast] [--claim R] <file.glass> [name=value ...]")
             return
         upath = args[0]
+        # Inputs are PRIVATE (kept in the witness). A value is an Int by default; a quoted value
+        # (key="...") or a non-numeric bareword is a STRING input — its codepoints become private
+        # witness wires (v5.101, Goldilocks only). `inputs` carries (name, int|str).
         inputs = []
         for arg in args[1:]:
             if "=" in arg:
                 k, v = arg.split("=", 1)
-                inputs.append((k.strip(), int(v.strip())))
+                k = k.strip(); v = v.strip()
+                if len(v) >= 2 and v[0] == '"' and v[-1] == '"':
+                    inputs.append((k, v[1:-1]))            # explicitly quoted string
+                else:
+                    try:
+                        inputs.append((k, int(v)))         # integer input
+                    except ValueError:
+                        inputs.append((k, v))              # bareword string (e.g. email=a@b.com)
+        _has_str_input = any(isinstance(v, str) for _, v in inputs)
+        if _has_str_input and not goldilocks:
+            print("glass prove: string inputs are a Goldilocks-path feature — drop --baby-bear (the 2^31 field is int-only)")
+            return
         with open(upath) as f:
             usrc = f.read()
         # Typecheck gate: refuse ILL-TYPED source (ABSTAIN) before lowering. The native bridge does
@@ -4106,7 +4126,14 @@ def main() -> None:
         here = os.path.dirname(os.path.abspath(__file__))
         bridge_dir = os.path.join(here, "examples", "prove")
         esc = usrc.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-        inp_glass = "[" + ", ".join('Pair("%s", %d)' % (k, v) for k, v in inputs) + "]"
+        # Goldilocks: each input is a MULTI-WIRE value — an Int -> [v], a string -> its codepoints
+        # [c0, c1, ..] (one private wire per char). Baby Bear stays int-only (no string support there).
+        def _mw_vals(v):
+            if isinstance(v, str):
+                return "[" + ", ".join(str(ord(c)) for c in v) + "]"
+            return "[%d]" % v
+        inp_glass = "[" + ", ".join('Pair("%s", %s)' % (k, _mw_vals(v)) for k, v in inputs) + "]"
+        inp_glass_bb = "[" + ", ".join('Pair("%s", %d)' % (k, v) for k, v in inputs if isinstance(v, int)) + "]"
         bridge_file = "prove_source_goldilocks_zk.glass" if goldilocks else "prove_source_adt_zk.glass"
         with open(os.path.join(bridge_dir, bridge_file)) as f:
             bridge = f.read()
@@ -4119,7 +4146,7 @@ def main() -> None:
                 print("glass prove --emit: only the Goldilocks path emits a portable proof"); return
             _ed = machinery + (
                 '\nlet _usrc : String = "%s"\n'
-                'let _inp : List<Pair<String, Int>> = %s\n'
+                'let _inp : List<Pair<String, List<Int>>> = %s\n'
                 'let _rv : List<List<Int>> = gref_m_checked(_usrc, _inp)\n'
                 'let _r : List<Int> = vh(_rv)\n'
                 'let _ : String = print(gprove_emit(_usrc, _inp, _r))\n'
@@ -4170,7 +4197,7 @@ def main() -> None:
                 _result_print = ('let _ : String = print("result:  " ++ bn_dec_signed(_r) ++ "  (over Goldilocks, p = 2^64-2^32+1)")\n')
             driver = machinery + (
                 '\nlet _usrc : String = "%s"\n'
-                'let _inp : List<Pair<String, Int>> = %s\n'
+                'let _inp : List<Pair<String, List<Int>>> = %s\n'
                 'let _rv : List<List<Int>> = gref_m_checked(_usrc, _inp)\n'
                 + _r_line
                 + _result_print
@@ -4191,7 +4218,7 @@ def main() -> None:
                 'let _ : String = print("result:  " ++ int_to_string(_r))\n'
                 'let _ : String = print("proof:   " ++ (if prove(_usrc, _inp, _r, 11111, bbv, bbw) then "ACCEPT  (succinct, zero-knowledge)" else "REJECT"))\n'
                 '"glass prove"\n'
-            ) % (esc, inp_glass)
+            ) % (esc, inp_glass_bb)
         field = "Goldilocks (2^64)" if goldilocks else "Baby Bear (2^31)"
         print("Glass prove — %s  [field: %s]" % (upath, field))
         if inputs:

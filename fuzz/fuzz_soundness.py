@@ -3,7 +3,8 @@
 # fuzz_soundness.py — differential soundness fuzzing of the prove pipeline.
 #
 # Generates random small Glass programs over private inputs — arithmetic, unsigned
-# comparison/boolean, AND signed gadgets (slt/sle/sgt/sge, sdiv/smod) — proves each
+# comparison/boolean, signed gadgets (slt/sle/sgt/sge, sdiv/smod), AND strings
+# (++/substring/string_length/==, the multi-wire codepoint lowering) — proves each
 # with `glass prove --witness3`, and asserts the soundness invariants across the
 # WHOLE stack at once:
 #   (1) honest proof -> ACCEPT          (verify_b3 accepts a real proof)
@@ -28,6 +29,27 @@ VARS = ["a", "b", "c"]
 P31, P32 = 1 << 31, 1 << 32
 BOUNDARY = [0, 1, 5, P31 - 1, P31, P31 + 1, P32 - 1, P32, P32 + 1,
             -1, -5, -P31, -P31 + 1, -P31 - 1]
+
+# STRING family (v5.101): random predicates over string LITERALS — concat, substring, length,
+# equality — exercising the multi-wire string lowering (codepoint wires, the AND-folded is-zero
+# `==`, static `substring` slice, `char_code` over a varied alphabet). Predicates are ~half true /
+# ~half false by construction; the witness3 reference (glass.py) decides which and confirms it. Safe
+# alphabet only (no quote/backslash/newline), so the generated literals need no escaping.
+SAFE_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.@"
+def rand_str(rng, lo=1, hi=6):
+    return "".join(rng.choice(SAFE_CHARS) for _ in range(rng.randint(lo, hi)))
+def gen_string(rng, depth):
+    k = rng.random()
+    if k < 0.4:
+        a = rand_str(rng); b = rand_str(rng)
+        rhs = (a + b) if rng.random() < 0.5 else rand_str(rng, len(a) + len(b), len(a) + len(b))
+        return '("%s" ++ "%s") == "%s"' % (a, b, rhs)
+    elif k < 0.8:
+        s = rand_str(rng, 3, 8); a = rng.randint(0, len(s) - 1); b = rng.randint(a, len(s))
+        rhs = s[a:b] if rng.random() < 0.5 else rand_str(rng, b - a, b - a)
+        return 'substring("%s", %d, %d) == "%s"' % (s, a, b, rhs)
+    s = rand_str(rng, 1, 8)
+    return 'string_length("%s") == %d' % (s, rng.randint(0, 9))
 
 def gen_expr(rng, depth):
     if depth <= 0 or rng.random() < 0.35:
@@ -64,7 +86,7 @@ def gen_signed(rng, depth):
 def run(n, seed, boundary=False):
     rng = random.Random(seed)
     mode = "BOUNDARY (inputs at the 2^31/2^32 range-gadget seams)" if boundary else "random (inputs 0..20 / -20..20)"
-    print(f"# soundness fuzz: {n} programs, {mode} (arithmetic + comparison/boolean + signed, seed {seed})")
+    print(f"# soundness fuzz: {n} programs, {mode} (arithmetic + comparison/boolean + signed + string, seed {seed})")
     ok = True
     for i in range(n):
         # cycle 3 families so each batch exercises the arithmetic lowering, the unsigned
@@ -74,13 +96,15 @@ def run(n, seed, boundary=False):
         # In boundary mode only the GADGET-bearing families (comparison + signed), whose operands
         # are range-guarded — a raw arithmetic product over near-2^32 inputs is a benign int64-vs-
         # field wrap (documented), not a soundness bug, so the arithmetic family is excluded there.
-        fam = (1 + (i % 2)) if boundary else (i % 3)
+        fam = (1 + (i % 2)) if boundary else (i % 4)
         if fam == 0:
             expr = gen_expr(rng, 3)
         elif fam == 1:
             expr = gen_bool(rng, 2)
-        else:
+        elif fam == 2:
             expr = gen_signed(rng, 1)
+        else:
+            expr = gen_string(rng, 1)
         if boundary:
             # signed family may use negatives; unsigned families draw from the non-negative seams.
             pool = BOUNDARY if fam == 2 else [x for x in BOUNDARY if x >= 0]
@@ -125,16 +149,18 @@ def run_differential(n, seed):
     guarantee is fuzzed across the gadget-bearing lowerings, not just `a+b`. (A signed proof is large,
     ~550k tokens, so emit is the slow step; keep N modest.)"""
     rng = random.Random(seed)
-    print(f"# differential fuzz: {n} programs (arithmetic + comparison + signed), Glass-prove vs independent Pentecost (seed {seed})")
+    print(f"# differential fuzz: {n} programs (arithmetic + comparison + signed + string), Glass-prove vs independent Pentecost (seed {seed})")
     ok = True
     for i in range(n):
-        fam = i % 3
+        fam = i % 4
         if fam == 0:
             expr = gen_expr(rng, 3)
         elif fam == 1:
             expr = gen_bool(rng, 2)
-        else:
+        elif fam == 2:
             expr = gen_signed(rng, 1)
+        else:
+            expr = gen_string(rng, 1)
         lo = -20 if fam == 2 else 0
         inputs = {v: rng.randint(lo, 20) for v in VARS}
         path = f"/tmp/fuzzd_{i}.glass"

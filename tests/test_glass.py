@@ -1396,6 +1396,54 @@ def main() -> int:
             print(f"        rc={_pd.returncode}  out: {_pd.stdout.strip()[-220:]}  err: {_pd.stderr.strip()[-150:]}")
             failures += 1
 
+    # Strings in zero-knowledge (v5.101): a string lowers as a MULTI-WIRE value — one codepoint
+    # wire per character — reusing the ADT/tuple layout; `++` is structural concat, `==` the
+    # per-codepoint is-zero gadget AND-folded, `substring` a static wire slice. No new gate type,
+    # no verify_b3 change. The headline: a PRIVATE string predicate in ZK. Prove a private API key
+    # has the public prefix "sk-live-" without revealing the key: substring(key,0,8)=="sk-live-"
+    # -> 1 ACCEPT, and the Third Witness (glass.py, independent of the bridge) AGREES. Goldilocks native.
+    _sp_path = os.path.join(EX, "prove", "private_prefix.glass")
+    _sp = subprocess.run([sys.executable, GLASS, "prove", _sp_path, 'key=sk-live-9f3a2c7e1b', "--cross-check"],
+                         capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_sp, "strings in ZK: private key prefix substring(key,0,8)=='sk-live-' -> 1 ACCEPT (key hidden)"):
+        sp_ok = (_sp.returncode == 0) and ("ACCEPT" in _sp.stdout) and ("result:  1" in _sp.stdout) and ("THIRD LINEAGE AGREES" in _sp.stdout)
+        print(f"  {'OK ' if sp_ok else 'FAIL'}  strings in ZK: private key prefix substring(key,0,8)=='sk-live-' -> 1 ACCEPT (key hidden)")
+        if not sp_ok:
+            print(f"        rc={_sp.returncode}  out: {_sp.stdout.strip()[-220:]}  err: {_sp.stderr.strip()[-150:]}")
+            failures += 1
+    # Discrimination: a NON-matching prefix must prove 0 (not always-1) — the per-codepoint equality
+    # actually compares. A test key -> result 0, ACCEPT, witness3 AGREES.
+    _spt = subprocess.run([sys.executable, GLASS, "prove", _sp_path, 'key=sk-test-0000000000', "--cross-check"],
+                          capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_spt, "strings in ZK: non-matching prefix proves 0 (per-codepoint compare discriminates)"):
+        spt_ok = (_spt.returncode == 0) and ("result:  0" in _spt.stdout) and ("THIRD LINEAGE AGREES" in _spt.stdout)
+        print(f"  {'OK ' if spt_ok else 'FAIL'}  strings in ZK: non-matching prefix proves 0 (per-codepoint compare discriminates)")
+        if not spt_ok:
+            print(f"        rc={_spt.returncode}  out: {_spt.stdout.strip()[-220:]}  err: {_spt.stderr.strip()[-150:]}")
+            failures += 1
+    # Soundness: a FALSE string-predicate claim must REJECT. is_live(live key) is 1 (true), so
+    # claiming 0 is unsatisfiable — the independent verify_b3 proves no false string predicate.
+    _spf = subprocess.run([sys.executable, GLASS, "prove", "--claim", "0", _sp_path, 'key=sk-live-9f3a2c7e1b'],
+                          capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_spf, "strings in ZK: false string-predicate claim REJECTs (is_live=1; claim 0 is false)"):
+        spf_ok = ("proof:   REJECT" in _spf.stdout) and ("proof:   ACCEPT" not in _spf.stdout)
+        print(f"  {'OK ' if spf_ok else 'FAIL'}  strings in ZK: false string-predicate claim REJECTs (is_live=1; claim 0 is false)")
+        if not spf_ok:
+            print(f"        rc={_spf.returncode}  out: {_spf.stdout.strip()[-220:]}  err: {_spf.stderr.strip()[-150:]}")
+            failures += 1
+    # Computed-but-static substring bound + string_length: prove a PRIVATE email is at the org domain
+    # without revealing it — substring(email, string_length(email)-14, string_length(email))=="@setonhill.edu"
+    # -> 1 ACCEPT, witness3 AGREES (string_length is the build-time wire count; the slice offset folds to a constant).
+    _se_path = os.path.join(EX, "prove", "private_email.glass")
+    _se = subprocess.run([sys.executable, GLASS, "prove", _se_path, 'email=ekhaklin@setonhill.edu', "--cross-check"],
+                         capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_se, "strings in ZK: private email org-domain suffix -> 1 ACCEPT (string_length + substring)"):
+        se_ok = (_se.returncode == 0) and ("ACCEPT" in _se.stdout) and ("result:  1" in _se.stdout) and ("THIRD LINEAGE AGREES" in _se.stdout)
+        print(f"  {'OK ' if se_ok else 'FAIL'}  strings in ZK: private email org-domain suffix -> 1 ACCEPT (string_length + substring)")
+        if not se_ok:
+            print(f"        rc={_se.returncode}  out: {_se.stdout.strip()[-220:]}  err: {_se.stderr.strip()[-150:]}")
+            failures += 1
+
     # The unboxed single-Int Goldilocks field (goldw_*) must agree with the trusted
     # base-2^16 limb field (gold_*) and obey the field laws — the load-bearing
     # correctness of the "unbox the field" speed cut. (Interpreter check; the native
@@ -1609,7 +1657,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 29)  # +29: ... + witness3 + h3-merkle + tamper-fuzz + plain-name-surface + statement-binding + proof-corpus + dead-branch-predication + live-div0-ABSTAIN + wrong-divmod-claim-REJECT + higher-order guards + signed-cmp-ACCEPT + wrong-signed-claim-REJECT + signed-band-membership + signed-div-ACCEPT + wrong-signed-div-claim-REJECT + private-distance-sabs
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 33)  # +33: ... + witness3 + h3-merkle + tamper-fuzz + plain-name-surface + statement-binding + proof-corpus + dead-branch-predication + live-div0-ABSTAIN + wrong-divmod-claim-REJECT + higher-order guards + signed-cmp-ACCEPT + wrong-signed-claim-REJECT + signed-band-membership + signed-div-ACCEPT + wrong-signed-div-claim-REJECT + private-distance-sabs + string-prefix-ACCEPT + string-nonmatch-0 + string-false-claim-REJECT + string-email-suffix-ACCEPT
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures
