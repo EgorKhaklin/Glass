@@ -486,14 +486,19 @@ horizon; 4 is prose; the rest are deferred/known.
      false-claim REJECT + Third-Witness AGREES + the independent Pentecost verifier ACCEPTs an emitted
      string proof. Showcases: [`private_prefix.glass`](../examples/prove/private_prefix.glass),
      [`private_email.glass`](../examples/prove/private_email.glass), [`string_eq.glass`](../examples/prove/string_eq.glass).
-   - **Still refused (the remaining bridge frontier):** **records & field access** (`ERec`/`ENamedRec`/`EField` —
-     a multi-wire layout like tuples, but `EField` needs name→index resolution across function/input
-     boundaries via the `RecordDecl` field order — tractably via a desugar-to-tuple-match pre-pass that
-     tracks record types through `let`s and rewrites `e.f` to `match e { (…) => f }`, plus extending
-     `twidth`/`find_type` to handle `RecordDecl`); a **string-VALUED result** (a function *returning* a
-     string — multi-wire claim binding + a multi-wire result display, not just a scalar Bool/Int); and
-     *computed* higher-order callees (a function value chosen at runtime, not a named fn passed as an
-     argument). Each needs its own faithful gadget or a principled refusal.
+   - **Records — construction + pattern-matching. ✅ LANDED v5.103.0.** A named record (`type Stats = { lo: Int, hi: Int }`)
+     lowers exactly like a tuple — a multi-wire value, fields in declaration order, twidth-padded (so any field
+     width works), NO tag (a single-variant product). `ENamedRec` (`Stats { lo: a, hi: b }`) lays the fields out
+     (mirroring `ECtor` without the tag); a `match s { Stats { lo, hi } => … }` pattern (`PRecord`) destructures
+     by binding each field at its declaration offset. Foundation: the type-helpers (`find_type`/`ctag`/`ctor_argtypes`)
+     and `twidth` now handle the `RecordDecl` variant (a `RecordDecl` head used to crash them with a non-exhaustive
+     match). No new gate, no verifier change. Showcase [`record_stats.glass`](../examples/prove/record_stats.glass).
+   - **Still refused (the remaining bridge frontier):** **record field access `r.field`** (`EField`) — the last
+     records piece; it needs a record type-env threaded through `unroll`+`seval` to resolve `e`'s record type to a
+     field offset (today `r.f` ABSTAINs with a message pointing to the pattern-match form). Then: a **string-VALUED
+     result** (a function *returning* a string — multi-wire claim binding + display, not just a scalar Bool/Int);
+     and *computed* higher-order callees (a function value chosen at runtime, not a named fn passed as an argument).
+     Each needs its own faithful gadget or a principled refusal.
    - **String `match` / `PStr`. ✅ LANDED v5.102.0.** `match s { "deploy" => 1; "status" => 2; _ => 0 }`
      over a *private* string — provable allowlist membership / dispatch without revealing the string. The
      cut reuses v5.101 entirely: `cgen`'s `psel(PStr)` selects via `mk_eq_wide` (the multi-wire per-codepoint

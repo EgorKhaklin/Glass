@@ -988,6 +988,8 @@ fn is_fn_arg(a: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>) : Boo
 fn arg_fn_name(a: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>) : String = match a { EVar(n) => resolve_fn(n, fns, fenv); _ => "" }
 fn unroll_args(es: List<Expr>, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: Int) : List<Expr> =
   match es { [] => []; [e, ...r] => [unroll(e, fns, fenv, fuel)] ++ unroll_args(r, fns, fenv, fuel) }
+fn unroll_recfields(lit: List<Pair<String, Expr>>, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: Int) : List<Pair<String, Expr>> =
+  match lit { [] => []; [Pair(k, v), ...r] => [Pair(k, unroll(v, fns, fenv, fuel))] ++ unroll_recfields(r, fns, fenv, fuel) }
 fn unroll_arms(arms: List<Pair<Pattern, Expr>>, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: Int) : List<Pair<Pattern, Expr>> =
   match arms { [] => []; [Pair(p, b), ...r] => [Pair(p, unroll(b, fns, fenv, fuel))] ++ unroll_arms(r, fns, fenv, fuel) }
 fn inline_fn(body: Expr, args: List<Expr>, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: Int) : Expr =
@@ -1082,6 +1084,9 @@ fn unroll(e: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: In
     EMatch(scrut, arms) => EMatch(unroll(scrut, fns, fenv, fuel), unroll_arms(arms, fns, fenv, fuel));
     ECtor(name, args) => ECtor(name, unroll_args(args, fns, fenv, fuel));
     ETuple(elems) => ETuple(unroll_args(elems, fns, fenv, fuel));
+    ENamedRec(name, lit) => ENamedRec(name, unroll_recfields(lit, fns, fenv, fuel));   # v5.103: records
+    ERec(lit) => ERec(unroll_recfields(lit, fns, fenv, fuel));
+    EField(e, f) => EField(unroll(e, fns, fenv, fuel), f);
     ELt(x, y) => ELt(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
     EGt(x, y) => EGt(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
     ELe(x, y) => ELe(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
@@ -1104,13 +1109,35 @@ fn vh(v: List<List<Int>>) : List<Int> = wnth(v, 0)
 fn slw(sv: List<List<Int>>, off: Int, w: Int) : List<List<Int>> = if w <= 0 then [] else [wnth(sv, off)] ++ slw(sv, off + 1, w - 1)
 fn padw(v: List<List<Int>>, t: Int) : List<List<Int>> = if llen(v) >= t then v else padw(v ++ [glit(0)], t)
 fn ctix(ctors: List<CtorDecl>, name: String, i: Int) : Int = match ctors { [] => 0 - 1; [CtorDecl(cn, ats), ...r] => if cn == name then i else ctix(r, name, i + 1) }
-fn ctag(types: List<TypeDecl>, name: String) : Int = match types { [] => 0; [TypeDecl(tn, tps, ctors), ...r] => let idx : Int = ctix(ctors, name, 0) in if idx >= 0 then idx else ctag(r, name) }
-fn find_type(types: List<TypeDecl>, name: String) : List<CtorDecl> = match types { [] => []; [TypeDecl(tn, tps, ctors), ...r] => if tn == name then ctors else find_type(r, name) }
+fn ctag(types: List<TypeDecl>, name: String) : Int = match types { [] => 0; [TypeDecl(tn, tps, ctors), ...r] => let idx : Int = ctix(ctors, name, 0) in if idx >= 0 then idx else ctag(r, name); [RecordDecl(rn, rps, rfs), ...r] => ctag(r, name) }
+fn find_type(types: List<TypeDecl>, name: String) : List<CtorDecl> = match types { [] => []; [TypeDecl(tn, tps, ctors), ...r] => if tn == name then ctors else find_type(r, name); [RecordDecl(rn, rps, rfs), ...r] => find_type(r, name) }
 fn has_ctor(ctors: List<CtorDecl>, name: String) : Bool = match ctors { [] => false; [CtorDecl(cn, ats), ...r] => if cn == name then true else has_ctor(r, name) }
 fn get_args(ctors: List<CtorDecl>, name: String) : List<Type> = match ctors { [] => []; [CtorDecl(cn, ats), ...r] => if cn == name then ats else get_args(r, name) }
-fn ctor_argtypes(types: List<TypeDecl>, name: String) : List<Type> = match types { [] => []; [TypeDecl(tn, tps, ctors), ...r] => if has_ctor(ctors, name) then get_args(ctors, name) else ctor_argtypes(r, name) }
+fn ctor_argtypes(types: List<TypeDecl>, name: String) : List<Type> = match types { [] => []; [TypeDecl(tn, tps, ctors), ...r] => if has_ctor(ctors, name) then get_args(ctors, name) else ctor_argtypes(r, name); [RecordDecl(rn, rps, rfs), ...r] => ctor_argtypes(r, name) }
+# --- records (v5.103): a single-variant product, NO tag — fields in DECL order, twidth-padded,
+# laid out exactly like a tuple but with declared field types (so any field width works). The
+# type-helpers above skip RecordDecl (a RecordDecl head used to crash find_type/ctag/ctor_argtypes
+# with a non-exhaustive match). find_record returns a record's declared fields by name.
+fn find_record(types: List<TypeDecl>, name: String) : List<Pair<String, Type>> = match types { [] => []; [TypeDecl(tn, tps, ctors), ...r] => find_record(r, name); [RecordDecl(rn, rps, rfs), ...r] => if rn == name then rfs else find_record(r, name) }
+fn rec_ftypes(fs: List<Pair<String, Type>>) : List<Type> = match fs { [] => []; [Pair(fnm, fty), ...r] => [fty] ++ rec_ftypes(r) }
+fn rec_fnames(fs: List<Pair<String, Type>>) : List<String> = match fs { [] => []; [Pair(fnm, fty), ...r] => [fnm] ++ rec_fnames(r) }
+# reorder a record literal's fields to the type's DECL order (so layout is canonical regardless of
+# the order the constructor wrote them): for each declared field name, pick its expr from the literal.
+fn assoc_e(fs: List<Pair<String, Expr>>, name: String) : Expr = match fs { [] => EInt(0); [Pair(k, v), ...r] => if k == name then v else assoc_e(r, name) }
+fn reorder_rec(declnames: List<String>, lit: List<Pair<String, Expr>>) : List<Expr> = match declnames { [] => []; [nm, ...r] => [assoc_e(lit, nm)] ++ reorder_rec(r, lit) }
+fn smem(xs: List<String>, x: String) : Bool = match xs { [] => false; [h, ...r] => if h == x then true else smem(r, x) }
+# PRecord binds the LISTED field names; iterate the DECL fields in order (so the slice offset
+# accumulates by twidth correctly), binding only the listed ones. heval (values) / cgen (wires).
+fn pbind_rec(declfs: List<Pair<String, Type>>, listed: List<String>, sv: List<List<Int>>, off: Int, types: List<TypeDecl>, env: List<Pair<String, List<List<Int>>>>) : List<Pair<String, List<List<Int>>>> =
+  match declfs { [] => env; [Pair(nm, ty), ...r] => let w : Int = twidth(ty, types, 12) in
+    let env2 : List<Pair<String, List<List<Int>>>> = if smem(listed, nm) then [Pair(nm, slw(sv, off, w))] ++ env else env in
+    pbind_rec(r, listed, sv, off + w, types, env2) }
+fn cbind_rec(declfs: List<Pair<String, Type>>, listed: List<String>, sv: List<Int>, off: Int, types: List<TypeDecl>, cenv: List<Pair<String, List<Int>>>) : List<Pair<String, List<Int>>> =
+  match declfs { [] => cenv; [Pair(nm, ty), ...r] => let w : Int = twidth(ty, types, 12) in
+    let cenv2 : List<Pair<String, List<Int>>> = if smem(listed, nm) then [Pair(nm, slwi(sv, off, w))] ++ cenv else cenv in
+    cbind_rec(r, listed, sv, off + w, types, cenv2) }
 fn scalar_types_e(xs: List<Expr>) : List<Type> = match xs { [] => []; [x, ...r] => [TyInt] ++ scalar_types_e(r) }
-fn twidth(ty: Type, types: List<TypeDecl>, fuel: Int) : Int = if fuel <= 0 then 1 else match ty { TyAdt(name, args) => match find_type(types, name) { [] => 1; cs => 1 + max_ctor_width(cs, types, fuel - 1) }; TyTuple(tys) => ctor_wsum(tys, types, fuel - 1); _ => 1 }
+fn twidth(ty: Type, types: List<TypeDecl>, fuel: Int) : Int = if fuel <= 0 then 1 else match ty { TyAdt(name, args) => match find_record(types, name) { [] => (match find_type(types, name) { [] => 1; cs => 1 + max_ctor_width(cs, types, fuel - 1) }); rfs => ctor_wsum(rec_ftypes(rfs), types, fuel - 1) }; TyRec(fs) => ctor_wsum(rec_ftypes(fs), types, fuel - 1); TyTuple(tys) => ctor_wsum(tys, types, fuel - 1); _ => 1 }
 fn ctor_wsum(args: List<Type>, types: List<TypeDecl>, fuel: Int) : Int = match args { [] => 0; [a, ...r] => twidth(a, types, fuel) + ctor_wsum(r, types, fuel) }
 fn max_ctor_width(ctors: List<CtorDecl>, types: List<TypeDecl>, fuel: Int) : Int = match ctors { [] => 0; [CtorDecl(cn, ats), ...r] => let w : Int = ctor_wsum(ats, types, fuel) in let rw : Int = max_ctor_width(r, types, fuel) in if w >= rw then w else rw }
 
@@ -1141,6 +1168,8 @@ fn heval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, t
     ELet(nm, v, body) => match heval(v, env, fns, types) { (vv, hv) => match heval(body, [Pair(nm, vv)] ++ env, fns, types) { (vb, hb) => (vb, hv ++ hb) } };
     ECtor(name, args) => match heval_fields(args, ctor_argtypes(types, name), env, fns, types) { (vals, hs) => ([glit(ctag(types, name))] ++ vals, hs) };
     ETuple(elems) => heval_fields(elems, scalar_types_e(elems), env, fns, types);
+    ENamedRec(nm, lit) => heval_fields(reorder_rec(rec_fnames(find_record(types, nm)), lit), rec_ftypes(find_record(types, nm)), env, fns, types);
+    EField(recd, f) => error("glass prove: direct record field access (r." ++ f ++ ") is not yet lowered to a circuit — destructure with a pattern instead: match r { T { " ++ f ++ " } => " ++ f ++ " } (EField needs a record type-env; the next increment). ABSTAIN.");
     EStr(s) => (estr_v(s), []);
     EConcat(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) => (va ++ vb, ha ++ hb) } };
     EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => if is_strfn(fname) then heval_strfn(fname, args, env, fns, types) else heval_call(fn_body_of(fns, fname), args, [], env, fns, types); _ => error("glass prove: unsupported call form (computed or higher-order callee) in the reference evaluator — refusing rather than silently proving 0") } };
@@ -1189,12 +1218,12 @@ fn heval_call(body: Expr, args: List<Expr>, ccenv: List<Pair<String, List<List<I
     ELam(p, inner) => match args { [] => heval(body, ccenv, fns, types); [a, ...rest] => match heval(a, fcenv, fns, types) { (va, ha) => match heval_call(inner, rest, [Pair(p, va)] ++ ccenv, fcenv, fns, types) { (vr, hr) => (vr, ha ++ hr) } } };
     _ => heval(body, ccenv, fns, types) }
 fn pmatch(p: Pattern, sv: List<List<Int>>, types: List<TypeDecl>) : Bool =
-  match p { PWild => true; PVar(x) => true; PInt(n) => bn_eq(vh(sv), glit(n)); PBool(bb) => bn_eq(vh(sv), if bb then glit(1) else glit(0)); PCtor(nm, ps) => if bn_eq(vh(sv), glit(ctag(types, nm))) then pmatch_fields(ps, ctor_argtypes(types, nm), sv, 1, types) else false; PTuple(ps) => pmatch_fields(ps, scalar_types_p(ps), sv, 0, types); PStr(s) => vals_eq(sv, estr_v(s)); PRecord(nm, fs) => false }
+  match p { PWild => true; PVar(x) => true; PInt(n) => bn_eq(vh(sv), glit(n)); PBool(bb) => bn_eq(vh(sv), if bb then glit(1) else glit(0)); PCtor(nm, ps) => if bn_eq(vh(sv), glit(ctag(types, nm))) then pmatch_fields(ps, ctor_argtypes(types, nm), sv, 1, types) else false; PTuple(ps) => pmatch_fields(ps, scalar_types_p(ps), sv, 0, types); PStr(s) => vals_eq(sv, estr_v(s)); PRecord(nm, fs) => true }
 fn pmatch_fields(ps: List<Pattern>, tys: List<Type>, sv: List<List<Int>>, off: Int, types: List<TypeDecl>) : Bool =
   match ps { [] => true; [p, ...prest] => match tys { [] => true; [t, ...trest] =>
     let wt : Int = twidth(t, types, 12) in if pmatch(p, slw(sv, off, wt), types) then pmatch_fields(prest, trest, sv, off + wt, types) else false } }
 fn pbind(p: Pattern, sv: List<List<Int>>, types: List<TypeDecl>, env: List<Pair<String, List<List<Int>>>>) : List<Pair<String, List<List<Int>>>> =
-  match p { PVar(x) => [Pair(x, sv)] ++ env; PCtor(nm, ps) => pbind_fields(ps, ctor_argtypes(types, nm), sv, 1, types, env); PWild => env; PInt(n) => env; PBool(bb) => env; PTuple(ps) => pbind_fields(ps, scalar_types_p(ps), sv, 0, types, env); PStr(s) => env; PRecord(nm, fs) => env }
+  match p { PVar(x) => [Pair(x, sv)] ++ env; PCtor(nm, ps) => pbind_fields(ps, ctor_argtypes(types, nm), sv, 1, types, env); PWild => env; PInt(n) => env; PBool(bb) => env; PTuple(ps) => pbind_fields(ps, scalar_types_p(ps), sv, 0, types, env); PStr(s) => env; PRecord(nm, fs) => pbind_rec(find_record(types, nm), fs, sv, 0, types, env) }
 fn pbind_fields(ps: List<Pattern>, tys: List<Type>, sv: List<List<Int>>, off: Int, types: List<TypeDecl>, env: List<Pair<String, List<List<Int>>>>) : List<Pair<String, List<List<Int>>>> =
   match ps { [] => env; [p, ...prest] => match tys { [] => env; [t, ...trest] =>
     let wt : Int = twidth(t, types, 12) in pbind_fields(prest, trest, sv, off + wt, types, pbind(p, slw(sv, off, wt), types, env)) } }
@@ -1253,6 +1282,8 @@ fn seval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, t
     ELet(nm, v, body) => seval(body, [Pair(nm, seval(v, env, fns, types, fenv, fuel))] ++ env, fns, types, fenv, fuel);
     ECtor(name, args) => [glit(ctag(types, name))] ++ seval_fields(args, ctor_argtypes(types, name), env, fns, types, fenv, fuel);
     ETuple(elems) => seval_fields(elems, scalar_types_e(elems), env, fns, types, fenv, fuel);
+    ENamedRec(nm, lit) => seval_fields(reorder_rec(rec_fnames(find_record(types, nm)), lit), rec_ftypes(find_record(types, nm)), env, fns, types, fenv, fuel);
+    EField(recd, f) => error("glass prove: direct record field access (r." ++ f ++ ") is not yet lowered — destructure with a pattern: match r { T { " ++ f ++ " } => " ++ f ++ " }. ABSTAIN.");
     EStr(s) => estr_v(s);
     EConcat(a, b) => seval(a, env, fns, types, fenv, fuel) ++ seval(b, env, fns, types, fenv, fuel);
     EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd {
@@ -1471,6 +1502,8 @@ fn cgen(e: Expr, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: 
     ELet(nm, v, body) => match cgen(v, cenv, fns, types, b) { (vv, b1) => cgen(body, [Pair(nm, vv)] ++ cenv, fns, types, b1) };
     ECtor(name, args) => match mkc(glit(ctag(types, name)), b) { (wtag, b1) => match cgen_fields(args, ctor_argtypes(types, name), cenv, fns, types, b1) { (fws, b2) => ([wtag] ++ fws, b2) } };
     ETuple(elems) => cgen_fields(elems, scalar_types_e(elems), cenv, fns, types, b);
+    ENamedRec(nm, lit) => cgen_fields(reorder_rec(rec_fnames(find_record(types, nm)), lit), rec_ftypes(find_record(types, nm)), cenv, fns, types, b);
+    EField(recd, f) => error("glass prove: direct record field access (r." ++ f ++ ") is not yet lowered — destructure with a pattern: match r { T { " ++ f ++ " } => " ++ f ++ " }. ABSTAIN.");
     EStr(s) => estr_c(str_codes(s), b);
     EConcat(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => (vx ++ vy, b2) } };
     EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => if is_strfn(fname) then cgen_strfn(fname, args, cenv, fns, types, b) else cgen_call(fn_body_of(fns, fname), args, [], cenv, fns, types, b); _ => error("glass prove: unsupported call form (computed or higher-order callee) in cgen — refusing rather than silently building a 0 circuit") } };
@@ -1501,12 +1534,12 @@ fn psel(p: Pattern, sv: List<Int>, types: List<TypeDecl>, b: Build) : (Int, Buil
     PCtor(nm, ps) => match mkc(glit(ctag(types, nm)), b) { (wn, b1) => match mk_eq_g(vhi(sv), wn, b1) { (s0, b2) => psel_fields(ps, ctor_argtypes(types, nm), sv, 1, types, s0, b2) } };
     PTuple(ps) => match mkc(glit(1), b) { (one, b1) => psel_fields(ps, scalar_types_p(ps), sv, 0, types, one, b1) };
     PStr(s) => match estr_c(str_codes(s), b) { (litws, b1) => mk_eq_wide(sv, litws, b1) };   # v5.102: string-literal arm selects by multi-wire codepoint equality
-    PRecord(nm, fs) => mkc(glit(0), b) }
+    PRecord(nm, fs) => mkc(glit(1), b) }
 fn psel_fields(ps: List<Pattern>, tys: List<Type>, sv: List<Int>, off: Int, types: List<TypeDecl>, acc: Int, b: Build) : (Int, Build) =
   match ps { [] => (acc, b); [p, ...prest] => match tys { [] => (acc, b); [t, ...trest] =>
     let wt : Int = twidth(t, types, 12) in match psel(p, slwi(sv, off, wt), types, b) { (s, b1) => match mkm(acc, s, b1) { (acc2, b2) => psel_fields(prest, trest, sv, off + wt, types, acc2, b2) } } } }
 fn cbind(p: Pattern, sv: List<Int>, types: List<TypeDecl>, cenv: List<Pair<String, List<Int>>>) : List<Pair<String, List<Int>>> =
-  match p { PVar(x) => [Pair(x, sv)] ++ cenv; PCtor(nm, ps) => cbind_fields(ps, ctor_argtypes(types, nm), sv, 1, types, cenv); PWild => cenv; PInt(n) => cenv; PBool(bb) => cenv; PTuple(ps) => cbind_fields(ps, scalar_types_p(ps), sv, 0, types, cenv); PStr(s) => cenv; PRecord(nm, fs) => cenv }
+  match p { PVar(x) => [Pair(x, sv)] ++ cenv; PCtor(nm, ps) => cbind_fields(ps, ctor_argtypes(types, nm), sv, 1, types, cenv); PWild => cenv; PInt(n) => cenv; PBool(bb) => cenv; PTuple(ps) => cbind_fields(ps, scalar_types_p(ps), sv, 0, types, cenv); PStr(s) => cenv; PRecord(nm, fs) => cbind_rec(find_record(types, nm), fs, sv, 0, types, cenv) }
 fn cbind_fields(ps: List<Pattern>, tys: List<Type>, sv: List<Int>, off: Int, types: List<TypeDecl>, cenv: List<Pair<String, List<Int>>>) : List<Pair<String, List<Int>>> =
   match ps { [] => cenv; [p, ...prest] => match tys { [] => cenv; [t, ...trest] =>
     let wt : Int = twidth(t, types, 12) in cbind_fields(prest, trest, sv, off + wt, types, cbind(p, slwi(sv, off, wt), types, cenv)) } }

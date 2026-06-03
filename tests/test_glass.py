@@ -1476,6 +1476,29 @@ def main() -> int:
             print(f"        rc={_alf.returncode}  out: {_alf.stdout.strip()[-220:]}  err: {_alf.stderr.strip()[-150:]}")
             failures += 1
 
+    # Records (v5.103): a named record lowers like a tuple (multi-wire, decl order, twidth-padded, no
+    # tag). Construct (ENamedRec) + destructure (PRecord match) over PRIVATE values — structured data
+    # flowing through a proof. `order` returns Stats { lo, hi } (sorted bounds), `span` matches it to
+    # prove hi-lo. x=3 y=8 -> 5 ACCEPT, witness3 AGREES; order normalizes (x=8 y=3 -> 5 too). Goldilocks native.
+    _rs_path = os.path.join(EX, "prove", "record_stats.glass")
+    _rs = subprocess.run([sys.executable, GLASS, "prove", _rs_path, "x=3", "y=8", "--cross-check"],
+                         capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_rs, "records: Stats{lo,hi} construct + match span = 5 ACCEPT (structured data in ZK)"):
+        rs_ok = (_rs.returncode == 0) and ("result:  5" in _rs.stdout) and ("ACCEPT" in _rs.stdout) and ("THIRD LINEAGE AGREES" in _rs.stdout)
+        print(f"  {'OK ' if rs_ok else 'FAIL'}  records: Stats{{lo,hi}} construct + match span = 5 ACCEPT (structured data in ZK)")
+        if not rs_ok:
+            print(f"        rc={_rs.returncode}  out: {_rs.stdout.strip()[-220:]}  err: {_rs.stderr.strip()[-150:]}")
+            failures += 1
+    # Soundness: a false claim about the record-derived result REJECTs (span=5; claim 4 is false).
+    _rsf = subprocess.run([sys.executable, GLASS, "prove", "--claim", "4", _rs_path, "x=3", "y=8"],
+                          capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_rsf, "records: false claim REJECTs (span(order(3,8))=5; claim 4 is false)"):
+        rsf_ok = ("proof:   REJECT" in _rsf.stdout) and ("proof:   ACCEPT" not in _rsf.stdout)
+        print(f"  {'OK ' if rsf_ok else 'FAIL'}  records: false claim REJECTs (span(order(3,8))=5; claim 4 is false)")
+        if not rsf_ok:
+            print(f"        rc={_rsf.returncode}  out: {_rsf.stdout.strip()[-220:]}  err: {_rsf.stderr.strip()[-150:]}")
+            failures += 1
+
     # The unboxed single-Int Goldilocks field (goldw_*) must agree with the trusted
     # base-2^16 limb field (gold_*) and obey the field laws — the load-bearing
     # correctness of the "unbox the field" speed cut. (Interpreter check; the native
@@ -1689,7 +1712,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 36)  # +36: ... + wrong-signed-div-claim-REJECT + private-distance-sabs + string-prefix-ACCEPT + string-nonmatch-0 + string-false-claim-REJECT + string-email-suffix-ACCEPT + strmatch-deploy-ACCEPT + strmatch-nonmember-0 + strmatch-false-claim-REJECT
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 38)  # +38: ... + string-email-suffix-ACCEPT + strmatch-deploy-ACCEPT + strmatch-nonmember-0 + strmatch-false-claim-REJECT + records-construct-match-ACCEPT + records-false-claim-REJECT
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

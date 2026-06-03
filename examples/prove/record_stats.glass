@@ -1,0 +1,24 @@
+# Records in zero-knowledge — structured intermediate data, proven.
+#
+#   glass prove examples/prove/record_stats.glass x=3 y=8    # -> result: 5, ACCEPT
+#   glass prove examples/prove/record_stats.glass x=8 y=3    # -> result: 5, ACCEPT (order normalizes)
+#
+# A record is a named product type. The cut: it lowers exactly like a tuple — a multi-wire value
+# with the fields in declaration order — but with declared field types (so any field width works)
+# and NO tag (a record is a single-variant product). Construction (`Stats { lo: a, hi: b }`) lays
+# the fields out; a `match s { Stats { lo, hi } => ... }` pattern destructures by binding each field
+# at its declaration offset. No new gate, no verifier change — the same Goldilocks gate model.
+#
+# Here `order` returns a Stats record carrying the sorted bounds of two PRIVATE values, and `span`
+# destructures it to prove the gap `hi - lo` — the record is a structured value flowing between
+# functions, the inputs never revealed. (Field access via `r.field` is the next increment; today
+# fields are read by pattern-matching, the idiomatic ML way.)
+type Stats = { lo: Int, hi: Int }
+
+fn order(a: Int, b: Int) : Stats =
+  if a <= b then Stats { lo: a, hi: b } else Stats { lo: b, hi: a }
+
+fn span(s: Stats) : Int =
+  match s { Stats { lo, hi } => hi - lo }
+
+span(order(x, y))

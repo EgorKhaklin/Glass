@@ -103,7 +103,10 @@ shown signed — and **strings**: `++` (concat), `==`/`!=`, `string_length`, `su
 `match` on string literals, so you can prove a predicate over a *private* string (e.g.
 `substring(key,0,8)=="sk-live-"` — prove a credential's prefix without revealing the key) or
 dispatch on one (`match cmd { "deploy" => 1; … }` — provable allowlist membership; pass a
-string input as `name="..."`).
+string input as `name="..."`) — and **records**: declare `type Stats = { lo: Int, hi: Int }`,
+construct (`Stats { lo: a, hi: b }`) and destructure (`match s { Stats { lo, hi } => hi - lo }`)
+structured data flowing through a proof. (Direct field access `r.field` is the next increment;
+today fields are read by pattern-matching, the idiomatic ML way.)
 Anything Glass cannot lower faithfully *abstains* loudly — it is never
 silently proven. The prover is written in Glass itself — see
 [the prove bridge](../examples/prove/).

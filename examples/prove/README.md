@@ -47,6 +47,17 @@ and the independent [Pentecost](../../pentecost/) verifier (`glass prove --emit`
 - [`private_prefix.glass`](private_prefix.glass) — **the headline: a private-credential predicate in ZK.** `glass prove private_prefix.glass key="sk-live-…"` proves `substring(key, 0, 8) == "sk-live-"` — the key is a private witness, only the public prefix and the 0/1 verdict are revealed. A non-matching prefix proves 0; a false `--claim` REJECTs.
 - [`private_email.glass`](private_email.glass) — **prove a private email is at an organization's domain.** `substring(email, string_length(email)-14, string_length(email)) == "@setonhill.edu"` — the suffix slice's offset folds to a build-time constant (`string_length` is the wire count). The address never appears; the verifier learns only domain membership.
 - [`string_eq.glass`](string_eq.glass) — the lowering end to end: `("Hello, " ++ "World") == "Hello, World"` → 12 codepoint wires per side, compared by the AND-folded is-zero gadget → R = 1.
+### Records in zero-knowledge (v5.103)
+
+A named record (`type Stats = { lo: Int, hi: Int }`) lowers exactly like a tuple — a multi-wire value
+with the fields in **declaration order**, each twidth-padded (so any field width works) — but with **no
+tag** (a record is a single-variant product). Construction (`Stats { lo: a, hi: b }`, `ENamedRec`)
+mirrors a constructor minus the tag; a `match s { Stats { lo, hi } => … }` pattern (`PRecord`)
+destructures by binding each field at its declaration offset. The type-helpers and `twidth` were
+extended to handle the `RecordDecl` variant. No new gate, no verifier change.
+
+- [`record_stats.glass`](record_stats.glass) — `order(a, b)` returns a `Stats` record holding the sorted bounds of two **private** values; `span` destructures it (`match s { Stats { lo, hi } => hi - lo }`) to prove the gap. The record is structured data flowing between functions, the inputs never revealed. `x=3 y=8` → 5 ACCEPT; a false claim REJECTs. (Direct field access `r.field` ABSTAINs with a pointer to the pattern-match form — it needs a record type-env, the next increment.)
+
 - [`private_allowlist.glass`](private_allowlist.glass) — **`match` over a private string (v5.102): provable allowlist membership / dispatch.** `match cmd { "deploy" => 1; "rollback" => 2; "status" => 3; _ => 0 }` over a private `cmd` proves which action a hidden command maps to. Each `"literal" =>` arm is the multi-wire per-codepoint equality gadget; `cgen_match`'s first-match mux returns the matched body. Prove "my command is allowed, mapping to action N" without disclosing it; a non-listed command falls through `_` to 0. `cmd="deploy"` → 1 ACCEPT, a false dispatch claim REJECTs.
 
 ### Pane ⊕ Frost — a zero-knowledge query (H1)
