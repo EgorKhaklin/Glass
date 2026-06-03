@@ -536,12 +536,17 @@ horizon; 4 is prose; the rest are deferred/known.
      caught the *sparse-support self-cancellation* hole: a prover-chosen support lets an out-of-range value
      cancel on both sides and pass; the dense table closes it). β ∈ F_{p^2} (error `(2^k−1)/|field|` ⇒ k≤32 for
      80-bit), degenerate β ABSTAINs. Sound (Schwartz–Zippel + partial-fraction uniqueness), int64-safe,
-     dogfooded (honest ACCEPT / out-of-range + forged-multiplicity REJECT / degenerate ABSTAIN). **Remaining
-     (the multi-session, soundness-critical step):** wire it into `range_k`/`lt_build` as a **constrained
-     running-sum column** (boundary + transition quotient binding it to the wires — the sibling of the PLONK
-     grand-product `Z`, *not* a host-side check; the panel flagged that an unconstrained running-sum lets a
-     prover commit `S=0` and certify anything) + **advice-pinned multiplicities**, landed in lockstep in
-     **both `verify_b3` AND the independent Pentecost verifier**.
+     dogfooded (honest ACCEPT / out-of-range + forged-multiplicity REJECT / degenerate ABSTAIN). ✅ **The
+     running-sum (AIR) form, v5.106.0** ([`frost_logup_air.glass`](../examples/frost/frost_logup_air.glass)):
+     the lookup as a committed running-sum column `S` (`S_0=0`, `S_{k+1}=S_k+num_k/(β−v_k)`, `S_N=0` iff the
+     lookup holds) with **boundary + transition** constraints (the sibling of the grand-product `Z`,
+     cleared-denominator). It demonstrates the integration's central soundness obligation concretely: a forged
+     `S≡0` **FOOLS a boundary-only check** (would certify an out-of-range lookup) but is **CAUGHT by the
+     transition constraint** — so `S` MUST be a *constrained* committed column, never accepted by a final-value
+     check alone. Sound, int64-safe, dogfooded. **Remaining (the multi-session, soundness-critical step):** wire
+     this running-sum + **advice-pinned multiplicities** into `range_k`/`lt_build` in lockstep in **both
+     `verify_b3` AND the independent Pentecost verifier** (mirror the existing `z_build`/`build_q_b3` grand-product
+     quotient; fresh Fiat-Shamir tags 141/142).
    - **Wider provable range.** `[0, 2^32)` is chosen so `q·b < p`; a tighter per-operand analysis (or
      the lookup argument above) could push the bound toward the field's natural width.
 

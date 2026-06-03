@@ -1553,6 +1553,23 @@ def main() -> int:
         print(f"        rc={rc}  out: {out.strip()[-300:]}  err: {err.strip()[-150:]}")
         failures += 1
 
+    # LogUp running-sum (AIR) form (v5.106): the integration-shaped step — the lookup as a committed
+    # running-sum column S with boundary (S_0=S_N=0) + transition ((S_{k+1}-S_k)(beta-v_k)=num_k)
+    # constraints, like the PLONK grand-product Z. Demonstrates THE integration's central soundness
+    # obligation: a forged S=0 FOOLS a boundary-only check (would certify an out-of-range lookup) but
+    # is CAUGHT by the transition constraint. Interpreter check; native byte-identical dogfood separate.
+    rc, out, err = run_file(os.path.join(EX, "frost", "frost_logup_air.glass"))
+    la_ok = (rc == 0) \
+        and ("boundary yes, transition yes  -> SOUND verdict: yes" in out) \
+        and ("boundary no (S_N != 0)" in out) \
+        and ("boundary-ONLY check (the unsound shortcut): yes" in out) \
+        and ("+ TRANSITION constraint (the fix):         no" in out) \
+        and ("SOUND verdict (boundary AND transition):   no" in out)
+    print(f"  {'OK ' if la_ok else 'FAIL'}  LogUp running-sum: honest ACCEPT, out-of-range REJECT, forged-S=0 fools boundary-only but transition catches it")
+    if not la_ok:
+        print(f"        rc={rc}  out: {out.strip()[-320:]}  err: {err.strip()[-150:]}")
+        failures += 1
+
     # The native Poseidon-permutation intrinsic (poseidon_perm / q_poseidon_perm — the
     # "cut the rope" hash speed-up) must hit the Plonky2 known-answer anchor AND match a
     # hand-written Glass goldw_* reference permutation. (Interpreter check; the native half
@@ -1754,7 +1771,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 41)  # +41: ... + string-email-suffix-ACCEPT + strmatch-deploy-ACCEPT + strmatch-nonmember-0 + strmatch-false-claim-REJECT + records-construct-match-ACCEPT + records-false-claim-REJECT + efield-solvent-ACCEPT + efield-false-claim-REJECT + logup-range-argument
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 42)  # +42: ... + string-email-suffix-ACCEPT + strmatch-deploy-ACCEPT + strmatch-nonmember-0 + strmatch-false-claim-REJECT + records-construct-match-ACCEPT + records-false-claim-REJECT + efield-solvent-ACCEPT + efield-false-claim-REJECT + logup-range-argument + logup-running-sum-AIR
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

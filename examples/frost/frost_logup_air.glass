@@ -1,0 +1,159 @@
+# =============================================================================
+# frost_logup_air.glass — the LogUp range argument in its IN-CIRCUIT RUNNING-SUM
+#                         form, and WHY the transition constraint is load-bearing
+#
+# frost_logup.glass established the LogUp range-lookup MECHANISM as a direct
+# rational-sum equality  Σ_j 1/(β−a_j) == Σ_i m_i/(β−T_i).  To embed it in a STARK
+# (replacing the bit-decomposition range_k), that equality becomes a committed
+# RUNNING-SUM column S with per-row constraints — the same shape as the PLONK
+# grand-product Z. This file builds that form standalone and demonstrates the one
+# thing the eventual in-circuit integration MUST get right.
+#
+# THE TRACE.  One row per term: each value a_j is a row with `num = +1`; each table
+# entry i ∈ [0,2^k) is a row with `num = −m_i`. Walk a running sum:
+#
+#     S_0 = 0,    S_{k+1} = S_k + num_k / (β − v_k)
+#
+# Then S_N = Σ_k num_k/(β−v_k) = [Σ 1/(β−a_j)] − [Σ m_i/(β−i)] = LHS − RHS, so the
+# lookup holds IFF S_N = 0.  In a circuit S is a committed column checked by:
+#   • BOUNDARY:    S_0 = 0  AND  S_N = 0
+#   • TRANSITION:  (S_{k+1} − S_k)·(β − v_k) = num_k   for every row k   (cleared
+#                  denominators — no in-AIR inverse, exactly like the Z recurrence)
+#
+# THE HAZARD (the adversarial design panel's second finding, demonstrated here).
+# A verifier that checks ONLY the boundary `S_N = 0` is UNSOUND: a malicious prover
+# commits S = all-zeros, which satisfies S_0 = S_N = 0 for FREE, and thereby
+# certifies ANY lookup — including an out-of-range value. The TRANSITION constraint
+# is what closes it: with S ≡ 0, row 0 gives (0−0)·(β−v_0) = 0 ≠ num_0 = +1, so the
+# transition fails. Below: a forged S=0 over an out-of-range claim is ACCEPTED by a
+# boundary-only check (the hole) and REJECTED once the transition is added (closed).
+#
+# This is standalone (no committed codeword / FRI / prover-verifier split — a Glass
+# function computing S and checking the two constraint families directly), int64-safe,
+# dogfooded interp==native. It is the AIR-shaped step between frost_logup.glass (the
+# math) and the in-circuit integration into range_k/lt_build inside verify_b3 AND the
+# Pentecost verifier (the multi-session, soundness-critical step). Research, UNAUDITED.
+# =============================================================================
+
+# --- Goldilocks base field via base-2^16 limbs (from frost_goldilocks.glass) -
+fn lmod(x: Int) : Int = x % 65536
+fn ldiv(x: Int) : Int = x / 65536
+fn rev_go(xs: List<Int>, acc: List<Int>) : List<Int> = match xs { [] => acc; [h, ...t] => rev_go(t, [h] ++ acc) }
+fn rev(xs: List<Int>) : List<Int> = rev_go(xs, [])
+fn drop_zeros(xs: List<Int>) : List<Int> = match xs { [] => []; [h, ...t] => if h == 0 then drop_zeros(t) else xs }
+fn trim(xs: List<Int>) : List<Int> = rev(drop_zeros(rev(xs)))
+fn addc(a: List<Int>, b: List<Int>, carry: Int) : List<Int> =
+  match a {
+    [] => match b { [] => if carry == 0 then [] else [carry]; [hb, ...tb] => let s : Int = hb + carry in [lmod(s)] ++ addc([], tb, ldiv(s)) };
+    [ha, ...ta] => match b { [] => let s : Int = ha + carry in [lmod(s)] ++ addc(ta, [], ldiv(s)); [hb, ...tb] => let s : Int = ha + hb + carry in [lmod(s)] ++ addc(ta, tb, ldiv(s)) }
+  }
+fn bn_add(a: List<Int>, b: List<Int>) : List<Int> = trim(addc(a, b, 0))
+fn smul(xs: List<Int>, k: Int, carry: Int) : List<Int> =
+  match xs { [] => if carry == 0 then [] else [carry]; [h, ...t] => let p : Int = h * k + carry in [lmod(p)] ++ smul(t, k, ldiv(p)) }
+fn shift(xs: List<Int>, n: Int) : List<Int> = if n <= 0 then xs else [0] ++ shift(xs, n - 1)
+fn mul_go(a: List<Int>, b: List<Int>, i: Int) : List<Int> =
+  match b { [] => []; [hb, ...tb] => bn_add(shift(smul(a, hb, 0), i), mul_go(a, tb, i + 1)) }
+fn bn_mul(a: List<Int>, b: List<Int>) : List<Int> = trim(mul_go(a, b, 0))
+fn cmp_hi(a: List<Int>, b: List<Int>) : Int = match a { [] => 0; [ha, ...ta] => match b { [] => 0; [hb, ...tb] => if ha == hb then cmp_hi(ta, tb) else (if ha < hb then 0 - 1 else 1) } }
+fn bn_cmp(a: List<Int>, b: List<Int>) : Int =
+  let ta : List<Int> = trim(a) in let tb : List<Int> = trim(b) in
+  if len(ta) == len(tb) then cmp_hi(rev(ta), rev(tb)) else (if len(ta) < len(tb) then 0 - 1 else 1)
+fn subb(a: List<Int>, b: List<Int>, borrow: Int) : List<Int> =
+  match a { [] => [];
+    [ha, ...ta] => match b {
+      [] => let d : Int = ha - borrow in if d < 0 then [d + 65536] ++ subb(ta, [], 1) else [d] ++ subb(ta, [], 0);
+      [hb, ...tb] => let d : Int = ha - hb - borrow in if d < 0 then [d + 65536] ++ subb(ta, tb, 1) else [d] ++ subb(ta, tb, 0) } }
+fn bn_sub(a: List<Int>, b: List<Int>) : List<Int> = trim(subb(a, b, 0))
+fn take(xs: List<Int>, n: Int) : List<Int> = if n <= 0 then [] else match xs { [] => []; [h, ...t] => [h] ++ take(t, n - 1) }
+fn drop(xs: List<Int>, n: Int) : List<Int> = if n <= 0 then xs else match xs { [] => []; [h, ...t] => drop(t, n - 1) }
+fn pg(d: Int) : List<Int> = [1, 0, 65535, 65535]
+fn fold_hi(d: Int) : List<Int> = [65535, 65535]
+fn bn_mod_p(a: List<Int>) : List<Int> =
+  let t : List<Int> = trim(a) in
+  if len(t) > 4 then bn_mod_p(bn_add(take(t, 4), bn_mul(drop(t, 4), fold_hi(0))))
+  else if bn_cmp(t, pg(0)) >= 0 then bn_sub(t, pg(0)) else t
+fn fadd(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_add(a, b))
+fn fsub(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_add(a, bn_sub(pg(0), bn_mod_p(b))))
+fn fmul(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_mul(a, b))
+fn bn_eq(a: List<Int>, b: List<Int>) : Bool = bn_cmp(a, b) == 0
+fn bn_is_zero(e: List<Int>) : Bool = match trim(e) { [] => true; _ => false }
+fn bn_is_odd(e: List<Int>) : Bool = match e { [] => false; [h, ...t] => h % 2 == 1 }
+fn half_hl(xs: List<Int>, rem: Int) : List<Int> = match xs { [] => []; [h, ...t] => let cur : Int = rem * 65536 + h in [cur / 2] ++ half_hl(t, cur % 2) }
+fn bn_half(e: List<Int>) : List<Int> = trim(rev(half_hl(rev(trim(e)), 0)))
+fn fpow_bn(base: List<Int>, e: List<Int>) : List<Int> =
+  if bn_is_zero(e) then [1]
+  else let h : List<Int> = fpow_bn(fmul(base, base), bn_half(e)) in
+       if bn_is_odd(e) then fmul(base, h) else h
+fn finv(a: List<Int>) : List<Int> = fpow_bn(a, bn_sub(pg(0), [2]))
+
+# --- F_{p^2} = F_p[X]/(X^2 − 7) over Goldilocks (from frost_goldilocks_ext.glass) -
+type G2 = | G2(List<Int>, List<Int>)
+fn ww(d: Int) : List<Int> = [7]
+fn gadd2(a: G2, b: G2) : G2 = match a { G2(a0, a1) => match b { G2(b0, b1) => G2(fadd(a0, b0), fadd(a1, b1)) } }
+fn gsub2(a: G2, b: G2) : G2 = match a { G2(a0, a1) => match b { G2(b0, b1) => G2(fsub(a0, b0), fsub(a1, b1)) } }
+fn gscale2(a: G2, s: List<Int>) : G2 = match a { G2(a0, a1) => G2(fmul(a0, s), fmul(a1, s)) }
+fn gmul2(a: G2, b: G2) : G2 = match a { G2(a0, a1) => match b { G2(b0, b1) =>
+  G2(fadd(fmul(a0, b0), fmul(ww(0), fmul(a1, b1))), fadd(fmul(a0, b1), fmul(a1, b0))) } }
+fn gconj(a: G2) : G2 = match a { G2(a0, a1) => G2(a0, fsub([], a1)) }
+fn gnorm(a: G2) : List<Int> = match a { G2(a0, a1) => fsub(fmul(a0, a0), fmul(ww(0), fmul(a1, a1))) }
+fn ginv2(a: G2) : G2 = gscale2(gconj(a), finv(gnorm(a)))
+fn geq2(a: G2, b: G2) : Bool = match a { G2(a0, a1) => match b { G2(b0, b1) => bn_eq(a0, b0) && bn_eq(a1, b1) } }
+fn emb(x: List<Int>) : G2 = G2(x, [])
+
+# --- the running-sum (AIR) form of the LogUp range argument ------------------
+fn g2zero(d: Int) : G2 = G2([], [])
+fn il(n: Int) : List<Int> = trim([n])
+fn fneg(x: List<Int>) : List<Int> = fsub([], x)                        # field negation: −x
+# a trace ROW is Pair(value v, num): value rows have num=+1, table rows have num=−m_i.
+fn vrows(avals: List<List<Int>>) : List<Pair<List<Int>, List<Int>>> =
+  match avals { [] => []; [a, ...r] => [Pair(a, il(1))] ++ vrows(r) }
+fn nthm(m: List<Int>, i: Int) : Int = match m { [] => 0; [h, ...t] => if i == 0 then h else nthm(t, i - 1) }
+fn trows(i: Int, tsize: Int, m: List<Int>) : List<Pair<List<Int>, List<Int>>> =
+  if i >= tsize then [] else [Pair(il(i), fneg(il(nthm(m, i))))] ++ trows(i + 1, tsize, m)
+# the running-sum sequence [S_0, S_1, …, S_N], S_0 = scur, S_{k+1} = S_k + num_k/(β − v_k).
+fn s_seq(rows: List<Pair<List<Int>, List<Int>>>, beta: G2, scur: G2) : List<G2> =
+  match rows { [] => [scur]; [Pair(v, num), ...r] => [scur] ++ s_seq(r, beta, gadd2(scur, gscale2(ginv2(gsub2(beta, emb(v))), num))) }
+fn last_g(ss: List<G2>) : G2 = match ss { [] => g2zero(0); [x] => x; [x, ...r] => last_g(r) }
+fn head_g(ss: List<G2>) : G2 = match ss { [] => g2zero(0); [x, ...r] => x }
+# BOUNDARY: S_0 = 0 and S_N = 0.   (alone, this is FOOLED by a forged S ≡ 0.)
+fn boundary_ok(ss: List<G2>) : Bool = geq2(head_g(ss), g2zero(0)) && geq2(last_g(ss), g2zero(0))
+# TRANSITION: (S_{k+1} − S_k)·(β − v_k) == num_k for every row — binds S to the wires.
+fn trans_ok(rows: List<Pair<List<Int>, List<Int>>>, ss: List<G2>, beta: G2) : Bool =
+  match rows { [] => true; [Pair(v, num), ...r] => match ss {
+    [sk, sk1, ...rest] => geq2(gmul2(gsub2(sk1, sk), gsub2(beta, emb(v))), emb(num)) && trans_ok(r, [sk1] ++ rest, beta);
+    _ => false } }
+fn zeros_g(n: Int) : List<G2> = if n <= 0 then [] else [g2zero(0)] ++ zeros_g(n - 1)
+fn nrows(rows: List<Pair<List<Int>, List<Int>>>) : Int = match rows { [] => 0; [x, ...r] => 1 + nrows(r) }
+# the SOUND verifier: boundary AND transition.  boundary-only is the unsound shortcut.
+fn logup_air_ok(rows: List<Pair<List<Int>, List<Int>>>, ss: List<G2>, beta: G2) : Bool = boundary_ok(ss) && trans_ok(rows, ss, beta)
+
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+
+# --- demo / dogfood ----------------------------------------------------------
+let beta : G2 = G2([12345, 6789], [9876, 54321])                       # F_{p^2} challenge, nonzero imaginary lane
+# HONEST in-range: values [3,7,7,0,15], dense table {0..15}, correct multiplicities.
+let m_ok   : List<Int> = [1, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 1]
+let rows_ok : List<Pair<List<Int>, List<Int>>> = vrows([il(3), il(7), il(7), il(0), il(15)]) ++ trows(0, 16, m_ok)
+let ss_ok  : List<G2> = s_seq(rows_ok, beta, g2zero(0))
+# OUT-OF-RANGE: value 16 (∉ table); honest counts for the in-range part (no slot 16).
+let m_oob  : List<Int> = [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+let rows_oob : List<Pair<List<Int>, List<Int>>> = vrows([il(3), il(7), il(16)]) ++ trows(0, 16, m_oob)
+let ss_oob : List<G2> = s_seq(rows_oob, beta, g2zero(0))               # the HONEST running sum for the out-of-range claim
+let ss_forged : List<G2> = zeros_g(nrows(rows_oob) + 1)                # the MALICIOUS S ≡ 0 (S_0 = S_N = 0 for free)
+
+let _ : String = print("--- frost_logup_air.glass: the LogUp range argument as a running-sum column ---")
+let _ : String = print("S_0 = 0, S_{k+1} = S_k + num_k/(β − v_k); lookup holds iff S_N = 0; checked by")
+let _ : String = print("BOUNDARY (S_0 = S_N = 0) + TRANSITION ((S_{k+1}−S_k)(β−v_k) = num_k), like the PLONK Z.")
+let _ : String = print("")
+let _ : String = print("HONEST in-range [3,7,7,0,15]:  boundary " ++ show_b(boundary_ok(ss_ok)) ++ ", transition " ++ show_b(trans_ok(rows_ok, ss_ok, beta)) ++ "  -> SOUND verdict: " ++ show_b(logup_air_ok(rows_ok, ss_ok, beta)) ++ "   (ACCEPT)")
+let _ : String = print("OUT-OF-RANGE [3,7,16], honest S:  boundary " ++ show_b(boundary_ok(ss_oob)) ++ " (S_N != 0)  -> SOUND verdict: " ++ show_b(logup_air_ok(rows_oob, ss_oob, beta)) ++ "   (REJECT, caught at the boundary)")
+let _ : String = print("")
+let _ : String = print("THE HAZARD — a malicious prover forges S ≡ 0 to certify the OUT-OF-RANGE [3,7,16]:")
+let _ : String = print("  boundary-ONLY check (the unsound shortcut): " ++ show_b(boundary_ok(ss_forged)) ++ "   (FOOLED — S=0 gives S_0=S_N=0 for free, so it would ACCEPT an out-of-range lookup)")
+let _ : String = print("  + TRANSITION constraint (the fix):         " ++ show_b(trans_ok(rows_oob, ss_forged, beta)) ++ "   (caught — (0−0)(β−v_0) = 0 != num_0 = +1)")
+let _ : String = print("  SOUND verdict (boundary AND transition):   " ++ show_b(logup_air_ok(rows_oob, ss_forged, beta)) ++ "   (REJECT)")
+let _ : String = print("")
+let _ : String = print("=> the running-sum S MUST be a CONSTRAINED committed column (transition binds it to the")
+let _ : String = print("wires), never accepted by a final-value check alone. That is the in-circuit integration's")
+let _ : String = print("central obligation, in verify_b3 AND Pentecost in lockstep. int64-safe, dogfooded. UNAUDITED.")
+"frost_logup_air.glass"
