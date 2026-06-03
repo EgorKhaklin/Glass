@@ -543,10 +543,17 @@ horizon; 4 is prose; the rest are deferred/known.
      cleared-denominator). It demonstrates the integration's central soundness obligation concretely: a forged
      `S≡0` **FOOLS a boundary-only check** (would certify an out-of-range lookup) but is **CAUGHT by the
      transition constraint** — so `S` MUST be a *constrained* committed column, never accepted by a final-value
-     check alone. Sound, int64-safe, dogfooded. **Remaining (the multi-session, soundness-critical step):** wire
-     this running-sum + **advice-pinned multiplicities** into `range_k`/`lt_build` in lockstep in **both
-     `verify_b3` AND the independent Pentecost verifier** (mirror the existing `z_build`/`build_q_b3` grand-product
-     quotient; fresh Fiat-Shamir tags 141/142).
+     check alone. Sound, int64-safe, dogfooded. ✅ **Committed + Fiat-Shamir, v5.107.0**
+     ([`frost_logup_committed.glass`](../examples/frost/frost_logup_committed.glass)): β is derived by hashing a
+     **commitment to the whole trace** (MiMC, fresh tags 141/142), so the prover commits *before* knowing β and
+     cannot adapt the values to a lucky β (commit-then-challenge soundness — the property the fixed-β demos
+     deferred). β is bound to the trace (honest β ≠ out-of-range β); honest ACCEPTs at its β, out-of-range REJECTs
+     at *its* β. **The standalone LogUp arc is now complete** — identity → running-sum/AIR → committed+FS, mirroring
+     `frost_goldilocks_fri → …_stark` — and it validates the exact β-derivation the integration uses.
+     **Remaining (the multi-session, soundness-critical step):** wire the constrained running-sum + **advice-pinned
+     multiplicities** into `range_k`/`lt_build` in lockstep in **both `verify_b3` AND the independent Pentecost
+     verifier**, β re-derived identically on the verify side (mirror the existing `z_build`/`build_q_b3` grand-product
+     quotient).
    - **Wider provable range.** `[0, 2^32)` is chosen so `q·b < p`; a tighter per-operand analysis (or
      the lookup argument above) could push the bound toward the field's natural width.
 

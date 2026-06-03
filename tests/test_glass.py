@@ -1570,6 +1570,20 @@ def main() -> int:
         print(f"        rc={rc}  out: {out.strip()[-320:]}  err: {err.strip()[-150:]}")
         failures += 1
 
+    # LogUp committed + Fiat-Shamir (v5.107): closes the standalone LogUp arc — beta is derived by
+    # hashing a commitment to the whole trace (MiMC, fresh tags 141/142), so the prover commits BEFORE
+    # knowing beta and cannot adapt the trace to a lucky beta (commit-then-challenge soundness, like the
+    # Goldilocks STARK's beta_of_root_g). Interpreter check; native byte-identical dogfood separate.
+    rc, out, err = run_file(os.path.join(EX, "frost", "frost_logup_committed.glass"))
+    lc_ok = (rc == 0) \
+        and ("denominators invertible): yes" in out) \
+        and ("sums match: yes   (ACCEPT)" in out) \
+        and ("sums match: no   (no => caught; 16 has no table partner" in out)
+    print(f"  {'OK ' if lc_ok else 'FAIL'}  LogUp committed+Fiat-Shamir: beta bound to the trace, honest ACCEPT, out-of-range REJECT (prover can't pick beta)")
+    if not lc_ok:
+        print(f"        rc={rc}  out: {out.strip()[-320:]}  err: {err.strip()[-150:]}")
+        failures += 1
+
     # The native Poseidon-permutation intrinsic (poseidon_perm / q_poseidon_perm — the
     # "cut the rope" hash speed-up) must hit the Plonky2 known-answer anchor AND match a
     # hand-written Glass goldw_* reference permutation. (Interpreter check; the native half
@@ -1771,7 +1785,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 42)  # +42: ... + string-email-suffix-ACCEPT + strmatch-deploy-ACCEPT + strmatch-nonmember-0 + strmatch-false-claim-REJECT + records-construct-match-ACCEPT + records-false-claim-REJECT + efield-solvent-ACCEPT + efield-false-claim-REJECT + logup-range-argument + logup-running-sum-AIR
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 43)  # +43: ... + string-email-suffix-ACCEPT + strmatch-deploy-ACCEPT + strmatch-nonmember-0 + strmatch-false-claim-REJECT + records-construct-match-ACCEPT + records-false-claim-REJECT + efield-solvent-ACCEPT + efield-false-claim-REJECT + logup-range-argument + logup-running-sum-AIR + logup-committed-FS
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures
