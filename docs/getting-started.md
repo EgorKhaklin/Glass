@@ -106,7 +106,10 @@ dispatch on one (`match cmd { "deploy" => 1; … }` — provable allowlist membe
 string input as `name="..."`) — and **records**: declare `type Account = { balance: Int, owner: Int }`,
 construct (`Account { balance: b, owner: o }`), destructure (`match a { Account { balance, owner } => … }`),
 and read fields directly (`a.balance >= 100`) — structured data flowing through a proof, so you can
-prove e.g. a private account is solvent without revealing its balance or owner.
+prove e.g. a private account is solvent without revealing its balance or owner. A proof's result can
+itself be a **string** (`fn reveal_prefix(k: String) = substring(k, 0, 8)` reveals only a private key's
+prefix; `if score >= 750 then "PASS" else "FAIL"` reveals a verdict word chosen by a private comparison),
+bound and decoded faithfully — equal-width `if`-branches only; unequal widths abstain.
 Anything Glass cannot lower faithfully *abstains* loudly — it is never
 silently proven. The prover is written in Glass itself — see
 [the prove bridge](../examples/prove/).

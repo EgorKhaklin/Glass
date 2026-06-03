@@ -1,0 +1,16 @@
+# Selective disclosure of a STRING: prove + reveal only the first 8 characters of a
+# private API key, keeping the rest hidden in the witness.
+#
+#   glass prove examples/prove/reveal_prefix.glass key=sk-live-9f3a2c7e1b   # -> "sk-live-", ACCEPT
+#   glass prove examples/prove/reveal_prefix.glass key=sk-test-0000000000   # -> "sk-test-", ACCEPT
+#
+# The result of a proven function can now be a STRING, not just a number or a yes/no.
+# A string is a multi-wire value (one field wire per codepoint), so the proof binds EVERY
+# codepoint of the result as a public output wire and decodes it back to text — while the
+# full key stays private. This is selective disclosure: the holder of a secret reveals a
+# verifiable PREFIX of it (enough to prove provenance / environment) without exposing the secret.
+# The Third Witness (glass.py) independently recomputes the same prefix, so three lineages agree
+# the revealed string really is the first 8 chars of the private key.
+fn reveal_prefix(k: String) : String = substring(k, 0, 8)
+
+reveal_prefix(key)

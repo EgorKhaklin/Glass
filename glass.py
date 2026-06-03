@@ -1,5 +1,5 @@
 """
-Glass v5.109.0 — reference implementation.
+Glass v5.110.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -3866,7 +3866,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.109.0 — interactive REPL")
+    print("Glass v5.110.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -4017,6 +4017,29 @@ def _witness3_eval(usrc, inputs):
         return None
 
 
+def _prove_result_str(usrc, inputs):
+    """Return the reference STRING value of the proven result if it is a String, else None. Runs the
+    program under the glass.py interpreter (the same independent lineage as the Third Witness). A
+    String result is MULTI-WIRE (one codepoint wire per char), so it routes the prove driver to the
+    decode-and-display + bind-EVERY-output-wire path (`build_claim_mw`) instead of the scalar path,
+    which would publish only the first codepoint. None (a scalar / non-evaluable result) keeps the
+    byte-identical scalar path. Used only on the Goldilocks path (strings are Goldilocks-only)."""
+    try:
+        binds = "".join(
+            ('let %s : String = "%s"\n' % (k, v.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n"))
+             if isinstance(v, str) else "let %s : Int = %d\n" % (k, v))
+            for k, v in inputs)
+        checker, env = make_runtime()
+        decls = Parser(tokenize(binds + usrc)).parse_program()
+        install_program(decls, checker, env, verbose=False)
+        r = env.get("_")
+        if isinstance(r, StringV):
+            return r.v
+        return None
+    except Exception:
+        return None
+
+
 def main() -> None:
     """Console entry point. After `pip install glass-lang`, this is what
     the `glass` command invokes. With no args it starts the REPL; with a
@@ -4028,7 +4051,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.109.0")
+        print("Glass 5.110.0")
     elif sys.argv[1] in ("help", "--help", "-h"):
         # Plain, professional command listing. The thematic names are aliases
         # (docs/naming.md) — this surface keeps the esoteric layer optional.
@@ -4123,6 +4146,10 @@ def main() -> None:
             print("glass prove: the source is ILL-TYPED (%s) — cannot lower an untypeable program to a sound circuit" % _tc_err)
             print("verdict: ABSTAIN  (the type checker rejects this program, so it has no well-typed meaning to prove — refused, NOT lowered as a loose field expression and never silently proven)")
             return
+        # A STRING result is multi-wire (one codepoint wire per char); detect it (via the reference
+        # interpreter) so the driver binds + displays the WHOLE string instead of truncating to the
+        # first codepoint. None -> scalar (or non-string) result -> the byte-identical scalar path.
+        _res_str = _prove_result_str(usrc, inputs) if goldilocks else None
         here = os.path.dirname(os.path.abspath(__file__))
         bridge_dir = os.path.join(here, "examples", "prove")
         esc = usrc.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
@@ -4148,7 +4175,10 @@ def main() -> None:
                 '\nlet _usrc : String = "%s"\n'
                 'let _inp : List<Pair<String, List<Int>>> = %s\n'
                 'let _rv : List<List<Int>> = gref_m_checked(_usrc, _inp)\n'
-                'let _r : List<Int> = vh(_rv)\n'
+                # --emit serializes a single-wire (scalar) result. A multi-wire (string / tuple / ADT)
+                # result ABSTAINs rather than emit a proof of only its first wire (portable string-proof
+                # emission is a documented follow-up); the prove path itself binds the whole string.
+                'let _r : List<Int> = if len(_rv) > 1 then error("glass prove --emit: a multi-wire result (String / tuple / record / ADT) is not yet serializable to a portable proof — use `glass prove` (which binds the whole value), or return a scalar") else vh(_rv)\n'
                 'let _ : String = print(gprove_emit(_usrc, _inp, _r))\n'
                 '"emit-done"\n'
             ) % (esc, inp_glass)
@@ -4169,7 +4199,34 @@ def main() -> None:
             print("wrote a portable proof: %s  (%d tokens)" % (emit_path, _ntok))
             print("verify it independently with:  glass verify %s" % emit_path)
             return
-        if goldilocks:
+        if goldilocks and _res_str is not None:
+            # STRING-VALUED result (multi-wire): bind EVERY codepoint wire as the public claim
+            # (build_claim_mw / gprove_*_mw) and display the DECODED string. The proven claim is the
+            # circuit's own multi-wire output `_rv` (no drift). --claim is scalar-only, so refuse it.
+            if claim_val is not None:
+                print("Glass prove — %s  [field: Goldilocks (2^64)]" % upath)
+                print("glass prove: --claim binds a single scalar value, but this program returns a String (multi-wire) — drop --claim; a string result is bound to its computed value")
+                print("verdict: ABSTAIN  (a scalar --claim cannot express a multi-wire string result — refused, not silently bound to the first codepoint)")
+                return
+            if fast_mode:
+                _prove_call = "gprove_m_mw(_usrc, _inp, _rv, 11111)"
+                _prove_label = "ACCEPT  (self-check over the witness — NOT a soundness proof; drop --fast for verify_b3)"
+            elif zk_mode:
+                _prove_call = "gprove_zk_mw(_usrc, _inp, _rv, 11111, 256)"
+                _prove_label = "ACCEPT  (SOUND + zero-knowledge — independent verify_b3 + randomized-trace hiding)"
+            else:
+                _prove_call = "gprove_sound_mw(_usrc, _inp, _rv)"
+                _prove_label = "ACCEPT  (SOUND — independent witness-free verify_b3; not zero-knowledge)"
+            driver = machinery + (
+                '\nlet _usrc : String = "%s"\n'
+                'let _inp : List<Pair<String, List<Int>>> = %s\n'
+                'let _rv : List<List<Int>> = gref_m_checked(_usrc, _inp)\n'
+                'let _ : String = print("result:  \\"" ++ decode_str(_rv) ++ "\\"  (a String result — each codepoint bound as a public output wire over Goldilocks)")\n'
+                'let _ : String = print("security: " ++ (match build_claim_mw(_usrc, _inp, _rv) { Build(_n, _gs, _w) => measure_line(_gs) }))\n'
+                'let _ : String = print("proof:   " ++ (if %s then "%s" else "REJECT"))\n'
+                '"glass prove --goldilocks"\n'
+            ) % (esc, inp_glass, _prove_call, _prove_label)
+        elif goldilocks:
             if fast_mode:
                 _prove_call = "gprove_m(_usrc, _inp, _r, 11111)"
                 _prove_label = "ACCEPT  (self-check over the witness — NOT a soundness proof; drop --fast for verify_b3)"
@@ -4191,7 +4248,12 @@ def main() -> None:
                     _r_line = 'let _r : List<Int> = glit(%d)\n' % claim_val
                 _result_print = ('let _ : String = print("claim:   " ++ bn_dec_signed(_r) ++ "  (asserted; the proof verifies iff this is the true result over Goldilocks)")\n')
             else:
-                _r_line = 'let _r : List<Int> = vh(_rv)\n'
+                # A scalar result is exactly one wire. If the circuit produced a MULTI-WIRE value that
+                # was NOT detected as a string (a tuple / record / ADT result), refuse loudly rather
+                # than silently publish only the first wire (the old `vh` truncation) — sound ABSTAIN.
+                _r_line = ('let _r : List<Int> = if len(_rv) > 1 then '
+                           'error("glass prove: this program returns a MULTI-WIRE value (a tuple / record / ADT), which is not yet bindable as a public claim — only Int/Bool (scalar) and String results are supported; return a scalar or a String") '
+                           'else vh(_rv)\n')
                 # bn_dec_signed renders an upper-half field element as the negative it represents, so
                 # signed comparison/division/arithmetic results display as -3, not the canonical p-3.
                 _result_print = ('let _ : String = print("result:  " ++ bn_dec_signed(_r) ++ "  (over Goldilocks, p = 2^64-2^32+1)")\n')
@@ -4265,7 +4327,22 @@ def main() -> None:
         # bind the proof's PUBLIC RESULT to it. This catches the one class the compiler fixpoint
         # (gen1==gen2) and verifier-be-two (two verifiers of the SAME circuit) structurally cannot:
         # a lowering where heval AND cgen share a bug, so the circuit faithfully proves g != f.
-        if goldilocks and "--witness3" in sys.argv[2:]:
+        if goldilocks and "--witness3" in sys.argv[2:] and _res_str is not None:
+            # STRING result: the proof's public claim is the decoded string `result: "..."`; the Third
+            # Witness is the reference interpreter's own string (`_res_str`). Compare them directly —
+            # an exact match means the bridge's circuit lowered the source to the SAME string the
+            # reference computes (the source<->circuit gap, on a multi-wire value).
+            import re as _re3s
+            _ms = _re3s.search(r'result:\s*"(.*?)"', _proc.stdout or "")
+            _ps = _ms.group(1) if _ms else None
+            print("")
+            if _ps is None:
+                print("witness3: (no proven string result to bind to — third witness skipped)")
+            elif _ps == _res_str:
+                print(f'witness3: THIRD LINEAGE AGREES — the reference interpreter (glass.py, independent of the bridge\'s evaluator and its circuit lowering) independently computes f(inputs) = "{_res_str}". Three lineages agree on the SEMANTICS of this string result — closing the source<->circuit gap that verify_b3 and Pentecost, both verifying the circuit, cannot see.')
+            else:
+                print(f'witness3: DIVERGENCE — the proof attests the string "{_ps}" but the reference interpreter computes f(inputs) = "{_res_str}". The proof is STARK-valid, yet the lowered circuit\'s string result differs from the source — a genuine source<->circuit mismatch. Worth investigating.')
+        elif goldilocks and "--witness3" in sys.argv[2:]:
             import re as _re3
             _m3 = _re3.search(r"result:\s*(-?[0-9]+)", _proc.stdout or "")
             _rp = int(_m3.group(1)) if _m3 else None

@@ -509,9 +509,21 @@ horizon; 4 is prose; the rest are deferred/known.
      declare/construct/destructure programs exercising **both** the `match` pattern path and the `.field` access path,
      in both the third-lineage (`--witness3`) and differential (`--differential`) run loops. No prover change — the
      wrong-proof invariant is now fuzzed for records just as for arithmetic/comparison/signed/string.
-   - **Still refused (the remaining bridge frontier):** a **string-VALUED result** (a function *returning* a string —
-     multi-wire claim binding + display, not just a scalar Bool/Int); and *computed* higher-order callees (a function
-     value chosen at runtime, not a named fn passed as an argument). Each needs its own faithful gadget or a principled refusal.
+   - **String-VALUED result. ✅ LANDED v5.110.0.** A proven function can now **return a String**, not just a scalar
+     Bool/Int. A string is a multi-wire value (one field wire per codepoint), so the result is bound by pinning
+     **every output wire** as the public claim (`build_claim_mw` — the same is-zero gadget the scalar claim and
+     `bind_input` use; **no `verify_b3` / Pentecost change**, a multi-wire claim is just more is-zero asserts) and
+     **decoded** back to text for display (the inverse of `char_code` via the printable-ASCII table). The driver
+     detects a string result via the reference interpreter (the Third-Witness lineage), which then re-checks the
+     revealed string. Two silent-truncation hazards were closed on the way: `muxw` over unequal-width branches (an
+     `if` returning strings of different lengths) now **ABSTAINs** instead of truncating to the shorter, and a
+     multi-wire **non-string** result (tuple/record/ADT) **ABSTAINs** rather than publish only its first wire (the
+     old `vh` truncation). Scalar results are byte-identical. Showcases: [`reveal_prefix.glass`](../examples/prove/reveal_prefix.glass)
+     (selective disclosure — reveal a private key's first 8 chars), [`private_verdict.glass`](../examples/prove/private_verdict.glass)
+     (a verdict word chosen by a private comparison). **Follow-ups:** unequal-width branches via length-tagged padding;
+     a portable string-proof `--emit`; a string `--claim`.
+   - **Still refused (the remaining bridge frontier):** *computed* higher-order callees (a function
+     value chosen at runtime, not a named fn passed as an argument) — needs its own faithful gadget or a principled refusal.
    - **String `match` / `PStr`. ✅ LANDED v5.102.0.** `match s { "deploy" => 1; "status" => 2; _ => 0 }`
      over a *private* string — provable allowlist membership / dispatch without revealing the string. The
      cut reuses v5.101 entirely: `cgen`'s `psel(PStr)` selects via `mk_eq_wide` (the multi-wire per-codepoint

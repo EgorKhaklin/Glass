@@ -1,0 +1,19 @@
+# Prove a classification of a PRIVATE number, revealing only the verdict WORD — not the number.
+#
+#   glass prove examples/prove/private_verdict.glass score=820   # -> "PASS", ACCEPT
+#   glass prove examples/prove/private_verdict.glass score=640   # -> "WAIT", ACCEPT
+#   glass prove examples/prove/private_verdict.glass score=500   # -> "FAIL", ACCEPT
+#
+# The result is a STRING chosen by a private comparison. A function returning a string lowers to a
+# multi-wire value, and an `if`/`else` over strings muxes them wire-by-wire — so the branches must
+# have EQUAL width (here every verdict is 4 characters; an `if` returning strings of different
+# lengths ABSTAINs rather than silently truncate). The proof reveals the verdict word and binds it
+# as the public result; the score it was computed from stays in the witness. The Third Witness
+# (glass.py) recomputes the same word — proving the circuit selected the verdict the source dictates,
+# not some corrupted muxing of the branches.
+fn verdict(s: Int) : String =
+  if s >= 750 then "PASS"
+  else if s >= 600 then "WAIT"
+  else "FAIL"
+
+verdict(score)

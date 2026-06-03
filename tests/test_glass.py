@@ -1544,6 +1544,68 @@ def main() -> int:
             print(f"        rc={_elf.returncode}  out: {_elf.stdout.strip()[-260:]}  err: {_elf.stderr.strip()[-150:]}")
             failures += 1
 
+    # String-VALUED result (v5.110): a proven function can RETURN a string, not just a number / Bool.
+    # A string is multi-wire (one codepoint wire per char), so the proof binds EVERY output wire as
+    # the public claim (build_claim_mw) and DECODES it back to text — no `verify_b3`/Pentecost change
+    # (a multi-wire claim is just more is-zero asserts). Selective disclosure: reveal_prefix reveals
+    # the first 8 chars of a PRIVATE key, the rest hidden. -> "sk-live-" ACCEPT, witness3 AGREES.
+    _rp_path = os.path.join(EX, "prove", "reveal_prefix.glass")
+    _rpv = subprocess.run([sys.executable, GLASS, "prove", _rp_path, "key=sk-live-9f3a2c7e1b", "--cross-check"],
+                          capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_rpv, 'string-valued result: reveal_prefix -> "sk-live-" ACCEPT (string result bound + decoded, key hidden)'):
+        rpv_ok = (_rpv.returncode == 0) and ('result:  "sk-live-"' in _rpv.stdout) and ("ACCEPT" in _rpv.stdout) and ("THIRD LINEAGE AGREES" in _rpv.stdout)
+        print(f"  {'OK ' if rpv_ok else 'FAIL'}  string-valued result: reveal_prefix -> \"sk-live-\" ACCEPT (string result bound + decoded, key hidden)")
+        if not rpv_ok:
+            print(f"        rc={_rpv.returncode}  out: {_rpv.stdout.strip()[-260:]}  err: {_rpv.stderr.strip()[-150:]}")
+            failures += 1
+    # A string chosen by a PRIVATE comparison: verdict(score). Equal-width branches mux wire-by-wire;
+    # the verdict WORD is revealed, the score hidden. score=820 -> "PASS", score=500 -> "FAIL" (the
+    # branch genuinely selects — not a constant), both ACCEPT + witness3 AGREES on the string.
+    _vd_path = os.path.join(EX, "prove", "private_verdict.glass")
+    _vdp = subprocess.run([sys.executable, GLASS, "prove", _vd_path, "score=820", "--cross-check"],
+                          capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_vdp, 'string-valued result: private score 820 -> "PASS" ACCEPT (verdict word revealed, score hidden)'):
+        vdp_ok = (_vdp.returncode == 0) and ('result:  "PASS"' in _vdp.stdout) and ("ACCEPT" in _vdp.stdout) and ("THIRD LINEAGE AGREES" in _vdp.stdout)
+        print(f"  {'OK ' if vdp_ok else 'FAIL'}  string-valued result: private score 820 -> \"PASS\" ACCEPT (verdict word revealed, score hidden)")
+        if not vdp_ok:
+            print(f"        rc={_vdp.returncode}  out: {_vdp.stdout.strip()[-260:]}  err: {_vdp.stderr.strip()[-150:]}")
+            failures += 1
+    _vdf = subprocess.run([sys.executable, GLASS, "prove", _vd_path, "score=500", "--cross-check"],
+                          capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_vdf, 'string-valued result: private score 500 -> "FAIL" (the if-over-strings branch selects)'):
+        vdf_ok = (_vdf.returncode == 0) and ('result:  "FAIL"' in _vdf.stdout) and ("THIRD LINEAGE AGREES" in _vdf.stdout)
+        print(f"  {'OK ' if vdf_ok else 'FAIL'}  string-valued result: private score 500 -> \"FAIL\" (the if-over-strings branch selects)")
+        if not vdf_ok:
+            print(f"        rc={_vdf.returncode}  out: {_vdf.stdout.strip()[-260:]}  err: {_vdf.stderr.strip()[-150:]}")
+            failures += 1
+    # Soundness guard 1: an `if` returning strings of DIFFERENT widths would mux to the shorter and
+    # prove a CORRUPTED value — so muxw ABSTAINs (loud refusal), never silently truncates.
+    import tempfile as _tf_sr
+    with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _uf:
+        _uf.write('fn lab(s: Int) : String = if s >= 700 then "approved" else "review"\nlab(score)\n')
+        _uneq_path = _uf.name
+    _uneq = subprocess.run([sys.executable, GLASS, "prove", _uneq_path, "score=820"],
+                           capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_uneq, "string-valued result: unequal-width if-branches ABSTAIN (no silent truncation)"):
+        uneq_ok = ("verdict: ABSTAIN" in _uneq.stdout) and ("proof:   ACCEPT" not in _uneq.stdout)
+        print(f"  {'OK ' if uneq_ok else 'FAIL'}  string-valued result: unequal-width if-branches ABSTAIN (no silent truncation)")
+        if not uneq_ok:
+            print(f"        rc={_uneq.returncode}  out: {_uneq.stdout.strip()[-260:]}  err: {_uneq.stderr.strip()[-150:]}")
+            failures += 1
+    # Soundness guard 2: a multi-wire NON-string result (a tuple) is not bindable as a public claim —
+    # ABSTAIN rather than silently publish only its first wire (the old `vh` truncation).
+    with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _uf2:
+        _uf2.write("fn mk(a: Int, b: Int) : (Int, Int) = (a, b)\nmk(x, y)\n")
+        _tup_path = _uf2.name
+    _tup = subprocess.run([sys.executable, GLASS, "prove", _tup_path, "x=3", "y=8"],
+                          capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_tup, "string-valued result: multi-wire tuple result ABSTAINs (not truncated to wire 0)"):
+        tup_ok = ("verdict: ABSTAIN" in _tup.stdout) and ("proof:   ACCEPT" not in _tup.stdout)
+        print(f"  {'OK ' if tup_ok else 'FAIL'}  string-valued result: multi-wire tuple result ABSTAINs (not truncated to wire 0)")
+        if not tup_ok:
+            print(f"        rc={_tup.returncode}  out: {_tup.stdout.strip()[-260:]}  err: {_tup.stderr.strip()[-150:]}")
+            failures += 1
+
     # The unboxed single-Int Goldilocks field (goldw_*) must agree with the trusted
     # base-2^16 limb field (gold_*) and obey the field laws — the load-bearing
     # correctness of the "unbox the field" speed cut. (Interpreter check; the native
@@ -1808,7 +1870,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 45)  # +45: ... + string-email-suffix-ACCEPT + strmatch-deploy-ACCEPT + strmatch-nonmember-0 + strmatch-false-claim-REJECT + records-construct-match-ACCEPT + records-false-claim-REJECT + efield-solvent-ACCEPT + efield-false-claim-REJECT + logup-range-argument + logup-running-sum-AIR + logup-committed-FS + capstone-eligible-ACCEPT + capstone-false-claim-REJECT
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 50)  # +50: ... + records-construct-match-ACCEPT + records-false-claim-REJECT + efield-solvent-ACCEPT + efield-false-claim-REJECT + logup-range-argument + logup-running-sum-AIR + logup-committed-FS + capstone-eligible-ACCEPT + capstone-false-claim-REJECT + strresult-prefix-ACCEPT + strresult-verdict-PASS + strresult-verdict-FAIL + strresult-unequal-ABSTAIN + strresult-tuple-ABSTAIN
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

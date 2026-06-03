@@ -1361,10 +1361,18 @@ fn mk_eq_g(wx: Int, wy: Int, b: Build) : (Int, Build) =
   match mks(wx, wy, b) { (wd, b1) => let dv : List<Int> = bwire(b1, wd) in let iv : List<Int> = if bn_is_zero(dv) then glit(0) else finv(dv) in
   match mkh(iv, b1) { (winv, b2) => match mkm(wd, winv, b2) { (wdi, b3) => match mkc(glit(1), b3) { (wone, b4) =>
   match mks(wone, wdi, b4) { (wz, b5) => match mkm(wz, wd, b5) { (wzd, b6) => (wz, mke(wzd, b6)) } } } } } }
-fn muxw(wc: Int, vt: List<Int>, vf: List<Int>, b: Build) : (List<Int>, Build) =
+fn muxw_go(wc: Int, vt: List<Int>, vf: List<Int>, b: Build) : (List<Int>, Build) =
   match vt { [] => ([], b); [t, ...tr] => match vf { [] => ([], b); [f, ...fr] =>
     match mks(t, f, b) { (wd, b1) => match mkm(wc, wd, b1) { (wcd, b2) => match mka(f, wcd, b2) { (wo, b3) =>
-    match muxw(wc, tr, fr, b3) { (rest, b4) => ([wo] ++ rest, b4) } } } } } }
+    match muxw_go(wc, tr, fr, b3) { (rest, b4) => ([wo] ++ rest, b4) } } } } } }
+# An `if` mux over MULTI-WIRE branches (strings, ADTs, tuples) must have EQUAL widths: muxw_go
+# recurses in lockstep and STOPS at the shorter branch, so unequal widths would silently TRUNCATE
+# the longer one to a corrupted value (e.g. `if c then "approved" else "review"` -> 6 muxed wires
+# mixing the two). Refuse that loudly (ABSTAIN) rather than prove a truncated result. Scalar ifs
+# (1 wire each) and equal-width string/ADT/tuple ifs are unaffected — the common case is untouched.
+fn muxw(wc: Int, vt: List<Int>, vf: List<Int>, b: Build) : (List<Int>, Build) =
+  if ilenI(vt) == ilenI(vf) then muxw_go(wc, vt, vf, b)
+  else error("glass prove: an `if` returns values of different wire widths (e.g. strings of different lengths) — muxing them would truncate to the shorter and prove a CORRUPTED value, so this ABSTAINs. Pad the branches to equal length.")
 
 # --- strings as multi-wire codepoint values (v5.101) -------------------------
 # "strings can't be field-proven" was the long-standing refusal. The cut: a string IS a value,
@@ -1713,8 +1721,34 @@ fn gref_m_checked(src: String, inputs: List<Pair<String, List<Int>>>) : List<Lis
 fn build_claim_m(src: String, inputs: List<Pair<String, List<Int>>>, claimedR: List<Int>) : Build =
   match build_multi_m(src, inputs) { (outws, b) =>
     match mkc(claimedR, b) { (wR, b1) => match mks(vhi(outws), wR, b1) { (wd, b2) => mke(wd, b2) } } }
+# --- MULTI-WIRE result claim (v5.110): bind EVERY output wire, not just the first ----------------
+# A scalar (Int/Bool) result is one wire; a STRING result is several (one codepoint wire per char).
+# build_claim_m above pins only outws[0] — fine for a scalar, but for a string it would publish just
+# the first codepoint and SILENTLY DROP the rest (a misleading public claim). bind_outs pins EACH
+# output wire to its claimed codepoint with the SAME is-zero gadget (mkc const + mks + mke) the scalar
+# path and bind_input use — so the whole string lands in GConst gates as the public statement and
+# verify_b3 checks it. No new gate, no verify_b3 / Pentecost change: a multi-wire claim is just more
+# is-zero asserts. (Lengths match by construction: claimedRs is the circuit's own output `_rv`.)
+fn bind_outs(outws: List<Int>, claimedRs: List<List<Int>>, b: Build) : Build =
+  match outws { [] => b; [ow, ...owr] => match claimedRs { [] => b; [cr, ...crr] =>
+    match mkc(cr, b) { (wR, b1) => match mks(ow, wR, b1) { (wd, b2) => bind_outs(owr, crr, mke(wd, b2)) } } } }
+fn build_claim_mw(src: String, inputs: List<Pair<String, List<Int>>>, claimedRs: List<List<Int>>) : Build =
+  match build_multi_m(src, inputs) { (outws, b) => bind_outs(outws, claimedRs, b) }
+# decode a multi-wire string RESULT (codepoint wires) back to text for display. Each wire's small
+# field value is its codepoint; the printable-ASCII char is table[code-32] (the inverse of char_code,
+# which is 32 + index-into-ascii_tbl). A codepoint outside 32..126 ABSTAINs (never a wrong proof) —
+# the same printable bound the lowering enforces, applied on the way out.
+fn decode_char(code: Int) : String =
+  if code < 32 then error("glass prove: a string result has a non-printable codepoint (< 32) — only 32..126 lower to the field; ABSTAIN")
+  else if code > 126 then error("glass prove: a string result has a non-printable codepoint (> 126) — only 32..126 lower to the field; ABSTAIN")
+  else substring(ascii_tbl(0), code - 32, code - 31)
+fn decode_str(rv: List<List<Int>>) : String =
+  match rv { [] => ""; [w, ...r] => decode_char(bn_small_to_int(w)) ++ decode_str(r) }
 fn gprove_m(src: String, inputs: List<Pair<String, List<Int>>>, claimedR: List<Int>, seed: Int) : Bool =
   match build_claim_m(src, inputs, claimedR) { Build(n, gs, w) => prove_stark(gs, w, seed) }
+# the multi-wire (string result) FAST self-check: bind every output wire, then the witness self-check.
+fn gprove_m_mw(src: String, inputs: List<Pair<String, List<Int>>>, claimedRs: List<List<Int>>, seed: Int) : Bool =
+  match build_claim_mw(src, inputs, claimedRs) { Build(n, gs, w) => prove_stark(gs, w, seed) }
 # --- SOUND path: prove via prove_b3, then verify with the INDEPENDENT witness-free
 # verify_b3 (per-row gate soundness + PLONK grand-product wire consistency). Unlike
 # gprove_m/prove_stark (a self-check over the witness, no malicious-prover bound), this
@@ -1723,11 +1757,21 @@ fn gprove_m(src: String, inputs: List<Pair<String, List<Int>>>, claimedR: List<I
 # opened in the clear); use gprove_zk for hiding. Research-grade + UNAUDITED (see soundness.md).
 fn gprove_sound(src: String, inputs: List<Pair<String, List<Int>>>, claimedR: List<Int>) : Bool =
   match build_claim_m(src, inputs, claimedR) { Build(n, gs, w) => verify_b3(gs, prove_b3(gs, w)) }
+# the multi-wire (string result) SOUND path: bind every output wire, then the SAME verify_b3.
+fn gprove_sound_mw(src: String, inputs: List<Pair<String, List<Int>>>, claimedRs: List<List<Int>>) : Bool =
+  match build_claim_mw(src, inputs, claimedRs) { Build(n, gs, w) => verify_b3(gs, prove_b3(gs, w)) }
 # --- SOUND + ZERO-KNOWLEDGE: randomized-trace ZK (build_claim_zk pads to targetN with
 # random dummy rows that hide the openings) then the same sound verify_b3. Heavy (targetN
 # is large so the random rows exceed the ~170 query openings) — opt-in via `--zk`.
 fn gprove_zk(src: String, inputs: List<Pair<String, List<Int>>>, claimedR: List<Int>, seed: Int, targetN: Int) : Bool =
   match build_claim_zk(src, inputs, claimedR, seed, targetN) { Build(n, gs, w) => verify_b3(gs, prove_b3(gs, w)) }
+# the multi-wire (string result) ZK path: pad the multi-wire claim with random dummy rows, same verify_b3.
+fn build_claim_zk_mw(src: String, inputs: List<Pair<String, List<Int>>>, claimedRs: List<List<Int>>, seed: Int, targetN: Int) : Build =
+  match build_claim_mw(src, inputs, claimedRs) { Build(n, gs, w) =>
+    let k : Int = targetN - glen(gs) in
+    Build(n + 3 * k, gs ++ zk_dummy_gates(n, k), w ++ zk_dummy_wit(seed, k, 1)) }
+fn gprove_zk_mw(src: String, inputs: List<Pair<String, List<Int>>>, claimedRs: List<List<Int>>, seed: Int, targetN: Int) : Bool =
+  match build_claim_zk_mw(src, inputs, claimedRs, seed, targetN) { Build(n, gs, w) => verify_b3(gs, prove_b3(gs, w)) }
 # --- PUBLIC INPUTS: pin a chosen input wire to a PUBLIC value, via the same is-zero
 # gadget (mkc+mks+mke = assert wire - value == 0). The value lands in a GConst gate, so
 # it is part of the public statement (absorbed into stmt_seed) and the verifier checks it.
