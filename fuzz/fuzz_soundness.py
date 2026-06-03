@@ -3,8 +3,9 @@
 # fuzz_soundness.py — differential soundness fuzzing of the prove pipeline.
 #
 # Generates random small Glass programs over private inputs — arithmetic, unsigned
-# comparison/boolean, signed gadgets (slt/sle/sgt/sge, sdiv/smod), AND strings
-# (++/substring/string_length/==, the multi-wire codepoint lowering) — proves each
+# comparison/boolean, signed gadgets (slt/sle/sgt/sge, sdiv/smod), strings
+# (++/substring/string_length/==, the multi-wire codepoint lowering), AND records
+# (declare/construct/destructure a 2-field record — the multi-wire tuple shape) — proves each
 # with `glass prove --witness3`, and asserts the soundness invariants across the
 # WHOLE stack at once:
 #   (1) honest proof -> ACCEPT          (verify_b3 accepts a real proof)
@@ -51,6 +52,15 @@ def gen_string(rng, depth):
     s = rand_str(rng, 1, 8)
     return 'string_length("%s") == %d' % (s, rng.randint(0, 9))
 
+# RECORD family (v5.109): a self-contained record program — declare a 2-field record, construct it
+# from the private inputs, read the fields (randomly via a `match` destructure OR direct `.field`
+# access, fuzzing both the v5.103 pattern path and the v5.104 type-env path), combine arithmetically.
+def gen_record_prog(rng):
+    op = rng.choice(["+", "-", "*"])
+    e0 = gen_expr(rng, 2); e1 = gen_expr(rng, 2)
+    body = ("match r { Rec { f0, f1 } => f0 %s f1 }" % op) if rng.random() < 0.5 else ("r.f0 %s r.f1" % op)
+    return "type Rec = { f0: Int, f1: Int }\nfn ruse(r: Rec) : Int = %s\nruse(Rec { f0: %s, f1: %s })" % (body, e0, e1)
+
 def gen_expr(rng, depth):
     if depth <= 0 or rng.random() < 0.35:
         return rng.choice(VARS) if rng.random() < 0.7 else str(rng.randint(0, 9))
@@ -86,25 +96,28 @@ def gen_signed(rng, depth):
 def run(n, seed, boundary=False):
     rng = random.Random(seed)
     mode = "BOUNDARY (inputs at the 2^31/2^32 range-gadget seams)" if boundary else "random (inputs 0..20 / -20..20)"
-    print(f"# soundness fuzz: {n} programs, {mode} (arithmetic + comparison/boolean + signed + string, seed {seed})")
+    print(f"# soundness fuzz: {n} programs, {mode} (arithmetic + comparison/boolean + signed + string + record, seed {seed})")
     ok = True
     for i in range(n):
-        # cycle 3 families so each batch exercises the arithmetic lowering, the unsigned
-        # comparison-gadget + boolean control-flow, AND the signed gadgets (slt/sdiv, the newest,
-        # riskiest). Signed inputs may be negative (-20..20); the others stay non-negative so the
-        # unsigned [0,2^32) gadget doesn't spuriously abstain.
+        # cycle 5 families so each batch exercises the arithmetic lowering, the unsigned
+        # comparison-gadget + boolean control-flow, the signed gadgets (slt/sdiv, the newest,
+        # riskiest), the multi-wire string lowering, AND the multi-wire record shape. Signed inputs
+        # may be negative (-20..20); the others stay non-negative so the unsigned [0,2^32) gadget
+        # doesn't spuriously abstain.
         # In boundary mode only the GADGET-bearing families (comparison + signed), whose operands
         # are range-guarded — a raw arithmetic product over near-2^32 inputs is a benign int64-vs-
         # field wrap (documented), not a soundness bug, so the arithmetic family is excluded there.
-        fam = (1 + (i % 2)) if boundary else (i % 4)
+        fam = (1 + (i % 2)) if boundary else (i % 5)
         if fam == 0:
             expr = gen_expr(rng, 3)
         elif fam == 1:
             expr = gen_bool(rng, 2)
         elif fam == 2:
             expr = gen_signed(rng, 1)
-        else:
+        elif fam == 3:
             expr = gen_string(rng, 1)
+        else:
+            expr = gen_record_prog(rng)
         if boundary:
             # signed family may use negatives; unsigned families draw from the non-negative seams.
             pool = BOUNDARY if fam == 2 else [x for x in BOUNDARY if x >= 0]
@@ -115,7 +128,7 @@ def run(n, seed, boundary=False):
         src = expr + "\n"
         path = f"/tmp/fuzz_{i}.glass"
         open(path, "w").write(src)
-        argv = ["python3", os.path.join(ROOT, "glass.py"), "prove", "--witness3", path] + \
+        argv = [sys.executable, os.path.join(ROOT, "glass.py"), "prove", "--witness3", path] + \
                [f"{v}={inputs[v]}" for v in VARS]
         out = subprocess.run(argv, capture_output=True, text=True, cwd=ROOT).stdout
         accept = "proof:   ACCEPT" in out
@@ -149,31 +162,33 @@ def run_differential(n, seed):
     guarantee is fuzzed across the gadget-bearing lowerings, not just `a+b`. (A signed proof is large,
     ~550k tokens, so emit is the slow step; keep N modest.)"""
     rng = random.Random(seed)
-    print(f"# differential fuzz: {n} programs (arithmetic + comparison + signed + string), Glass-prove vs independent Pentecost (seed {seed})")
+    print(f"# differential fuzz: {n} programs (arithmetic + comparison + signed + string + record), Glass-prove vs independent Pentecost (seed {seed})")
     ok = True
     for i in range(n):
-        fam = i % 4
+        fam = i % 5
         if fam == 0:
             expr = gen_expr(rng, 3)
         elif fam == 1:
             expr = gen_bool(rng, 2)
         elif fam == 2:
             expr = gen_signed(rng, 1)
-        else:
+        elif fam == 3:
             expr = gen_string(rng, 1)
+        else:
+            expr = gen_record_prog(rng)
         lo = -20 if fam == 2 else 0
         inputs = {v: rng.randint(lo, 20) for v in VARS}
         path = f"/tmp/fuzzd_{i}.glass"
         open(path, "w").write(expr + "\n")
         pf = f"/tmp/fuzzd_{i}.proof"
-        emit = subprocess.run(["python3", os.path.join(ROOT, "glass.py"), "prove", "--emit", pf, path] +
+        emit = subprocess.run([sys.executable, os.path.join(ROOT, "glass.py"), "prove", "--emit", pf, path] +
                               [f"{v}={inputs[v]}" for v in VARS], capture_output=True, text=True, cwd=ROOT)
         emitted = (emit.returncode == 0) and ("wrote a portable proof" in emit.stdout)
         if not emitted:
             # ABSTAIN (unlowerable) is sound — skip, not a failure
             print(f"  --  [no proof emitted]  {expr}  with {inputs}")
             continue
-        ver = subprocess.run(["python3", os.path.join(ROOT, "glass.py"), "verify", pf], capture_output=True, text=True, cwd=ROOT)
+        ver = subprocess.run([sys.executable, os.path.join(ROOT, "glass.py"), "verify", pf], capture_output=True, text=True, cwd=ROOT)
         pent = "PENTECOST: ACCEPT" in ver.stdout
         # both verifiers must AGREE: Glass emitted an honest proof, Pentecost must ACCEPT it
         good = pent

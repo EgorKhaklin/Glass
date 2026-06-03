@@ -1777,10 +1777,11 @@ def main() -> int:
         failures += 1
 
     # Multi-shape corpus: the differential + tamper guarantees, broadened beyond the single a+b
-    # shape they originally ran on. For every committed proof fixture (a+b, a*b, a*a+b) the
-    # independent Pentecost verifier must ACCEPT the honest proof and REJECT a tamper in either the
-    # proof region or the public-claim region. Catches a verify_b3 bug that only manifests on some
-    # circuit shapes (more gates, different gate kinds) — invisible to a single-fixture gate.
+    # shape they originally ran on. For every committed proof fixture (a+b, a*b, a*a+b, a<b, a/b,
+    # string-eq, AND a record destructure) the independent Pentecost verifier must ACCEPT the honest
+    # proof and REJECT a tamper in either the proof region or the public-claim region. Catches a
+    # verify_b3 bug that only manifests on some circuit shapes (more gates, different gate kinds,
+    # multi-wire string/record values) — invisible to a single-fixture gate.
     _cc = subprocess.run([sys.executable, os.path.join("fuzz", "corpus_check.py")],
                          capture_output=True, text=True, cwd=_root)
     cc_ok = (_cc.returncode == 0) and ("0 failures" in _cc.stdout)

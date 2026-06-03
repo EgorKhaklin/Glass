@@ -502,6 +502,13 @@ horizon; 4 is prose; the rest are deferred/known.
      discarded). An unresolvable `e.f` ABSTAINs (never a wrong proof). Showcase [`record_field.glass`](../examples/prove/record_field.glass):
      `fn solvent(a: Account) = a.balance >= 100` over a *private* account → prove solvency reading the field
      directly, revealing only the verdict.
+   - **Records soundness hardening. ✅ LANDED v5.109.0.** Extended the two existing soundness disciplines to the
+     record circuit shape: a committed Pentecost corpus fixture ([`honest_record.b3.txt.gz`](../pentecost/corpus/honest_record.b3.txt.gz))
+     so the **independent second verifier** ACCEPTs an honest record proof and REJECTs proof/claim tampers (it had
+     only ever seen scalar/string shapes), plus a fifth **fuzzer family** (`gen_record_prog`) that random-generates
+     declare/construct/destructure programs exercising **both** the `match` pattern path and the `.field` access path,
+     in both the third-lineage (`--witness3`) and differential (`--differential`) run loops. No prover change — the
+     wrong-proof invariant is now fuzzed for records just as for arithmetic/comparison/signed/string.
    - **Still refused (the remaining bridge frontier):** a **string-VALUED result** (a function *returning* a string —
      multi-wire claim binding + display, not just a scalar Bool/Int); and *computed* higher-order callees (a function
      value chosen at runtime, not a named fn passed as an argument). Each needs its own faithful gadget or a principled refusal.
