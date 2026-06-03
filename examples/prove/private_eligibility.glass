@@ -1,0 +1,22 @@
+# A capstone: prove a PRIVATE applicant meets an access policy — revealing only allow/deny.
+#
+#   glass prove examples/prove/private_eligibility.glass age0=29 region0=3 tier0=gold      # -> 1, ACCEPT (eligible)
+#   glass prove examples/prove/private_eligibility.glass age0=16 region0=3 tier0=gold      # -> 0 (under age)
+#   glass prove examples/prove/private_eligibility.glass age0=29 region0=9 tier0=gold      # -> 0 (region out of range)
+#   glass prove examples/prove/private_eligibility.glass age0=29 region0=3 tier0=bronze    # -> 0 (tier not in allowlist)
+#
+# This composes everything the prove bridge learned this arc into one realistic private decision:
+#   • a RECORD models the applicant (`type Applicant = { age, region }`, constructed from private inputs)
+#   • FIELD ACCESS reads its fields (`a.age`, `a.region`)
+#   • ORDERING COMPARISON checks the thresholds (`a.age >= 18`, `a.region <= 5`)
+#   • a STRING predicate checks the membership tier (`tier == "gold" || tier == "platinum"`)
+# all proven over Goldilocks. age, region, and tier are PRIVATE inputs (kept in the witness); the
+# proof reveals only the 0/1 verdict — prove policy compliance without disclosing any applicant data.
+type Applicant = { age: Int, region: Int }
+
+fn tier_ok(t: String) : Bool = (t == "gold") || (t == "platinum")
+
+fn eligible(a: Applicant, t: String) : Bool =
+  (a.age >= 18) && (a.region <= 5) && tier_ok(t)
+
+eligible(Applicant { age: age0, region: region0 }, tier0)

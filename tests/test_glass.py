@@ -1522,6 +1522,28 @@ def main() -> int:
             print(f"        rc={_rff.returncode}  out: {_rff.stdout.strip()[-220:]}  err: {_rff.stderr.strip()[-150:]}")
             failures += 1
 
+    # Capstone (v5.108): the whole arc COMPOSES — a private access-policy decision combining records
+    # (Applicant), field access (a.age, a.region), ordering comparison (>=, <=), and string dispatch
+    # (tier in an allowlist), all in one proven circuit. age/region/tier are PRIVATE; only the verdict
+    # is revealed. End-to-end composition test: eligible -> 1 ACCEPT + witness3 AGREES; false claim REJECTs.
+    _el_path = os.path.join(EX, "prove", "private_eligibility.glass")
+    _el = subprocess.run([sys.executable, GLASS, "prove", _el_path, "age0=29", "region0=3", "tier0=gold", "--cross-check"],
+                         capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_el, "capstone: records + field access + comparison + string dispatch compose -> eligible=1 ACCEPT"):
+        el_ok = (_el.returncode == 0) and ("result:  1" in _el.stdout) and ("ACCEPT" in _el.stdout) and ("THIRD LINEAGE AGREES" in _el.stdout)
+        print(f"  {'OK ' if el_ok else 'FAIL'}  capstone: records + field access + comparison + string dispatch compose -> eligible=1 ACCEPT")
+        if not el_ok:
+            print(f"        rc={_el.returncode}  out: {_el.stdout.strip()[-260:]}  err: {_el.stderr.strip()[-150:]}")
+            failures += 1
+    _elf = subprocess.run([sys.executable, GLASS, "prove", "--claim", "0", _el_path, "age0=29", "region0=3", "tier0=gold"],
+                          capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_elf, "capstone: false eligibility claim REJECTs (eligible=1; claim 0 is false)"):
+        elf_ok = ("proof:   REJECT" in _elf.stdout) and ("proof:   ACCEPT" not in _elf.stdout)
+        print(f"  {'OK ' if elf_ok else 'FAIL'}  capstone: false eligibility claim REJECTs (eligible=1; claim 0 is false)")
+        if not elf_ok:
+            print(f"        rc={_elf.returncode}  out: {_elf.stdout.strip()[-260:]}  err: {_elf.stderr.strip()[-150:]}")
+            failures += 1
+
     # The unboxed single-Int Goldilocks field (goldw_*) must agree with the trusted
     # base-2^16 limb field (gold_*) and obey the field laws — the load-bearing
     # correctness of the "unbox the field" speed cut. (Interpreter check; the native
@@ -1785,7 +1807,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 43)  # +43: ... + string-email-suffix-ACCEPT + strmatch-deploy-ACCEPT + strmatch-nonmember-0 + strmatch-false-claim-REJECT + records-construct-match-ACCEPT + records-false-claim-REJECT + efield-solvent-ACCEPT + efield-false-claim-REJECT + logup-range-argument + logup-running-sum-AIR + logup-committed-FS
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 45)  # +45: ... + string-email-suffix-ACCEPT + strmatch-deploy-ACCEPT + strmatch-nonmember-0 + strmatch-false-claim-REJECT + records-construct-match-ACCEPT + records-false-claim-REJECT + efield-solvent-ACCEPT + efield-false-claim-REJECT + logup-range-argument + logup-running-sum-AIR + logup-committed-FS + capstone-eligible-ACCEPT + capstone-false-claim-REJECT
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures
