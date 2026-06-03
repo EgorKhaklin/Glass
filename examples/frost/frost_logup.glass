@@ -1,0 +1,162 @@
+# =============================================================================
+# frost_logup.glass — a LogUp (log-derivative) RANGE-LOOKUP argument over Goldilocks
+#
+# The bridge's range gadget (range_k / lt_build) proves `a ∈ [0, 2^k)` by
+# BIT-DECOMPOSITION: ~k boolean wires + a weighted-sum bind, ~32 gates/operand —
+# which is what makes comparison/division proofs ~600k tokens. The cheaper, wider
+# alternative every modern STARK uses is a LOOKUP: prove `a` is one of the table
+# values {0,1,…,2^k−1} without decomposing it. The standard sound form is LogUp:
+#
+#     Σ_j  1/(β − a_j)   ==   Σ_i  m_i/(β − T_i)
+#
+# the values a_j on the left, the dense table T_i = i with multiplicities m_i on
+# the right, β a Fiat-Shamir challenge. By partial-fraction uniqueness the two
+# rational functions are equal IFF the multiset {a_j} equals {i with multiplicity
+# m_i}; so by Schwartz–Zippel a wrong claim passes at a random β only with prob
+# ≤ (2^k−1)/|field|.
+#
+# THE SOUNDNESS POINT (an adversarial design panel caught the trap): the table MUST
+# be the DENSE LITERAL {0..2^k−1}. If the "table" were the prover's observed
+# distinct values, an OUT-OF-RANGE value (say 16) would appear as a pole on BOTH
+# sides — 1/(β−16) on the left and m_16·1/(β−16) on the right — and CANCEL at every
+# β, so [3,7,16] would be ACCEPTED. With the dense literal table the right side can
+# only have poles at genuine table points 0..2^k−1, so an out-of-range value has no
+# canceling partner and the sums differ. (The sparse "support = observed values"
+# form proves only values ⊆ support; it never proves support ⊆ [0,2^k).)
+#
+# β ∈ F_{p^2} ≈ 2^128 (NOT base Goldilocks 2^64): the soundness error is
+# (2^k−1)/|field|, so the base field gives only ~(64−k) bits — below the 80-bit
+# target for any useful k. F_{p^2} gives 128−k bits, comfortably past 80 for k≤32.
+# Cap k ≤ 32 for F_{p^2}; k=64 would need F_{p^3}.
+#
+# This is a STANDALONE component (like frost_goldilocks_fri.glass): it computes both
+# rational sums DIRECTLY and compares them — no committed codeword, no FRI, no
+# prover/verifier split. It establishes the LogUp range-check MECHANISM — sound
+# (Schwartz–Zippel + partial-fraction uniqueness), int64-safe, dogfooded interp ==
+# native — at small k. β here is a fixed F_{p^2} value standing in for a hash output
+# (frost_goldilocks_fri.glass does the same with its fold β); wiring LogUp in-circuit
+# (a constrained running-sum column + advice-pinned multiplicities, in BOTH verify_b3
+# AND the Pentecost verifier, replacing range_k) is the known multi-session,
+# soundness-critical next step (see the footer). Research/educational, UNAUDITED.
+# =============================================================================
+
+# --- Goldilocks base field via base-2^16 limbs (from frost_goldilocks.glass) -
+fn lmod(x: Int) : Int = x % 65536
+fn ldiv(x: Int) : Int = x / 65536
+fn rev_go(xs: List<Int>, acc: List<Int>) : List<Int> = match xs { [] => acc; [h, ...t] => rev_go(t, [h] ++ acc) }
+fn rev(xs: List<Int>) : List<Int> = rev_go(xs, [])
+fn drop_zeros(xs: List<Int>) : List<Int> = match xs { [] => []; [h, ...t] => if h == 0 then drop_zeros(t) else xs }
+fn trim(xs: List<Int>) : List<Int> = rev(drop_zeros(rev(xs)))
+fn addc(a: List<Int>, b: List<Int>, carry: Int) : List<Int> =
+  match a {
+    [] => match b { [] => if carry == 0 then [] else [carry]; [hb, ...tb] => let s : Int = hb + carry in [lmod(s)] ++ addc([], tb, ldiv(s)) };
+    [ha, ...ta] => match b { [] => let s : Int = ha + carry in [lmod(s)] ++ addc(ta, [], ldiv(s)); [hb, ...tb] => let s : Int = ha + hb + carry in [lmod(s)] ++ addc(ta, tb, ldiv(s)) }
+  }
+fn bn_add(a: List<Int>, b: List<Int>) : List<Int> = trim(addc(a, b, 0))
+fn smul(xs: List<Int>, k: Int, carry: Int) : List<Int> =
+  match xs { [] => if carry == 0 then [] else [carry]; [h, ...t] => let p : Int = h * k + carry in [lmod(p)] ++ smul(t, k, ldiv(p)) }
+fn shift(xs: List<Int>, n: Int) : List<Int> = if n <= 0 then xs else [0] ++ shift(xs, n - 1)
+fn mul_go(a: List<Int>, b: List<Int>, i: Int) : List<Int> =
+  match b { [] => []; [hb, ...tb] => bn_add(shift(smul(a, hb, 0), i), mul_go(a, tb, i + 1)) }
+fn bn_mul(a: List<Int>, b: List<Int>) : List<Int> = trim(mul_go(a, b, 0))
+fn cmp_hi(a: List<Int>, b: List<Int>) : Int = match a { [] => 0; [ha, ...ta] => match b { [] => 0; [hb, ...tb] => if ha == hb then cmp_hi(ta, tb) else (if ha < hb then 0 - 1 else 1) } }
+fn bn_cmp(a: List<Int>, b: List<Int>) : Int =
+  let ta : List<Int> = trim(a) in let tb : List<Int> = trim(b) in
+  if len(ta) == len(tb) then cmp_hi(rev(ta), rev(tb)) else (if len(ta) < len(tb) then 0 - 1 else 1)
+fn subb(a: List<Int>, b: List<Int>, borrow: Int) : List<Int> =
+  match a { [] => [];
+    [ha, ...ta] => match b {
+      [] => let d : Int = ha - borrow in if d < 0 then [d + 65536] ++ subb(ta, [], 1) else [d] ++ subb(ta, [], 0);
+      [hb, ...tb] => let d : Int = ha - hb - borrow in if d < 0 then [d + 65536] ++ subb(ta, tb, 1) else [d] ++ subb(ta, tb, 0) } }
+fn bn_sub(a: List<Int>, b: List<Int>) : List<Int> = trim(subb(a, b, 0))
+fn take(xs: List<Int>, n: Int) : List<Int> = if n <= 0 then [] else match xs { [] => []; [h, ...t] => [h] ++ take(t, n - 1) }
+fn drop(xs: List<Int>, n: Int) : List<Int> = if n <= 0 then xs else match xs { [] => []; [h, ...t] => drop(t, n - 1) }
+fn pg(d: Int) : List<Int> = [1, 0, 65535, 65535]
+fn fold_hi(d: Int) : List<Int> = [65535, 65535]
+fn bn_mod_p(a: List<Int>) : List<Int> =
+  let t : List<Int> = trim(a) in
+  if len(t) > 4 then bn_mod_p(bn_add(take(t, 4), bn_mul(drop(t, 4), fold_hi(0))))
+  else if bn_cmp(t, pg(0)) >= 0 then bn_sub(t, pg(0)) else t
+fn fadd(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_add(a, b))
+fn fsub(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_add(a, bn_sub(pg(0), bn_mod_p(b))))
+fn fmul(a: List<Int>, b: List<Int>) : List<Int> = bn_mod_p(bn_mul(a, b))
+fn bn_eq(a: List<Int>, b: List<Int>) : Bool = bn_cmp(a, b) == 0
+fn bn_is_zero(e: List<Int>) : Bool = match trim(e) { [] => true; _ => false }
+fn bn_is_odd(e: List<Int>) : Bool = match e { [] => false; [h, ...t] => h % 2 == 1 }
+fn half_hl(xs: List<Int>, rem: Int) : List<Int> = match xs { [] => []; [h, ...t] => let cur : Int = rem * 65536 + h in [cur / 2] ++ half_hl(t, cur % 2) }
+fn bn_half(e: List<Int>) : List<Int> = trim(rev(half_hl(rev(trim(e)), 0)))
+fn fpow_bn(base: List<Int>, e: List<Int>) : List<Int> =
+  if bn_is_zero(e) then [1]
+  else let h : List<Int> = fpow_bn(fmul(base, base), bn_half(e)) in
+       if bn_is_odd(e) then fmul(base, h) else h
+fn finv(a: List<Int>) : List<Int> = fpow_bn(a, bn_sub(pg(0), [2]))
+
+# --- F_{p^2} = F_p[X]/(X^2 − 7) over Goldilocks (from frost_goldilocks_ext.glass) -
+type G2 = | G2(List<Int>, List<Int>)
+fn ww(d: Int) : List<Int> = [7]
+fn gadd2(a: G2, b: G2) : G2 = match a { G2(a0, a1) => match b { G2(b0, b1) => G2(fadd(a0, b0), fadd(a1, b1)) } }
+fn gsub2(a: G2, b: G2) : G2 = match a { G2(a0, a1) => match b { G2(b0, b1) => G2(fsub(a0, b0), fsub(a1, b1)) } }
+fn gscale2(a: G2, s: List<Int>) : G2 = match a { G2(a0, a1) => G2(fmul(a0, s), fmul(a1, s)) }
+fn gmul2(a: G2, b: G2) : G2 = match a { G2(a0, a1) => match b { G2(b0, b1) =>
+  G2(fadd(fmul(a0, b0), fmul(ww(0), fmul(a1, b1))), fadd(fmul(a0, b1), fmul(a1, b0))) } }
+fn gconj(a: G2) : G2 = match a { G2(a0, a1) => G2(a0, fsub([], a1)) }
+fn gnorm(a: G2) : List<Int> = match a { G2(a0, a1) => fsub(fmul(a0, a0), fmul(ww(0), fmul(a1, a1))) }
+fn ginv2(a: G2) : G2 = gscale2(gconj(a), finv(gnorm(a)))
+fn geq2(a: G2, b: G2) : Bool = match a { G2(a0, a1) => match b { G2(b0, b1) => bn_eq(a0, b0) && bn_eq(a1, b1) } }
+fn emb(x: List<Int>) : G2 = G2(x, [])
+
+# --- the LogUp range-lookup argument -----------------------------------------
+fn g2zero(d: Int) : G2 = G2([], [])                                    # additive identity in F_{p^2}
+fn il(n: Int) : List<Int> = trim([n])                                  # a small int (< 2^16) as a base-field element
+# value side:  Σ_j 1/(β − a_j).   avals are base-field limb-lists.
+fn lhs_sum(avals: List<List<Int>>, beta: G2) : G2 =
+  match avals { [] => g2zero(0); [a, ...r] => gadd2(ginv2(gsub2(beta, emb(a))), lhs_sum(r, beta)) }
+# table side:  Σ_{i=0}^{tsize-1} m_i/(β − i),  over the DENSE literal table T_i = i.
+fn nthm(m: List<Int>, i: Int) : Int = match m { [] => 0; [h, ...t] => if i == 0 then h else nthm(t, i - 1) }
+fn rhs_sum(i: Int, tsize: Int, m: List<Int>, beta: G2) : G2 =
+  if i >= tsize then g2zero(0)
+  else gadd2(gscale2(ginv2(gsub2(beta, emb(il(i)))), il(nthm(m, i))), rhs_sum(i + 1, tsize, m, beta))
+# β must have a NONZERO imaginary part: then β − x (x base-field) always carries that
+# nonzero lane, so every denominator is invertible. (A degenerate β with imag 0 — e.g.
+# a forced β = emb(7) — could make a base-field denominator zero; we ABSTAIN on it.)
+fn beta_ok(beta: G2) : Bool = match beta { G2(b0, b1) => bn_is_zero(b1) == false }
+# the verdict: the two rational sums are equal  ⟺  {a_j} = {i with multiplicity m_i}.
+fn logup_ok(avals: List<List<Int>>, tsize: Int, m: List<Int>, beta: G2) : Bool =
+  geq2(lhs_sum(avals, beta), rhs_sum(0, tsize, m, beta))
+
+fn show_b(b: Bool) : String = if b then "yes" else "no"
+
+# --- demo / dogfood ----------------------------------------------------------
+# a fixed F_{p^2} challenge with a NONZERO imaginary lane (stands in for a Fiat-Shamir
+# hash output; in-circuit it would be derived from a commitment to the values + table).
+let beta : G2 = G2([12345, 6789], [9876, 54321])
+let avals : List<List<Int>> = [il(3), il(7), il(7), il(0), il(15)]      # the in-range value list (k=4, table {0..15})
+let m_honest  : List<Int> = [1, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 1]   # m_0=1, m_3=1, m_7=2, m_15=1
+let m_under   : List<Int> = [1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1]   # m_7 claimed 1 (actual 2)
+let m_over    : List<Int> = [1, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 1]   # m_3 claimed 2 (actual 1)
+let oob       : List<List<Int>> = [il(3), il(7), il(16)]                # 16 is OUT of [0,16)
+let m_oob     : List<Int> = [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]   # honest counts for the in-range part (no slot 16)
+let dupv      : List<List<Int>> = [il(5), il(5), il(5), il(5)]
+let m_dup     : List<Int> = [0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]   # m_5=4
+let m_zero16  : List<Int> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+let beta_bad  : G2 = emb(il(7))                                          # imag = 0 -> degenerate
+
+let _ : String = print("--- frost_logup.glass: a LogUp range-lookup argument over Goldilocks ---")
+let _ : String = print("prove values are in [0, 2^4) by a lookup into {0..15}, NOT by bit-decomposition:")
+let _ : String = print("  Σ 1/(β − a_j)  ==  Σ m_i/(β − i),  β ∈ F_{p^2} ≈ 2^128, dense literal table.")
+let _ : String = print("")
+let _ : String = print("β has nonzero imaginary part (denominators invertible): " ++ show_b(beta_ok(beta)))
+let _ : String = print("")
+let _ : String = print("HONEST in-range list [3,7,7,0,15], correct m -> sums match: " ++ show_b(logup_ok(avals, 16, m_honest, beta)) ++ "   (ACCEPT)")
+let _ : String = print("OUT-OF-RANGE value [3,7,16] (16 >= 2^4)      -> sums match: " ++ show_b(logup_ok(oob, 16, m_oob, beta)) ++ "   (no => caught; 16 has no table partner)")
+let _ : String = print("FORGED multiplicity (m_7 claimed 1, is 2)    -> sums match: " ++ show_b(logup_ok(avals, 16, m_under, beta)) ++ "   (no => caught)")
+let _ : String = print("FORGED multiplicity (m_3 claimed 2, is 1)    -> sums match: " ++ show_b(logup_ok(avals, 16, m_over, beta)) ++ "   (no => caught)")
+let _ : String = print("EMPTY value list [], all m_i = 0             -> sums match: " ++ show_b(logup_ok([], 16, m_zero16, beta)) ++ "   (ACCEPT, vacuous)")
+let _ : String = print("DUPLICATE-heavy [5,5,5,5], m_5 = 4           -> sums match: " ++ show_b(logup_ok(dupv, 16, m_dup, beta)) ++ "   (ACCEPT; LogUp counts multiplicities)")
+let _ : String = print("")
+let _ : String = print("degenerate β (zero imaginary part) -> abstain (do NOT divide): " ++ (if beta_ok(beta_bad) then "WOULD PROCEED (bug!)" else "abstain"))
+let _ : String = print("")
+let _ : String = print("LogUp range-check MECHANISM: sound (Schwartz–Zippel + partial-fraction uniqueness over")
+let _ : String = print("F_{p^2}), int64-safe, dogfooded. In-circuit (constrained running-sum + advice-pinned m,")
+let _ : String = print("in verify_b3 AND Pentecost, replacing range_k) is the multi-session next step. UNAUDITED.")
+"frost_logup.glass"

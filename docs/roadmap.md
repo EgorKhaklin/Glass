@@ -526,12 +526,22 @@ horizon; 4 is prose; the rest are deferred/known.
      magnitude+post-negate, the unsigned `divmod_build` core), NOT a sign-bit gadget (an adversarial
      panel proved the naive sign-bit design unsound; the sound version needs no new gate/verifier).
      Still ABSTAINing: a wider symmetric range (gated on the lookup-range argument below).
-   - **A lookup-based range argument (the cheap-range unblock).** Both comparison and division pay
-     ~32 range gates per operand via bit-decomposition, which is what makes their proofs ~600k
-     tokens (vs ~150k for pure arithmetic). A plookup-style table range argument would replace the
-     bit gadget with a single table lookup — shrinking every comparison/division proof, widening the
-     affordable range, and unblocking heavier gadgets (and H3's per-node hashing). High leverage:
-     one argument makes a whole family of gadgets cheap.
+   - **A lookup-based range argument (the cheap-range unblock). 🟡 STANDALONE FOUNDATION LANDED v5.105.0.**
+     Both comparison and division pay ~32 range gates per operand via bit-decomposition (~600k tokens vs
+     ~150k for pure arithmetic). A lookup replaces the bit gadget with a table lookup — shrinking every
+     comparison/division proof, widening the affordable range, unblocking heavier gadgets (and H3's
+     per-node hashing). ✅ **The sound core, standalone** ([`frost_logup.glass`](../examples/frost/frost_logup.glass)):
+     a **LogUp (log-derivative) range-lookup** over Goldilocks/F_{p^2} — `Σ_j 1/(β − a_j) == Σ_i m_i/(β − T_i)`
+     over the **DENSE literal table** `{0..2^k−1}` — designed + adversarially red-teamed (a multi-agent panel
+     caught the *sparse-support self-cancellation* hole: a prover-chosen support lets an out-of-range value
+     cancel on both sides and pass; the dense table closes it). β ∈ F_{p^2} (error `(2^k−1)/|field|` ⇒ k≤32 for
+     80-bit), degenerate β ABSTAINs. Sound (Schwartz–Zippel + partial-fraction uniqueness), int64-safe,
+     dogfooded (honest ACCEPT / out-of-range + forged-multiplicity REJECT / degenerate ABSTAIN). **Remaining
+     (the multi-session, soundness-critical step):** wire it into `range_k`/`lt_build` as a **constrained
+     running-sum column** (boundary + transition quotient binding it to the wires — the sibling of the PLONK
+     grand-product `Z`, *not* a host-side check; the panel flagged that an unconstrained running-sum lets a
+     prover commit `S=0` and certify anything) + **advice-pinned multiplicities**, landed in lockstep in
+     **both `verify_b3` AND the independent Pentecost verifier**.
    - **Wider provable range.** `[0, 2^32)` is chosen so `q·b < p`; a tighter per-operand analysis (or
      the lookup argument above) could push the bound toward the field's natural width.
 

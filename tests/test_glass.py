@@ -1534,6 +1534,25 @@ def main() -> int:
         print(f"        out: {out.strip()[-200:]}  err: {err.strip()[-150:]}")
         failures += 1
 
+    # LogUp range argument (v5.105): the cheap-range frontier's foundation — a standalone
+    # log-derivative range-lookup over Goldilocks / F_{p^2}, soundness-vetted by an adversarial
+    # design panel (the DENSE literal table closes the sparse-support self-cancellation hole that
+    # would otherwise ACCEPT an out-of-range value). Interpreter check; the native byte-identical
+    # dogfood runs via run_native.sh separately. Honest in-range -> match; out-of-range value AND
+    # forged multiplicity -> no-match (caught); duplicates handled; degenerate beta -> ABSTAIN.
+    rc, out, err = run_file(os.path.join(EX, "frost", "frost_logup.glass"))
+    lu_ok = (rc == 0) \
+        and ("correct m -> sums match: yes" in out) \
+        and ("[3,7,16] (16 >= 2^4)      -> sums match: no" in out) \
+        and ("(m_7 claimed 1, is 2)    -> sums match: no" in out) \
+        and ("(m_3 claimed 2, is 1)    -> sums match: no" in out) \
+        and ("[5,5,5,5], m_5 = 4           -> sums match: yes" in out) \
+        and ("-> abstain (do NOT divide): abstain" in out)
+    print(f"  {'OK ' if lu_ok else 'FAIL'}  LogUp range argument: in-range ACCEPT, out-of-range + forged-m REJECT, degenerate-beta ABSTAIN")
+    if not lu_ok:
+        print(f"        rc={rc}  out: {out.strip()[-300:]}  err: {err.strip()[-150:]}")
+        failures += 1
+
     # The native Poseidon-permutation intrinsic (poseidon_perm / q_poseidon_perm — the
     # "cut the rope" hash speed-up) must hit the Plonky2 known-answer anchor AND match a
     # hand-written Glass goldw_* reference permutation. (Interpreter check; the native half
@@ -1735,7 +1754,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 40)  # +40: ... + string-email-suffix-ACCEPT + strmatch-deploy-ACCEPT + strmatch-nonmember-0 + strmatch-false-claim-REJECT + records-construct-match-ACCEPT + records-false-claim-REJECT + efield-solvent-ACCEPT + efield-false-claim-REJECT
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 41)  # +41: ... + string-email-suffix-ACCEPT + strmatch-deploy-ACCEPT + strmatch-nonmember-0 + strmatch-false-claim-REJECT + records-construct-match-ACCEPT + records-false-claim-REJECT + efield-solvent-ACCEPT + efield-false-claim-REJECT + logup-range-argument
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures
