@@ -1,0 +1,18 @@
+# Prove a property of a PRIVATE record via direct field access `r.field` — revealing only the verdict.
+#
+#   glass prove examples/prove/record_field.glass bal=250 own=7    # -> result: 1, ACCEPT (solvent)
+#   glass prove examples/prove/record_field.glass bal=50  own=7    # -> result: 0, ACCEPT (not solvent)
+#
+# `a.balance` is record field access (`EField`). The cut: a record value is positional (no field
+# names at runtime), so `r.field` needs the record's TYPE to find the field's offset. The bridge
+# resolves it at lowering time via a type-env threaded through `unroll` (reusing the `fenv` slot:
+# a record variable binds as `name -> "@rec:Account"`), then desugars `a.balance` into the v5.103
+# pattern form `match a { Account { balance } => balance }`. No new gate, no verifier change.
+#
+# `solvent` takes a private Account and proves `balance >= 100` by reading the field directly — the
+# proof reveals only the 0/1 verdict, never the balance or the owner.
+type Account = { balance: Int, owner: Int }
+
+fn solvent(a: Account) : Bool = a.balance >= 100
+
+solvent(Account { balance: bal, owner: own })

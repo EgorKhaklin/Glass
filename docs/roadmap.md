@@ -493,12 +493,18 @@ horizon; 4 is prose; the rest are deferred/known.
      by binding each field at its declaration offset. Foundation: the type-helpers (`find_type`/`ctag`/`ctor_argtypes`)
      and `twidth` now handle the `RecordDecl` variant (a `RecordDecl` head used to crash them with a non-exhaustive
      match). No new gate, no verifier change. Showcase [`record_stats.glass`](../examples/prove/record_stats.glass).
-   - **Still refused (the remaining bridge frontier):** **record field access `r.field`** (`EField`) — the last
-     records piece; it needs a record type-env threaded through `unroll`+`seval` to resolve `e`'s record type to a
-     field offset (today `r.f` ABSTAINs with a message pointing to the pattern-match form). Then: a **string-VALUED
-     result** (a function *returning* a string — multi-wire claim binding + display, not just a scalar Bool/Int);
-     and *computed* higher-order callees (a function value chosen at runtime, not a named fn passed as an argument).
-     Each needs its own faithful gadget or a principled refusal.
+   - **Record field access `r.field`. ✅ LANDED v5.104.0 — records now COMPLETE.** Direct field access (`EField`)
+     resolves at lowering time via a record **type-env** (`var → record-type`) — threaded with **no new parameter**
+     by reusing the existing `fenv` slot (a record variable binds as `name → "@rec:Type"`; `resolve_fn` ignores
+     such entries, since a record var is never a call callee). `unroll` then desugars `a.balance` into the v5.103
+     pattern form `match a { Account { balance } => balance }` when `a`'s record type is inferable (a record var,
+     literal, or an `if` over records — `rtype_of`); `seval` (the guard) treats `EField` permissively (its value is
+     discarded). An unresolvable `e.f` ABSTAINs (never a wrong proof). Showcase [`record_field.glass`](../examples/prove/record_field.glass):
+     `fn solvent(a: Account) = a.balance >= 100` over a *private* account → prove solvency reading the field
+     directly, revealing only the verdict.
+   - **Still refused (the remaining bridge frontier):** a **string-VALUED result** (a function *returning* a string —
+     multi-wire claim binding + display, not just a scalar Bool/Int); and *computed* higher-order callees (a function
+     value chosen at runtime, not a named fn passed as an argument). Each needs its own faithful gadget or a principled refusal.
    - **String `match` / `PStr`. ✅ LANDED v5.102.0.** `match s { "deploy" => 1; "status" => 2; _ => 0 }`
      over a *private* string — provable allowlist membership / dispatch without revealing the string. The
      cut reuses v5.101 entirely: `cgen`'s `psel(PStr)` selects via `mk_eq_wide` (the multi-wire per-codepoint

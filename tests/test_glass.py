@@ -1499,6 +1499,29 @@ def main() -> int:
             print(f"        rc={_rsf.returncode}  out: {_rsf.stdout.strip()[-220:]}  err: {_rsf.stderr.strip()[-150:]}")
             failures += 1
 
+    # Record field access r.field (v5.104): the idiomatic dot-access lowers via a type-env (reusing
+    # the fenv slot, name -> "@rec:Type") + the v5.103 PRecord desugar. `solvent(a) = a.balance >= 100`
+    # over a PRIVATE Account proves solvency by reading the field directly — revealing only the verdict.
+    # bal=250 -> 1 ACCEPT, witness3 AGREES (balance + owner hidden). Goldilocks native.
+    _rf_path = os.path.join(EX, "prove", "record_field.glass")
+    _rf = subprocess.run([sys.executable, GLASS, "prove", _rf_path, "bal=250", "own=7", "--cross-check"],
+                         capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_rf, "record field access: solvent(a)=a.balance>=100 -> 1 ACCEPT (a.field read directly, hidden)"):
+        rf_ok = (_rf.returncode == 0) and ("result:  1" in _rf.stdout) and ("ACCEPT" in _rf.stdout) and ("THIRD LINEAGE AGREES" in _rf.stdout)
+        print(f"  {'OK ' if rf_ok else 'FAIL'}  record field access: solvent(a)=a.balance>=100 -> 1 ACCEPT (a.field read directly, hidden)")
+        if not rf_ok:
+            print(f"        rc={_rf.returncode}  out: {_rf.stdout.strip()[-220:]}  err: {_rf.stderr.strip()[-150:]}")
+            failures += 1
+    # Soundness: a false claim about the field-access result REJECTs (solvent(250)=1; claim 0 is false).
+    _rff = subprocess.run([sys.executable, GLASS, "prove", "--claim", "0", _rf_path, "bal=250", "own=7"],
+                          capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_rff, "record field access: false claim REJECTs (solvent=1; claim 0 is false)"):
+        rff_ok = ("proof:   REJECT" in _rff.stdout) and ("proof:   ACCEPT" not in _rff.stdout)
+        print(f"  {'OK ' if rff_ok else 'FAIL'}  record field access: false claim REJECTs (solvent=1; claim 0 is false)")
+        if not rff_ok:
+            print(f"        rc={_rff.returncode}  out: {_rff.stdout.strip()[-220:]}  err: {_rff.stderr.strip()[-150:]}")
+            failures += 1
+
     # The unboxed single-Int Goldilocks field (goldw_*) must agree with the trusted
     # base-2^16 limb field (gold_*) and obey the field laws — the load-bearing
     # correctness of the "unbox the field" speed cut. (Interpreter check; the native
@@ -1712,7 +1735,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 38)  # +38: ... + string-email-suffix-ACCEPT + strmatch-deploy-ACCEPT + strmatch-nonmember-0 + strmatch-false-claim-REJECT + records-construct-match-ACCEPT + records-false-claim-REJECT
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 40)  # +40: ... + string-email-suffix-ACCEPT + strmatch-deploy-ACCEPT + strmatch-nonmember-0 + strmatch-false-claim-REJECT + records-construct-match-ACCEPT + records-false-claim-REJECT + efield-solvent-ACCEPT + efield-false-claim-REJECT
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

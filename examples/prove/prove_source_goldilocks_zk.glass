@@ -982,8 +982,27 @@ fn fn_body_of(fns: List<FnDecl>, name: String) : Expr = match fns { [] => error(
 fn unwind_app(e: Expr, acc: List<Expr>) : (Expr, List<Expr>) = match e { EApp(f, a) => unwind_app(f, [a] ++ acc); _ => (e, acc) }
 fn fn_exists(fns: List<FnDecl>, name: String) : Bool = match fns { [] => false; [FnDecl(fnm, tps, ty, body), ...rest] => if fnm == name then true else fn_exists(rest, name) }
 fn fenv_get(fenv: List<Pair<String, String>>, name: String) : String = match fenv { [] => ""; [Pair(k, v), ...r] => if k == name then v else fenv_get(r, name) }
+# --- record field access `r.field` (EField), v5.104 -------------------------------------------
+# A record value is a positional multi-wire value (no field names at runtime), so `r.field` needs
+# a *type-env* (var -> record-type-name) to find the field's offset at LOWERING time. Rather than
+# thread a new param everywhere, we REUSE the already-threaded `fenv` (param -> fn-name): a record
+# var binds as `name -> "@rec:Type"`. resolve_fn IGNORES "@rec:" entries (a record var is never a
+# call callee), so the two namespaces coexist. `unroll` then desugars `e.f` -> `match e { T { f }
+# => f }` (reusing the v5.103 PRecord machinery) when e's record type T is known; if unknown it
+# leaves EField, which heval/cgen ABSTAIN on. `seval` (the guard) treats EField permissively (its
+# value is discarded) — it just guards the sub-expression. So the desugar is the SINGLE lowering.
+fn is_rec_tag(s: String) : Bool = if string_length(s) >= 5 then substring(s, 0, 5) == "@rec:" else false
+fn rec_tag_type(s: String) : String = substring(s, 5, string_length(s))
+fn addrec(nm: String, rt: String, fenv: List<Pair<String, String>>) : List<Pair<String, String>> = if rt == "" then fenv else [Pair(nm, "@rec:" ++ rt)] ++ fenv
+fn rtype_of(e: Expr, fenv: List<Pair<String, String>>) : String =
+  match e {
+    ENamedRec(n, l) => n;
+    EVar(x) => let b : String = fenv_get(fenv, x) in if is_rec_tag(b) then rec_tag_type(b) else "";
+    EIf(c, t, f) => let rt : String = rtype_of(t, fenv) in if rt == rtype_of(f, fenv) then rt else "";
+    ELet(x, v, bd) => rtype_of(bd, addrec(x, rtype_of(v, fenv), fenv));
+    _ => "" }
 fn resolve_fn(name: String, fns: List<FnDecl>, fenv: List<Pair<String, String>>) : String =
-  let bound : String = fenv_get(fenv, name) in if bound == "" then (if fn_exists(fns, name) then name else "") else bound
+  let bound : String = fenv_get(fenv, name) in if (bound == "") || is_rec_tag(bound) then (if fn_exists(fns, name) then name else "") else bound
 fn is_fn_arg(a: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>) : Bool = match a { EVar(n) => resolve_fn(n, fns, fenv) != ""; _ => false }
 fn arg_fn_name(a: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>) : String = match a { EVar(n) => resolve_fn(n, fns, fenv); _ => "" }
 fn unroll_args(es: List<Expr>, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: Int) : List<Expr> =
@@ -998,7 +1017,7 @@ fn inline_fn(body: Expr, args: List<Expr>, fns: List<FnDecl>, fenv: List<Pair<St
       [] => unroll(inner, fns, fenv, fuel - 1);
       [a, ...rest] => if is_fn_arg(a, fns, fenv)
         then inline_fn(inner, rest, fns, [Pair(p, arg_fn_name(a, fns, fenv))] ++ fenv, fuel)
-        else ELet(p, unroll(a, fns, fenv, fuel), inline_fn(inner, rest, fns, fenv, fuel)) };
+        else (let ua : Expr = unroll(a, fns, fenv, fuel) in ELet(p, ua, inline_fn(inner, rest, fns, addrec(p, rtype_of(ua, fenv), fenv), fuel))) };
     _ => unroll(body, fns, fenv, fuel - 1) }
 # Signed comparison intrinsics. slt/sle/sgt/sge(a,b) compare a,b as SIGNED integers in
 # [-2^31, 2^31). They DESUGAR to the existing unsigned ordering gadget with a +2^31 offset:
@@ -1080,13 +1099,13 @@ fn unroll(e: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: In
     EOr(x, y) => EOr(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
     EUNot(a) => EUNot(unroll(a, fns, fenv, fuel));
     EIf(c, t, f) => EIf(unroll(c, fns, fenv, fuel), unroll(t, fns, fenv, fuel), unroll(f, fns, fenv, fuel));
-    ELet(nm, v, body) => ELet(nm, unroll(v, fns, fenv, fuel), unroll(body, fns, fenv, fuel));
+    ELet(nm, v, body) => let uv : Expr = unroll(v, fns, fenv, fuel) in ELet(nm, uv, unroll(body, fns, addrec(nm, rtype_of(uv, fenv), fenv), fuel));
     EMatch(scrut, arms) => EMatch(unroll(scrut, fns, fenv, fuel), unroll_arms(arms, fns, fenv, fuel));
     ECtor(name, args) => ECtor(name, unroll_args(args, fns, fenv, fuel));
     ETuple(elems) => ETuple(unroll_args(elems, fns, fenv, fuel));
     ENamedRec(name, lit) => ENamedRec(name, unroll_recfields(lit, fns, fenv, fuel));   # v5.103: records
     ERec(lit) => ERec(unroll_recfields(lit, fns, fenv, fuel));
-    EField(e, f) => EField(unroll(e, fns, fenv, fuel), f);
+    EField(e, f) => let rt : String = rtype_of(e, fenv) in (if rt == "" then EField(unroll(e, fns, fenv, fuel), f) else EMatch(unroll(e, fns, fenv, fuel), [Pair(PRecord(rt, [f]), EVar(f))]));
     ELt(x, y) => ELt(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
     EGt(x, y) => EGt(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
     ELe(x, y) => ELe(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
@@ -1169,7 +1188,7 @@ fn heval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, t
     ECtor(name, args) => match heval_fields(args, ctor_argtypes(types, name), env, fns, types) { (vals, hs) => ([glit(ctag(types, name))] ++ vals, hs) };
     ETuple(elems) => heval_fields(elems, scalar_types_e(elems), env, fns, types);
     ENamedRec(nm, lit) => heval_fields(reorder_rec(rec_fnames(find_record(types, nm)), lit), rec_ftypes(find_record(types, nm)), env, fns, types);
-    EField(recd, f) => error("glass prove: direct record field access (r." ++ f ++ ") is not yet lowered to a circuit — destructure with a pattern instead: match r { T { " ++ f ++ " } => " ++ f ++ " } (EField needs a record type-env; the next increment). ABSTAIN.");
+    EField(recd, f) => error("glass prove: could not resolve the record TYPE for field access (." ++ f ++ ") — direct `r.field` lowers when the record's type is inferable (a record variable or literal, or an if over records); otherwise destructure with a pattern: match r { T { " ++ f ++ " } => " ++ f ++ " }. ABSTAIN.");
     EStr(s) => (estr_v(s), []);
     EConcat(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) => (va ++ vb, ha ++ hb) } };
     EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => if is_strfn(fname) then heval_strfn(fname, args, env, fns, types) else heval_call(fn_body_of(fns, fname), args, [], env, fns, types); _ => error("glass prove: unsupported call form (computed or higher-order callee) in the reference evaluator — refusing rather than silently proving 0") } };
@@ -1283,7 +1302,10 @@ fn seval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, t
     ECtor(name, args) => [glit(ctag(types, name))] ++ seval_fields(args, ctor_argtypes(types, name), env, fns, types, fenv, fuel);
     ETuple(elems) => seval_fields(elems, scalar_types_e(elems), env, fns, types, fenv, fuel);
     ENamedRec(nm, lit) => seval_fields(reorder_rec(rec_fnames(find_record(types, nm)), lit), rec_ftypes(find_record(types, nm)), env, fns, types, fenv, fuel);
-    EField(recd, f) => error("glass prove: direct record field access (r." ++ f ++ ") is not yet lowered — destructure with a pattern: match r { T { " ++ f ++ " } => " ++ f ++ " }. ABSTAIN.");
+    # v5.104: EField is permissive in the guard (its value is discarded) — just guard the subexpr's
+    # recursion/callees. The real lowering is unroll's `e.f -> match e { T { f } => f }` desugar
+    # (heval/cgen on the unrolled term); an UNRESOLVABLE e.f stays EField -> heval/cgen ABSTAIN.
+    EField(recd, f) => let _g : List<List<Int>> = seval(recd, env, fns, types, fenv, fuel) in [glit(0)];
     EStr(s) => estr_v(s);
     EConcat(a, b) => seval(a, env, fns, types, fenv, fuel) ++ seval(b, env, fns, types, fenv, fuel);
     EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd {
@@ -1503,7 +1525,7 @@ fn cgen(e: Expr, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: 
     ECtor(name, args) => match mkc(glit(ctag(types, name)), b) { (wtag, b1) => match cgen_fields(args, ctor_argtypes(types, name), cenv, fns, types, b1) { (fws, b2) => ([wtag] ++ fws, b2) } };
     ETuple(elems) => cgen_fields(elems, scalar_types_e(elems), cenv, fns, types, b);
     ENamedRec(nm, lit) => cgen_fields(reorder_rec(rec_fnames(find_record(types, nm)), lit), rec_ftypes(find_record(types, nm)), cenv, fns, types, b);
-    EField(recd, f) => error("glass prove: direct record field access (r." ++ f ++ ") is not yet lowered — destructure with a pattern: match r { T { " ++ f ++ " } => " ++ f ++ " }. ABSTAIN.");
+    EField(recd, f) => error("glass prove: could not resolve the record TYPE for field access (." ++ f ++ ") — direct `r.field` lowers when the record's type is inferable; otherwise destructure with a pattern: match r { T { " ++ f ++ " } => " ++ f ++ " }. ABSTAIN.");
     EStr(s) => estr_c(str_codes(s), b);
     EConcat(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => (vx ++ vy, b2) } };
     EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => if is_strfn(fname) then cgen_strfn(fname, args, cenv, fns, types, b) else cgen_call(fn_body_of(fns, fname), args, [], cenv, fns, types, b); _ => error("glass prove: unsupported call form (computed or higher-order callee) in cgen — refusing rather than silently building a 0 circuit") } };
