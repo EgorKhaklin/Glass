@@ -1,0 +1,5 @@
+# Signed absolute value in zero-knowledge over Goldilocks. sabs(x) = |x| for a SIGNED x in
+# [-2^31, 2^31). Composes the existing signed comparison + if (sabs(x) = if x < 0 then -x else x) —
+# no new gadget, no verifier change. The proof reveals only |x|, never x's sign or value.
+#   glass prove examples/prove/signed_abs.glass x=-5    # -> result: 5, ACCEPT
+sabs(x)

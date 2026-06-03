@@ -1,5 +1,5 @@
 """
-Glass v5.99.0 — reference implementation.
+Glass v5.100.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -1349,6 +1349,9 @@ def builtin_types() -> dict[str, Ty]:
         # Witness re-execution) agree with the proven result. See prove_source_goldilocks_zk.glass.
         "sdiv": TyFn((TyInt(), TyInt()), TyInt()),
         "smod": TyFn((TyInt(), TyInt()), TyInt()),
+        "sabs": TyFn((TyInt(),), TyInt()),
+        "smin": TyFn((TyInt(), TyInt()), TyInt()),
+        "smax": TyFn((TyInt(), TyInt()), TyInt()),
         "slt": TyFn((TyInt(), TyInt()), TyBool()),
         "sle": TyFn((TyInt(), TyInt()), TyBool()),
         "sgt": TyFn((TyInt(), TyInt()), TyBool()),
@@ -2605,6 +2608,11 @@ def builtin_values() -> dict[str, Value]:
     def b_smod(a, b):
         if b.v == 0: raise RuntimeError("signed modulo by zero")
         return IntV(_c_mod(a.v, b.v))
+    # Signed utility intrinsics (mirror the prove bridge's sabs/smin/smax). |x|, min, max over
+    # signed ints; the bridge lowers the SAME call by composing slt + if, so this reference matches.
+    def b_sabs(x):    return IntV(abs(x.v))
+    def b_smin(a, b): return IntV(min(a.v, b.v))
+    def b_smax(a, b): return IntV(max(a.v, b.v))
     def b_substring(s, start, end):
         # Clamp to string bounds; raise on inverted indices to keep semantics
         # honest. Negative indices are not Python-style — that's a footgun.
@@ -2867,6 +2875,9 @@ def builtin_values() -> dict[str, Value]:
         "wrap_int64":       BuiltinV("wrap_int64", b_wrap_int64),
         "sdiv":             BuiltinV("sdiv", b_sdiv),
         "smod":             BuiltinV("smod", b_smod),
+        "sabs":             BuiltinV("sabs", b_sabs),
+        "smin":             BuiltinV("smin", b_smin),
+        "smax":             BuiltinV("smax", b_smax),
         "slt":              BuiltinV("slt", b_slt),
         "sle":              BuiltinV("sle", b_sle),
         "sgt":              BuiltinV("sgt", b_sgt),
@@ -3855,7 +3866,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.99.0 — interactive REPL")
+    print("Glass v5.100.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -4011,7 +4022,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.99.0")
+        print("Glass 5.100.0")
     elif sys.argv[1] in ("help", "--help", "-h"):
         # Plain, professional command listing. The thematic names are aliases
         # (docs/naming.md) — this surface keeps the esoteric layer optional.

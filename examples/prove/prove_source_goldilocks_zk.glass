@@ -1043,6 +1043,20 @@ fn sdiv_desugar(fname: String, a: Expr, b: Expr) : Expr =
   if fname == "sdiv"
     then EIf(ENeq(EVar("q9sa"), EVar("q9sb")), neg_e(EVar("q9qm")), EVar("q9qm"))
     else EIf(EVar("q9sa"), neg_e(EVar("q9rm")), EVar("q9rm"))))))))))
+# Signed utility intrinsics over [-2^31, 2^31): sabs(x)=|x| (1 arg), smin(a,b)/smax(a,b) (2 args).
+# Same compositional cut as sdiv — express the body with the already-lowered signed comparison
+# (`slt` via scmp_desugar) + `if`/`then`/`else`, and let the bridge lower it. No new gadget, no
+# verifier change. sabs/smin/smax are reserved names. (sabs(-2^31)=2^31 is the mathematically
+# correct magnitude — a positive value just outside the symmetric range, fine as a field result.)
+fn is_sabs(fname: String) : Bool = if fname == "sabs" then true else false
+fn is_sutil2(fname: String) : Bool = if fname == "smin" then true else if fname == "smax" then true else false
+fn sabs_desugar(x: Expr) : Expr =
+  ELet("q9z", x, EIf(scmp_desugar("slt", EVar("q9z"), EInt(0)), neg_e(EVar("q9z")), EVar("q9z")))
+fn sutil2_desugar(fname: String, a: Expr, b: Expr) : Expr =
+  ELet("q9u", a, ELet("q9v", b,
+  if fname == "smin"
+    then EIf(scmp_desugar("slt", EVar("q9u"), EVar("q9v")), EVar("q9u"), EVar("q9v"))
+    else EIf(scmp_desugar("slt", EVar("q9u"), EVar("q9v")), EVar("q9v"), EVar("q9u"))))
 fn unroll(e: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: Int) : Expr =
   match e {
     # fuel <= 0 => EInt(0) is the TERMINATOR of bounded symbolic unrolling, NOT an error:
@@ -1053,7 +1067,7 @@ fn unroll(e: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: In
     # here without breaking every recursive program. The genuine-error fallbacks below DO
     # refuse loudly (unresolved / higher-order callee — programs the bridge cannot lower).
     EApp(f, a) => if fuel <= 0 then EInt(0) else match unwind_app(EApp(f, a), []) { (hd, args) => match hd {
-      EVar(fname) => if is_scmp(fname) then (match args { [sa, sb] => unroll(scmp_desugar(fname, sa, sb), fns, fenv, fuel); _ => error("glass prove: signed comparison '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sdiv(fname) then (match args { [da, db] => unroll(sdiv_desugar(fname, da, db), fns, fenv, fuel); _ => error("glass prove: signed division '" ++ fname ++ "' expects exactly 2 arguments") }) else (let tgt : String = resolve_fn(fname, fns, fenv) in if tgt == "" then error("glass prove: unresolved call to '" ++ fname ++ "' — the prove bridge cannot lower this construct to a gate circuit (a silent proven-0 is refused)") else inline_fn(fn_body_of(fns, tgt), args, fns, fenv, fuel));
+      EVar(fname) => if is_scmp(fname) then (match args { [sa, sb] => unroll(scmp_desugar(fname, sa, sb), fns, fenv, fuel); _ => error("glass prove: signed comparison '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sdiv(fname) then (match args { [da, db] => unroll(sdiv_desugar(fname, da, db), fns, fenv, fuel); _ => error("glass prove: signed division '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sabs(fname) then (match args { [za] => unroll(sabs_desugar(za), fns, fenv, fuel); _ => error("glass prove: 'sabs' expects exactly 1 argument") }) else if is_sutil2(fname) then (match args { [ua, ub] => unroll(sutil2_desugar(fname, ua, ub), fns, fenv, fuel); _ => error("glass prove: signed '" ++ fname ++ "' expects exactly 2 arguments") }) else (let tgt : String = resolve_fn(fname, fns, fenv) in if tgt == "" then error("glass prove: unresolved call to '" ++ fname ++ "' — the prove bridge cannot lower this construct to a gate circuit (a silent proven-0 is refused)") else inline_fn(fn_body_of(fns, tgt), args, fns, fenv, fuel));
       _ => error("glass prove: unsupported call form (computed or higher-order callee) — cannot lower to a gate circuit (a silent proven-0 is refused)") } };
     EAdd(x, y) => EAdd(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
     ESub(x, y) => ESub(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
@@ -1227,7 +1241,7 @@ fn seval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, t
     ECtor(name, args) => [glit(ctag(types, name))] ++ seval_fields(args, ctor_argtypes(types, name), env, fns, types, fenv, fuel);
     ETuple(elems) => seval_fields(elems, scalar_types_e(elems), env, fns, types, fenv, fuel);
     EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd {
-      EVar(fname) => if is_scmp(fname) then (match args { [sa, sb] => seval(scmp_desugar(fname, sa, sb), env, fns, types, fenv, fuel); _ => error("glass prove: signed comparison '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sdiv(fname) then (match args { [da, db] => seval(sdiv_desugar(fname, da, db), env, fns, types, fenv, fuel); _ => error("glass prove: signed division '" ++ fname ++ "' expects exactly 2 arguments") }) else if fuel <= 0 then error("glass prove: recursion depth exceeds the unroll bound (" ++ int_to_string(unroll_fuel(0)) ++ "); refusing to prove a depth-truncated result — it would otherwise be a silently wrong value with a valid-looking proof (the program needs statically-bounded, shallower recursion)") else (let tgt : String = resolve_fn(fname, fns, fenv) in if tgt == "" then error("glass prove: unresolved call to '" ++ fname ++ "' in the reference evaluator") else seval_call(fn_body_of(fns, tgt), args, [], env, [], fenv, fns, types, fuel));
+      EVar(fname) => if is_scmp(fname) then (match args { [sa, sb] => seval(scmp_desugar(fname, sa, sb), env, fns, types, fenv, fuel); _ => error("glass prove: signed comparison '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sdiv(fname) then (match args { [da, db] => seval(sdiv_desugar(fname, da, db), env, fns, types, fenv, fuel); _ => error("glass prove: signed division '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sabs(fname) then (match args { [za] => seval(sabs_desugar(za), env, fns, types, fenv, fuel); _ => error("glass prove: 'sabs' expects exactly 1 argument") }) else if is_sutil2(fname) then (match args { [ua, ub] => seval(sutil2_desugar(fname, ua, ub), env, fns, types, fenv, fuel); _ => error("glass prove: signed '" ++ fname ++ "' expects exactly 2 arguments") }) else if fuel <= 0 then error("glass prove: recursion depth exceeds the unroll bound (" ++ int_to_string(unroll_fuel(0)) ++ "); refusing to prove a depth-truncated result — it would otherwise be a silently wrong value with a valid-looking proof (the program needs statically-bounded, shallower recursion)") else (let tgt : String = resolve_fn(fname, fns, fenv) in if tgt == "" then error("glass prove: unresolved call to '" ++ fname ++ "' in the reference evaluator") else seval_call(fn_body_of(fns, tgt), args, [], env, [], fenv, fns, types, fuel));
       _ => error("glass prove: unsupported call form (computed or higher-order callee) in the reference evaluator") } };
     EMatch(scrut, arms) => seval_match(seval(scrut, env, fns, types, fenv, fuel), arms, env, fns, types, fenv, fuel);
     ELt(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fenv, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fenv, fuel)) in

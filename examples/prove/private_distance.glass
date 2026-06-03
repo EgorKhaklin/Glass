@@ -1,0 +1,6 @@
+# Zero-knowledge PRIVATE DISTANCE: prove |a - b| between two private values without revealing
+# either. sabs(a - b) is the signed magnitude of their difference — the building block for
+# "prove two values are within tolerance" (|a-b| <= eps) without disclosure. Reveals only the
+# distance (or, composed with a comparison, just the 0/1 within-tolerance verdict).
+#   glass prove examples/prove/private_distance.glass a=3 b=17   # -> result: 14, ACCEPT
+sabs(a - b)

@@ -1384,6 +1384,18 @@ def main() -> int:
             print(f"        rc={_sdf.returncode}  out: {_sdf.stdout.strip()[-200:]}  err: {_sdf.stderr.strip()[-150:]}")
             failures += 1
 
+    # Signed utility intrinsics (v5.100): sabs(x)=|x|, smin/smax — composed from the proven slt + if
+    # (no new gadget). The zero-knowledge PRIVATE-DISTANCE pattern sabs(a-b): prove |a-b| between two
+    # private values without revealing either. sabs(3-17) = 14, witness3-confirmed. Goldilocks native.
+    _pd = subprocess.run([sys.executable, GLASS, "prove", os.path.join(EX, "prove", "private_distance.glass"),
+                          "a=3", "b=17", "--cross-check"], capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_pd, "private distance: sabs(3 - 17) = 14 ACCEPT (|a-b| without revealing a,b)"):
+        pd_ok = (_pd.returncode == 0) and ("ACCEPT" in _pd.stdout) and ("result:  14" in _pd.stdout) and ("THIRD LINEAGE AGREES" in _pd.stdout)
+        print(f"  {'OK ' if pd_ok else 'FAIL'}  private distance: sabs(3 - 17) = 14 ACCEPT (|a-b| without revealing a,b)")
+        if not pd_ok:
+            print(f"        rc={_pd.returncode}  out: {_pd.stdout.strip()[-220:]}  err: {_pd.stderr.strip()[-150:]}")
+            failures += 1
+
     # The unboxed single-Int Goldilocks field (goldw_*) must agree with the trusted
     # base-2^16 limb field (gold_*) and obey the field laws — the load-bearing
     # correctness of the "unbox the field" speed cut. (Interpreter check; the native
@@ -1511,6 +1523,10 @@ def main() -> int:
                "assert glass._witness3_eval('smod(a, b)', [('a',-17),('b',5)]) == -2; "
                "assert glass._witness3_eval('sdiv(a, b)', [('a',17),('b',-5)]) == -3; "
                "assert glass._witness3_eval('smod(a, b)', [('a',-17),('b',-5)]) == -2; "
+               "assert glass._witness3_eval('sabs(a)', [('a',-5)]) == 5; "
+               "assert glass._witness3_eval('sabs(a - b)', [('a',3),('b',17)]) == 14; "
+               "assert glass._witness3_eval('smin(a, b)', [('a',-5),('b',3)]) == -5; "
+               "assert glass._witness3_eval('smax(a, b)', [('a',-5),('b',3)]) == 3; "
                "assert glass._witness3_eval('(h * 31 + c) % 1000003', [('h',12345),('c',67)]) == 382762; "
                "assert glass._witness3_eval(open('examples/prove/gcd_prove.glass').read(), [('x',48),('y',18)]) == 6; "
                "assert glass._witness3_eval(open('examples/prove/gcd_prove.glass').read(), [('x',48),('y',36)]) == 12; "
@@ -1593,7 +1609,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 28)  # +28: ... + witness3 + h3-merkle + tamper-fuzz + plain-name-surface + statement-binding + proof-corpus + dead-branch-predication + live-div0-ABSTAIN + wrong-divmod-claim-REJECT + higher-order guards + signed-cmp-ACCEPT + wrong-signed-claim-REJECT + signed-band-membership + signed-div-ACCEPT + wrong-signed-div-claim-REJECT
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 29)  # +29: ... + witness3 + h3-merkle + tamper-fuzz + plain-name-surface + statement-binding + proof-corpus + dead-branch-predication + live-div0-ABSTAIN + wrong-divmod-claim-REJECT + higher-order guards + signed-cmp-ACCEPT + wrong-signed-claim-REJECT + signed-band-membership + signed-div-ACCEPT + wrong-signed-div-claim-REJECT + private-distance-sabs
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures
