@@ -111,7 +111,9 @@ and read fields directly (`a.balance >= 100`) — structured data flowing throug
 prove e.g. a private account is solvent without revealing its balance or owner. A proof's result can
 itself be a **string** (`fn reveal_prefix(k: String) = substring(k, 0, 8)` reveals only a private key's
 prefix; `if score >= 750 then "PASS" else "FAIL"` reveals a verdict word chosen by a private comparison),
-bound and decoded faithfully — equal-width `if`-branches only; unequal widths abstain.
+bound and decoded faithfully — equal-width `if`-branches only; unequal widths abstain — or a **tuple
+or record** of scalars (`fn divmod(a, b) = (a / b, a % b)` reveals the `(quotient, remainder)` pair;
+a record displays with field names) — so what a proof returns is scalar, string, or structured.
 Anything Glass cannot lower faithfully *abstains* loudly — it is never
 silently proven. The prover is written in Glass itself — see
 [the prove bridge](../examples/prove/).

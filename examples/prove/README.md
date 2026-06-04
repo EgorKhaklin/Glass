@@ -75,6 +75,10 @@ A string result is also **assertable** (v5.111): `glass prove --claim "PASS" pri
 
 - [`private_bitmask.glass`](private_bitmask.glass) — **`bit_and`/`bit_or`/`bit_xor` over `[0, 2³²)`, the last integer-operation family.** `bit_and(perms, required) == required` proves a **private** permission bitmask contains all the required capability bits (`perms=29, required=13 → 1`; `perms=8 → 0`), revealing only pass/fail. The gadget decomposes both operands into boolean-pinned bits (reusing the range gadget's machinery), combines per position (AND `a·b`, OR `a+b−ab`, XOR `(a−b)²`), and recomposes — sound, no new gate, Third-Witness-confirmed; an operand outside `[0, 2³²)` ABSTAINs.
 
+### Tuple & record results (v5.117)
+
+- [`private_divmod.glass`](private_divmod.glass) — **a proof can return a multi-component value, not just a scalar or string.** `divmod(a, b) = (a / b, a % b)` proves **both** the quotient and remainder of a **private** division (`a=17 b=5 → (3, 2)`), revealing the pair while hiding `a`/`b`. Every component wire is bound as the public claim (the same `build_claim_mw` a string result uses) and the Third Witness confirms each component. Records display with field names (`Bounds { lo: 3, hi: 8 }`); a tuple/record with a non-scalar component ABSTAINs.
+
 ### Computed (runtime-chosen) callees (v5.113)
 
 - [`computed_callee.glass`](computed_callee.glass) — **the last refused call form.** `run(mode, x) = (if mode >= 1 then double else increment)(x)` proves a result where *which function runs* is chosen at runtime by a **private** flag — not a named function passed as an argument (that already proved, v5.87), but a callee selected by an `if`. The cut: **push the application inside the selector** — applying a conditionally-chosen function equals conditionally applying each candidate, so `(if c then g else h)(x)` lowers as `if c then g(x) else h(x)`, two named-fn calls muxed by the same gadget an `if` uses (sound because Glass is pure). `mode=1 x=21` → 42, `mode=0` → 22; the bridge now has no refused call form.

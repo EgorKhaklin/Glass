@@ -1,5 +1,5 @@
 """
-Glass v5.116.0 — reference implementation.
+Glass v5.117.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -3866,7 +3866,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.116.0 — interactive REPL")
+    print("Glass v5.117.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -4040,6 +4040,42 @@ def _prove_result_str(usrc, inputs):
         return None
 
 
+def _prove_result_struct(usrc, inputs):
+    """Detect a TUPLE or RECORD result with all-SCALAR (Int/Bool) components, so the driver can bind
+    every component wire as the public claim (build_claim_mw, like a string result) and display the
+    components. Returns ('tuple', [int vals]) or ('record', typename, [(field, int val), ...]); None
+    for a scalar, a string, or a structured result with a non-scalar component (those keep their own
+    path / ABSTAIN). The int values are for the Third-Witness component comparison. Goldilocks-only."""
+    try:
+        binds = "".join(
+            ('let %s : String = "%s"\n' % (k, v.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n"))
+             if isinstance(v, str) else "let %s : Int = %d\n" % (k, v))
+            for k, v in inputs)
+        checker, env = make_runtime()
+        decls = Parser(tokenize(binds + usrc)).parse_program()
+        install_program(decls, checker, env, verbose=False)
+        r = env.get("_")
+        def _scalar(c):
+            if isinstance(c, BoolV):
+                return 1 if c.v else 0
+            if isinstance(c, IntV):
+                return c.v
+            return None
+        if isinstance(r, TupleV):
+            vals = [_scalar(c) for c in r.items]
+            if len(vals) >= 1 and all(v is not None for v in vals):
+                return ('tuple', vals)
+            return None
+        if isinstance(r, RecordV):
+            items = [(k, _scalar(v)) for k, v in r.fields.items()]
+            if len(items) >= 1 and all(v is not None for _, v in items):
+                return ('record', r.name, items)
+            return None
+        return None
+    except Exception:
+        return None
+
+
 def main() -> None:
     """Console entry point. After `pip install glass-lang`, this is what
     the `glass` command invokes. With no args it starts the REPL; with a
@@ -4051,7 +4087,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.116.0")
+        print("Glass 5.117.0")
     elif sys.argv[1] in ("help", "--help", "-h"):
         # Plain, professional command listing. The thematic names are aliases
         # (docs/naming.md) — this surface keeps the esoteric layer optional.
@@ -4155,6 +4191,9 @@ def main() -> None:
         # interpreter) so the driver binds + displays the WHOLE string instead of truncating to the
         # first codepoint. None -> scalar (or non-string) result -> the byte-identical scalar path.
         _res_str = _prove_result_str(usrc, inputs) if goldilocks else None
+        # A TUPLE/RECORD result (multi-wire, scalar components) routes to the same multi-wire binder
+        # as a string result, displaying the components. None unless it is exactly that shape.
+        _res_struct = _prove_result_struct(usrc, inputs) if (goldilocks and _res_str is None) else None
         here = os.path.dirname(os.path.abspath(__file__))
         bridge_dir = os.path.join(here, "examples", "prove")
         esc = usrc.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
@@ -4241,6 +4280,45 @@ def main() -> None:
                          '{ Build(_n, _gs, _w) => measure_line(_gs) }))\n') % _claim_arg
             _proof_line = 'let _ : String = print("proof:   " ++ (if %s then "%s" else "REJECT"))\n' % (_prove_call, _prove_label)
             driver = machinery + _head_lines + _claim_let + _disp_line + _sec_line + _proof_line + '"glass prove --goldilocks"\n'
+        elif goldilocks and _res_struct is not None:
+            # TUPLE/RECORD result (multi-wire, scalar components): bind EVERY component wire as the
+            # public claim (the same build_claim_mw / gprove_*_mw a string result uses) and display the
+            # components. The bound value is the circuit's own output `_rv`. --claim is scalar/string-only.
+            if claim_raw is not None:
+                print("Glass prove — %s  [field: Goldilocks (2^64)]" % upath)
+                print("glass prove: --claim does not express a tuple/record result — drop --claim; a structured result is bound to its computed value")
+                print("verdict: ABSTAIN  (a scalar/string claim cannot express a multi-component result — refused, not silently bound)")
+                return
+            if _res_struct[0] == 'tuple':
+                _kindword = "tuple"
+                _disp_expr = '"(" ++ bn_dec_signed(wnth(_rv, 0))'
+                for _i in range(1, len(_res_struct[1])):
+                    _disp_expr += ' ++ ", " ++ bn_dec_signed(wnth(_rv, %d))' % _i
+                _disp_expr += ' ++ ")"'
+            else:                                      # record: Type { f0: v0, f1: v1, ... }
+                _kindword = "record"
+                _rname, _rfields = _res_struct[1], _res_struct[2]
+                _disp_expr = '"%s { %s: " ++ bn_dec_signed(wnth(_rv, 0))' % (_rname, _rfields[0][0])
+                for _i in range(1, len(_rfields)):
+                    _disp_expr += ' ++ ", %s: " ++ bn_dec_signed(wnth(_rv, %d))' % (_rfields[_i][0], _i)
+                _disp_expr += ' ++ " }"'
+            if fast_mode:
+                _prove_call = "gprove_m_mw(_usrc, _inp, _rv, 11111)"
+                _prove_label = "ACCEPT  (self-check over the witness — NOT a soundness proof; drop --fast for verify_b3)"
+            elif zk_mode:
+                _prove_call = "gprove_zk_mw(_usrc, _inp, _rv, 11111, 256)"
+                _prove_label = "ACCEPT  (SOUND + zero-knowledge — independent verify_b3 + randomized-trace hiding)"
+            else:
+                _prove_call = "gprove_sound_mw(_usrc, _inp, _rv)"
+                _prove_label = "ACCEPT  (SOUND — independent witness-free verify_b3; not zero-knowledge)"
+            _head_lines = ('\nlet _usrc : String = "%s"\n'
+                           'let _inp : List<Pair<String, List<Int>>> = %s\n'
+                           'let _rv : List<List<Int>> = gref_m_checked(_usrc, _inp)\n') % (esc, inp_glass)
+            _disp_line = ('let _ : String = print("result:  " ++ %s ++ "  (a %s result — each component bound as a public output wire over Goldilocks)")\n') % (_disp_expr, _kindword)
+            _sec_line = ('let _ : String = print("security: " ++ (match build_claim_mw(_usrc, _inp, _rv) '
+                         '{ Build(_n, _gs, _w) => measure_line(_gs) }))\n')
+            _proof_line = 'let _ : String = print("proof:   " ++ (if %s then "%s" else "REJECT"))\n' % (_prove_call, _prove_label)
+            driver = machinery + _head_lines + _disp_line + _sec_line + _proof_line + '"glass prove --goldilocks"\n'
         elif goldilocks:
             if fast_mode:
                 _prove_call = "gprove_m(_usrc, _inp, _r, 11111)"
@@ -4274,7 +4352,7 @@ def main() -> None:
                 # was NOT detected as a string (a tuple / record / ADT result), refuse loudly rather
                 # than silently publish only the first wire (the old `vh` truncation) — sound ABSTAIN.
                 _r_line = ('let _r : List<Int> = if len(_rv) > 1 then '
-                           'error("glass prove: this program returns a MULTI-WIRE value (a tuple / record / ADT), which is not yet bindable as a public claim — only Int/Bool (scalar) and String results are supported; return a scalar or a String") '
+                           'error("glass prove: this program returns a MULTI-WIRE value not bindable as a public claim — an ADT, or a tuple/record with a non-scalar component. Supported results: a scalar (Int/Bool), a String, or a tuple/record of scalars.") '
                            'else vh(_rv)\n')
                 # bn_dec_signed renders an upper-half field element as the negative it represents, so
                 # signed comparison/division/arithmetic results display as -3, not the canonical p-3.
@@ -4364,6 +4442,21 @@ def main() -> None:
                 print(f'witness3: THIRD LINEAGE AGREES — the reference interpreter (glass.py, independent of the bridge\'s evaluator and its circuit lowering) independently computes f(inputs) = "{_res_str}". Three lineages agree on the SEMANTICS of this string result — closing the source<->circuit gap that verify_b3 and Pentecost, both verifying the circuit, cannot see.')
             else:
                 print(f'witness3: DIVERGENCE — the proof attests the string "{_ps}" but the reference interpreter computes f(inputs) = "{_res_str}". The proof is STARK-valid, yet the lowered circuit\'s string result differs from the source — a genuine source<->circuit mismatch. Worth investigating.')
+        elif goldilocks and "--witness3" in sys.argv[2:] and _res_struct is not None:
+            # TUPLE/RECORD result: compare each revealed component to the reference's, modulo the prime
+            # (the same reconciliation the scalar witness uses). _refvals are the reference components.
+            import re as _re3t
+            _refvals = _res_struct[1] if _res_struct[0] == 'tuple' else [v for _, v in _res_struct[2]]
+            _m3line = _re3t.search(r"result:\s*(.*)", _proc.stdout or "")
+            _pcomps = [int(x) for x in _re3t.findall(r"-?[0-9]+", _m3line.group(1))] if _m3line else []
+            _P = (1 << 64) - (1 << 32) + 1
+            print("")
+            if len(_pcomps) != len(_refvals):
+                print(f"witness3: (could not align {len(_pcomps)} proven components with {len(_refvals)} reference components — third witness skipped)")
+            elif all((_r - _p) % _P == 0 for _r, _p in zip(_refvals, _pcomps)):
+                print(f"witness3: THIRD LINEAGE AGREES — the reference interpreter (glass.py, independent of the bridge's evaluator and its circuit lowering) independently computes the {len(_refvals)} components {_refvals} (mod the Goldilocks prime). Three lineages agree on the SEMANTICS of this {_res_struct[0]} result — closing the source<->circuit gap that verify_b3 and Pentecost, both verifying the circuit, cannot see.")
+            else:
+                print(f"witness3: DIVERGENCE — the proof's components {_pcomps} differ from the reference interpreter's {_refvals} (even modulo the prime). A genuine source<->circuit mismatch on a structured result. Worth investigating.")
         elif goldilocks and "--witness3" in sys.argv[2:]:
             import re as _re3
             _m3 = _re3.search(r"result:\s*(-?[0-9]+)", _proc.stdout or "")

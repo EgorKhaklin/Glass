@@ -1592,16 +1592,18 @@ def main() -> int:
         if not uneq_ok:
             print(f"        rc={_uneq.returncode}  out: {_uneq.stdout.strip()[-260:]}  err: {_uneq.stderr.strip()[-150:]}")
             failures += 1
-    # Soundness guard 2: a multi-wire NON-string result (a tuple) is not bindable as a public claim —
-    # ABSTAIN rather than silently publish only its first wire (the old `vh` truncation).
+    # Soundness guard 2: a multi-wire result that is NOT a string and NOT a tuple/record-of-scalars —
+    # an ADT (a tagged constructor value) — is not bindable as a public claim, so it ABSTAINs rather
+    # than silently publish only its first wire (the old `vh` truncation). (Tuples/records of scalars
+    # ARE bindable since v5.117; ADTs are the residual multi-wire shape that still abstains.)
     with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _uf2:
-        _uf2.write("fn mk(a: Int, b: Int) : (Int, Int) = (a, b)\nmk(x, y)\n")
+        _uf2.write("type Box = | B(Int) | C(Int)\nfn mk(a: Int) : Box = B(a)\nmk(x)\n")
         _tup_path = _uf2.name
-    _tup = subprocess.run([sys.executable, GLASS, "prove", _tup_path, "x=3", "y=8"],
+    _tup = subprocess.run([sys.executable, GLASS, "prove", _tup_path, "x=3"],
                           capture_output=True, text=True, cwd=ROOT)
-    if not _heavy_skipped(_tup, "string-valued result: multi-wire tuple result ABSTAINs (not truncated to wire 0)"):
+    if not _heavy_skipped(_tup, "structured result: a multi-wire ADT result ABSTAINs (not truncated to wire 0)"):
         tup_ok = ("verdict: ABSTAIN" in _tup.stdout) and ("proof:   ACCEPT" not in _tup.stdout)
-        print(f"  {'OK ' if tup_ok else 'FAIL'}  string-valued result: multi-wire tuple result ABSTAINs (not truncated to wire 0)")
+        print(f"  {'OK ' if tup_ok else 'FAIL'}  structured result: a multi-wire ADT result ABSTAINs (not truncated to wire 0)")
         if not tup_ok:
             print(f"        rc={_tup.returncode}  out: {_tup.stdout.strip()[-260:]}  err: {_tup.stderr.strip()[-150:]}")
             failures += 1
@@ -1801,6 +1803,46 @@ def main() -> int:
         print(f"  {'OK ' if bm0_ok else 'FAIL'}  bitwise showcase: missing bits (8 lacks 13's) -> 0 (the check discriminates)")
         if not bm0_ok:
             print(f"        rc={_bm0.returncode}  out: {_bm0.stdout.strip()[-260:]}  err: {_bm0.stderr.strip()[-150:]}")
+            failures += 1
+
+    # Tuple / record RESULTS (v5.117): a proof can RETURN a multi-component value (scalar components),
+    # bound by the same multi-wire binder a string result uses (build_claim_mw) and displayed component
+    # by component. divmod(17,5) -> (3, 2) ACCEPT; the Third Witness confirms BOTH components.
+    _tr_path = os.path.join(EX, "prove", "private_divmod.glass")
+    _tr = subprocess.run([sys.executable, GLASS, "prove", _tr_path, "a=17", "b=5", "--cross-check"],
+                         capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_tr, "tuple result: divmod(17,5) -> (3, 2) ACCEPT (both components bound + Third-Witness-confirmed)"):
+        tr_ok = (_tr.returncode == 0) and ("result:  (3, 2)" in _tr.stdout) and ("ACCEPT" in _tr.stdout) and ("THIRD LINEAGE AGREES" in _tr.stdout)
+        print(f"  {'OK ' if tr_ok else 'FAIL'}  tuple result: divmod(17,5) -> (3, 2) ACCEPT (both components bound + Third-Witness-confirmed)")
+        if not tr_ok:
+            print(f"        rc={_tr.returncode}  out: {_tr.stdout.strip()[-260:]}  err: {_tr.stderr.strip()[-150:]}")
+            failures += 1
+    # A RECORD result displays with field names (Type { f: v, ... }) and binds each field wire.
+    with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _rrf:
+        _rrf.write("type Bounds = { lo: Int, hi: Int }\n"
+                   "fn order(a: Int, b: Int) : Bounds = if a <= b then Bounds { lo: a, hi: b } else Bounds { lo: b, hi: a }\n"
+                   "order(x, y)\n")
+        _rr_path = _rrf.name
+    _rr = subprocess.run([sys.executable, GLASS, "prove", _rr_path, "x=8", "y=3", "--cross-check"],
+                         capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_rr, "record result: order(8,3) -> Bounds { lo: 3, hi: 8 } ACCEPT (field-named display)"):
+        rr_ok = (_rr.returncode == 0) and ("result:  Bounds { lo: 3, hi: 8 }" in _rr.stdout) and ("THIRD LINEAGE AGREES" in _rr.stdout)
+        print(f"  {'OK ' if rr_ok else 'FAIL'}  record result: order(8,3) -> Bounds {{ lo: 3, hi: 8 }} ACCEPT (field-named display)")
+        if not rr_ok:
+            print(f"        rc={_rr.returncode}  out: {_rr.stdout.strip()[-260:]}  err: {_rr.stderr.strip()[-150:]}")
+            failures += 1
+    # A tuple with a NON-scalar component (a string) is not bindable this way -> ABSTAIN (the scalar
+    # multi-wire guard catches it; never a wrong proof). Restricts the feature to scalar components.
+    with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _nsf:
+        _nsf.write('fn p(a: Int) : (Int, String) = (a + 1, "x")\np(x)\n')
+        _ns_path = _nsf.name
+    _ns = subprocess.run([sys.executable, GLASS, "prove", _ns_path, "x=5"],
+                         capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_ns, "tuple result: a non-scalar component (string) ABSTAINs (scalar components only)"):
+        ns_ok = ("verdict: ABSTAIN" in _ns.stdout) and ("proof:   ACCEPT" not in _ns.stdout)
+        print(f"  {'OK ' if ns_ok else 'FAIL'}  tuple result: a non-scalar component (string) ABSTAINs (scalar components only)")
+        if not ns_ok:
+            print(f"        rc={_ns.returncode}  out: {_ns.stdout.strip()[-260:]}  err: {_ns.stderr.strip()[-150:]}")
             failures += 1
 
     # The unboxed single-Int Goldilocks field (goldw_*) must agree with the trusted
@@ -2068,7 +2110,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 69)  # +69: ... + computed-callee-mode1-ACCEPT + computed-callee-mode0 + computed-callee-false-claim-REJECT + let-alias-callee-ACCEPT + let-alias-callee-false-claim-REJECT + selector-let-callee-ACCEPT + selector-let-callee-false-claim-REJECT + bitwise-and-ACCEPT + bitwise-or-ACCEPT + bitwise-xor-ACCEPT + bitwise-oob-ABSTAIN + bitwise-false-claim-REJECT + bitwise-bitmask-subset-1 + bitwise-bitmask-missing-0
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 72)  # +72: ... + let-alias-callee-ACCEPT + let-alias-callee-false-claim-REJECT + selector-let-callee-ACCEPT + selector-let-callee-false-claim-REJECT + bitwise-and-ACCEPT + bitwise-or-ACCEPT + bitwise-xor-ACCEPT + bitwise-oob-ABSTAIN + bitwise-false-claim-REJECT + bitwise-bitmask-subset-1 + bitwise-bitmask-missing-0 + tuple-result-ACCEPT + record-result-ACCEPT + tuple-nonscalar-component-ABSTAIN
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

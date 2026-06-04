@@ -81,9 +81,11 @@ primitives* (a multiply/add, the range gadget, the multi-wire value model) so it
   literals an allowlist dispatch — all over a **private** string. *v5.101–v5.102.*
 - **Records** — construct (`Account { … }`), destructure (`match a { Account { … } }`),
   and field access (`a.balance`), lowering like a tagless tuple. *v5.103–v5.104.*
-- **String-VALUED results** — a proof can *return* a string, bound by pinning every
-  output wire as the public claim and decoded back to text (selective disclosure of a
-  private key's prefix; a verdict word chosen by a private comparison). *v5.110.*
+- **Structured results** — a proof can *return* a string (*v5.110*), or a **tuple/record**
+  of scalar components (*v5.117*), bound by pinning every output wire as the public claim
+  (`build_claim_mw`) and decoded/displayed (a key's revealed prefix; a verdict word; a
+  `divmod` revealing `(q, r)`; a record `Bounds { lo, hi }`). Scalar/string/tuple/record —
+  what a proof can return is complete; a non-scalar tuple component ABSTAINs.
 
 - **Computed (runtime-chosen) callees** — `(if c then g else h)(x)`, the callee selected at
   runtime, lower by pushing the application inside the selector (`if c then g(x) else h(x)`).
@@ -375,10 +377,11 @@ The forward map is above; this is the rear-view, one line per era. Full detail p
 - **The verification stack (v5.63–v5.79).** The Measuring Reed, Pentecost (verifier-be-two), the
   Name, the Preserved Tablet, ABSTAIN, Opening-the-Seals, the Poseidon2 migration, the Third
   Witness, the fuzzing campaigns, `Concealed<T>`, the plain-name surface.
-- **The bridge gadget frontier (v5.62–v5.116).** Comparison, division/modulo, signed integers,
-  strings, records, string-valued results (`--claim` / portable `--emit`), computed callees
-  (runtime-chosen, let-aliased, and let-selector), and bitwise logic (`bit_and/or/xor`) — each a
-  faithful field lowering that narrowed the refusal without ever replacing it with a silent wrong
-  proof, until zero refused call forms remained and the integer-operation families were complete.
+- **The bridge gadget frontier (v5.62–v5.117).** Comparison, division/modulo, signed integers,
+  strings, records, structured results (string / tuple / record, `--claim` / portable `--emit`),
+  computed callees (runtime-chosen, let-aliased, and let-selector), and bitwise logic
+  (`bit_and/or/xor`) — each a faithful field lowering that narrowed the refusal without ever
+  replacing it with a silent wrong proof, until zero refused call forms remained, the
+  integer-operation families were complete, and a proof could return any scalar/string/tuple/record.
 - **The standalone LogUp arc (v5.105–v5.107).** The de-risking of the cheap-range frontier: the
   rational-sum identity, the running-sum/AIR form, and the committed + Fiat-Shamir form.

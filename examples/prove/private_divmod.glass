@@ -1,0 +1,14 @@
+# Prove BOTH the quotient and the remainder of a PRIVATE division — revealing the pair, hiding a, b.
+#
+#   glass prove examples/prove/private_divmod.glass a=17 b=5   # -> (3, 2), ACCEPT
+#   glass prove examples/prove/private_divmod.glass a=100 b=7  # -> (14, 2)
+#
+# A proof can now RETURN a tuple (or record), not just a scalar or a string: every component is
+# bound as a public output wire (the multi-wire binder `build_claim_mw`, the same one string results
+# use) and revealed. `divmod` returns `(a / b, a % b)`; a and b stay private witnesses, and the
+# verifier learns only the quotient/remainder pair. The Third Witness independently confirms both
+# components. (Components must be scalars — a tuple/record containing a string or a nested structure
+# ABSTAINs, never a wrong proof.)
+fn divmod(a: Int, b: Int) : (Int, Int) = (a / b, a % b)
+
+divmod(a, b)
