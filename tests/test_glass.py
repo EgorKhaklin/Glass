@@ -1699,6 +1699,30 @@ def main() -> int:
             print(f"        rc={_ccf.returncode}  out: {_ccf.stdout.strip()[-260:]}  err: {_ccf.stderr.strip()[-150:]}")
             failures += 1
 
+    # Let-aliased fn callee (v5.114): `let f = g in f(x)` binds a function NAME locally and calls it
+    # — closing the "unresolved call to 'f'" refusal for a let-bound fn name (distinct from the v5.113
+    # runtime-chosen callee; reuses the v5.87 fn-arg fenv mechanism, aliasing f -> g in fenv and
+    # dropping the let). g0 = double, so `let f = g0 in f(6)` = 12.
+    with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _laf:
+        _laf.write("fn g0(x: Int) : Int = x + x\nfn run(n: Int) : Int = let f = g0 in f(n)\nrun(k)\n")
+        _la_path = _laf.name
+    _la = subprocess.run([sys.executable, GLASS, "prove", _la_path, "k=6", "--cross-check"],
+                         capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_la, "let-aliased fn callee: let f = g0 in f(6) -> 12 ACCEPT (the 'unresolved f' refusal closed)"):
+        la_ok = (_la.returncode == 0) and ("result:  12" in _la.stdout) and ("ACCEPT" in _la.stdout) and ("THIRD LINEAGE AGREES" in _la.stdout)
+        print(f"  {'OK ' if la_ok else 'FAIL'}  let-aliased fn callee: let f = g0 in f(6) -> 12 ACCEPT (the 'unresolved f' refusal closed)")
+        if not la_ok:
+            print(f"        rc={_la.returncode}  out: {_la.stdout.strip()[-260:]}  err: {_la.stderr.strip()[-150:]}")
+            failures += 1
+    _laf2 = subprocess.run([sys.executable, GLASS, "prove", "--claim", "11", _la_path, "k=6"],
+                           capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_laf2, "let-aliased fn callee: false claim REJECTs (f(6)=12; claim 11 is false)"):
+        laf2_ok = ("proof:   REJECT" in _laf2.stdout) and ("proof:   ACCEPT" not in _laf2.stdout)
+        print(f"  {'OK ' if laf2_ok else 'FAIL'}  let-aliased fn callee: false claim REJECTs (f(6)=12; claim 11 is false)")
+        if not laf2_ok:
+            print(f"        rc={_laf2.returncode}  out: {_laf2.stdout.strip()[-260:]}  err: {_laf2.stderr.strip()[-150:]}")
+            failures += 1
+
     # The unboxed single-Int Goldilocks field (goldw_*) must agree with the trusted
     # base-2^16 limb field (gold_*) and obey the field laws — the load-bearing
     # correctness of the "unbox the field" speed cut. (Interpreter check; the native
@@ -1964,7 +1988,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 58)  # +58: ... + strresult-prefix-ACCEPT + strresult-verdict-PASS + strresult-verdict-FAIL + strresult-unequal-ABSTAIN + strresult-tuple-ABSTAIN + strclaim-true-ACCEPT + strclaim-false-REJECT + strclaim-wronglen-ABSTAIN + strclaim-scalar-mismatch-ABSTAIN + strresult-emit-pentecost-ACCEPT + computed-callee-mode1-ACCEPT + computed-callee-mode0 + computed-callee-false-claim-REJECT
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 60)  # +60: ... + strclaim-true-ACCEPT + strclaim-false-REJECT + strclaim-wronglen-ABSTAIN + strclaim-scalar-mismatch-ABSTAIN + strresult-emit-pentecost-ACCEPT + computed-callee-mode1-ACCEPT + computed-callee-mode0 + computed-callee-false-claim-REJECT + let-alias-callee-ACCEPT + let-alias-callee-false-claim-REJECT
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

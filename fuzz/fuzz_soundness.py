@@ -4,8 +4,9 @@
 #
 # Generates random small Glass programs over private inputs — arithmetic, unsigned
 # comparison/boolean, signed gadgets (slt/sle/sgt/sge, sdiv/smod), strings
-# (++/substring/string_length/==, the multi-wire codepoint lowering), AND records
-# (declare/construct/destructure a 2-field record — the multi-wire tuple shape) — proves each
+# (++/substring/string_length/==, the multi-wire codepoint lowering), records
+# (declare/construct/destructure a 2-field record — the multi-wire tuple shape), AND computed
+# callees (a runtime-chosen `(if c then g else h)(x)` or a let-aliased fn name) — proves each
 # with `glass prove --witness3`, and asserts the soundness invariants across the
 # WHOLE stack at once:
 #   (1) honest proof -> ACCEPT          (verify_b3 accepts a real proof)
@@ -61,6 +62,23 @@ def gen_record_prog(rng):
     body = ("match r { Rec { f0, f1 } => f0 %s f1 }" % op) if rng.random() < 0.5 else ("r.f0 %s r.f1" % op)
     return "type Rec = { f0: Int, f1: Int }\nfn ruse(r: Rec) : Int = %s\nruse(Rec { f0: %s, f1: %s })" % (body, e0, e1)
 
+# COMPUTED-CALLEE family (v5.114): which function runs is decided WITHOUT a static call name —
+# either a RUNTIME-CHOSEN callee `(if cond then g0 else g1)(arg)` (the v5.113 push-inside desugar)
+# or a let-aliased fn name `let f = g0 in f(arg)` (the v5.114 alias). Two candidate fns (double /
+# increment); a random comparison picks one (runtime form) or a coin picks the alias target. The
+# result is an Int, so the numeric witness3 reconciliation applies — fuzzing both call-form lowerings
+# under random conditions/arguments.
+def gen_computed_callee(rng):
+    arg = gen_expr(rng, 2)
+    if rng.random() < 0.5:
+        cmp = rng.choice(["<", ">", "<=", ">="])
+        cond = "(%s %s %s)" % (gen_expr(rng, 1), cmp, gen_expr(rng, 1))
+        body = "(if %s then g0 else g1)(%s)" % (cond, arg)        # runtime-chosen callee (v5.113)
+    else:
+        body = "let f = %s in f(%s)" % (rng.choice(["g0", "g1"]), arg)  # let-aliased fn name (v5.114)
+    return ("fn g0(x: Int) : Int = x + x\nfn g1(x: Int) : Int = x + 1\n"
+            "fn run(a: Int, b: Int, c: Int) : Int = %s\nrun(a, b, c)" % body)
+
 def gen_expr(rng, depth):
     if depth <= 0 or rng.random() < 0.35:
         return rng.choice(VARS) if rng.random() < 0.7 else str(rng.randint(0, 9))
@@ -96,18 +114,18 @@ def gen_signed(rng, depth):
 def run(n, seed, boundary=False):
     rng = random.Random(seed)
     mode = "BOUNDARY (inputs at the 2^31/2^32 range-gadget seams)" if boundary else "random (inputs 0..20 / -20..20)"
-    print(f"# soundness fuzz: {n} programs, {mode} (arithmetic + comparison/boolean + signed + string + record, seed {seed})")
+    print(f"# soundness fuzz: {n} programs, {mode} (arithmetic + comparison/boolean + signed + string + record + computed-callee, seed {seed})")
     ok = True
     for i in range(n):
-        # cycle 5 families so each batch exercises the arithmetic lowering, the unsigned
+        # cycle 6 families so each batch exercises the arithmetic lowering, the unsigned
         # comparison-gadget + boolean control-flow, the signed gadgets (slt/sdiv, the newest,
-        # riskiest), the multi-wire string lowering, AND the multi-wire record shape. Signed inputs
-        # may be negative (-20..20); the others stay non-negative so the unsigned [0,2^32) gadget
-        # doesn't spuriously abstain.
+        # riskiest), the multi-wire string lowering, the multi-wire record shape, AND the computed-
+        # callee lowering (runtime-chosen / let-aliased fns). Signed inputs may be negative (-20..20);
+        # the others stay non-negative so the unsigned [0,2^32) gadget doesn't spuriously abstain.
         # In boundary mode only the GADGET-bearing families (comparison + signed), whose operands
         # are range-guarded — a raw arithmetic product over near-2^32 inputs is a benign int64-vs-
         # field wrap (documented), not a soundness bug, so the arithmetic family is excluded there.
-        fam = (1 + (i % 2)) if boundary else (i % 5)
+        fam = (1 + (i % 2)) if boundary else (i % 6)
         if fam == 0:
             expr = gen_expr(rng, 3)
         elif fam == 1:
@@ -116,8 +134,10 @@ def run(n, seed, boundary=False):
             expr = gen_signed(rng, 1)
         elif fam == 3:
             expr = gen_string(rng, 1)
-        else:
+        elif fam == 4:
             expr = gen_record_prog(rng)
+        else:
+            expr = gen_computed_callee(rng)
         if boundary:
             # signed family may use negatives; unsigned families draw from the non-negative seams.
             pool = BOUNDARY if fam == 2 else [x for x in BOUNDARY if x >= 0]
@@ -162,10 +182,10 @@ def run_differential(n, seed):
     guarantee is fuzzed across the gadget-bearing lowerings, not just `a+b`. (A signed proof is large,
     ~550k tokens, so emit is the slow step; keep N modest.)"""
     rng = random.Random(seed)
-    print(f"# differential fuzz: {n} programs (arithmetic + comparison + signed + string + record), Glass-prove vs independent Pentecost (seed {seed})")
+    print(f"# differential fuzz: {n} programs (arithmetic + comparison + signed + string + record + computed-callee), Glass-prove vs independent Pentecost (seed {seed})")
     ok = True
     for i in range(n):
-        fam = i % 5
+        fam = i % 6
         if fam == 0:
             expr = gen_expr(rng, 3)
         elif fam == 1:
@@ -174,8 +194,10 @@ def run_differential(n, seed):
             expr = gen_signed(rng, 1)
         elif fam == 3:
             expr = gen_string(rng, 1)
-        else:
+        elif fam == 4:
             expr = gen_record_prog(rng)
+        else:
+            expr = gen_computed_callee(rng)
         lo = -20 if fam == 2 else 0
         inputs = {v: rng.randint(lo, 20) for v in VARS}
         path = f"/tmp/fuzzd_{i}.glass"
