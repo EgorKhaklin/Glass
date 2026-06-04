@@ -980,6 +980,22 @@ fn prove_b3_cols(gates: List<Gate>, lvals: List<List<Int>>, rvals: List<List<Int
 # --- bridge: parse, inline calls, lower the arithmetic subset to gates -------
 fn fn_body_of(fns: List<FnDecl>, name: String) : Expr = match fns { [] => error("glass prove: internal — body of resolved function '" ++ name ++ "' not found"); [FnDecl(fnm, tps, ty, body), ...rest] => if fnm == name then body else fn_body_of(rest, name) }
 fn unwind_app(e: Expr, acc: List<Expr>) : (Expr, List<Expr>) = match e { EApp(f, a) => unwind_app(f, [a] ++ acc); _ => (e, acc) }
+# A COMPUTED higher-order callee — the head of an application is not a bare function name but an
+# expression that SELECTS a function at runtime: (if c then g else h)(x), (let f = g in f)(x), or a
+# match choosing a function. The cut: PUSH THE APPLICATION INSIDE the selector — applying a
+# conditionally-chosen function equals conditionally applying each candidate. (if c then g else h)(x)
+# becomes if c then g(x) else h(x); each leaf is then a NAMED-fn call the bridge already lowers, and
+# the branch results mux through the same `muxw` an ordinary `if` uses (so equal-width results only;
+# unequal-width string branches ABSTAIN, as everywhere). Semantics-preserving because Glass is pure
+# (no effect is duplicated or reordered). One shared rewrite, called from BOTH unroll (feeds heval +
+# cgen) AND seval (the raw-AST guard), so the guard and the circuit can never disagree on it.
+fn push_app_arms(arms: List<Pair<Pattern, Expr>>, args: List<Expr>) : List<Pair<Pattern, Expr>> =
+  match arms { [] => []; [Pair(p, body), ...r] => [Pair(p, app_of(body, args))] ++ push_app_arms(r, args) }
+fn push_app(hd: Expr, args: List<Expr>) : Expr = match hd {
+  EIf(c, t, f) => EIf(c, app_of(t, args), app_of(f, args));
+  ELet(nm, v, body) => ELet(nm, v, app_of(body, args));
+  EMatch(scrut, arms) => EMatch(scrut, push_app_arms(arms, args));
+  _ => error("glass prove: a computed callee must be an `if`/`let`/`match` selecting among functions — this application form cannot be lowered to a gate circuit (refused, never a silent proven-0)") }
 fn fn_exists(fns: List<FnDecl>, name: String) : Bool = match fns { [] => false; [FnDecl(fnm, tps, ty, body), ...rest] => if fnm == name then true else fn_exists(rest, name) }
 fn fenv_get(fenv: List<Pair<String, String>>, name: String) : String = match fenv { [] => ""; [Pair(k, v), ...r] => if k == name then v else fenv_get(r, name) }
 # --- record field access `r.field` (EField), v5.104 -------------------------------------------
@@ -1089,7 +1105,7 @@ fn unroll(e: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: In
     # refuse loudly (unresolved / higher-order callee — programs the bridge cannot lower).
     EApp(f, a) => if fuel <= 0 then EInt(0) else match unwind_app(EApp(f, a), []) { (hd, args) => match hd {
       EVar(fname) => if is_scmp(fname) then (match args { [sa, sb] => unroll(scmp_desugar(fname, sa, sb), fns, fenv, fuel); _ => error("glass prove: signed comparison '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sdiv(fname) then (match args { [da, db] => unroll(sdiv_desugar(fname, da, db), fns, fenv, fuel); _ => error("glass prove: signed division '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sabs(fname) then (match args { [za] => unroll(sabs_desugar(za), fns, fenv, fuel); _ => error("glass prove: 'sabs' expects exactly 1 argument") }) else if is_sutil2(fname) then (match args { [ua, ub] => unroll(sutil2_desugar(fname, ua, ub), fns, fenv, fuel); _ => error("glass prove: signed '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_strfn(fname) then app_of(EVar(fname), unroll_args(args, fns, fenv, fuel)) else (let tgt : String = resolve_fn(fname, fns, fenv) in if tgt == "" then error("glass prove: unresolved call to '" ++ fname ++ "' — the prove bridge cannot lower this construct to a gate circuit (a silent proven-0 is refused)") else inline_fn(fn_body_of(fns, tgt), args, fns, fenv, fuel));
-      _ => error("glass prove: unsupported call form (computed or higher-order callee) — cannot lower to a gate circuit (a silent proven-0 is refused)") } };
+      _ => unroll(push_app(hd, args), fns, fenv, fuel) } };
     EAdd(x, y) => EAdd(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
     ESub(x, y) => ESub(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
     EMul(x, y) => EMul(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
@@ -1310,7 +1326,7 @@ fn seval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, t
     EConcat(a, b) => seval(a, env, fns, types, fenv, fuel) ++ seval(b, env, fns, types, fenv, fuel);
     EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd {
       EVar(fname) => if is_scmp(fname) then (match args { [sa, sb] => seval(scmp_desugar(fname, sa, sb), env, fns, types, fenv, fuel); _ => error("glass prove: signed comparison '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sdiv(fname) then (match args { [da, db] => seval(sdiv_desugar(fname, da, db), env, fns, types, fenv, fuel); _ => error("glass prove: signed division '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sabs(fname) then (match args { [za] => seval(sabs_desugar(za), env, fns, types, fenv, fuel); _ => error("glass prove: 'sabs' expects exactly 1 argument") }) else if is_sutil2(fname) then (match args { [ua, ub] => seval(sutil2_desugar(fname, ua, ub), env, fns, types, fenv, fuel); _ => error("glass prove: signed '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_strfn(fname) then seval_strfn(fname, args, env, fns, types, fenv, fuel) else if fuel <= 0 then error("glass prove: recursion depth exceeds the unroll bound (" ++ int_to_string(unroll_fuel(0)) ++ "); refusing to prove a depth-truncated result — it would otherwise be a silently wrong value with a valid-looking proof (the program needs statically-bounded, shallower recursion)") else (let tgt : String = resolve_fn(fname, fns, fenv) in if tgt == "" then error("glass prove: unresolved call to '" ++ fname ++ "' in the reference evaluator") else seval_call(fn_body_of(fns, tgt), args, [], env, [], fenv, fns, types, fuel));
-      _ => error("glass prove: unsupported call form (computed or higher-order callee) in the reference evaluator") } };
+      _ => seval(push_app(hd, args), env, fns, types, fenv, fuel) } };
     EMatch(scrut, arms) => seval_match(seval(scrut, env, fns, types, fenv, fuel), arms, env, fns, types, fenv, fuel);
     ELt(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fenv, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fenv, fuel)) in
       if cmp_ok_g(xa, xb) then (if bn_cmp(trim(xa), trim(xb)) < 0 then [glit(1)] else [glit(0)]) else error("glass prove: ordering comparison operand out of provable range [0,2^32) — ABSTAIN (cannot lower; abstaining, not disproving)");

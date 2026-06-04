@@ -1666,6 +1666,39 @@ def main() -> int:
             print(f"        emit rc={_emi.returncode} out: {_emi.stdout.strip()[-180:]}  verify out: {_emv.stdout.strip()[-180:]}")
             failures += 1
 
+    # Computed higher-order callee (v5.113): a callee CHOSEN AT RUNTIME — `(if mode >= 1 then double
+    # else increment)(x)` — was the last refused call form (named-fn HOFs already proved, v5.87). The
+    # cut: push the application inside the selector (applying a conditionally-chosen function == cond-
+    # itionally applying each candidate), so it lowers as `if c then g(x) else h(x)` — named-fn calls
+    # muxed by the same gadget an `if` uses; the rewrite is shared by seval (guard) + unroll (circuit).
+    _cc_path = os.path.join(EX, "prove", "computed_callee.glass")
+    _cc1 = subprocess.run([sys.executable, GLASS, "prove", _cc_path, "mode=1", "x=21", "--cross-check"],
+                          capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_cc1, "computed callee: (if mode>=1 then double else increment)(21), mode=1 -> 42 ACCEPT"):
+        cc1_ok = (_cc1.returncode == 0) and ("result:  42" in _cc1.stdout) and ("ACCEPT" in _cc1.stdout) and ("THIRD LINEAGE AGREES" in _cc1.stdout)
+        print(f"  {'OK ' if cc1_ok else 'FAIL'}  computed callee: (if mode>=1 then double else increment)(21), mode=1 -> 42 ACCEPT")
+        if not cc1_ok:
+            print(f"        rc={_cc1.returncode}  out: {_cc1.stdout.strip()[-260:]}  err: {_cc1.stderr.strip()[-150:]}")
+            failures += 1
+    # The runtime-chosen callee genuinely depends on the private flag (not a constant): mode=0 -> increment.
+    _cc0 = subprocess.run([sys.executable, GLASS, "prove", _cc_path, "mode=0", "x=21", "--cross-check"],
+                          capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_cc0, "computed callee: mode=0 -> increment(21)=22 (the runtime-chosen callee depends on the flag)"):
+        cc0_ok = (_cc0.returncode == 0) and ("result:  22" in _cc0.stdout) and ("THIRD LINEAGE AGREES" in _cc0.stdout)
+        print(f"  {'OK ' if cc0_ok else 'FAIL'}  computed callee: mode=0 -> increment(21)=22 (the runtime-chosen callee depends on the flag)")
+        if not cc0_ok:
+            print(f"        rc={_cc0.returncode}  out: {_cc0.stdout.strip()[-260:]}  err: {_cc0.stderr.strip()[-150:]}")
+            failures += 1
+    # Soundness: a false claim about the computed-callee result REJECTs (run(1,21)=42; claim 22 is false).
+    _ccf = subprocess.run([sys.executable, GLASS, "prove", "--claim", "22", _cc_path, "mode=1", "x=21"],
+                          capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_ccf, "computed callee: false claim REJECTs (run(1,21)=42; claim 22 is false)"):
+        ccf_ok = ("proof:   REJECT" in _ccf.stdout) and ("proof:   ACCEPT" not in _ccf.stdout)
+        print(f"  {'OK ' if ccf_ok else 'FAIL'}  computed callee: false claim REJECTs (run(1,21)=42; claim 22 is false)")
+        if not ccf_ok:
+            print(f"        rc={_ccf.returncode}  out: {_ccf.stdout.strip()[-260:]}  err: {_ccf.stderr.strip()[-150:]}")
+            failures += 1
+
     # The unboxed single-Int Goldilocks field (goldw_*) must agree with the trusted
     # base-2^16 limb field (gold_*) and obey the field laws — the load-bearing
     # correctness of the "unbox the field" speed cut. (Interpreter check; the native
@@ -1931,7 +1964,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 55)  # +55: ... + capstone-eligible-ACCEPT + capstone-false-claim-REJECT + strresult-prefix-ACCEPT + strresult-verdict-PASS + strresult-verdict-FAIL + strresult-unequal-ABSTAIN + strresult-tuple-ABSTAIN + strclaim-true-ACCEPT + strclaim-false-REJECT + strclaim-wronglen-ABSTAIN + strclaim-scalar-mismatch-ABSTAIN + strresult-emit-pentecost-ACCEPT
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 58)  # +58: ... + strresult-prefix-ACCEPT + strresult-verdict-PASS + strresult-verdict-FAIL + strresult-unequal-ABSTAIN + strresult-tuple-ABSTAIN + strclaim-true-ACCEPT + strclaim-false-REJECT + strclaim-wronglen-ABSTAIN + strclaim-scalar-mismatch-ABSTAIN + strresult-emit-pentecost-ACCEPT + computed-callee-mode1-ACCEPT + computed-callee-mode0 + computed-callee-false-claim-REJECT
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

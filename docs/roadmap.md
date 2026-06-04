@@ -82,10 +82,13 @@ primitives* (a multiply/add, the range gadget, the multi-wire value model) so it
   output wire as the public claim and decoded back to text (selective disclosure of a
   private key's prefix; a verdict word chosen by a private comparison). *v5.110.*
 
-Anything the bridge cannot lower **faithfully** *abstains* loudly — it is never
-silently proven. (Still refused: a *computed* runtime-chosen callee, unequal-width
-string `if`-branches, multi-wire non-string claims, and a wider comparison range — see
-*What's open*.)
+- **Computed (runtime-chosen) callees** — `(if c then g else h)(x)`, the callee selected at
+  runtime, lower by pushing the application inside the selector (`if c then g(x) else h(x)`).
+  Named-fn callees already proved (*v5.87*); with this the bridge has **no refused call form**. *v5.113.*
+
+Anything the bridge cannot lower **faithfully** *abstains* loudly — it is never silently proven.
+(Still refused: unequal-width string `if`-branches, multi-wire non-string public claims, and a wider
+comparison range — see *What's open*.)
 
 ### 2 · The verification stack — three independent lineages
 
@@ -169,11 +172,12 @@ buildable next-session work; 5–6 are large/gated; 7–8 are rigor and the hard
    **Remaining:** **unequal-width `if`-branches via length-tagged padding** (today they ABSTAIN).
    Additive, gateable (`cgen == heval == seval` + a corpus fixture), no `verify_b3` soundness change.
 
-4. **Computed higher-order callees** *(medium; differential-gateable).* The last refused
-   bridge construct: a function value chosen *at runtime* (named-fn HOFs already prove,
-   *v5.87*). Needs a selector-mux over candidate bodies or a principled refusal. An honest
-   ABSTAIN already covers it safely, so it is a self-contained expressiveness session, not
-   urgent.
+4. **Computed higher-order callees. ✅ LANDED v5.113.0.** A function value chosen *at runtime*
+   (`(if c then g else h)(x)`) — the last refused bridge construct — now lowers by pushing the
+   application inside the selector (`if c then g(x) else h(x)`), reducing it to the named-fn calls
+   already supported (*v5.87*); a shared `push_app` keeps `seval` and `unroll` in lockstep. The
+   bridge now has **no refused call form**. (A `let`-bound runtime callee still cleanly refuses —
+   resolving a fn-name *through* a `let` isn't wired — the one residual sub-case.)
 
 5. **H3 — full recursive STARK verifier** *(large; performance-gated; native-primary).*
    The two building blocks have landed: the FRI **fold-check as a circuit**
@@ -348,8 +352,9 @@ The forward map is above; this is the rear-view, one line per era. Full detail p
 - **The verification stack (v5.63–v5.79).** The Measuring Reed, Pentecost (verifier-be-two), the
   Name, the Preserved Tablet, ABSTAIN, Opening-the-Seals, the Poseidon2 migration, the Third
   Witness, the fuzzing campaigns, `Concealed<T>`, the plain-name surface.
-- **The bridge gadget frontier (v5.62–v5.112).** Comparison, division/modulo, signed integers,
-  strings, records, string-valued results, and a string `--claim` / portable `--emit` — each a
-  faithful field lowering that narrowed the refusal without ever replacing it with a silent wrong proof.
+- **The bridge gadget frontier (v5.62–v5.113).** Comparison, division/modulo, signed integers,
+  strings, records, string-valued results (`--claim` / portable `--emit`), and computed
+  (runtime-chosen) callees — each a faithful field lowering that narrowed the refusal without ever
+  replacing it with a silent wrong proof, until no refused call form remained.
 - **The standalone LogUp arc (v5.105–v5.107).** The de-risking of the cheap-range frontier: the
   rational-sum identity, the running-sum/AIR form, and the committed + Fiat-Shamir form.

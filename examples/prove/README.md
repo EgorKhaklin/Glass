@@ -71,6 +71,10 @@ A proven function can **return a string**, not just a number or a yes/no. A stri
 
 A string result is also **assertable** (v5.111): `glass prove --claim "PASS" private_verdict.glass score=820` binds the *claimed* codepoints, so a false string claim makes the circuit unsatisfiable and the independent `verify_b3` **REJECTs** (`--claim "FAIL"` → REJECT), and a wrong-length claim **ABSTAINs** (never bound as a matching prefix) — the string-result soundness property, made testable end to end. And it is **portable** (v5.112): `glass prove --emit p.b3 reveal_prefix.glass key=sk-live-…` writes a string-valued proof that the independent Pentecost verifier checks (`glass verify p.b3` → `PENTECOST: ACCEPT`) — the "let the verifier be two" guarantee now covers the multi-wire output shape.
 
+### Computed (runtime-chosen) callees (v5.113)
+
+- [`computed_callee.glass`](computed_callee.glass) — **the last refused call form.** `run(mode, x) = (if mode >= 1 then double else increment)(x)` proves a result where *which function runs* is chosen at runtime by a **private** flag — not a named function passed as an argument (that already proved, v5.87), but a callee selected by an `if`. The cut: **push the application inside the selector** — applying a conditionally-chosen function equals conditionally applying each candidate, so `(if c then g else h)(x)` lowers as `if c then g(x) else h(x)`, two named-fn calls muxed by the same gadget an `if` uses (sound because Glass is pure). `mode=1 x=21` → 42, `mode=0` → 22; the bridge now has no refused call form.
+
 ### Pane ⊕ Frost — a zero-knowledge query (H1)
 
 The founding vision: *Frost is the zero-knowledge extension of [Pane](../pane/).*
