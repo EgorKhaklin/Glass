@@ -157,6 +157,15 @@ buildable next-session work; 5–6 are large/gated; 7–8 are rigor and the hard
    hole (closed by a dense literal table) and the **forged-`S≡0` fools a boundary-only
    check** hazard (closed by the cleared-denominator transition constraint). Explicitly
    *not* tail-of-context work — a dedicated focused session.
+   - **✅ DESIGN PHASE DONE** ([`logup-integration-design.md`](logup-integration-design.md), grounded +
+     adversarially red-teamed). It **reframed the goal**: a LogUp lookup is an **amortized** win (the
+     dense table is one trace row per table entry, so it shrinks circuits with *many* range-checks —
+     deep `divmod`/`gcd`, H3 hashing — but is a *regression* for a single comparison; `range_k` stays
+     as the large-`k` fallback behind a `k`-sizing guard). The red-team killed three would-be forgeries
+     on paper (an unconstrained comparison-result wire, a degree-broken `S_N=0` boundary, an out-of-range
+     escape) and showed the change is **≈12 lockstep sites** that must land in **ordered stages** (S
+     column → multiplicity + `GLookup` marker → wire the gadget), each its own verified changeset, with
+     a **Stage 0 GO/NO-GO** on the table representation. The design doc is the executable plan.
 
 2. **Wider provable range** *(small–medium if it rides LogUp; soundness-critical).* `[0, 2³²)`
    is chosen so `q·b < p`. The lookup argument (#1) lifts the ceiling almost for free; a
