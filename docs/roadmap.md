@@ -166,6 +166,15 @@ buildable next-session work; 5–6 are large/gated; 7–8 are rigor and the hard
      escape) and showed the change is **≈12 lockstep sites** that must land in **ordered stages** (S
      column → multiplicity + `GLookup` marker → wire the gadget), each its own verified changeset, with
      a **Stage 0 GO/NO-GO** on the table representation. The design doc is the executable plan.
+   - **🟠 STAGE 0 DONE → DEFER (2026-06-04).** A *measured* cost analysis settled the GO/NO-GO: a
+     baseline `a+b` proof is **154,842 tokens**, one comparison `a<b` is **552,366** (the ~693-gate range
+     gadget, +397k). The dense table is `2^k` trace rows paid once, so LogUp's break-even is `≈ 2^k/693`
+     range-checks (~6–20 at small `k`, ~95 at `k=16`). Two facts: **(a)** the single comparison (`N=1`,
+     essentially every current proof) is *never* helped — it stays on `range_k`; **(b)** no current
+     workload (max ~dozens, mostly the semantics-gated `gcd`) crosses break-even, so building it now
+     **regresses every routine proof**. So: **keep `range_k`, defer Stages 1–3.** Trigger to execute:
+     a workload emitting **&gt; ~20 range-checks in one proof** (batched multi-statement proofs, wide-range
+     arithmetic at scale, or H3 accumulating many range-checked values). The design is ready to fire then.
 
 2. **Wider provable range** *(small–medium if it rides LogUp; soundness-critical).* `[0, 2³²)`
    is chosen so `q·b < p`. The lookup argument (#1) lifts the ceiling almost for free; a

@@ -1,6 +1,14 @@
 # LogUp in-circuit range integration — design
 
-*Status: DESIGN (no code yet). Grounded in a read-only survey of the live bridge + an
+> **STAGE 0 OUTCOME (2026-06-04): DEFER.** The design below is sound and ready (Stages 1–3), but a
+> measured cost analysis (§0) shows the integration would **regress every routine workload** and is
+> not worth its multi-session, soundness-critical cost **yet**. The bridge's range-checks are too few
+> to amortize the lookup table. Keep `range_k`. **Trigger to build:** a workload that emits **&gt; ~20
+> range-checks in one proof** (batched multi-statement proofs; wide-range arithmetic at scale; an H3
+> recursive verifier that accumulates many range-checked values). This document is the executable plan
+> for that day. See §0 for the numbers.
+
+*Status: DESIGN (no code yet) — Stage-0 GO/NO-GO complete (DEFER). Grounded in a read-only survey of the live bridge + an
 adversarial red-team (multi-agent). The standalone LogUp arc — [`frost_logup.glass`](../examples/frost/frost_logup.glass)
 (identity), [`…_air.glass`](../examples/frost/frost_logup_air.glass) (running-sum/AIR),
 [`…_committed.glass`](../examples/frost/frost_logup_committed.glass) (Fiat-Shamir β) — is the
@@ -14,6 +22,67 @@ what the red-team **broke** so the implementation never re-discovers it in sound
 > `range_k` as the large-`k` fallback, adds the lookup behind a `k`-sizing guard, materializes the
 > table at a feasible limb width (≤ 2¹⁶), keeps the comparison's sound sign-bit, and lands in
 > ordered stages each of which is independently green (suite + `pentecost/difftest.sh` + Name + fixpoint).
+
+---
+
+## 0 · Stage-0 GO/NO-GO — the measured cost analysis (outcome: DEFER)
+
+The design's §6 mandates a Stage-0 measurement before any code, because the whole integration's value
+is a *performance* claim. Here it is, with real numbers from the live prover.
+
+**Measured proof sizes** (`glass prove --emit`, Goldilocks, base-2¹⁶, current bridge):
+
+| circuit | range-checks | proof tokens |
+|---------|--------------|--------------|
+| `a + b` (baseline, arithmetic) | 0 | **154,842** |
+| `a < b` (one comparison) | 1 | **552,366** |
+
+One comparison's range gadget (`lt_build`: two `range_k(·,32)` ≈ 454 gates + a 33-bit
+`decompose_capture` ≈ 234 gates ≈ **~693 gates**) takes the proof from 155k → 552k tokens — a **3.6×**
+blow-up, **+397k tokens**. The cost is the gadget pushing the trace size `n = next_pow2(#gates)` up
+(proof ∝ the coset `m = 32n`).
+
+**The break-even.** A LogUp lookup replaces the per-value bit gadget with a table lookup, but the
+dense range table `{0..2^k−1}` is **2^k trace rows** (one gate = one row), paid **once** and amortized
+across all `N` range-checks sharing it. LogUp's trace beats `range_k`'s when `693·N > 2^k`, i.e.
+
+> **break-even `N ≈ 2^k / 693`** range-checks (more precisely, limb-lookups).
+
+| limb width `k` | table rows | break-even `N` | covers operands |
+|----------------|-----------|----------------|-----------------|
+| 32 | 2³² (infeasible) | ~6.2 million | full `[0,2³²)` directly |
+| 16 | 65,536 | ~95 | 16-bit limbs (2 limbs / 32-bit value) |
+| 12 | 4,096 | ~6 (≈18 effective, 3 limbs/value) | 12-bit limbs |
+| 8 | 256 | <1 | bytes only (rarely the operand width) |
+
+**Two hard conclusions:**
+
+1. **The single comparison — the headline ~552k proof — is never helped.** It is `N = 1`, far below
+   any break-even at any usable `k`; the table overhead dwarfs the one gadget it removes. The
+   single/few-comparison case (which is essentially *every* current `glass prove`) **stays on
+   `range_k`**, full stop. LogUp is the wrong tool for the headline proof-size problem.
+2. **No current workload reliably crosses break-even.** Surveying what the bridge emits: a comparison
+   (1), the capstone `private_eligibility` (2), signed `sdiv` (a few), `gcd` at fuel-8 (~8–16, and it
+   is already *semantics-gated*, not routinely proven natively). The heaviest realistic circuit has a
+   few dozen range-checks — below even the `k=12` effective break-even (~18), and `gcd`'s ~16 is at
+   best marginal. Building the integration now would make **every routine proof larger** for **no
+   workload that benefits today.**
+
+**Decision: DEFER (NO-GO for now).** The architecture (§2–§5) is sound and the staged plan (§6) is
+ready, but the ROI is negative against the current workload mix, and the cost is a multi-session,
+soundness-critical, ~12-lockstep-site build. Spending it now would violate "don't ship a regression."
+
+**Trigger to execute Stages 1–3:** a workload that emits **&gt; ~20 range-checks in a single proof** —
+e.g. batched multi-statement proofs (many comparisons per proof), wide-range arithmetic at scale, a
+table shared *across* proofs, or H3's recursive verifier if it accumulates many range-checked values.
+When such a workload is real, this design executes against it directly (the math is validated, the
+hazards are closed on paper, the lockstep surface is enumerated). Until then, the honest lever for the
+single-comparison proof is elsewhere (a smaller base proof / fewer FRI queries at equal security — a
+separate frontier), not a range lookup.
+
+*(This is "search before building": the design phase + a measured Stage-0 turned a roadmap headline
+into a precise, deferred, ready-to-fire plan — and avoided a large effort that would currently regress
+performance.)*
 
 ---
 
