@@ -1733,7 +1733,9 @@ fn bind_outs(outws: List<Int>, claimedRs: List<List<Int>>, b: Build) : Build =
   match outws { [] => b; [ow, ...owr] => match claimedRs { [] => b; [cr, ...crr] =>
     match mkc(cr, b) { (wR, b1) => match mks(ow, wR, b1) { (wd, b2) => bind_outs(owr, crr, mke(wd, b2)) } } } }
 fn build_claim_mw(src: String, inputs: List<Pair<String, List<Int>>>, claimedRs: List<List<Int>>) : Build =
-  match build_multi_m(src, inputs) { (outws, b) => bind_outs(outws, claimedRs, b) }
+  match build_multi_m(src, inputs) { (outws, b) =>
+    if ilenI(outws) == len(claimedRs) then bind_outs(outws, claimedRs, b)
+    else error("glass prove --claim: the claimed string is a different length than the result — cannot bind it; ABSTAIN (a wrong-LENGTH claim is refused, never bound as a matching prefix)") }
 # decode a multi-wire string RESULT (codepoint wires) back to text for display. Each wire's small
 # field value is its codepoint; the printable-ASCII char is table[code-32] (the inverse of char_code,
 # which is 32 + index-into-ascii_tbl). A codepoint outside 32..126 ABSTAINs (never a wrong proof) —

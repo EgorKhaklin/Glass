@@ -1,5 +1,5 @@
 """
-Glass v5.110.0 — reference implementation.
+Glass v5.111.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -3866,7 +3866,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.110.0 — interactive REPL")
+    print("Glass v5.111.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -4051,7 +4051,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.110.0")
+        print("Glass 5.111.0")
     elif sys.argv[1] in ("help", "--help", "-h"):
         # Plain, professional command listing. The thematic names are aliases
         # (docs/naming.md) — this surface keeps the esoteric layer optional.
@@ -4062,7 +4062,7 @@ def main() -> None:
             "  glass prove <file> [k=v ...]  generate a zero-knowledge proof of its result\n"
             "      --cross-check             also re-execute under the reference interpreter\n"
             "      --emit <path>             write a portable proof instead of self-checking\n"
-            "      --claim <R>               prove a SPECIFIC claimed result (ACCEPT iff R is true)\n"
+            "      --claim <R>               prove a SPECIFIC claimed result, an integer or a \"string\" (ACCEPT iff R is the true result; a false claim REJECTs)\n"
             "  glass verify <proof>          check a portable proof with the independent verifier\n"
             "  glass fingerprint [--check]   print/verify the content-addressed project identity\n"
             "  glass ledger <cmd>            append-only, tamper-evident proof-verdict ledger\n"
@@ -4090,14 +4090,19 @@ def main() -> None:
         # --claim <R>: assert a SPECIFIC result instead of proving the computed one. The claimed R is
         # bound into the circuit (build_claim_m asserts output == R); a FALSE claim makes the circuit
         # unsatisfiable, so the independent verify_b3 REJECTs — the soundness property, made testable.
-        claim_val = None
+        claim_val = None    # an integer claim (scalar result)
+        claim_raw = None    # the raw claim string (a String-result claim binds this; see below)
         if "--claim" in _argv2:
             _ci = _argv2.index("--claim")
             if _ci + 1 < len(_argv2):
-                try:
-                    claim_val = int(_argv2[_ci + 1])
-                except ValueError:
-                    print("glass prove --claim: expected an integer result"); return
+                claim_raw = _argv2[_ci + 1]
+                if len(claim_raw) >= 2 and claim_raw[0] == '"' and claim_raw[-1] == '"':
+                    claim_raw = claim_raw[1:-1]            # explicitly quoted string claim
+                else:
+                    try:
+                        claim_val = int(claim_raw)         # an integer scalar claim
+                    except ValueError:
+                        claim_val = None                   # non-numeric -> a String-result claim (validated once the result type is known)
             _argv2 = _argv2[:_ci] + _argv2[_ci + 2:]   # drop --claim and its value
         args = [a for a in _argv2 if a not in ("--goldilocks", "--baby-bear", "--zk", "--fast", "--witness3")]
         # Default is now Goldilocks (2^64, ADTs) — off the toy 2^31 Baby Bear field.
@@ -4201,31 +4206,38 @@ def main() -> None:
             return
         if goldilocks and _res_str is not None:
             # STRING-VALUED result (multi-wire): bind EVERY codepoint wire as the public claim
-            # (build_claim_mw / gprove_*_mw) and display the DECODED string. The proven claim is the
-            # circuit's own multi-wire output `_rv` (no drift). --claim is scalar-only, so refuse it.
-            if claim_val is not None:
-                print("Glass prove — %s  [field: Goldilocks (2^64)]" % upath)
-                print("glass prove: --claim binds a single scalar value, but this program returns a String (multi-wire) — drop --claim; a string result is bound to its computed value")
-                print("verdict: ABSTAIN  (a scalar --claim cannot express a multi-wire string result — refused, not silently bound to the first codepoint)")
-                return
+            # (build_claim_mw / gprove_*_mw) and display the DECODED string. The bound value is either
+            # the circuit's own output `_rv` (no --claim — no drift) or a USER-CLAIMED string `--claim
+            # "S"`, whose codepoints are bound so a false claim makes the circuit unsatisfiable and the
+            # independent verify_b3 REJECTs (a wrong-LENGTH claim ABSTAINs via build_claim_mw's guard).
+            if claim_raw is not None:
+                # bind the CLAIMED string's codepoints (gin = the canonical field element of each, the
+                # same binder the circuit's string wires use), not the computed result.
+                _claim_codes = "[" + ", ".join("gin(%d)" % ord(c) for c in claim_raw) + "]"
+                _claim_arg = "_claimcodes"
+                _claim_let = "let _claimcodes : List<List<Int>> = %s\n" % _claim_codes
+                _esc_claim = claim_raw.replace("\\", "\\\\").replace('"', '\\"')
+                _disp_line = 'let _ : String = print("claim:   \\"%s\\"  (asserted; the proof verifies iff this is the true string result over Goldilocks)")\n' % _esc_claim
+            else:
+                _claim_arg = "_rv"
+                _claim_let = ""
+                _disp_line = 'let _ : String = print("result:  \\"" ++ decode_str(_rv) ++ "\\"  (a String result — each codepoint bound as a public output wire over Goldilocks)")\n'
             if fast_mode:
-                _prove_call = "gprove_m_mw(_usrc, _inp, _rv, 11111)"
+                _prove_call = "gprove_m_mw(_usrc, _inp, %s, 11111)" % _claim_arg
                 _prove_label = "ACCEPT  (self-check over the witness — NOT a soundness proof; drop --fast for verify_b3)"
             elif zk_mode:
-                _prove_call = "gprove_zk_mw(_usrc, _inp, _rv, 11111, 256)"
+                _prove_call = "gprove_zk_mw(_usrc, _inp, %s, 11111, 256)" % _claim_arg
                 _prove_label = "ACCEPT  (SOUND + zero-knowledge — independent verify_b3 + randomized-trace hiding)"
             else:
-                _prove_call = "gprove_sound_mw(_usrc, _inp, _rv)"
+                _prove_call = "gprove_sound_mw(_usrc, _inp, %s)" % _claim_arg
                 _prove_label = "ACCEPT  (SOUND — independent witness-free verify_b3; not zero-knowledge)"
-            driver = machinery + (
-                '\nlet _usrc : String = "%s"\n'
-                'let _inp : List<Pair<String, List<Int>>> = %s\n'
-                'let _rv : List<List<Int>> = gref_m_checked(_usrc, _inp)\n'
-                'let _ : String = print("result:  \\"" ++ decode_str(_rv) ++ "\\"  (a String result — each codepoint bound as a public output wire over Goldilocks)")\n'
-                'let _ : String = print("security: " ++ (match build_claim_mw(_usrc, _inp, _rv) { Build(_n, _gs, _w) => measure_line(_gs) }))\n'
-                'let _ : String = print("proof:   " ++ (if %s then "%s" else "REJECT"))\n'
-                '"glass prove --goldilocks"\n'
-            ) % (esc, inp_glass, _prove_call, _prove_label)
+            _head_lines = ('\nlet _usrc : String = "%s"\n'
+                           'let _inp : List<Pair<String, List<Int>>> = %s\n'
+                           'let _rv : List<List<Int>> = gref_m_checked(_usrc, _inp)\n') % (esc, inp_glass)
+            _sec_line = ('let _ : String = print("security: " ++ (match build_claim_mw(_usrc, _inp, %s) '
+                         '{ Build(_n, _gs, _w) => measure_line(_gs) }))\n') % _claim_arg
+            _proof_line = 'let _ : String = print("proof:   " ++ (if %s then "%s" else "REJECT"))\n' % (_prove_call, _prove_label)
+            driver = machinery + _head_lines + _claim_let + _disp_line + _sec_line + _proof_line + '"glass prove --goldilocks"\n'
         elif goldilocks:
             if fast_mode:
                 _prove_call = "gprove_m(_usrc, _inp, _r, 11111)"
@@ -4236,6 +4248,13 @@ def main() -> None:
             else:
                 _prove_call = "gprove_sound(_usrc, _inp, _r)"
                 _prove_label = "ACCEPT  (SOUND — independent witness-free verify_b3; not zero-knowledge)"
+            # A non-numeric --claim on a SCALAR (Int/Bool) result is a category error (a string claim
+            # for a number) — refuse loudly rather than ignore the flag.
+            if claim_raw is not None and claim_val is None:
+                print("Glass prove — %s  [field: Goldilocks (2^64)]" % upath)
+                print("glass prove: --claim %r is not an integer, but this program's result is a scalar (Int/Bool) — pass an integer claim (a string --claim binds only a String result)" % claim_raw)
+                print("verdict: ABSTAIN  (the claim's type does not match the result's type — refused, never bound)")
+                return
             # --claim binds a SPECIFIED result (forged or honest) instead of gref_m_checked's; the guard
             # `_rv` still runs (so out-of-domain ABSTAINs), but the proof is for the claim — a false claim
             # makes the circuit unsatisfiable and verify_b3 REJECTs.

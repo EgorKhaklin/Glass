@@ -69,6 +69,8 @@ A proven function can **return a string**, not just a number or a yes/no. A stri
 - [`reveal_prefix.glass`](reveal_prefix.glass) — **selective disclosure of a secret.** `substring(key, 0, 8)` proves + reveals only the first 8 characters of a **private** API key (`key=sk-live-…` → `"sk-live-"`), the rest staying in the witness — verifiable provenance without exposing the credential.
 - [`private_verdict.glass`](private_verdict.glass) — **a verdict word chosen by a private comparison.** `if score >= 750 then "PASS" else if score >= 600 then "WAIT" else "FAIL"` reveals the classification of a **private** number while hiding the number (`820 → "PASS"`, `640 → "WAIT"`, `500 → "FAIL"`). The equal-width branches mux wire-by-wire; the Third Witness confirms the circuit selected the verdict the source dictates.
 
+A string result is also **assertable** (v5.111): `glass prove --claim "PASS" private_verdict.glass score=820` binds the *claimed* codepoints, so a false string claim makes the circuit unsatisfiable and the independent `verify_b3` **REJECTs** (`--claim "FAIL"` → REJECT), and a wrong-length claim **ABSTAINs** (never bound as a matching prefix) — the string-result soundness property, made testable end to end.
+
 ### Pane ⊕ Frost — a zero-knowledge query (H1)
 
 The founding vision: *Frost is the zero-knowledge extension of [Pane](../pane/).*

@@ -1606,6 +1606,49 @@ def main() -> int:
             print(f"        rc={_tup.returncode}  out: {_tup.stdout.strip()[-260:]}  err: {_tup.stderr.strip()[-150:]}")
             failures += 1
 
+    # String --claim (v5.111): assert a SPECIFIC string result. The claimed string's codepoints are
+    # bound (not the computed result), so a FALSE claim makes the circuit unsatisfiable and the
+    # independent verify_b3 REJECTs — the soundness property for string results, made testable
+    # end-to-end (v5.110 string results had only the structural REJECT argument). verdict(820)="PASS".
+    _vc = subprocess.run([sys.executable, GLASS, "prove", "--claim", "PASS", _vd_path, "score=820"],
+                         capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_vc, 'string --claim: a TRUE string claim ("PASS") ACCEPTs'):
+        vc_ok = (_vc.returncode == 0) and ('claim:   "PASS"' in _vc.stdout) and ("proof:   ACCEPT" in _vc.stdout)
+        print(f"  {'OK ' if vc_ok else 'FAIL'}  string --claim: a TRUE string claim (\"PASS\") ACCEPTs")
+        if not vc_ok:
+            print(f"        rc={_vc.returncode}  out: {_vc.stdout.strip()[-260:]}  err: {_vc.stderr.strip()[-150:]}")
+            failures += 1
+    # The soundness headline: a FALSE equal-length string claim REJECTs (verdict(820)="PASS"; "FAIL" is false).
+    _vcf = subprocess.run([sys.executable, GLASS, "prove", "--claim", "FAIL", _vd_path, "score=820"],
+                          capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_vcf, 'string --claim: a FALSE string claim ("FAIL") REJECTs (the string-result soundness gate)'):
+        vcf_ok = ("proof:   REJECT" in _vcf.stdout) and ("proof:   ACCEPT" not in _vcf.stdout)
+        print(f"  {'OK ' if vcf_ok else 'FAIL'}  string --claim: a FALSE string claim (\"FAIL\") REJECTs (the string-result soundness gate)")
+        if not vcf_ok:
+            print(f"        rc={_vcf.returncode}  out: {_vcf.stdout.strip()[-260:]}  err: {_vcf.stderr.strip()[-150:]}")
+            failures += 1
+    # A wrong-LENGTH string claim ABSTAINs (build_claim_mw's length guard) — never bound as a matching
+    # prefix (which would wrongly ACCEPT a too-short claim). "PASSING" (7) vs the 4-char result.
+    _vcl = subprocess.run([sys.executable, GLASS, "prove", "--claim", "PASSING", _vd_path, "score=820"],
+                          capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_vcl, "string --claim: a wrong-LENGTH claim ABSTAINs (no matching-prefix under-binding)"):
+        vcl_ok = ("verdict: ABSTAIN" in _vcl.stdout) and ("proof:   ACCEPT" not in _vcl.stdout)
+        print(f"  {'OK ' if vcl_ok else 'FAIL'}  string --claim: a wrong-LENGTH claim ABSTAINs (no matching-prefix under-binding)")
+        if not vcl_ok:
+            print(f"        rc={_vcl.returncode}  out: {_vcl.stdout.strip()[-260:]}  err: {_vcl.stderr.strip()[-150:]}")
+            failures += 1
+    # A non-numeric --claim on a SCALAR result is a category error -> ABSTAIN (a pure pre-lowering guard).
+    with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _uf3:
+        _uf3.write("fn add(a: Int, b: Int) : Int = a + b\nadd(x, y)\n")
+        _sclaim_path = _uf3.name
+    _scc = subprocess.run([sys.executable, GLASS, "prove", "--claim", "foo", _sclaim_path, "x=5", "y=7"],
+                          capture_output=True, text=True, cwd=ROOT)
+    scc_ok = ("verdict: ABSTAIN" in _scc.stdout) and ("proof:   ACCEPT" not in _scc.stdout)
+    print(f"  {'OK ' if scc_ok else 'FAIL'}  string --claim: a string claim on a SCALAR result ABSTAINs (type mismatch)")
+    if not scc_ok:
+        print(f"        rc={_scc.returncode}  out: {_scc.stdout.strip()[-260:]}  err: {_scc.stderr.strip()[-150:]}")
+        failures += 1
+
     # The unboxed single-Int Goldilocks field (goldw_*) must agree with the trusted
     # base-2^16 limb field (gold_*) and obey the field laws — the load-bearing
     # correctness of the "unbox the field" speed cut. (Interpreter check; the native
@@ -1870,7 +1913,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 50)  # +50: ... + records-construct-match-ACCEPT + records-false-claim-REJECT + efield-solvent-ACCEPT + efield-false-claim-REJECT + logup-range-argument + logup-running-sum-AIR + logup-committed-FS + capstone-eligible-ACCEPT + capstone-false-claim-REJECT + strresult-prefix-ACCEPT + strresult-verdict-PASS + strresult-verdict-FAIL + strresult-unequal-ABSTAIN + strresult-tuple-ABSTAIN
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 54)  # +54: ... + logup-range-argument + logup-running-sum-AIR + logup-committed-FS + capstone-eligible-ACCEPT + capstone-false-claim-REJECT + strresult-prefix-ACCEPT + strresult-verdict-PASS + strresult-verdict-FAIL + strresult-unequal-ABSTAIN + strresult-tuple-ABSTAIN + strclaim-true-ACCEPT + strclaim-false-REJECT + strclaim-wronglen-ABSTAIN + strclaim-scalar-mismatch-ABSTAIN
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures
