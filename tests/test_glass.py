@@ -1649,6 +1649,23 @@ def main() -> int:
         print(f"        rc={_scc.returncode}  out: {_scc.stdout.strip()[-260:]}  err: {_scc.stderr.strip()[-150:]}")
         failures += 1
 
+    # Portable STRING-RESULT proof (v5.112): `glass prove --emit` a string-valued proof, then the
+    # INDEPENDENT Pentecost verifier must ACCEPT it. v5.110 string results couldn't --emit (multi-wire
+    # ABSTAIN); now the multi-wire claim (gprove_emit_mw) serializes to the same token stream Pentecost
+    # parses, so the second verifier checks the string-VALUED proof shape end-to-end via the CLI. (The
+    # committed corpus fixture honest_string_result.b3.txt.gz tamper-checks the same shape statically.)
+    with _tf_sr.NamedTemporaryFile("w", suffix=".b3.txt", delete=False) as _ef:
+        _emit_proof_path = _ef.name
+    _emi = subprocess.run([sys.executable, GLASS, "prove", "--emit", _emit_proof_path, _rp_path, "key=sk-live-9f3a2c7e1b"],
+                          capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_emi, "portable string-result proof: --emit a string-valued proof, Pentecost verifies it"):
+        _emv = subprocess.run([sys.executable, GLASS, "verify", _emit_proof_path], capture_output=True, text=True, cwd=ROOT)
+        emi_ok = (_emi.returncode == 0) and ("wrote a portable proof" in _emi.stdout) and ("PENTECOST: ACCEPT" in _emv.stdout)
+        print(f"  {'OK ' if emi_ok else 'FAIL'}  portable string-result proof: --emit a string-valued proof, Pentecost verifies it")
+        if not emi_ok:
+            print(f"        emit rc={_emi.returncode} out: {_emi.stdout.strip()[-180:]}  verify out: {_emv.stdout.strip()[-180:]}")
+            failures += 1
+
     # The unboxed single-Int Goldilocks field (goldw_*) must agree with the trusted
     # base-2^16 limb field (gold_*) and obey the field laws — the load-bearing
     # correctness of the "unbox the field" speed cut. (Interpreter check; the native
@@ -1883,10 +1900,11 @@ def main() -> int:
 
     # Multi-shape corpus: the differential + tamper guarantees, broadened beyond the single a+b
     # shape they originally ran on. For every committed proof fixture (a+b, a*b, a*a+b, a<b, a/b,
-    # string-eq, AND a record destructure) the independent Pentecost verifier must ACCEPT the honest
-    # proof and REJECT a tamper in either the proof region or the public-claim region. Catches a
-    # verify_b3 bug that only manifests on some circuit shapes (more gates, different gate kinds,
-    # multi-wire string/record values) — invisible to a single-fixture gate.
+    # string-eq, a record destructure, AND a string-VALUED result — a multi-wire public claim) the
+    # independent Pentecost verifier must ACCEPT the honest proof and REJECT a tamper in either the
+    # proof region or the public-claim region. Catches a verify_b3 bug that only manifests on some
+    # circuit shapes (more gates, different gate kinds, multi-wire string/record output bindings) —
+    # invisible to a single-fixture gate.
     _cc = subprocess.run([sys.executable, os.path.join("fuzz", "corpus_check.py")],
                          capture_output=True, text=True, cwd=_root)
     cc_ok = (_cc.returncode == 0) and ("0 failures" in _cc.stdout)
@@ -1913,7 +1931,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 54)  # +54: ... + logup-range-argument + logup-running-sum-AIR + logup-committed-FS + capstone-eligible-ACCEPT + capstone-false-claim-REJECT + strresult-prefix-ACCEPT + strresult-verdict-PASS + strresult-verdict-FAIL + strresult-unequal-ABSTAIN + strresult-tuple-ABSTAIN + strclaim-true-ACCEPT + strclaim-false-REJECT + strclaim-wronglen-ABSTAIN + strclaim-scalar-mismatch-ABSTAIN
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 55)  # +55: ... + capstone-eligible-ACCEPT + capstone-false-claim-REJECT + strresult-prefix-ACCEPT + strresult-verdict-PASS + strresult-verdict-FAIL + strresult-unequal-ABSTAIN + strresult-tuple-ABSTAIN + strclaim-true-ACCEPT + strclaim-false-REJECT + strclaim-wronglen-ABSTAIN + strclaim-scalar-mismatch-ABSTAIN + strresult-emit-pentecost-ACCEPT
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

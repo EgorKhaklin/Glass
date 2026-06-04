@@ -1848,6 +1848,12 @@ fn emit_roots(p: List<List<Int>>) : String = emit_int(len(p)) ++ emit_hlist(p)
 # serialize a freshly-built+proven claim (gprove_sound throws ProofB3 away; here we KEEP it)
 fn gprove_emit(src: String, inputs: List<Pair<String, List<Int>>>, claimedR: List<Int>) : String =
   match build_claim_m(src, inputs, claimedR) { Build(n, gs, w) => emit_proofb3(gs, prove_b3(gs, w)) }
+# the multi-wire (string result) emit: bind every output wire, serialize the SAME ProofB3. The extra
+# is-zero asserts are ordinary GConst/GSub/GEqZero gates emit_gate already serializes, so a string-
+# VALUED proof rides the same byte-for-byte token stream Pentecost parses — extending the second
+# verifier to the multi-wire output shape, no serializer change.
+fn gprove_emit_mw(src: String, inputs: List<Pair<String, List<Int>>>, claimedRs: List<List<Int>>) : String =
+  match build_claim_mw(src, inputs, claimedRs) { Build(n, gs, w) => emit_proofb3(gs, prove_b3(gs, w)) }
 
 # --- demo --------------------------------------------------------------------
 fn show_a(b: Bool) : String = if b then "ACCEPT" else "REJECT"

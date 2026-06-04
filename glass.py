@@ -1,5 +1,5 @@
 """
-Glass v5.111.0 — reference implementation.
+Glass v5.112.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -3866,7 +3866,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.111.0 — interactive REPL")
+    print("Glass v5.112.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -4051,7 +4051,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.111.0")
+        print("Glass 5.112.0")
     elif sys.argv[1] in ("help", "--help", "-h"):
         # Plain, professional command listing. The thematic names are aliases
         # (docs/naming.md) — this surface keeps the esoteric layer optional.
@@ -4176,17 +4176,20 @@ def main() -> None:
             # independent verifier (pentecost/) consumes — prove once here, `glass verify` it anywhere.
             if not goldilocks:
                 print("glass prove --emit: only the Goldilocks path emits a portable proof"); return
+            if _res_str is not None:
+                # A STRING result emits via the multi-wire binder (every codepoint wire pinned),
+                # so the second verifier (Pentecost) checks the string-VALUED proof shape too.
+                _emit_body = 'let _ : String = print(gprove_emit_mw(_usrc, _inp, _rv))\n'
+            else:
+                # A scalar result serializes its one wire. A multi-wire NON-string result
+                # (tuple / record / ADT) ABSTAINs rather than emit a proof of only its first wire.
+                _emit_body = ('let _r : List<Int> = if len(_rv) > 1 then error("glass prove --emit: a multi-wire NON-string result (tuple / record / ADT) is not serializable to a portable proof — use `glass prove`, or return a scalar or a String") else vh(_rv)\n'
+                              'let _ : String = print(gprove_emit(_usrc, _inp, _r))\n')
             _ed = machinery + (
                 '\nlet _usrc : String = "%s"\n'
                 'let _inp : List<Pair<String, List<Int>>> = %s\n'
                 'let _rv : List<List<Int>> = gref_m_checked(_usrc, _inp)\n'
-                # --emit serializes a single-wire (scalar) result. A multi-wire (string / tuple / ADT)
-                # result ABSTAINs rather than emit a proof of only its first wire (portable string-proof
-                # emission is a documented follow-up); the prove path itself binds the whole string.
-                'let _r : List<Int> = if len(_rv) > 1 then error("glass prove --emit: a multi-wire result (String / tuple / record / ADT) is not yet serializable to a portable proof — use `glass prove` (which binds the whole value), or return a scalar") else vh(_rv)\n'
-                'let _ : String = print(gprove_emit(_usrc, _inp, _r))\n'
-                '"emit-done"\n'
-            ) % (esc, inp_glass)
+            ) % (esc, inp_glass) + _emit_body + '"emit-done"\n'
             _et = "/tmp/glass_emit_driver.glass"
             with open(_et, "w") as _f:
                 _f.write(_ed)

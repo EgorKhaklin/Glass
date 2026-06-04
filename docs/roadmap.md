@@ -163,13 +163,11 @@ buildable next-session work; 5–6 are large/gated; 7–8 are rigor and the hard
    crown-jewel silent-wrong-ACCEPT class). Keep the hard `range_k` + ABSTAIN guard.
 
 3. **String-result follow-ups** *(small–medium; low-risk, bridge-only).* A **string `--claim`**
-   landed *v5.111* (binds the claimed codepoints, so a false string result REJECTs and a
-   wrong-length claim ABSTAINs — the string-result soundness gate, made end-to-end). Remaining:
-   a **portable string-proof `--emit`** (extend `emit_proofb3` for multi-wire claims — closes
-   the Pentecost lineage gap on string-*valued* proofs) and **unequal-width `if`-branches via
-   length-tagged padding** (today they ABSTAIN). Additive, gateable (`cgen == heval == seval`
-   + a corpus fixture), no `verify_b3` soundness change. The clean lower-risk session between
-   heavier pushes.
+   landed *v5.111* (a false string result REJECTs, a wrong-length claim ABSTAINs), and a
+   **portable string-proof `--emit`** landed *v5.112* (`gprove_emit_mw` — the second verifier
+   Pentecost now checks the string-*valued* proof shape, with a tamper-checked corpus fixture).
+   **Remaining:** **unequal-width `if`-branches via length-tagged padding** (today they ABSTAIN).
+   Additive, gateable (`cgen == heval == seval` + a corpus fixture), no `verify_b3` soundness change.
 
 4. **Computed higher-order callees** *(medium; differential-gateable).* The last refused
    bridge construct: a function value chosen *at runtime* (named-fn HOFs already prove,
@@ -350,8 +348,8 @@ The forward map is above; this is the rear-view, one line per era. Full detail p
 - **The verification stack (v5.63–v5.79).** The Measuring Reed, Pentecost (verifier-be-two), the
   Name, the Preserved Tablet, ABSTAIN, Opening-the-Seals, the Poseidon2 migration, the Third
   Witness, the fuzzing campaigns, `Concealed<T>`, the plain-name surface.
-- **The bridge gadget frontier (v5.62–v5.111).** Comparison, division/modulo, signed integers,
-  strings, records, string-valued results, and a string `--claim` — each a faithful field lowering
-  that narrowed the refusal without ever replacing it with a silent wrong proof.
+- **The bridge gadget frontier (v5.62–v5.112).** Comparison, division/modulo, signed integers,
+  strings, records, string-valued results, and a string `--claim` / portable `--emit` — each a
+  faithful field lowering that narrowed the refusal without ever replacing it with a silent wrong proof.
 - **The standalone LogUp arc (v5.105–v5.107).** The de-risking of the cheap-range frontier: the
   rational-sum identity, the running-sum/AIR form, and the committed + Fiat-Shamir form.
