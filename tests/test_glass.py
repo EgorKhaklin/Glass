@@ -1723,6 +1723,31 @@ def main() -> int:
             print(f"        rc={_laf2.returncode}  out: {_laf2.stdout.strip()[-260:]}  err: {_laf2.stderr.strip()[-150:]}")
             failures += 1
 
+    # Selector-let callee (v5.115): `let f = (if c then g else h) in f(x)` — a let bound to a RUNTIME
+    # SELECTOR over functions, the last residual call form. The cut is the DUAL of push_app: distribute
+    # the let over the selector (== if c then (let f=g in body) else (let f=h in body)), each branch
+    # then a v5.114 alias. c>=1 -> dbl(5)=10, c=0 -> inc(5)=6 (the callee depends on the private flag).
+    with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _slf:
+        _slf.write("fn dbl(x: Int) : Int = x + x\nfn inc(x: Int) : Int = x + 1\n"
+                   "fn run(c: Int, n: Int) : Int = let f = (if c >= 1 then dbl else inc) in f(n)\nrun(c, n)\n")
+        _sl_path = _slf.name
+    _sl = subprocess.run([sys.executable, GLASS, "prove", _sl_path, "c=1", "n=5", "--cross-check"],
+                         capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_sl, "selector-let callee: let f = (if c then dbl else inc) in f(5), c=1 -> 10 ACCEPT"):
+        sl_ok = (_sl.returncode == 0) and ("result:  10" in _sl.stdout) and ("ACCEPT" in _sl.stdout) and ("THIRD LINEAGE AGREES" in _sl.stdout)
+        print(f"  {'OK ' if sl_ok else 'FAIL'}  selector-let callee: let f = (if c then dbl else inc) in f(5), c=1 -> 10 ACCEPT")
+        if not sl_ok:
+            print(f"        rc={_sl.returncode}  out: {_sl.stdout.strip()[-260:]}  err: {_sl.stderr.strip()[-150:]}")
+            failures += 1
+    _slf2 = subprocess.run([sys.executable, GLASS, "prove", "--claim", "6", _sl_path, "c=1", "n=5"],
+                           capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_slf2, "selector-let callee: false claim REJECTs (run(1,5)=10; claim 6 is false)"):
+        slf2_ok = ("proof:   REJECT" in _slf2.stdout) and ("proof:   ACCEPT" not in _slf2.stdout)
+        print(f"  {'OK ' if slf2_ok else 'FAIL'}  selector-let callee: false claim REJECTs (run(1,5)=10; claim 6 is false)")
+        if not slf2_ok:
+            print(f"        rc={_slf2.returncode}  out: {_slf2.stdout.strip()[-260:]}  err: {_slf2.stderr.strip()[-150:]}")
+            failures += 1
+
     # The unboxed single-Int Goldilocks field (goldw_*) must agree with the trusted
     # base-2^16 limb field (gold_*) and obey the field laws — the load-bearing
     # correctness of the "unbox the field" speed cut. (Interpreter check; the native
@@ -1988,7 +2013,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 60)  # +60: ... + strclaim-true-ACCEPT + strclaim-false-REJECT + strclaim-wronglen-ABSTAIN + strclaim-scalar-mismatch-ABSTAIN + strresult-emit-pentecost-ACCEPT + computed-callee-mode1-ACCEPT + computed-callee-mode0 + computed-callee-false-claim-REJECT + let-alias-callee-ACCEPT + let-alias-callee-false-claim-REJECT
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 62)  # +62: ... + strresult-emit-pentecost-ACCEPT + computed-callee-mode1-ACCEPT + computed-callee-mode0 + computed-callee-false-claim-REJECT + let-alias-callee-ACCEPT + let-alias-callee-false-claim-REJECT + selector-let-callee-ACCEPT + selector-let-callee-false-claim-REJECT
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

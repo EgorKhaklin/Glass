@@ -1021,6 +1021,26 @@ fn resolve_fn(name: String, fns: List<FnDecl>, fenv: List<Pair<String, String>>)
   let bound : String = fenv_get(fenv, name) in if (bound == "") || is_rec_tag(bound) then (if fn_exists(fns, name) then name else "") else bound
 fn is_fn_arg(a: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>) : Bool = match a { EVar(n) => resolve_fn(n, fns, fenv) != ""; _ => false }
 fn arg_fn_name(a: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>) : String = match a { EVar(n) => resolve_fn(n, fns, fenv); _ => "" }
+# A computed callee bound by a LET to a RUNTIME SELECTOR over functions: `let f = (if c then g else
+# h) in body`, f then called in body. The v5.114 alias handles `let f = g` (a bare fn name); this
+# handles the SELECTOR case — the DUAL of push_app (v5.113): DISTRIBUTE THE LET OVER THE SELECTOR.
+# `let f = (if c then g else h) in body` == `if c then (let f=g in body) else (let f=h in body)`;
+# each branch is then a bare-name alias the v5.114 path resolves. Sound because Glass is pure (body
+# is evaluated once, in the taken branch). is_fn_sel recognises a selector whose leaves are ALL fn
+# names (so an Int-valued `if` is NOT distributed); shared by unroll + seval, so guard and circuit agree.
+fn arms_fn_sel(arms: List<Pair<Pattern, Expr>>, fns: List<FnDecl>, fenv: List<Pair<String, String>>) : Bool =
+  match arms { [] => true; [Pair(p, b), ...r] => is_fn_sel(b, fns, fenv) && arms_fn_sel(r, fns, fenv) }
+fn is_fn_sel(e: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>) : Bool = match e {
+  EVar(n) => resolve_fn(n, fns, fenv) != "";
+  EIf(c, t, f) => is_fn_sel(t, fns, fenv) && is_fn_sel(f, fns, fenv);
+  EMatch(s, arms) => arms_fn_sel(arms, fns, fenv);
+  _ => false }
+fn distrib_let_arms(nm: String, arms: List<Pair<Pattern, Expr>>, body: Expr) : List<Pair<Pattern, Expr>> =
+  match arms { [] => []; [Pair(p, b), ...r] => [Pair(p, ELet(nm, b, body))] ++ distrib_let_arms(nm, r, body) }
+fn distrib_let(nm: String, v: Expr, body: Expr) : Expr = match v {
+  EIf(c, t, f) => EIf(c, ELet(nm, t, body), ELet(nm, f, body));
+  EMatch(s, arms) => EMatch(s, distrib_let_arms(nm, arms, body));
+  _ => ELet(nm, v, body) }
 fn unroll_args(es: List<Expr>, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: Int) : List<Expr> =
   match es { [] => []; [e, ...r] => [unroll(e, fns, fenv, fuel)] ++ unroll_args(r, fns, fenv, fuel) }
 fn unroll_recfields(lit: List<Pair<String, Expr>>, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: Int) : List<Pair<String, Expr>> =
@@ -1115,7 +1135,7 @@ fn unroll(e: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: In
     EOr(x, y) => EOr(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
     EUNot(a) => EUNot(unroll(a, fns, fenv, fuel));
     EIf(c, t, f) => EIf(unroll(c, fns, fenv, fuel), unroll(t, fns, fenv, fuel), unroll(f, fns, fenv, fuel));
-    ELet(nm, v, body) => if is_fn_arg(v, fns, fenv) then unroll(body, fns, [Pair(nm, arg_fn_name(v, fns, fenv))] ++ fenv, fuel) else (let uv : Expr = unroll(v, fns, fenv, fuel) in ELet(nm, uv, unroll(body, fns, addrec(nm, rtype_of(uv, fenv), fenv), fuel)));
+    ELet(nm, v, body) => if is_fn_arg(v, fns, fenv) then unroll(body, fns, [Pair(nm, arg_fn_name(v, fns, fenv))] ++ fenv, fuel) else if is_fn_sel(v, fns, fenv) then unroll(distrib_let(nm, v, body), fns, fenv, fuel) else (let uv : Expr = unroll(v, fns, fenv, fuel) in ELet(nm, uv, unroll(body, fns, addrec(nm, rtype_of(uv, fenv), fenv), fuel)));
     EMatch(scrut, arms) => EMatch(unroll(scrut, fns, fenv, fuel), unroll_arms(arms, fns, fenv, fuel));
     ECtor(name, args) => ECtor(name, unroll_args(args, fns, fenv, fuel));
     ETuple(elems) => ETuple(unroll_args(elems, fns, fenv, fuel));
@@ -1314,7 +1334,7 @@ fn seval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, t
     EOr(a, b) => let va : List<Int> = vh(seval(a, env, fns, types, fenv, fuel)) in let vb : List<Int> = vh(seval(b, env, fns, types, fenv, fuel)) in [fsub(fadd(va, vb), fmul(va, vb))];
     EUNot(a) => [fsub(glit(1), vh(seval(a, env, fns, types, fenv, fuel)))];
     EIf(c, t, f) => if bn_eq(vh(seval(c, env, fns, types, fenv, fuel)), glit(1)) then seval(t, env, fns, types, fenv, fuel) else seval(f, env, fns, types, fenv, fuel);
-    ELet(nm, v, body) => if is_fn_arg(v, fns, fenv) then seval(body, env, fns, types, [Pair(nm, arg_fn_name(v, fns, fenv))] ++ fenv, fuel) else seval(body, [Pair(nm, seval(v, env, fns, types, fenv, fuel))] ++ env, fns, types, fenv, fuel);
+    ELet(nm, v, body) => if is_fn_arg(v, fns, fenv) then seval(body, env, fns, types, [Pair(nm, arg_fn_name(v, fns, fenv))] ++ fenv, fuel) else if is_fn_sel(v, fns, fenv) then seval(distrib_let(nm, v, body), env, fns, types, fenv, fuel) else seval(body, [Pair(nm, seval(v, env, fns, types, fenv, fuel))] ++ env, fns, types, fenv, fuel);
     ECtor(name, args) => [glit(ctag(types, name))] ++ seval_fields(args, ctor_argtypes(types, name), env, fns, types, fenv, fuel);
     ETuple(elems) => seval_fields(elems, scalar_types_e(elems), env, fns, types, fenv, fuel);
     ENamedRec(nm, lit) => seval_fields(reorder_rec(rec_fnames(find_record(types, nm)), lit), rec_ftypes(find_record(types, nm)), env, fns, types, fenv, fuel);

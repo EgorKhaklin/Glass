@@ -185,10 +185,10 @@ buildable next-session work; 5–6 are large/gated; 7–8 are rigor and the hard
    chosen *at runtime* (`(if c then g else h)(x)`) — the last refused bridge construct — lowers by
    pushing the application inside the selector (`if c then g(x) else h(x)`), reducing it to the
    named-fn calls already supported (*v5.87*); a shared `push_app` keeps `seval` and `unroll` in
-   lockstep. A *let-aliased* fn name (`let f = g in f(x)`) also resolves now (*v5.114*, reusing the
-   `fenv` fn-arg slot). The bridge has **no refused call form**. (One residual, cleanly refused: a
-   `let` bound to a runtime *selector* — `let f = (if c then g else h) in f(x)` — would need an
-   expression-valued environment; write the direct form instead.)
+   lockstep. A *let-aliased* fn name (`let f = g in f(x)`) resolves via the `fenv` slot (*v5.114*),
+   and a *let-bound runtime selector* (`let f = (if c then g else h) in f(x)`) lowers by distributing
+   the `let` over the selector — the dual of `push_app` (*v5.115*). The bridge now has **zero refused
+   call forms**: named, runtime-chosen, let-aliased, and let-selector callees all lower soundly.
 
 5. **H3 — full recursive STARK verifier** *(large; performance-gated; native-primary).*
    The two building blocks have landed: the FRI **fold-check as a circuit**
@@ -363,9 +363,9 @@ The forward map is above; this is the rear-view, one line per era. Full detail p
 - **The verification stack (v5.63–v5.79).** The Measuring Reed, Pentecost (verifier-be-two), the
   Name, the Preserved Tablet, ABSTAIN, Opening-the-Seals, the Poseidon2 migration, the Third
   Witness, the fuzzing campaigns, `Concealed<T>`, the plain-name surface.
-- **The bridge gadget frontier (v5.62–v5.114).** Comparison, division/modulo, signed integers,
-  strings, records, string-valued results (`--claim` / portable `--emit`), and computed
-  (runtime-chosen + let-aliased) callees — each a faithful field lowering that narrowed the refusal
-  without ever replacing it with a silent wrong proof, until no refused call form remained.
+- **The bridge gadget frontier (v5.62–v5.115).** Comparison, division/modulo, signed integers,
+  strings, records, string-valued results (`--claim` / portable `--emit`), and computed callees
+  (runtime-chosen, let-aliased, and let-selector) — each a faithful field lowering that narrowed the
+  refusal without ever replacing it with a silent wrong proof, until **zero** refused call forms remained.
 - **The standalone LogUp arc (v5.105–v5.107).** The de-risking of the cheap-range frontier: the
   rational-sum identity, the running-sum/AIR form, and the committed + Fiat-Shamir form.
