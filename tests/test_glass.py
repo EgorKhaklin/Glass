@@ -1748,6 +1748,61 @@ def main() -> int:
             print(f"        rc={_slf2.returncode}  out: {_slf2.stdout.strip()[-260:]}  err: {_slf2.stderr.strip()[-150:]}")
             failures += 1
 
+    # Bitwise logic (v5.116): bit_and / bit_or / bit_xor over [0,2^32) — the one integer-operation
+    # family the bridge lacked. The gadget decomposes both operands into boolean-pinned bits (reusing
+    # the range gadget's machinery), combines per position (AND=a*b, OR=a+b-ab, XOR=(a-b)^2), and
+    # recomposes. Each op is value-checked + Third-Witness-confirmed (so the per-bit formula matches
+    # the reference int64 builtin); out-of-range ABSTAINs; a false claim REJECTs.
+    def _bit_prog(op):
+        with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _bf:
+            _bf.write("%s(a, b)\n" % op)
+            return _bf.name
+    for _op, _exp in [("bit_and", 8), ("bit_or", 14), ("bit_xor", 6)]:   # 12 & 10 = 8, | = 14, ^ = 6
+        _bp = subprocess.run([sys.executable, GLASS, "prove", _bit_prog(_op), "a=12", "b=10", "--cross-check"],
+                             capture_output=True, text=True, cwd=ROOT)
+        if not _heavy_skipped(_bp, f"bitwise: {_op}(12,10) -> {_exp} ACCEPT (Third Witness confirms the per-bit formula)"):
+            bp_ok = (_bp.returncode == 0) and (f"result:  {_exp}" in _bp.stdout) and ("ACCEPT" in _bp.stdout) and ("THIRD LINEAGE AGREES" in _bp.stdout)
+            print(f"  {'OK ' if bp_ok else 'FAIL'}  bitwise: {_op}(12,10) -> {_exp} ACCEPT (Third Witness confirms the per-bit formula)")
+            if not bp_ok:
+                print(f"        rc={_bp.returncode}  out: {_bp.stdout.strip()[-260:]}  err: {_bp.stderr.strip()[-150:]}")
+                failures += 1
+    # Out-of-range operand (>= 2^32) ABSTAINs (the bit-decomposition would be unsatisfiable — refused, not REJECTed).
+    _boob = subprocess.run([sys.executable, GLASS, "prove", _bit_prog("bit_and"), "a=8589934592", "b=5"],
+                           capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_boob, "bitwise: out-of-range operand (2^33) ABSTAINs"):
+        boob_ok = ("verdict: ABSTAIN" in _boob.stdout) and ("proof:   ACCEPT" not in _boob.stdout)
+        print(f"  {'OK ' if boob_ok else 'FAIL'}  bitwise: out-of-range operand (2^33) ABSTAINs")
+        if not boob_ok:
+            print(f"        rc={_boob.returncode}  out: {_boob.stdout.strip()[-260:]}  err: {_boob.stderr.strip()[-150:]}")
+            failures += 1
+    # Soundness: a false claim about a bitwise result REJECTs (bit_and(12,10)=8; claim 9 is false).
+    _bf2 = subprocess.run([sys.executable, GLASS, "prove", "--claim", "9", _bit_prog("bit_and"), "a=12", "b=10"],
+                          capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_bf2, "bitwise: false claim REJECTs (bit_and(12,10)=8; claim 9 is false)"):
+        bf2_ok = ("proof:   REJECT" in _bf2.stdout) and ("proof:   ACCEPT" not in _bf2.stdout)
+        print(f"  {'OK ' if bf2_ok else 'FAIL'}  bitwise: false claim REJECTs (bit_and(12,10)=8; claim 9 is false)")
+        if not bf2_ok:
+            print(f"        rc={_bf2.returncode}  out: {_bf2.stdout.strip()[-260:]}  err: {_bf2.stderr.strip()[-150:]}")
+            failures += 1
+    # Showcase: a PRIVATE permission bitmask — bit_and(perms, required) == required is a subset check.
+    _bm_path = os.path.join(EX, "prove", "private_bitmask.glass")
+    _bm1 = subprocess.run([sys.executable, GLASS, "prove", _bm_path, "perms=29", "required=13", "--cross-check"],
+                          capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_bm1, "bitwise showcase: private bitmask 13's bits ⊆ 29 -> 1 ACCEPT (perms hidden)"):
+        bm1_ok = (_bm1.returncode == 0) and ("result:  1" in _bm1.stdout) and ("ACCEPT" in _bm1.stdout) and ("THIRD LINEAGE AGREES" in _bm1.stdout)
+        print(f"  {'OK ' if bm1_ok else 'FAIL'}  bitwise showcase: private bitmask 13's bits subset 29 -> 1 ACCEPT (perms hidden)")
+        if not bm1_ok:
+            print(f"        rc={_bm1.returncode}  out: {_bm1.stdout.strip()[-260:]}  err: {_bm1.stderr.strip()[-150:]}")
+            failures += 1
+    _bm0 = subprocess.run([sys.executable, GLASS, "prove", _bm_path, "perms=8", "required=13", "--cross-check"],
+                          capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_bm0, "bitwise showcase: missing bits (8 lacks 13's) -> 0 (the check discriminates)"):
+        bm0_ok = (_bm0.returncode == 0) and ("result:  0" in _bm0.stdout) and ("THIRD LINEAGE AGREES" in _bm0.stdout)
+        print(f"  {'OK ' if bm0_ok else 'FAIL'}  bitwise showcase: missing bits (8 lacks 13's) -> 0 (the check discriminates)")
+        if not bm0_ok:
+            print(f"        rc={_bm0.returncode}  out: {_bm0.stdout.strip()[-260:]}  err: {_bm0.stderr.strip()[-150:]}")
+            failures += 1
+
     # The unboxed single-Int Goldilocks field (goldw_*) must agree with the trusted
     # base-2^16 limb field (gold_*) and obey the field laws — the load-bearing
     # correctness of the "unbox the field" speed cut. (Interpreter check; the native
@@ -2013,7 +2068,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 62)  # +62: ... + strresult-emit-pentecost-ACCEPT + computed-callee-mode1-ACCEPT + computed-callee-mode0 + computed-callee-false-claim-REJECT + let-alias-callee-ACCEPT + let-alias-callee-false-claim-REJECT + selector-let-callee-ACCEPT + selector-let-callee-false-claim-REJECT
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 69)  # +69: ... + computed-callee-mode1-ACCEPT + computed-callee-mode0 + computed-callee-false-claim-REJECT + let-alias-callee-ACCEPT + let-alias-callee-false-claim-REJECT + selector-let-callee-ACCEPT + selector-let-callee-false-claim-REJECT + bitwise-and-ACCEPT + bitwise-or-ACCEPT + bitwise-xor-ACCEPT + bitwise-oob-ABSTAIN + bitwise-false-claim-REJECT + bitwise-bitmask-subset-1 + bitwise-bitmask-missing-0
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

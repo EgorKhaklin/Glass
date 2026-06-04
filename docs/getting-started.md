@@ -99,7 +99,9 @@ The proof reveals only the result (`86`), not `inp`. Supported today: arithmetic
 boolean logic, `let`, function calls, `==`/`if`, and `match` over (nested) algebraic
 data types — plus **signed integers** in `[-2³¹, 2³¹)`: `slt`/`sle`/`sgt`/`sge`
 (signed comparison) and `sdiv`/`smod` (C99 truncated division), with negative results
-shown signed — and **strings**: `++` (concat), `==`/`!=`, `string_length`, `substring`, and
+shown signed; **bitwise logic** over `[0,2³²)` — `bit_and`/`bit_or`/`bit_xor` (e.g. prove a
+private permission set contains the required bits: `bit_and(perms, required) == required`) —
+and **strings**: `++` (concat), `==`/`!=`, `string_length`, `substring`, and
 `match` on string literals, so you can prove a predicate over a *private* string (e.g.
 `substring(key,0,8)=="sk-live-"` — prove a credential's prefix without revealing the key) or
 dispatch on one (`match cmd { "deploy" => 1; … }` — provable allowlist membership; pass a

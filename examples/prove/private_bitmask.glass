@@ -1,0 +1,14 @@
+# Prove a PRIVATE permission bitmask has all the required bits set — revealing only pass/fail.
+#
+#   glass prove examples/prove/private_bitmask.glass perms=29 required=13   # -> 1 (13's bits ⊆ 29), ACCEPT
+#   glass prove examples/prove/private_bitmask.glass perms=8  required=13   # -> 0 (missing bits)
+#
+# `bit_and(perms, required) == required` holds iff every bit set in `required` is also set in
+# `perms` — a subset / capability check. The bridge lowers `bit_and` to a circuit that decomposes
+# both operands into bits (each pinned boolean and bound to its operand, reusing the range gadget's
+# machinery), ANDs them per position (a*b for 0/1 bits), and recomposes — sound over [0, 2^32).
+# `perms` stays a private witness; only the 0/1 verdict is revealed. Prove "I hold the required
+# permissions" without disclosing which others you hold.
+fn has_perms(perms: Int, required: Int) : Bool = bit_and(perms, required) == required
+
+has_perms(perms, required)

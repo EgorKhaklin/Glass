@@ -72,6 +72,9 @@ primitives* (a multiply/add, the range gadget, the multi-wire value model) so it
   gadget with a monotonic `+2³¹` offset), `sdiv/smod` (C99 truncated; sign-magnitude
   composed from `slt` + `if` + unsigned divmod — the naive sign-bit design was
   adversarially proven unsound), and `sabs/smin/smax`. *v5.94–v5.100.*
+- **Bitwise logic** `bit_and/bit_or/bit_xor` over `[0, 2³²)` — decompose both operands into
+  boolean-pinned bits (reusing the range gadget), combine per position (AND `a·b`, OR `a+b−ab`,
+  XOR `(a−b)²`), recompose; out-of-range ABSTAINs. *v5.116.*
 - **Strings** — a string is a multi-wire value (one field wire per codepoint), so
   `++` is structural concat (no gate), `==`/`!=` the AND-folded per-codepoint is-zero
   gadget, `string_length`/`substring` static wire counts/slices, and `match` on string
@@ -372,9 +375,10 @@ The forward map is above; this is the rear-view, one line per era. Full detail p
 - **The verification stack (v5.63–v5.79).** The Measuring Reed, Pentecost (verifier-be-two), the
   Name, the Preserved Tablet, ABSTAIN, Opening-the-Seals, the Poseidon2 migration, the Third
   Witness, the fuzzing campaigns, `Concealed<T>`, the plain-name surface.
-- **The bridge gadget frontier (v5.62–v5.115).** Comparison, division/modulo, signed integers,
-  strings, records, string-valued results (`--claim` / portable `--emit`), and computed callees
-  (runtime-chosen, let-aliased, and let-selector) — each a faithful field lowering that narrowed the
-  refusal without ever replacing it with a silent wrong proof, until **zero** refused call forms remained.
+- **The bridge gadget frontier (v5.62–v5.116).** Comparison, division/modulo, signed integers,
+  strings, records, string-valued results (`--claim` / portable `--emit`), computed callees
+  (runtime-chosen, let-aliased, and let-selector), and bitwise logic (`bit_and/or/xor`) — each a
+  faithful field lowering that narrowed the refusal without ever replacing it with a silent wrong
+  proof, until zero refused call forms remained and the integer-operation families were complete.
 - **The standalone LogUp arc (v5.105–v5.107).** The de-risking of the cheap-range frontier: the
   rational-sum identity, the running-sum/AIR form, and the committed + Fiat-Shamir form.

@@ -1124,7 +1124,7 @@ fn unroll(e: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: In
     # here without breaking every recursive program. The genuine-error fallbacks below DO
     # refuse loudly (unresolved / higher-order callee — programs the bridge cannot lower).
     EApp(f, a) => if fuel <= 0 then EInt(0) else match unwind_app(EApp(f, a), []) { (hd, args) => match hd {
-      EVar(fname) => if is_scmp(fname) then (match args { [sa, sb] => unroll(scmp_desugar(fname, sa, sb), fns, fenv, fuel); _ => error("glass prove: signed comparison '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sdiv(fname) then (match args { [da, db] => unroll(sdiv_desugar(fname, da, db), fns, fenv, fuel); _ => error("glass prove: signed division '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sabs(fname) then (match args { [za] => unroll(sabs_desugar(za), fns, fenv, fuel); _ => error("glass prove: 'sabs' expects exactly 1 argument") }) else if is_sutil2(fname) then (match args { [ua, ub] => unroll(sutil2_desugar(fname, ua, ub), fns, fenv, fuel); _ => error("glass prove: signed '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_strfn(fname) then app_of(EVar(fname), unroll_args(args, fns, fenv, fuel)) else (let tgt : String = resolve_fn(fname, fns, fenv) in if tgt == "" then error("glass prove: unresolved call to '" ++ fname ++ "' — the prove bridge cannot lower this construct to a gate circuit (a silent proven-0 is refused)") else inline_fn(fn_body_of(fns, tgt), args, fns, fenv, fuel));
+      EVar(fname) => if is_scmp(fname) then (match args { [sa, sb] => unroll(scmp_desugar(fname, sa, sb), fns, fenv, fuel); _ => error("glass prove: signed comparison '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sdiv(fname) then (match args { [da, db] => unroll(sdiv_desugar(fname, da, db), fns, fenv, fuel); _ => error("glass prove: signed division '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sabs(fname) then (match args { [za] => unroll(sabs_desugar(za), fns, fenv, fuel); _ => error("glass prove: 'sabs' expects exactly 1 argument") }) else if is_sutil2(fname) then (match args { [ua, ub] => unroll(sutil2_desugar(fname, ua, ub), fns, fenv, fuel); _ => error("glass prove: signed '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_strfn(fname) then app_of(EVar(fname), unroll_args(args, fns, fenv, fuel)) else if is_bitop(fname) then app_of(EVar(fname), unroll_args(args, fns, fenv, fuel)) else (let tgt : String = resolve_fn(fname, fns, fenv) in if tgt == "" then error("glass prove: unresolved call to '" ++ fname ++ "' — the prove bridge cannot lower this construct to a gate circuit (a silent proven-0 is refused)") else inline_fn(fn_body_of(fns, tgt), args, fns, fenv, fuel));
       _ => unroll(push_app(hd, args), fns, fenv, fuel) } };
     EAdd(x, y) => EAdd(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
     ESub(x, y) => ESub(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
@@ -1227,7 +1227,7 @@ fn heval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, t
     EField(recd, f) => error("glass prove: could not resolve the record TYPE for field access (." ++ f ++ ") — direct `r.field` lowers when the record's type is inferable (a record variable or literal, or an if over records); otherwise destructure with a pattern: match r { T { " ++ f ++ " } => " ++ f ++ " }. ABSTAIN.");
     EStr(s) => (estr_v(s), []);
     EConcat(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) => (va ++ vb, ha ++ hb) } };
-    EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => if is_strfn(fname) then heval_strfn(fname, args, env, fns, types) else heval_call(fn_body_of(fns, fname), args, [], env, fns, types); _ => error("glass prove: unsupported call form (computed or higher-order callee) in the reference evaluator — refusing rather than silently proving 0") } };
+    EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => if is_strfn(fname) then heval_strfn(fname, args, env, fns, types) else if is_bitop(fname) then heval_bitop(fname, args, env, fns, types) else heval_call(fn_body_of(fns, fname), args, [], env, fns, types); _ => error("glass prove: unsupported call form (computed or higher-order callee) in the reference evaluator — refusing rather than silently proving 0") } };
     EMatch(scrut, arms) => match heval(scrut, env, fns, types) { (sv, hs) => match heval_match(sv, arms, env, fns, types) { (rv, ha) => (rv, hs ++ ha) } };
     ELt(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) =>
       let xa : List<Int> = vh(va) in let xb : List<Int> = vh(vb) in
@@ -1345,7 +1345,7 @@ fn seval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, t
     EStr(s) => estr_v(s);
     EConcat(a, b) => seval(a, env, fns, types, fenv, fuel) ++ seval(b, env, fns, types, fenv, fuel);
     EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd {
-      EVar(fname) => if is_scmp(fname) then (match args { [sa, sb] => seval(scmp_desugar(fname, sa, sb), env, fns, types, fenv, fuel); _ => error("glass prove: signed comparison '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sdiv(fname) then (match args { [da, db] => seval(sdiv_desugar(fname, da, db), env, fns, types, fenv, fuel); _ => error("glass prove: signed division '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sabs(fname) then (match args { [za] => seval(sabs_desugar(za), env, fns, types, fenv, fuel); _ => error("glass prove: 'sabs' expects exactly 1 argument") }) else if is_sutil2(fname) then (match args { [ua, ub] => seval(sutil2_desugar(fname, ua, ub), env, fns, types, fenv, fuel); _ => error("glass prove: signed '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_strfn(fname) then seval_strfn(fname, args, env, fns, types, fenv, fuel) else if fuel <= 0 then error("glass prove: recursion depth exceeds the unroll bound (" ++ int_to_string(unroll_fuel(0)) ++ "); refusing to prove a depth-truncated result — it would otherwise be a silently wrong value with a valid-looking proof (the program needs statically-bounded, shallower recursion)") else (let tgt : String = resolve_fn(fname, fns, fenv) in if tgt == "" then error("glass prove: unresolved call to '" ++ fname ++ "' in the reference evaluator") else seval_call(fn_body_of(fns, tgt), args, [], env, [], fenv, fns, types, fuel));
+      EVar(fname) => if is_scmp(fname) then (match args { [sa, sb] => seval(scmp_desugar(fname, sa, sb), env, fns, types, fenv, fuel); _ => error("glass prove: signed comparison '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sdiv(fname) then (match args { [da, db] => seval(sdiv_desugar(fname, da, db), env, fns, types, fenv, fuel); _ => error("glass prove: signed division '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sabs(fname) then (match args { [za] => seval(sabs_desugar(za), env, fns, types, fenv, fuel); _ => error("glass prove: 'sabs' expects exactly 1 argument") }) else if is_sutil2(fname) then (match args { [ua, ub] => seval(sutil2_desugar(fname, ua, ub), env, fns, types, fenv, fuel); _ => error("glass prove: signed '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_strfn(fname) then seval_strfn(fname, args, env, fns, types, fenv, fuel) else if is_bitop(fname) then seval_bitop(fname, args, env, fns, types, fenv, fuel) else if fuel <= 0 then error("glass prove: recursion depth exceeds the unroll bound (" ++ int_to_string(unroll_fuel(0)) ++ "); refusing to prove a depth-truncated result — it would otherwise be a silently wrong value with a valid-looking proof (the program needs statically-bounded, shallower recursion)") else (let tgt : String = resolve_fn(fname, fns, fenv) in if tgt == "" then error("glass prove: unresolved call to '" ++ fname ++ "' in the reference evaluator") else seval_call(fn_body_of(fns, tgt), args, [], env, [], fenv, fns, types, fuel));
       _ => seval(push_app(hd, args), env, fns, types, fenv, fuel) } };
     EMatch(scrut, arms) => seval_match(seval(scrut, env, fns, types, fenv, fuel), arms, env, fns, types, fenv, fuel);
     ELt(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fenv, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fenv, fuel)) in
@@ -1505,6 +1505,64 @@ fn decompose_capture(w: Int, kk: Int, capIdx: Int, b: Build) : (Int, Build) =
   match mkc(glit(0), b) { (wzero, b0) =>
   match cmp_bits_loop(w, 0, kk, capIdx, wzero, 0 - 1, b0) { (wsum, wcap, b1) =>
   match mks(wsum, w, b1) { (wdiff, b2) => let b3 : Build = mke(wdiff, b2) in (wcap, b3) } } }
+# --- bitwise logic (bit_and / bit_or / bit_xor) over [0, 2^32) -----------------------------------
+# The one integer-operation family the bridge lacked (it has +,-,*, /,%, comparison, signed). The
+# language already exposes bit_and/bit_or/bit_xor as builtins; here they lower to a circuit that
+# reuses the SAME bit-decomposition the range gadget uses (each bit pinned boolean wb^2-wb==0 and the
+# weighted sum bound to the operand), combines the two operands' bits per position, and recomposes.
+# Sound: the bits are the operand's TRUE bits (an out-of-range operand makes the bind unsatisfiable —
+# guarded to ABSTAIN at heval/seval, never a wrong proof). Per bit (over 0/1 values): AND = a*b,
+# OR = a+b-a*b, XOR = (a-b)^2 (= a+b-2ab). Result is a fresh wire = Σ 2^i (a_i op b_i), in [0,2^32),
+# matching the int64 builtin for non-negative operands (so the Third Witness agrees).
+fn is_bitop(n: String) : Bool = (n == "bit_and") || (n == "bit_or") || (n == "bit_xor")
+# value side (shared by heval/seval, pure bit arithmetic — no native bitwise builtin needed, and it
+# computes EXACTLY what the circuit computes, so the witness matches).
+fn bv_bit(op: String, ai: Int, bi: Int) : Int =
+  if op == "bit_and" then ai * bi else if op == "bit_or" then ai + bi - ai * bi else ai + bi - 2 * ai * bi
+fn bitop_val_go(op: String, xa: List<Int>, xb: List<Int>, i: Int, k: Int) : List<Int> =
+  if i >= k then glit(0)
+  else fadd(if bv_bit(op, bn_bit(xa, i), bn_bit(xb, i)) == 1 then pow2_lit(i) else glit(0), bitop_val_go(op, xa, xb, i + 1, k))
+fn bitop_val(op: String, xa: List<Int>, xb: List<Int>) : List<Int> = bitop_val_go(op, xa, xb, 0, 32)
+# circuit side: decompose a wire into k boolean-pinned bit wires + bind Σ 2^i bit_i == the wire.
+fn dbits_go(w: Int, i: Int, k: Int, b: Build) : (List<Int>, Build) =
+  if i >= k then ([], b)
+  else let bv : List<Int> = if bn_bit(bwire(b, w), i) == 1 then glit(1) else glit(0) in
+    match mkh(bv, b) { (wb, b1) => match mkm(wb, wb, b1) { (wsq, b2) => match mks(wsq, wb, b2) { (wbm, b3) =>
+    let b4 : Build = mke(wbm, b3) in match dbits_go(w, i + 1, k, b4) { (rest, b5) => ([wb] ++ rest, b5) } } } }
+fn bsum_go(bits: List<Int>, i: Int, b: Build) : (Int, Build) =
+  match bits { [] => mkc(glit(0), b); [wb, ...r] =>
+    match mkc(pow2_lit(i), b) { (wp, b1) => match mkm(wp, wb, b1) { (wt, b2) =>
+    match bsum_go(r, i + 1, b2) { (wrest, b3) => mka(wt, wrest, b3) } } } }
+fn decompose_bits(w: Int, k: Int, b: Build) : (List<Int>, Build) =
+  match dbits_go(w, 0, k, b) { (bits, b1) => match bsum_go(bits, 0, b1) { (wsum, b2) =>
+    match mks(wsum, w, b2) { (wd, b3) => let b4 : Build = mke(wd, b3) in (bits, b4) } } }
+fn bit1(op: String, a0: Int, b0: Int, b: Build) : (Int, Build) =
+  if op == "bit_and" then mkm(a0, b0, b)
+  else if op == "bit_or" then (match mka(a0, b0, b) { (s, b1) => match mkm(a0, b0, b1) { (p, b2) => mks(s, p, b2) } })
+  else (match mks(a0, b0, b) { (d, b1) => mkm(d, d, b1) })
+fn bitcombine_go(op: String, ba: List<Int>, bb: List<Int>, b: Build) : (List<Int>, Build) =
+  match ba { [] => ([], b); [a0, ...ar] => match bb { [] => ([], b); [b0, ...br] =>
+    match bit1(op, a0, b0, b) { (wc, b1) => match bitcombine_go(op, ar, br, b1) { (rest, b2) => ([wc] ++ rest, b2) } } } }
+fn cgen_bitop(op: String, args: List<Expr>, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: List<TypeDecl>, b: Build) : (List<Int>, Build) =
+  match args { [ea, eb] =>
+    match cgen(ea, cenv, fns, types, b) { (va, b1) => match cgen(eb, cenv, fns, types, b1) { (vb, b2) =>
+    match decompose_bits(vhi(va), 32, b2) { (bits_a, b3) => match decompose_bits(vhi(vb), 32, b3) { (bits_b, b4) =>
+    match bitcombine_go(op, bits_a, bits_b, b4) { (cbits, b5) => match bsum_go(cbits, 0, b5) { (wr, b6) => ([wr], b6) } } } } } };
+    _ => error("glass prove: bitwise '" ++ op ++ "' expects exactly 2 arguments") }
+fn heval_bitop(op: String, args: List<Expr>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>) : (List<List<Int>>, List<List<Int>>) =
+  match args { [ea, eb] =>
+    match heval(ea, env, fns, types) { (va, ha) => match heval(eb, env, fns, types) { (vb, hb) =>
+    let xa : List<Int> = vh(va) in let xb : List<Int> = vh(vb) in
+    if cmp_ok_g(xa, xb) then ([bitop_val(op, xa, xb)], ha ++ hb)
+    else error("glass prove: bitwise '" ++ op ++ "' operands must be in [0,2^32) — out of range, ABSTAIN (never a wrong proof)") } };
+    _ => error("glass prove: bitwise '" ++ op ++ "' expects exactly 2 arguments") }
+fn seval_bitop(op: String, args: List<Expr>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>, fenv: List<Pair<String, String>>, fuel: Int) : List<List<Int>> =
+  match args { [ea, eb] =>
+    let xa : List<Int> = vh(seval(ea, env, fns, types, fenv, fuel)) in
+    let xb : List<Int> = vh(seval(eb, env, fns, types, fenv, fuel)) in
+    if cmp_ok_g(xa, xb) then [bitop_val(op, xa, xb)]
+    else error("glass prove: bitwise '" ++ op ++ "' operands must be in [0,2^32) — out of range, ABSTAIN (never a wrong proof)");
+    _ => error("glass prove: bitwise '" ++ op ++ "' expects exactly 2 arguments") }
 # lt_build: a 0/1 wire = (value(wx) < value(wy)), after PROVING both ∈ [0,2^k).
 fn lt_build(wx: Int, wy: Int, b: Build) : (Int, Build) =
   let b1 : Build = range_k(wx, 32, b) in
@@ -1572,7 +1630,7 @@ fn cgen(e: Expr, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: 
     EField(recd, f) => error("glass prove: could not resolve the record TYPE for field access (." ++ f ++ ") — direct `r.field` lowers when the record's type is inferable; otherwise destructure with a pattern: match r { T { " ++ f ++ " } => " ++ f ++ " }. ABSTAIN.");
     EStr(s) => estr_c(str_codes(s), b);
     EConcat(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => (vx ++ vy, b2) } };
-    EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => if is_strfn(fname) then cgen_strfn(fname, args, cenv, fns, types, b) else cgen_call(fn_body_of(fns, fname), args, [], cenv, fns, types, b); _ => error("glass prove: unsupported call form (computed or higher-order callee) in cgen — refusing rather than silently building a 0 circuit") } };
+    EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => if is_strfn(fname) then cgen_strfn(fname, args, cenv, fns, types, b) else if is_bitop(fname) then cgen_bitop(fname, args, cenv, fns, types, b) else cgen_call(fn_body_of(fns, fname), args, [], cenv, fns, types, b); _ => error("glass prove: unsupported call form (computed or higher-order callee) in cgen — refusing rather than silently building a 0 circuit") } };
     EMatch(scrut, arms) => match cgen(scrut, cenv, fns, types, b) { (sv, b1) => match mkc(glit(0), b1) { (zm, b2) => cgen_match(arms, sv, cenv, fns, types, zm, [], b2) } };
     ELt(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match lt_build(vhi(vx), vhi(vy), b2) { (wlt, b3) => ([wlt], b3) } } };
     EGt(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match lt_build(vhi(vy), vhi(vx), b2) { (wlt, b3) => ([wlt], b3) } } };
