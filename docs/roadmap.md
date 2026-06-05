@@ -219,11 +219,19 @@ buildable next-session work; 5–6 are large/gated; 7–8 are rigor and the hard
    differential oracle**. A force-multiplier (unblocks #5 and heavy demos), but a structural
    rewrite — the "do it when the dogfood pain bites" background project.
 
-7. **R2 formal follow-ons** *(medium; not gateable).* A formal MDS/round-count cryptanalysis
+7. **Proof-size reduction (serialization).** *(medium; soundness-neutral; dedicated proof-format
+   change).* A single comparison proof is ~552k tokens, ~94.9% of which is Merkle-path hash data
+   ([`docs/proof-size-frontier.md`](proof-size-frontier.md)). The grind/query *parameter* lever is
+   NO-GO (~5%, brittle). The real win is a **denser field-element encoding + Merkle-path
+   deduplication** — soundness-neutral, ~20–40%+ — but it changes the portable proof format, so it
+   must land in lockstep across `emit_proofb3` and Pentecost's `parse`, regenerate all 8 corpus
+   fixtures, and re-root the Name. (The design verdict + the grind-overstatement guard shipped v5.120.)
+
+8. **R2 formal follow-ons** *(medium; not gateable).* A formal MDS/round-count cryptanalysis
    and a formal Fiat-Shamir separation argument — reviewed prose, no differential-testable
    artifact, partly subsumed by the external-audit boundary.
 
-8. **External audit + Poseidon cryptanalysis** *(the hard boundary — not in-repo work).*
+9. **External audit + Poseidon cryptanalysis** *(the hard boundary — not in-repo work).*
    The only path from research-grade to production-soundness. Listed to keep the roadmap
    honest about what in-repo work can and cannot achieve; a builder cannot pick this.
 

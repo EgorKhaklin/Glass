@@ -240,7 +240,7 @@ fn ng(gates: List<Gate>) : Int = next_pow2(glen(gates), 1)
 fn fri_log(d: Int) : Int = let r : Int = ilog2(d) + 5 in if r > 32 then error("glass prove: trace/coset size exceeds Goldilocks 2-adicity (2^32) — no primitive 2^k-th root of unity exists for k>32, so the NTT/LDE would silently compute on a wrong domain; ABSTAIN (defense-in-depth: unreachable for any constructible proof, which would need ~2^27 gates)") else r   # coset = 32N (B3: log2(32N)); ρ=1/8 still (tested deg<4N / 32N)
 fn fri_dsize(d: Int) : Int = 32 * d             # coset = 32N -> ρ = 4N/32N = 1/8 (B3 perm-quotient is deg ~3N < 4N; was 16N/2N pre-B3)
 fn fri_final(d: Int) : Int = 8                  # fold to 8 over 32N (= 32N/4N): degree-<4N folded to a constant
-fn fri_queries(d: Int) : Int = 82               # 82q -> ~80-bit provable FRI-query term (68 + 12 grind) / ~135 list-decode. The hash is now 4-lane (~128-bit binding) so this is no longer ~32-bit-capped. Residual: sampled WITH replacement, so effective distinct queries < 82 (small margin erosion to re-price)
+fn fri_queries(d: Int) : Int = 82               # 82q -> ~80-bit provable FRI-query term (68 + 12 grind) / ~135 list-decode. The hash is now 4-lane (~128-bit binding) so this is no longer ~32-bit-capped. Queries are sampled WITHOUT replacement (sample_distinct dedups), so the 82 draws are negatively correlated => effective distinct queries >= the iid-82 model; the 0.83-bit/query closed-form is therefore conservative, not eroded (corrected v5.120; the old "with replacement / erosion" note was backward).
 fn fri_coset(d: Int) : List<List<Int>> = dom_powers([7], root_pow2(fri_log(d)), fri_dsize(d))
 # Column polynomials, factored so the (future) verifier recomputes the PUBLIC
 # selectors/const by the EXACT same construction the prover uses (no drift).
@@ -576,7 +576,7 @@ fn sample_queries_g(seed: List<Int>, count: Int, dsize: Int) : List<Int> = sampl
 # closed-forms at the construction's fixed rate ρ=4N/32N=1/8 (blowup = fri_dsize(1) = 32):
 # ~0.83 bit/query unique-decoding, 1.5 bit/query list-decoding, + the grind bits.
 fn grind_modulus(d: Int) : Int = 4096                       # 2^12 proof-of-work target
-fn grind_bits(d: Int) : Int = ilog2(grind_modulus(0))       # = 12, derived from the target above
+fn grind_bits(d: Int) : Int = let g : Int = ilog2(grind_modulus(0)) in if g > 16 then 16 else g   # = 12 today; CAPPED at 16: pow_ok only tests the first 16-bit limb (x in [0,2^16)), so grind_modulus > 2^16 would NOT raise the actual proof-of-work above 2^-16 — the cap keeps the PRINTED bit-security from overstating the grinding the prover does (v5.120 audit fix). Widening pow_ok to consume more limbs is the prerequisite for a genuinely higher grind.
 fn blowup(d: Int) : Int = fri_dsize(1)                      # coset = 32N -> blowup 32 -> ρ = 1/8
 fn provable_bits(gates: List<Gate>) : Int = (fri_queries(ng(gates)) * 83) / 100 + grind_bits(0)
 fn listdecode_bits(gates: List<Gate>) : Int = (fri_queries(ng(gates)) * 3) / 2 + grind_bits(0)

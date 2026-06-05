@@ -6,7 +6,7 @@
 ### You can see straight through it.
 
 [![Tests](https://github.com/EgorKhaklin/Glass/actions/workflows/tests.yml/badge.svg)](https://github.com/EgorKhaklin/Glass/actions/workflows/tests.yml)
-[![Tests passing](https://img.shields.io/badge/tests-475%2F475-00bcd4?style=flat-square)](tests/test_glass.py)
+[![Tests passing](https://img.shields.io/badge/tests-476%2F476-00bcd4?style=flat-square)](tests/test_glass.py)
 [![Self-hosting](https://img.shields.io/badge/self--hosting-✓_bootstrap_fixpoint-00bcd4?style=flat-square)](docs/self-hosting.md)
 [![Verified twice](https://img.shields.io/badge/proofs-checked_by_two_verifiers-00bcd4?style=flat-square)](pentecost/)
 [![License](https://img.shields.io/badge/license-MIT_OR_Apache--2.0-00bcd4?style=flat-square)](LICENSE)
@@ -173,7 +173,7 @@ glass/
 ├── name/ ledger/ seal/   # content-addressed identity · append-only verdict ledger · selective disclosure
 ├── fuzz/             # soundness fuzzers — random + adversarial tamper/claim campaigns
 ├── docs/             # tour, spec, self-hosting, soundness, roadmap
-├── tests/            # the regression suite (475/475)
+├── tests/            # the regression suite (476/476)
 └── playground.html   # browser playground (Pyodide)
 ```
 
