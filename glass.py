@@ -1,5 +1,5 @@
 """
-Glass v5.118.0 — reference implementation.
+Glass v5.119.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -3866,7 +3866,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.118.0 — interactive REPL")
+    print("Glass v5.119.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -4087,7 +4087,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.118.0")
+        print("Glass 5.119.0")
     elif sys.argv[1] in ("help", "--help", "-h"):
         # Plain, professional command listing. The thematic names are aliases
         # (docs/naming.md) — this surface keeps the esoteric layer optional.
@@ -4194,6 +4194,11 @@ def main() -> None:
         # A TUPLE/RECORD result (multi-wire, scalar components) routes to the same multi-wire binder
         # as a string result, displaying the components. None unless it is exactly that shape.
         _res_struct = _prove_result_struct(usrc, inputs) if (goldilocks and _res_str is None) else None
+        # --zk dummy-row randomness: a CSPRNG-fresh seed PER INVOCATION (v5.119), so re-proving a
+        # statement yields a DIFFERENT proof — the re-randomization the hiding argument relies on (the
+        # old hardcoded 11111 made every --zk proof identical). The mask derivation downstream is still
+        # an idealized PRG (a disclosed honest-scope caveat). Used only by the --zk gprove_zk* calls.
+        _zk_seed = int.from_bytes(os.urandom(4), "big") % (1 << 31)
         here = os.path.dirname(os.path.abspath(__file__))
         bridge_dir = os.path.join(here, "examples", "prove")
         esc = usrc.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
@@ -4268,7 +4273,7 @@ def main() -> None:
                 _prove_call = "gprove_m_mw(_usrc, _inp, %s, 11111)" % _claim_arg
                 _prove_label = "ACCEPT  (self-check over the witness — NOT a soundness proof; drop --fast for verify_b3)"
             elif zk_mode:
-                _prove_call = "gprove_zk_mw(_usrc, _inp, %s, 11111, 256)" % _claim_arg
+                _prove_call = "gprove_zk_mw(_usrc, _inp, %s, %d, 256)" % (_claim_arg, _zk_seed)
                 _prove_label = "ACCEPT  (SOUND + zero-knowledge — independent verify_b3 + randomized-trace hiding)"
             else:
                 _prove_call = "gprove_sound_mw(_usrc, _inp, %s)" % _claim_arg
@@ -4306,7 +4311,7 @@ def main() -> None:
                 _prove_call = "gprove_m_mw(_usrc, _inp, _rv, 11111)"
                 _prove_label = "ACCEPT  (self-check over the witness — NOT a soundness proof; drop --fast for verify_b3)"
             elif zk_mode:
-                _prove_call = "gprove_zk_mw(_usrc, _inp, _rv, 11111, 256)"
+                _prove_call = "gprove_zk_mw(_usrc, _inp, _rv, %d, 256)" % _zk_seed
                 _prove_label = "ACCEPT  (SOUND + zero-knowledge — independent verify_b3 + randomized-trace hiding)"
             else:
                 _prove_call = "gprove_sound_mw(_usrc, _inp, _rv)"
@@ -4324,7 +4329,7 @@ def main() -> None:
                 _prove_call = "gprove_m(_usrc, _inp, _r, 11111)"
                 _prove_label = "ACCEPT  (self-check over the witness — NOT a soundness proof; drop --fast for verify_b3)"
             elif zk_mode:
-                _prove_call = "gprove_zk(_usrc, _inp, _r, 11111, 256)"
+                _prove_call = "gprove_zk(_usrc, _inp, _r, %d, 256)" % _zk_seed
                 _prove_label = "ACCEPT  (SOUND + zero-knowledge — independent verify_b3 + randomized-trace hiding)"
             else:
                 _prove_call = "gprove_sound(_usrc, _inp, _r)"

@@ -237,7 +237,7 @@ fn is_constb(cw: List<List<Int>>) : Bool = match cw { [] => true; [x, ...r] => a
 # the Baby Bear prover uses, now N-parametric so ADT circuits (N up to hundreds) prove.
 fn glen(gs: List<Gate>) : Int = match gs { [] => 0; [g, ...r] => 1 + glen(r) }
 fn ng(gates: List<Gate>) : Int = next_pow2(glen(gates), 1)
-fn fri_log(d: Int) : Int = ilog2(d) + 5         # coset = 32N (B3: log2(32N)); ρ=1/8 still (tested deg<4N / 32N)
+fn fri_log(d: Int) : Int = let r : Int = ilog2(d) + 5 in if r > 32 then error("glass prove: trace/coset size exceeds Goldilocks 2-adicity (2^32) — no primitive 2^k-th root of unity exists for k>32, so the NTT/LDE would silently compute on a wrong domain; ABSTAIN (defense-in-depth: unreachable for any constructible proof, which would need ~2^27 gates)") else r   # coset = 32N (B3: log2(32N)); ρ=1/8 still (tested deg<4N / 32N)
 fn fri_dsize(d: Int) : Int = 32 * d             # coset = 32N -> ρ = 4N/32N = 1/8 (B3 perm-quotient is deg ~3N < 4N; was 16N/2N pre-B3)
 fn fri_final(d: Int) : Int = 8                  # fold to 8 over 32N (= 32N/4N): degree-<4N folded to a constant
 fn fri_queries(d: Int) : Int = 82               # 82q -> ~80-bit provable FRI-query term (68 + 12 grind) / ~135 list-decode. The hash is now 4-lane (~128-bit binding) so this is no longer ~32-bit-capped. Residual: sampled WITH replacement, so effective distinct queries < 82 (small margin erosion to re-price)
@@ -582,7 +582,7 @@ fn provable_bits(gates: List<Gate>) : Int = (fri_queries(ng(gates)) * 83) / 100 
 fn listdecode_bits(gates: List<Gate>) : Int = (fri_queries(ng(gates)) * 3) / 2 + grind_bits(0)
 fn measure_line(gates: List<Gate>) : String =
   int_to_string(provable_bits(gates)) ++ " bits provable / " ++ int_to_string(listdecode_bits(gates))
-  ++ " bits list-decoding  (" ++ int_to_string(fri_queries(ng(gates))) ++ " queries, blowup "
+  ++ " bits list-decoding (conjectural, proximity-gap)  (" ++ int_to_string(fri_queries(ng(gates))) ++ " queries, blowup "
   ++ int_to_string(blowup(0)) ++ " => rate 1/8, " ++ int_to_string(grind_bits(0)) ++ "-bit grind, 4-lane ~128-bit hash)"
 fn pow_ok(h: List<Int>) : Bool = match trim(h) { [] => true; [x, ...t] => x % grind_modulus(0) == 0 }   # 12-bit proof-of-work: the FS query seed's low 12 bits must be 0
 fn grind_in(seed: List<Int>, base: Int, i: Int) : Int =
