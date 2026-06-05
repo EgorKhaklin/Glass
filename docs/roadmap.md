@@ -238,15 +238,19 @@ buildable next-session work; 5–6 are large/gated; 7–8 are rigor and the hard
    multi-session); (c) base-2^31 limbs — deferred (a cross-lane combine overflows `int64`; the safe
    per-lane form yields a smaller win than the count-drop already shipped).
 
-8. **Test-suite performance (test-infra).** *(medium; not soundness-critical; the practical blocker.)*
-   A full `tests/test_glass.py` run takes **hours** on a loaded machine: each of the ~50 heavy `glass
-   prove` gates shells to `run_native.sh`, which (re)builds `native_glassc` from scratch — so the
-   self-hosting compiler is rebuilt dozens of times per suite. v5.123 made the suite *complete* under
-   load (timeout-guard → a hung gate SKIPs instead of hanging forever), but the inherent per-gate
-   rebuild cost remains. The lever: **build `native_glassc` once per suite and reuse it across the prove
-   gates** (a content-addressed cache keyed on `glassc.glass`+`prism.glass`+`quartz.py`, or a suite-level
-   warm-up that the gates reuse) — could turn hours into minutes. Touches the bootstrap-critical
-   `run_native.sh`, so it earns its own careful change (must keep the fixpoint byte-identical).
+8. **Test-suite performance (test-infra).** *(medium; not soundness-critical.)* A full
+   `tests/test_glass.py` run is **slow** (~tens of minutes): each of the ~50 heavy `glass prove` gates
+   shells to `run_native.sh`, which native-**compiles** the ~2000-line bridge+driver (`native_glassc` →
+   C → `cc`) and then runs a STARK — ~1 min/gate. (`native_glassc` *itself* is already cached across
+   gates — `run_native.sh:27-33`; the per-gate cost is recompiling the *bridge*, since Glass has no
+   separate compilation, plus the prove run.) It balloons to **hours** only when killed-suite `cc`/native
+   processes accumulate and push load to 17+ — an *operational* issue (pkill the orphans + let load
+   settle), not an inherent one. v5.123 made the suite *complete* under load (timeout-guard → a hung
+   gate SKIPs rather than hangs forever). Real levers (none cheap): a suite-level warm binary that
+   batches many claims into one compiled program (the bridge is identical across gates — only the driver
+   tail differs); or emitting less/faster C. Lower-priority than the LogUp/Merkle frontiers; the
+   pragmatic interim is shipping on standalone gates + partial-suite OK/0-FAIL when a full run is
+   impractical.
 
 9. **R2 formal follow-ons** *(medium; not gateable).* A formal MDS/round-count cryptanalysis
    and a formal Fiat-Shamir separation argument — reviewed prose, no differential-testable
