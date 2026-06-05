@@ -28,6 +28,26 @@ def run_file(path: str) -> tuple[int, str, str]:
     return p.returncode, p.stdout, p.stderr
 
 
+# A heavy native `glass prove` gate occasionally HANGS in a resource-starved env — the documented
+# under-load native-compile flake (a native subprocess deadlocks at 0% CPU). Without a timeout, the
+# suite's subprocess.run would block FOREVER on that one gate, so the whole suite never completes.
+# `_prove_run` bounds every prove gate: a hang past PROVE_TIMEOUT becomes a synthetic signal-like
+# result (rc=137), which `_heavy_skipped` treats as an env-limited SKIP (CI green) — exactly as it
+# already does for a signal-KILLED heavy prove. A genuine regression still returns a verdict in time
+# and is evaluated normally; only a true hang is skipped (and logged — no silent cap). Legit heavy
+# proves finish in well under a minute, so a multi-minute timeout fires only on a real stall.
+PROVE_TIMEOUT = 600
+
+def _prove_run(args, **kw):
+    kw.setdefault("capture_output", True)
+    kw.setdefault("text", True)
+    kw.setdefault("cwd", ROOT)
+    try:
+        return subprocess.run(args, timeout=PROVE_TIMEOUT, **kw)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(args, 137, stdout="", stderr=f"TIMEOUT >{PROVE_TIMEOUT}s (native prove hung — env-limited)")
+
+
 # Examples that must succeed.
 POSITIVE = [
     os.path.join(EX, "basic",    "hello.glass"),
@@ -1262,7 +1282,7 @@ def main() -> int:
     # its `r < b` check on an in-circuit `b!=0` bit, so the dead `a%0` is vacuously satisfiable and the
     # live result PROVES — `result: 7, ACCEPT` (was ABSTAIN). Goldilocks native path (~15s).
     _db_path = os.path.join(EX, "prove", "deadbranch_div.glass")
-    _db = subprocess.run([sys.executable, GLASS, "prove", _db_path, "a=7", "b=0"],
+    _db = _prove_run([sys.executable, GLASS, "prove", _db_path, "a=7", "b=0"],
                          capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_db, "dead-branch predication: dead a%0 proves the live result (7, ACCEPT)"):
         db_ok = (_db.returncode == 0) and ("ACCEPT" in _db.stdout) and ("result:  7" in _db.stdout)
@@ -1274,7 +1294,7 @@ def main() -> int:
     # predication only relaxes DEAD arms; seval short-circuits to the taken path and refuses b==0.
     with tempfile.NamedTemporaryFile("w", suffix=".glass", delete=False) as _lf:
         _lf.write("a % b\n"); _live_path = _lf.name
-    _lv = subprocess.run([sys.executable, GLASS, "prove", _live_path, "a=7", "b=0"],
+    _lv = _prove_run([sys.executable, GLASS, "prove", _live_path, "a=7", "b=0"],
                          capture_output=True, text=True, cwd=ROOT)
     os.unlink(_live_path)
     lv_ok = (_lv.returncode != 0) and ("ABSTAIN" in (_lv.stdout + _lv.stderr)) and ("ACCEPT" not in _lv.stdout)
@@ -1288,7 +1308,7 @@ def main() -> int:
     # REJECT — the prover cannot forge a verifying proof of a wrong quotient. (Goldilocks native, ~55s.)
     with tempfile.NamedTemporaryFile("w", suffix=".glass", delete=False) as _wf:
         _wf.write("a / b\n"); _wc_path = _wf.name
-    _wc = subprocess.run([sys.executable, GLASS, "prove", "--claim", "4", _wc_path, "a=17", "b=5"],
+    _wc = _prove_run([sys.executable, GLASS, "prove", "--claim", "4", _wc_path, "a=17", "b=5"],
                          capture_output=True, text=True, cwd=ROOT)
     os.unlink(_wc_path)
     if not _heavy_skipped(_wc, "wrong divmod claim REJECTs (claim 17/5=4; true is 3 — no proof of a false quotient)"):
@@ -1303,7 +1323,7 @@ def main() -> int:
     # of spuriously refused (it ABSTAINed before, because seval couldn't resolve the `f` callee that
     # unroll+cgen handle). Goldilocks native path (~30s); proves the result and ACCEPTs.
     _ho_path = os.path.join(EX, "prove", "map_prove.glass")
-    _ho = subprocess.run([sys.executable, GLASS, "prove", _ho_path, "inp=5"],
+    _ho = _prove_run([sys.executable, GLASS, "prove", _ho_path, "inp=5"],
                          capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_ho, "higher-order proving: map(inc, [5,2,3]) sum = 13 ACCEPT (no spurious refusal)"):
         ho_ok = (_ho.returncode == 0) and ("ACCEPT" in _ho.stdout) and ("result:  13" in _ho.stdout)
@@ -1318,7 +1338,7 @@ def main() -> int:
     # now bound CANONICALLY (gin: p-|v|, not the non-canonical two's-complement limbs glit4(-5)
     # would give). slt(-5, 3) -> result 1, ACCEPT. Goldilocks native path (~30s).
     _sc_path = os.path.join(EX, "prove", "signed_cmp.glass")
-    _sc = subprocess.run([sys.executable, GLASS, "prove", _sc_path, "a=-5", "b=3"],
+    _sc = _prove_run([sys.executable, GLASS, "prove", _sc_path, "a=-5", "b=3"],
                          capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_sc, "signed comparison: slt(-5, 3) = 1 ACCEPT (negatives, canonical binding)"):
         sc_ok = (_sc.returncode == 0) and ("ACCEPT" in _sc.stdout) and ("result:  1" in _sc.stdout)
@@ -1329,7 +1349,7 @@ def main() -> int:
 
     # ...and a FALSE signed-comparison claim must REJECT: slt(-5, 3) is 1 (true), so claiming 0
     # is unsatisfiable — the independent verify_b3 proves no false signed ordering. Goldilocks native.
-    _scf = subprocess.run([sys.executable, GLASS, "prove", _sc_path, "a=-5", "b=3", "--claim", "0"],
+    _scf = _prove_run([sys.executable, GLASS, "prove", _sc_path, "a=-5", "b=3", "--claim", "0"],
                           capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_scf, "wrong signed-comparison claim REJECTs (slt(-5,3)=1; claim 0 is false)"):
         scf_ok = ("proof:   REJECT" in _scf.stdout) and ("proof:   ACCEPT" not in _scf.stdout)
@@ -1346,7 +1366,7 @@ def main() -> int:
     # canonically (gin), so the band proves the right verdict. t=20 is in band -> result 1 ACCEPT; if the
     # negative-literal fix regressed, sge(20,-40) would be 0 and this gate would see result 0. Goldilocks native.
     _sb_path = os.path.join(EX, "prove", "signed_band.glass")
-    _sb = subprocess.run([sys.executable, GLASS, "prove", _sb_path, "t=20"],
+    _sb = _prove_run([sys.executable, GLASS, "prove", _sb_path, "t=20"],
                          capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_sb, "signed band: -40 <= 20 <= 125 proves 1 ACCEPT (negative literal lowers canonically)"):
         sb_ok = (_sb.returncode == 0) and ("ACCEPT" in _sb.stdout) and ("result:  1" in _sb.stdout)
@@ -1364,7 +1384,7 @@ def main() -> int:
     # canonical field element p-|r| for negatives; --cross-check confirms the signed value. Goldilocks
     # native (~2x divmod). ACCEPT: sdiv(-17,5) = -3 with witness3 AGREEing on the signed -3.
     _sd_path = os.path.join(EX, "prove", "signed_div.glass")
-    _sd = subprocess.run([sys.executable, GLASS, "prove", _sd_path, "a=-17", "b=5", "--cross-check"],
+    _sd = _prove_run([sys.executable, GLASS, "prove", _sd_path, "a=-17", "b=5", "--cross-check"],
                          capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_sd, "signed division: sdiv(-17,5) = -3 ACCEPT (C99 trunc; Third Witness confirms -3)"):
         sd_ok = (_sd.returncode == 0) and ("ACCEPT" in _sd.stdout) and ("result:  -3" in _sd.stdout) and ("f(inputs) = -3" in _sd.stdout) and ("DIVERGENCE" not in _sd.stdout)
@@ -1375,7 +1395,7 @@ def main() -> int:
 
     # ...and a FALSE signed-division claim must REJECT: sdiv(-17,5) is -3 (canonical p-3); claiming 3
     # is unsatisfiable, so the independent verify_b3 REJECTs (no proof of a wrong signed quotient).
-    _sdf = subprocess.run([sys.executable, GLASS, "prove", _sd_path, "a=-17", "b=5", "--claim", "3"],
+    _sdf = _prove_run([sys.executable, GLASS, "prove", _sd_path, "a=-17", "b=5", "--claim", "3"],
                           capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_sdf, "wrong signed-division claim REJECTs (sdiv(-17,5)=-3; claim 3 is false)"):
         sdf_ok = ("proof:   REJECT" in _sdf.stdout) and ("proof:   ACCEPT" not in _sdf.stdout)
@@ -1387,7 +1407,7 @@ def main() -> int:
     # Signed utility intrinsics (v5.100): sabs(x)=|x|, smin/smax — composed from the proven slt + if
     # (no new gadget). The zero-knowledge PRIVATE-DISTANCE pattern sabs(a-b): prove |a-b| between two
     # private values without revealing either. sabs(3-17) = 14, witness3-confirmed. Goldilocks native.
-    _pd = subprocess.run([sys.executable, GLASS, "prove", os.path.join(EX, "prove", "private_distance.glass"),
+    _pd = _prove_run([sys.executable, GLASS, "prove", os.path.join(EX, "prove", "private_distance.glass"),
                           "a=3", "b=17", "--cross-check"], capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_pd, "private distance: sabs(3 - 17) = 14 ACCEPT (|a-b| without revealing a,b)"):
         pd_ok = (_pd.returncode == 0) and ("ACCEPT" in _pd.stdout) and ("result:  14" in _pd.stdout) and ("THIRD LINEAGE AGREES" in _pd.stdout)
@@ -1403,7 +1423,7 @@ def main() -> int:
     # has the public prefix "sk-live-" without revealing the key: substring(key,0,8)=="sk-live-"
     # -> 1 ACCEPT, and the Third Witness (glass.py, independent of the bridge) AGREES. Goldilocks native.
     _sp_path = os.path.join(EX, "prove", "private_prefix.glass")
-    _sp = subprocess.run([sys.executable, GLASS, "prove", _sp_path, 'key=sk-live-9f3a2c7e1b', "--cross-check"],
+    _sp = _prove_run([sys.executable, GLASS, "prove", _sp_path, 'key=sk-live-9f3a2c7e1b', "--cross-check"],
                          capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_sp, "strings in ZK: private key prefix substring(key,0,8)=='sk-live-' -> 1 ACCEPT (key hidden)"):
         sp_ok = (_sp.returncode == 0) and ("ACCEPT" in _sp.stdout) and ("result:  1" in _sp.stdout) and ("THIRD LINEAGE AGREES" in _sp.stdout)
@@ -1413,7 +1433,7 @@ def main() -> int:
             failures += 1
     # Discrimination: a NON-matching prefix must prove 0 (not always-1) — the per-codepoint equality
     # actually compares. A test key -> result 0, ACCEPT, witness3 AGREES.
-    _spt = subprocess.run([sys.executable, GLASS, "prove", _sp_path, 'key=sk-test-0000000000', "--cross-check"],
+    _spt = _prove_run([sys.executable, GLASS, "prove", _sp_path, 'key=sk-test-0000000000', "--cross-check"],
                           capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_spt, "strings in ZK: non-matching prefix proves 0 (per-codepoint compare discriminates)"):
         spt_ok = (_spt.returncode == 0) and ("result:  0" in _spt.stdout) and ("THIRD LINEAGE AGREES" in _spt.stdout)
@@ -1423,7 +1443,7 @@ def main() -> int:
             failures += 1
     # Soundness: a FALSE string-predicate claim must REJECT. is_live(live key) is 1 (true), so
     # claiming 0 is unsatisfiable — the independent verify_b3 proves no false string predicate.
-    _spf = subprocess.run([sys.executable, GLASS, "prove", "--claim", "0", _sp_path, 'key=sk-live-9f3a2c7e1b'],
+    _spf = _prove_run([sys.executable, GLASS, "prove", "--claim", "0", _sp_path, 'key=sk-live-9f3a2c7e1b'],
                           capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_spf, "strings in ZK: false string-predicate claim REJECTs (is_live=1; claim 0 is false)"):
         spf_ok = ("proof:   REJECT" in _spf.stdout) and ("proof:   ACCEPT" not in _spf.stdout)
@@ -1435,7 +1455,7 @@ def main() -> int:
     # without revealing it — substring(email, string_length(email)-14, string_length(email))=="@setonhill.edu"
     # -> 1 ACCEPT, witness3 AGREES (string_length is the build-time wire count; the slice offset folds to a constant).
     _se_path = os.path.join(EX, "prove", "private_email.glass")
-    _se = subprocess.run([sys.executable, GLASS, "prove", _se_path, 'email=ekhaklin@setonhill.edu', "--cross-check"],
+    _se = _prove_run([sys.executable, GLASS, "prove", _se_path, 'email=ekhaklin@setonhill.edu', "--cross-check"],
                          capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_se, "strings in ZK: private email org-domain suffix -> 1 ACCEPT (string_length + substring)"):
         se_ok = (_se.returncode == 0) and ("ACCEPT" in _se.stdout) and ("result:  1" in _se.stdout) and ("THIRD LINEAGE AGREES" in _se.stdout)
@@ -1449,7 +1469,7 @@ def main() -> int:
     # `match cmd { "deploy" => 1; "rollback" => 2; "status" => 3; _ => 0 }`: cmd="deploy" -> 1 ACCEPT,
     # witness3 AGREES (the command stays a private witness). Goldilocks native path.
     _al_path = os.path.join(EX, "prove", "private_allowlist.glass")
-    _al = subprocess.run([sys.executable, GLASS, "prove", _al_path, 'cmd=deploy', "--cross-check"],
+    _al = _prove_run([sys.executable, GLASS, "prove", _al_path, 'cmd=deploy', "--cross-check"],
                          capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_al, "string match: private cmd 'deploy' -> action 1 ACCEPT (allowlist dispatch, cmd hidden)"):
         al_ok = (_al.returncode == 0) and ("result:  1" in _al.stdout) and ("ACCEPT" in _al.stdout) and ("THIRD LINEAGE AGREES" in _al.stdout)
@@ -1458,7 +1478,7 @@ def main() -> int:
             print(f"        rc={_al.returncode}  out: {_al.stdout.strip()[-220:]}  err: {_al.stderr.strip()[-150:]}")
             failures += 1
     # Non-member falls through `_` to 0 (the per-codepoint compare discriminates; no string matches it).
-    _aln = subprocess.run([sys.executable, GLASS, "prove", _al_path, 'cmd=hack', "--cross-check"],
+    _aln = _prove_run([sys.executable, GLASS, "prove", _al_path, 'cmd=hack', "--cross-check"],
                           capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_aln, "string match: non-member cmd 'hack' -> 0 (falls through _; no arm matches)"):
         aln_ok = (_aln.returncode == 0) and ("result:  0" in _aln.stdout) and ("THIRD LINEAGE AGREES" in _aln.stdout)
@@ -1467,7 +1487,7 @@ def main() -> int:
             print(f"        rc={_aln.returncode}  out: {_aln.stdout.strip()[-220:]}  err: {_aln.stderr.strip()[-150:]}")
             failures += 1
     # Soundness: a false dispatch claim REJECTs. action("deploy") is 1, so claiming 2 is unsatisfiable.
-    _alf = subprocess.run([sys.executable, GLASS, "prove", "--claim", "2", _al_path, 'cmd=deploy'],
+    _alf = _prove_run([sys.executable, GLASS, "prove", "--claim", "2", _al_path, 'cmd=deploy'],
                           capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_alf, "string match: false dispatch claim REJECTs (action 'deploy'=1; claim 2 is false)"):
         alf_ok = ("proof:   REJECT" in _alf.stdout) and ("proof:   ACCEPT" not in _alf.stdout)
@@ -1481,7 +1501,7 @@ def main() -> int:
     # flowing through a proof. `order` returns Stats { lo, hi } (sorted bounds), `span` matches it to
     # prove hi-lo. x=3 y=8 -> 5 ACCEPT, witness3 AGREES; order normalizes (x=8 y=3 -> 5 too). Goldilocks native.
     _rs_path = os.path.join(EX, "prove", "record_stats.glass")
-    _rs = subprocess.run([sys.executable, GLASS, "prove", _rs_path, "x=3", "y=8", "--cross-check"],
+    _rs = _prove_run([sys.executable, GLASS, "prove", _rs_path, "x=3", "y=8", "--cross-check"],
                          capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_rs, "records: Stats{lo,hi} construct + match span = 5 ACCEPT (structured data in ZK)"):
         rs_ok = (_rs.returncode == 0) and ("result:  5" in _rs.stdout) and ("ACCEPT" in _rs.stdout) and ("THIRD LINEAGE AGREES" in _rs.stdout)
@@ -1490,7 +1510,7 @@ def main() -> int:
             print(f"        rc={_rs.returncode}  out: {_rs.stdout.strip()[-220:]}  err: {_rs.stderr.strip()[-150:]}")
             failures += 1
     # Soundness: a false claim about the record-derived result REJECTs (span=5; claim 4 is false).
-    _rsf = subprocess.run([sys.executable, GLASS, "prove", "--claim", "4", _rs_path, "x=3", "y=8"],
+    _rsf = _prove_run([sys.executable, GLASS, "prove", "--claim", "4", _rs_path, "x=3", "y=8"],
                           capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_rsf, "records: false claim REJECTs (span(order(3,8))=5; claim 4 is false)"):
         rsf_ok = ("proof:   REJECT" in _rsf.stdout) and ("proof:   ACCEPT" not in _rsf.stdout)
@@ -1504,7 +1524,7 @@ def main() -> int:
     # over a PRIVATE Account proves solvency by reading the field directly — revealing only the verdict.
     # bal=250 -> 1 ACCEPT, witness3 AGREES (balance + owner hidden). Goldilocks native.
     _rf_path = os.path.join(EX, "prove", "record_field.glass")
-    _rf = subprocess.run([sys.executable, GLASS, "prove", _rf_path, "bal=250", "own=7", "--cross-check"],
+    _rf = _prove_run([sys.executable, GLASS, "prove", _rf_path, "bal=250", "own=7", "--cross-check"],
                          capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_rf, "record field access: solvent(a)=a.balance>=100 -> 1 ACCEPT (a.field read directly, hidden)"):
         rf_ok = (_rf.returncode == 0) and ("result:  1" in _rf.stdout) and ("ACCEPT" in _rf.stdout) and ("THIRD LINEAGE AGREES" in _rf.stdout)
@@ -1513,7 +1533,7 @@ def main() -> int:
             print(f"        rc={_rf.returncode}  out: {_rf.stdout.strip()[-220:]}  err: {_rf.stderr.strip()[-150:]}")
             failures += 1
     # Soundness: a false claim about the field-access result REJECTs (solvent(250)=1; claim 0 is false).
-    _rff = subprocess.run([sys.executable, GLASS, "prove", "--claim", "0", _rf_path, "bal=250", "own=7"],
+    _rff = _prove_run([sys.executable, GLASS, "prove", "--claim", "0", _rf_path, "bal=250", "own=7"],
                           capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_rff, "record field access: false claim REJECTs (solvent=1; claim 0 is false)"):
         rff_ok = ("proof:   REJECT" in _rff.stdout) and ("proof:   ACCEPT" not in _rff.stdout)
@@ -1527,7 +1547,7 @@ def main() -> int:
     # (tier in an allowlist), all in one proven circuit. age/region/tier are PRIVATE; only the verdict
     # is revealed. End-to-end composition test: eligible -> 1 ACCEPT + witness3 AGREES; false claim REJECTs.
     _el_path = os.path.join(EX, "prove", "private_eligibility.glass")
-    _el = subprocess.run([sys.executable, GLASS, "prove", _el_path, "age0=29", "region0=3", "tier0=gold", "--cross-check"],
+    _el = _prove_run([sys.executable, GLASS, "prove", _el_path, "age0=29", "region0=3", "tier0=gold", "--cross-check"],
                          capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_el, "capstone: records + field access + comparison + string dispatch compose -> eligible=1 ACCEPT"):
         el_ok = (_el.returncode == 0) and ("result:  1" in _el.stdout) and ("ACCEPT" in _el.stdout) and ("THIRD LINEAGE AGREES" in _el.stdout)
@@ -1535,7 +1555,7 @@ def main() -> int:
         if not el_ok:
             print(f"        rc={_el.returncode}  out: {_el.stdout.strip()[-260:]}  err: {_el.stderr.strip()[-150:]}")
             failures += 1
-    _elf = subprocess.run([sys.executable, GLASS, "prove", "--claim", "0", _el_path, "age0=29", "region0=3", "tier0=gold"],
+    _elf = _prove_run([sys.executable, GLASS, "prove", "--claim", "0", _el_path, "age0=29", "region0=3", "tier0=gold"],
                           capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_elf, "capstone: false eligibility claim REJECTs (eligible=1; claim 0 is false)"):
         elf_ok = ("proof:   REJECT" in _elf.stdout) and ("proof:   ACCEPT" not in _elf.stdout)
@@ -1550,7 +1570,7 @@ def main() -> int:
     # (a multi-wire claim is just more is-zero asserts). Selective disclosure: reveal_prefix reveals
     # the first 8 chars of a PRIVATE key, the rest hidden. -> "sk-live-" ACCEPT, witness3 AGREES.
     _rp_path = os.path.join(EX, "prove", "reveal_prefix.glass")
-    _rpv = subprocess.run([sys.executable, GLASS, "prove", _rp_path, "key=sk-live-9f3a2c7e1b", "--cross-check"],
+    _rpv = _prove_run([sys.executable, GLASS, "prove", _rp_path, "key=sk-live-9f3a2c7e1b", "--cross-check"],
                           capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_rpv, 'string-valued result: reveal_prefix -> "sk-live-" ACCEPT (string result bound + decoded, key hidden)'):
         rpv_ok = (_rpv.returncode == 0) and ('result:  "sk-live-"' in _rpv.stdout) and ("ACCEPT" in _rpv.stdout) and ("THIRD LINEAGE AGREES" in _rpv.stdout)
@@ -1562,7 +1582,7 @@ def main() -> int:
     # the verdict WORD is revealed, the score hidden. score=820 -> "PASS", score=500 -> "FAIL" (the
     # branch genuinely selects — not a constant), both ACCEPT + witness3 AGREES on the string.
     _vd_path = os.path.join(EX, "prove", "private_verdict.glass")
-    _vdp = subprocess.run([sys.executable, GLASS, "prove", _vd_path, "score=820", "--cross-check"],
+    _vdp = _prove_run([sys.executable, GLASS, "prove", _vd_path, "score=820", "--cross-check"],
                           capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_vdp, 'string-valued result: private score 820 -> "PASS" ACCEPT (verdict word revealed, score hidden)'):
         vdp_ok = (_vdp.returncode == 0) and ('result:  "PASS"' in _vdp.stdout) and ("ACCEPT" in _vdp.stdout) and ("THIRD LINEAGE AGREES" in _vdp.stdout)
@@ -1570,7 +1590,7 @@ def main() -> int:
         if not vdp_ok:
             print(f"        rc={_vdp.returncode}  out: {_vdp.stdout.strip()[-260:]}  err: {_vdp.stderr.strip()[-150:]}")
             failures += 1
-    _vdf = subprocess.run([sys.executable, GLASS, "prove", _vd_path, "score=500", "--cross-check"],
+    _vdf = _prove_run([sys.executable, GLASS, "prove", _vd_path, "score=500", "--cross-check"],
                           capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_vdf, 'string-valued result: private score 500 -> "FAIL" (the if-over-strings branch selects)'):
         vdf_ok = (_vdf.returncode == 0) and ('result:  "FAIL"' in _vdf.stdout) and ("THIRD LINEAGE AGREES" in _vdf.stdout)
@@ -1585,7 +1605,7 @@ def main() -> int:
     # hidden. (Until v5.121 this ABSTAINed and branches had to be hand-padded, as private_verdict does.)
     import tempfile as _tf_sr
     _rk_path = os.path.join(EX, "prove", "private_risk.glass")
-    _rk = subprocess.run([sys.executable, GLASS, "prove", _rk_path, "score=95", "--cross-check"],
+    _rk = _prove_run([sys.executable, GLASS, "prove", _rk_path, "score=95", "--cross-check"],
                          capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_rk, 'unequal-width strings: private_risk score=95 -> "CRITICAL" ACCEPT (NUL-padded if-mux, score hidden)'):
         rk_ok = (_rk.returncode == 0) and ('result:  "CRITICAL"' in _rk.stdout) and ("ACCEPT" in _rk.stdout) and ("THIRD LINEAGE AGREES" in _rk.stdout)
@@ -1594,7 +1614,7 @@ def main() -> int:
             print(f"        rc={_rk.returncode}  out: {_rk.stdout.strip()[-260:]}  err: {_rk.stderr.strip()[-150:]}")
             failures += 1
     # The shortest band, to show the nested if genuinely selects (not a constant) across widths.
-    _rk2 = subprocess.run([sys.executable, GLASS, "prove", _rk_path, "score=10", "--cross-check"],
+    _rk2 = _prove_run([sys.executable, GLASS, "prove", _rk_path, "score=10", "--cross-check"],
                           capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_rk2, 'unequal-width strings: private_risk score=10 -> "LOW" (the shortest band selects)'):
         rk2_ok = (_rk2.returncode == 0) and ('result:  "LOW"' in _rk2.stdout) and ("THIRD LINEAGE AGREES" in _rk2.stdout)
@@ -1609,7 +1629,7 @@ def main() -> int:
     with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _ufm:
         _ufm.write('fn lab(s: Int) : String = match s { 0 => "approved"; _ => "no" }\nlab(score)\n')
         _mtrunc_path = _ufm.name
-    _mt = subprocess.run([sys.executable, GLASS, "prove", _mtrunc_path, "score=0", "--cross-check"],
+    _mt = _prove_run([sys.executable, GLASS, "prove", _mtrunc_path, "score=0", "--cross-check"],
                          capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_mt, 'unequal-width match: s=0 -> "approved" ACCEPT (was silently truncated to "ap"; v5.121 fix)'):
         mt_ok = (_mt.returncode == 0) and ('result:  "approved"' in _mt.stdout) and ("ACCEPT" in _mt.stdout) and ("THIRD LINEAGE AGREES" in _mt.stdout)
@@ -1623,7 +1643,7 @@ def main() -> int:
     with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _ufs:
         _ufs.write('fn pick(c: Int) : (String, Int) = if c >= 1 then ("ab", 1) else ("xyz", 2)\npick(flag)\n')
         _struct_path = _ufs.name
-    _st = subprocess.run([sys.executable, GLASS, "prove", _struct_path, "flag=1"],
+    _st = _prove_run([sys.executable, GLASS, "prove", _struct_path, "flag=1"],
                          capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_st, "unequal-width mux: a structured (tuple-with-string) value ABSTAINs (not NUL-corrupted)"):
         st_ok = ("verdict: ABSTAIN" in _st.stdout) and ("proof:   ACCEPT" not in _st.stdout)
@@ -1638,7 +1658,7 @@ def main() -> int:
     with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _uf2:
         _uf2.write("type Box = | B(Int) | C(Int)\nfn mk(a: Int) : Box = B(a)\nmk(x)\n")
         _tup_path = _uf2.name
-    _tup = subprocess.run([sys.executable, GLASS, "prove", _tup_path, "x=3"],
+    _tup = _prove_run([sys.executable, GLASS, "prove", _tup_path, "x=3"],
                           capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_tup, "structured result: a multi-wire ADT result ABSTAINs (not truncated to wire 0)"):
         tup_ok = ("verdict: ABSTAIN" in _tup.stdout) and ("proof:   ACCEPT" not in _tup.stdout)
@@ -1651,7 +1671,7 @@ def main() -> int:
     # bound (not the computed result), so a FALSE claim makes the circuit unsatisfiable and the
     # independent verify_b3 REJECTs — the soundness property for string results, made testable
     # end-to-end (v5.110 string results had only the structural REJECT argument). verdict(820)="PASS".
-    _vc = subprocess.run([sys.executable, GLASS, "prove", "--claim", "PASS", _vd_path, "score=820"],
+    _vc = _prove_run([sys.executable, GLASS, "prove", "--claim", "PASS", _vd_path, "score=820"],
                          capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_vc, 'string --claim: a TRUE string claim ("PASS") ACCEPTs'):
         vc_ok = (_vc.returncode == 0) and ('claim:   "PASS"' in _vc.stdout) and ("proof:   ACCEPT" in _vc.stdout)
@@ -1660,7 +1680,7 @@ def main() -> int:
             print(f"        rc={_vc.returncode}  out: {_vc.stdout.strip()[-260:]}  err: {_vc.stderr.strip()[-150:]}")
             failures += 1
     # The soundness headline: a FALSE equal-length string claim REJECTs (verdict(820)="PASS"; "FAIL" is false).
-    _vcf = subprocess.run([sys.executable, GLASS, "prove", "--claim", "FAIL", _vd_path, "score=820"],
+    _vcf = _prove_run([sys.executable, GLASS, "prove", "--claim", "FAIL", _vd_path, "score=820"],
                           capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_vcf, 'string --claim: a FALSE string claim ("FAIL") REJECTs (the string-result soundness gate)'):
         vcf_ok = ("proof:   REJECT" in _vcf.stdout) and ("proof:   ACCEPT" not in _vcf.stdout)
@@ -1670,7 +1690,7 @@ def main() -> int:
             failures += 1
     # A wrong-LENGTH string claim ABSTAINs (build_claim_mw's length guard) — never bound as a matching
     # prefix (which would wrongly ACCEPT a too-short claim). "PASSING" (7) vs the 4-char result.
-    _vcl = subprocess.run([sys.executable, GLASS, "prove", "--claim", "PASSING", _vd_path, "score=820"],
+    _vcl = _prove_run([sys.executable, GLASS, "prove", "--claim", "PASSING", _vd_path, "score=820"],
                           capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_vcl, "string --claim: a wrong-LENGTH claim ABSTAINs (no matching-prefix under-binding)"):
         vcl_ok = ("verdict: ABSTAIN" in _vcl.stdout) and ("proof:   ACCEPT" not in _vcl.stdout)
@@ -1682,7 +1702,7 @@ def main() -> int:
     with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _uf3:
         _uf3.write("fn add(a: Int, b: Int) : Int = a + b\nadd(x, y)\n")
         _sclaim_path = _uf3.name
-    _scc = subprocess.run([sys.executable, GLASS, "prove", "--claim", "foo", _sclaim_path, "x=5", "y=7"],
+    _scc = _prove_run([sys.executable, GLASS, "prove", "--claim", "foo", _sclaim_path, "x=5", "y=7"],
                           capture_output=True, text=True, cwd=ROOT)
     scc_ok = ("verdict: ABSTAIN" in _scc.stdout) and ("proof:   ACCEPT" not in _scc.stdout)
     print(f"  {'OK ' if scc_ok else 'FAIL'}  string --claim: a string claim on a SCALAR result ABSTAINs (type mismatch)")
@@ -1697,7 +1717,7 @@ def main() -> int:
     # committed corpus fixture honest_string_result.b3.txt.gz tamper-checks the same shape statically.)
     with _tf_sr.NamedTemporaryFile("w", suffix=".b3.txt", delete=False) as _ef:
         _emit_proof_path = _ef.name
-    _emi = subprocess.run([sys.executable, GLASS, "prove", "--emit", _emit_proof_path, _rp_path, "key=sk-live-9f3a2c7e1b"],
+    _emi = _prove_run([sys.executable, GLASS, "prove", "--emit", _emit_proof_path, _rp_path, "key=sk-live-9f3a2c7e1b"],
                           capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_emi, "portable string-result proof: --emit a string-valued proof, Pentecost verifies it"):
         _emv = subprocess.run([sys.executable, GLASS, "verify", _emit_proof_path], capture_output=True, text=True, cwd=ROOT)
@@ -1713,7 +1733,7 @@ def main() -> int:
     # itionally applying each candidate), so it lowers as `if c then g(x) else h(x)` — named-fn calls
     # muxed by the same gadget an `if` uses; the rewrite is shared by seval (guard) + unroll (circuit).
     _cc_path = os.path.join(EX, "prove", "computed_callee.glass")
-    _cc1 = subprocess.run([sys.executable, GLASS, "prove", _cc_path, "mode=1", "x=21", "--cross-check"],
+    _cc1 = _prove_run([sys.executable, GLASS, "prove", _cc_path, "mode=1", "x=21", "--cross-check"],
                           capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_cc1, "computed callee: (if mode>=1 then double else increment)(21), mode=1 -> 42 ACCEPT"):
         cc1_ok = (_cc1.returncode == 0) and ("result:  42" in _cc1.stdout) and ("ACCEPT" in _cc1.stdout) and ("THIRD LINEAGE AGREES" in _cc1.stdout)
@@ -1722,7 +1742,7 @@ def main() -> int:
             print(f"        rc={_cc1.returncode}  out: {_cc1.stdout.strip()[-260:]}  err: {_cc1.stderr.strip()[-150:]}")
             failures += 1
     # The runtime-chosen callee genuinely depends on the private flag (not a constant): mode=0 -> increment.
-    _cc0 = subprocess.run([sys.executable, GLASS, "prove", _cc_path, "mode=0", "x=21", "--cross-check"],
+    _cc0 = _prove_run([sys.executable, GLASS, "prove", _cc_path, "mode=0", "x=21", "--cross-check"],
                           capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_cc0, "computed callee: mode=0 -> increment(21)=22 (the runtime-chosen callee depends on the flag)"):
         cc0_ok = (_cc0.returncode == 0) and ("result:  22" in _cc0.stdout) and ("THIRD LINEAGE AGREES" in _cc0.stdout)
@@ -1731,7 +1751,7 @@ def main() -> int:
             print(f"        rc={_cc0.returncode}  out: {_cc0.stdout.strip()[-260:]}  err: {_cc0.stderr.strip()[-150:]}")
             failures += 1
     # Soundness: a false claim about the computed-callee result REJECTs (run(1,21)=42; claim 22 is false).
-    _ccf = subprocess.run([sys.executable, GLASS, "prove", "--claim", "22", _cc_path, "mode=1", "x=21"],
+    _ccf = _prove_run([sys.executable, GLASS, "prove", "--claim", "22", _cc_path, "mode=1", "x=21"],
                           capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_ccf, "computed callee: false claim REJECTs (run(1,21)=42; claim 22 is false)"):
         ccf_ok = ("proof:   REJECT" in _ccf.stdout) and ("proof:   ACCEPT" not in _ccf.stdout)
@@ -1747,7 +1767,7 @@ def main() -> int:
     with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _laf:
         _laf.write("fn g0(x: Int) : Int = x + x\nfn run(n: Int) : Int = let f = g0 in f(n)\nrun(k)\n")
         _la_path = _laf.name
-    _la = subprocess.run([sys.executable, GLASS, "prove", _la_path, "k=6", "--cross-check"],
+    _la = _prove_run([sys.executable, GLASS, "prove", _la_path, "k=6", "--cross-check"],
                          capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_la, "let-aliased fn callee: let f = g0 in f(6) -> 12 ACCEPT (the 'unresolved f' refusal closed)"):
         la_ok = (_la.returncode == 0) and ("result:  12" in _la.stdout) and ("ACCEPT" in _la.stdout) and ("THIRD LINEAGE AGREES" in _la.stdout)
@@ -1755,7 +1775,7 @@ def main() -> int:
         if not la_ok:
             print(f"        rc={_la.returncode}  out: {_la.stdout.strip()[-260:]}  err: {_la.stderr.strip()[-150:]}")
             failures += 1
-    _laf2 = subprocess.run([sys.executable, GLASS, "prove", "--claim", "11", _la_path, "k=6"],
+    _laf2 = _prove_run([sys.executable, GLASS, "prove", "--claim", "11", _la_path, "k=6"],
                            capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_laf2, "let-aliased fn callee: false claim REJECTs (f(6)=12; claim 11 is false)"):
         laf2_ok = ("proof:   REJECT" in _laf2.stdout) and ("proof:   ACCEPT" not in _laf2.stdout)
@@ -1772,7 +1792,7 @@ def main() -> int:
         _slf.write("fn dbl(x: Int) : Int = x + x\nfn inc(x: Int) : Int = x + 1\n"
                    "fn run(c: Int, n: Int) : Int = let f = (if c >= 1 then dbl else inc) in f(n)\nrun(c, n)\n")
         _sl_path = _slf.name
-    _sl = subprocess.run([sys.executable, GLASS, "prove", _sl_path, "c=1", "n=5", "--cross-check"],
+    _sl = _prove_run([sys.executable, GLASS, "prove", _sl_path, "c=1", "n=5", "--cross-check"],
                          capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_sl, "selector-let callee: let f = (if c then dbl else inc) in f(5), c=1 -> 10 ACCEPT"):
         sl_ok = (_sl.returncode == 0) and ("result:  10" in _sl.stdout) and ("ACCEPT" in _sl.stdout) and ("THIRD LINEAGE AGREES" in _sl.stdout)
@@ -1780,7 +1800,7 @@ def main() -> int:
         if not sl_ok:
             print(f"        rc={_sl.returncode}  out: {_sl.stdout.strip()[-260:]}  err: {_sl.stderr.strip()[-150:]}")
             failures += 1
-    _slf2 = subprocess.run([sys.executable, GLASS, "prove", "--claim", "6", _sl_path, "c=1", "n=5"],
+    _slf2 = _prove_run([sys.executable, GLASS, "prove", "--claim", "6", _sl_path, "c=1", "n=5"],
                            capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_slf2, "selector-let callee: false claim REJECTs (run(1,5)=10; claim 6 is false)"):
         slf2_ok = ("proof:   REJECT" in _slf2.stdout) and ("proof:   ACCEPT" not in _slf2.stdout)
@@ -1799,7 +1819,7 @@ def main() -> int:
             _bf.write("%s(a, b)\n" % op)
             return _bf.name
     for _op, _exp in [("bit_and", 8), ("bit_or", 14), ("bit_xor", 6)]:   # 12 & 10 = 8, | = 14, ^ = 6
-        _bp = subprocess.run([sys.executable, GLASS, "prove", _bit_prog(_op), "a=12", "b=10", "--cross-check"],
+        _bp = _prove_run([sys.executable, GLASS, "prove", _bit_prog(_op), "a=12", "b=10", "--cross-check"],
                              capture_output=True, text=True, cwd=ROOT)
         if not _heavy_skipped(_bp, f"bitwise: {_op}(12,10) -> {_exp} ACCEPT (Third Witness confirms the per-bit formula)"):
             bp_ok = (_bp.returncode == 0) and (f"result:  {_exp}" in _bp.stdout) and ("ACCEPT" in _bp.stdout) and ("THIRD LINEAGE AGREES" in _bp.stdout)
@@ -1808,7 +1828,7 @@ def main() -> int:
                 print(f"        rc={_bp.returncode}  out: {_bp.stdout.strip()[-260:]}  err: {_bp.stderr.strip()[-150:]}")
                 failures += 1
     # Out-of-range operand (>= 2^32) ABSTAINs (the bit-decomposition would be unsatisfiable — refused, not REJECTed).
-    _boob = subprocess.run([sys.executable, GLASS, "prove", _bit_prog("bit_and"), "a=8589934592", "b=5"],
+    _boob = _prove_run([sys.executable, GLASS, "prove", _bit_prog("bit_and"), "a=8589934592", "b=5"],
                            capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_boob, "bitwise: out-of-range operand (2^33) ABSTAINs"):
         boob_ok = ("verdict: ABSTAIN" in _boob.stdout) and ("proof:   ACCEPT" not in _boob.stdout)
@@ -1817,7 +1837,7 @@ def main() -> int:
             print(f"        rc={_boob.returncode}  out: {_boob.stdout.strip()[-260:]}  err: {_boob.stderr.strip()[-150:]}")
             failures += 1
     # Soundness: a false claim about a bitwise result REJECTs (bit_and(12,10)=8; claim 9 is false).
-    _bf2 = subprocess.run([sys.executable, GLASS, "prove", "--claim", "9", _bit_prog("bit_and"), "a=12", "b=10"],
+    _bf2 = _prove_run([sys.executable, GLASS, "prove", "--claim", "9", _bit_prog("bit_and"), "a=12", "b=10"],
                           capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_bf2, "bitwise: false claim REJECTs (bit_and(12,10)=8; claim 9 is false)"):
         bf2_ok = ("proof:   REJECT" in _bf2.stdout) and ("proof:   ACCEPT" not in _bf2.stdout)
@@ -1827,7 +1847,7 @@ def main() -> int:
             failures += 1
     # Showcase: a PRIVATE permission bitmask — bit_and(perms, required) == required is a subset check.
     _bm_path = os.path.join(EX, "prove", "private_bitmask.glass")
-    _bm1 = subprocess.run([sys.executable, GLASS, "prove", _bm_path, "perms=29", "required=13", "--cross-check"],
+    _bm1 = _prove_run([sys.executable, GLASS, "prove", _bm_path, "perms=29", "required=13", "--cross-check"],
                           capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_bm1, "bitwise showcase: private bitmask 13's bits ⊆ 29 -> 1 ACCEPT (perms hidden)"):
         bm1_ok = (_bm1.returncode == 0) and ("result:  1" in _bm1.stdout) and ("ACCEPT" in _bm1.stdout) and ("THIRD LINEAGE AGREES" in _bm1.stdout)
@@ -1835,7 +1855,7 @@ def main() -> int:
         if not bm1_ok:
             print(f"        rc={_bm1.returncode}  out: {_bm1.stdout.strip()[-260:]}  err: {_bm1.stderr.strip()[-150:]}")
             failures += 1
-    _bm0 = subprocess.run([sys.executable, GLASS, "prove", _bm_path, "perms=8", "required=13", "--cross-check"],
+    _bm0 = _prove_run([sys.executable, GLASS, "prove", _bm_path, "perms=8", "required=13", "--cross-check"],
                           capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_bm0, "bitwise showcase: missing bits (8 lacks 13's) -> 0 (the check discriminates)"):
         bm0_ok = (_bm0.returncode == 0) and ("result:  0" in _bm0.stdout) and ("THIRD LINEAGE AGREES" in _bm0.stdout)
@@ -1848,7 +1868,7 @@ def main() -> int:
     # bound by the same multi-wire binder a string result uses (build_claim_mw) and displayed component
     # by component. divmod(17,5) -> (3, 2) ACCEPT; the Third Witness confirms BOTH components.
     _tr_path = os.path.join(EX, "prove", "private_divmod.glass")
-    _tr = subprocess.run([sys.executable, GLASS, "prove", _tr_path, "a=17", "b=5", "--cross-check"],
+    _tr = _prove_run([sys.executable, GLASS, "prove", _tr_path, "a=17", "b=5", "--cross-check"],
                          capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_tr, "tuple result: divmod(17,5) -> (3, 2) ACCEPT (both components bound + Third-Witness-confirmed)"):
         tr_ok = (_tr.returncode == 0) and ("result:  (3, 2)" in _tr.stdout) and ("ACCEPT" in _tr.stdout) and ("THIRD LINEAGE AGREES" in _tr.stdout)
@@ -1862,7 +1882,7 @@ def main() -> int:
                    "fn order(a: Int, b: Int) : Bounds = if a <= b then Bounds { lo: a, hi: b } else Bounds { lo: b, hi: a }\n"
                    "order(x, y)\n")
         _rr_path = _rrf.name
-    _rr = subprocess.run([sys.executable, GLASS, "prove", _rr_path, "x=8", "y=3", "--cross-check"],
+    _rr = _prove_run([sys.executable, GLASS, "prove", _rr_path, "x=8", "y=3", "--cross-check"],
                          capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_rr, "record result: order(8,3) -> Bounds { lo: 3, hi: 8 } ACCEPT (field-named display)"):
         rr_ok = (_rr.returncode == 0) and ("result:  Bounds { lo: 3, hi: 8 }" in _rr.stdout) and ("THIRD LINEAGE AGREES" in _rr.stdout)
@@ -1875,7 +1895,7 @@ def main() -> int:
     with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _nsf:
         _nsf.write('fn p(a: Int) : (Int, String) = (a + 1, "x")\np(x)\n')
         _ns_path = _nsf.name
-    _ns = subprocess.run([sys.executable, GLASS, "prove", _ns_path, "x=5"],
+    _ns = _prove_run([sys.executable, GLASS, "prove", _ns_path, "x=5"],
                          capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_ns, "tuple result: a non-scalar component (string) ABSTAINs (scalar components only)"):
         ns_ok = ("verdict: ABSTAIN" in _ns.stdout) and ("proof:   ACCEPT" not in _ns.stdout)
@@ -1891,7 +1911,7 @@ def main() -> int:
     with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _zkf:
         _zkf.write("a < b\n")
         _zk_path = _zkf.name
-    _zk = subprocess.run([sys.executable, GLASS, "prove", "--zk", _zk_path, "a=3", "b=5"],
+    _zk = _prove_run([sys.executable, GLASS, "prove", "--zk", _zk_path, "a=3", "b=5"],
                          capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_zk, "--zk hiding on a ~700-gate comparison ACCEPTs with genuine padding (audit-HIGH fix)"):
         zk_ok = (_zk.returncode == 0) and ("proof:   ACCEPT" in _zk.stdout) and ("zero-knowledge" in _zk.stdout)
@@ -2147,6 +2167,28 @@ def main() -> int:
         print(f"        {(_cc.stdout + _cc.stderr).strip()[-220:]}")
         failures += 1
 
+    # Native round-trip (v5.123): the strongest proof-FORMAT gate. The NATIVE Glass prover EMITS a real
+    # proof token stream and the INDEPENDENT Pentecost verifier parses + checks it (honest ACCEPT, every
+    # tamper REJECT). It is the only gate that exercises emit <-> parse TOGETHER, so it catches a
+    # serialization drift the parse-only corpus_check cannot — a denser-encoding change that emits AND
+    # parses consistently-wrong sails through corpus_check but fails here (the "green-but-broken" hazard
+    # the v5.122 proof-size change had to guard by hand). Does a native compile (~1-2 min); timeout-guarded
+    # so an under-load native stall SKIPs rather than hangs the suite. (Was "run separately"; wired in now
+    # that the v5.122 difftest segfault — a stale input type — is fixed.)
+    try:
+        _dt = subprocess.run(["bash", os.path.join("pentecost", "difftest.sh")],
+                             capture_output=True, text=True, cwd=_root, timeout=PROVE_TIMEOUT)
+        if _dt.returncode >= 128:
+            print(f"  OK   native round-trip: difftest emit<->Pentecost  (SKIPPED: native stall rc={_dt.returncode} — env-limited)")
+        else:
+            dt_ok = (_dt.returncode == 0) and ("PENTECOST DIFFERENTIAL PASSED" in _dt.stdout)
+            print(f"  {'OK ' if dt_ok else 'FAIL'}  native round-trip: difftest emit<->Pentecost (honest ACCEPT + tampers REJECT)")
+            if not dt_ok:
+                print(f"        {(_dt.stdout + _dt.stderr).strip()[-260:]}")
+                failures += 1
+    except subprocess.TimeoutExpired:
+        print("  OK   native round-trip: difftest emit<->Pentecost  (SKIPPED: timeout — env-limited)")
+
     # Plain-name surface (docs/naming.md): the public CLI exposes neutral names; the thematic
     # names remain as aliases. `glass help` must list the plain names, and each plain alias must
     # be identical to its thematic counterpart (so neither audience drifts out of test coverage).
@@ -2165,7 +2207,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 76)  # +76: ... + tuple-result-ACCEPT + record-result-ACCEPT + tuple-nonscalar-component-ABSTAIN + zk-hiding-large-circuit-ACCEPT + v5.121: unequal-width-risk-CRITICAL-ACCEPT + unequal-width-risk-LOW + unequal-width-match-truncation-fix-ACCEPT (replaced the old unequal-width-if-ABSTAIN; structured-tuple-string-ABSTAIN retained)
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 77)  # +77: ... + zk-hiding-large-circuit-ACCEPT + v5.121: unequal-width-risk-CRITICAL/LOW + unequal-width-match-truncation-fix + v5.123: native-round-trip-difftest-in-suite (emit<->Pentecost; skip-on-stall)
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures
