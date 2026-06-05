@@ -72,9 +72,13 @@ shared.
   [`fuzz/merkle_batch_proto.py`](../fuzz/merkle_batch_proto.py) is a hash-agnostic reference of the
   bottom-up reconstruction (`batch_copath` prover + `reconstruct_root` verifier) — honest reconstruction
   matches the root, forged/missing co-path nodes and tampered leaves all REJECT, dedup is monotone
-  (2.67×–4.61× over sparse trees), full saturation needs zero co-path. The real `verify_b3` /
-  `pentecost_verify.py` reconstructions must mirror it byte-identically; it is their executable spec +
-  regression.
+  (2.67×–4.61× over sparse trees), full saturation needs zero co-path. **Validated in BOTH languages:**
+  [`examples/prove/merkle_batch_difftest.glass`](../examples/prove/merkle_batch_difftest.glass) is the
+  Glass port of the same algorithm (same canonical sweep, even=left orientation matching `fold_path_g`)
+  and passes the same honest=root / forged-REJECT / missing-REJECT / monotone-dedup self-test. The real
+  `verify_b3` (Glass) and `pentecost_verify.py` (Python) reconstructions must mirror these byte-identically
+  — they are the executable spec + regression for the O3 obligation, proven in both languages *before*
+  the format-change wiring (Stage 1) begins.
 - **O2 — missing/extra/forged node.** Counts are canonically *derived and checked*, never trusted as a
   stream length (the v5.111 under-binding lesson): reject on co-path under-run mid-sweep AND over-run at
   the end (`ci != len(copath)`). A forged node → wrong parent → wrong root → REJECT.

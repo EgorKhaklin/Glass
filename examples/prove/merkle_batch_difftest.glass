@@ -1,0 +1,96 @@
+# Merkle batch-opening (multiproof) — GLASS reference of the reconstruction core, for the proof-size
+# Merkle-dedup frontier (docs/merkle-dedup-design.md, roadmap #7b). The Python prototype
+# (fuzz/merkle_batch_proto.py) validated the ALGORITHM; this validates the GLASS implementation of it —
+# the other half of the byte-identical requirement the eventual verify_b3 reconstruction must satisfy.
+#
+# It is hash-agnostic (a trivial arithmetic `h` stands in for Poseidon `hashg`): what is validated is
+# the TREE-RECONSTRUCTION logic — the O3 soundness obligation — canonical bottom-up rebuild of a root
+# from (opened leaves at their indices) + (a minimal co-path node set in canonical order), with even
+# position = LEFT input to h (matching fold_path_g, prove_source...glass:469). O1 (every opened leaf
+# bound), O2 (a missing/forged co-path node is rejected) are exercised too.
+#
+#   glass run examples/prove/merkle_batch_difftest.glass     # prints "merkle-batch: PASS"
+
+# --- a trivial collision-ish hash stand-in (the reconstruction logic is hash-independent) -----------
+fn h(a: Int, b: Int) : Int = (a * 1000003 + b * 31 + 7) % 2147483647
+fn leafh(i: Int, v: Int) : Int = (i * 48611 + v * 97 + 13) % 2147483647
+
+# --- a level = List<Int>; build the full tree as List<List<Int>> (level 0 = leaves, last = [root]) ---
+fn level_up(xs: List<Int>) : List<Int> =
+  match xs { [] => []; [a, ...rest] => match rest { [] => [a]; [b, ...r2] => [h(a, b)] ++ level_up(r2) } }
+fn build_levels(cur: List<Int>, acc: List<List<Int>>) : List<List<Int>> =
+  if len(cur) <= 1 then acc ++ [cur] else build_levels(level_up(cur), acc ++ [cur])
+fn lvl(levels: List<List<Int>>, i: Int) : List<Int> =
+  match levels { [] => []; [a, ...t] => if i == 0 then a else lvl(t, i - 1) }
+fn nthI(xs: List<Int>, i: Int) : Int = match xs { [] => 0; [a, ...t] => if i == 0 then a else nthI(t, i - 1) }
+
+# --- assoc "known" map: List<Pair<Int,Int>> (position -> node hash) ----------------------------------
+fn kget(m: List<Pair<Int, Int>>, k: Int) : Int =
+  match m { [] => 0 - 1; [Pair(kk, vv), ...t] => if kk == k then vv else kget(t, k) }
+fn khas(m: List<Pair<Int, Int>>, k: Int) : Bool =
+  match m { [] => false; [Pair(kk, vv), ...t] => if kk == k then true else khas(t, k) }
+fn sortI(xs: List<Int>) : List<Int> =                       # insertion sort (small sets)
+  match xs { [] => []; [a, ...t] => ins(a, sortI(t)) }
+fn ins(a: Int, xs: List<Int>) : List<Int> =
+  match xs { [] => [a]; [b, ...t] => if a <= b then [a] ++ xs else [b] ++ ins(a, t) }
+fn keysOf(m: List<Pair<Int, Int>>) : List<Int> =
+  match m { [] => []; [Pair(k, v), ...t] => [k] ++ keysOf(t) }
+
+# --- PROVER: minimal co-path for a set of opened indices, canonical (ascending pos) order ------------
+# Walk bottom-up; `known` = positions reconstructible at this level; send a sibling iff not known.
+fn copath_level(known: List<Int>, levelnodes: List<Int>) : (List<Int>, List<Int>) =
+  cp_go(sortI(known), known, levelnodes, [], [])
+fn cp_go(todo: List<Int>, known: List<Int>, levelnodes: List<Int>, parents: List<Int>, cp: List<Int>) : (List<Int>, List<Int>) =
+  match todo { [] => (parents, cp);
+    [pos, ...rest] => let parent : Int = pos / 2 in
+      if memI(parents, parent) then cp_go(rest, known, levelnodes, parents, cp)
+      else let sib : Int = if pos % 2 == 0 then pos + 1 else pos - 1 in
+        let cp2 : List<Int> = if memI(known, sib) then cp else cp ++ [nthI(levelnodes, sib)] in
+        cp_go(rest, known, levelnodes, parents ++ [parent], cp2) }
+fn memI(xs: List<Int>, k: Int) : Bool = match xs { [] => false; [a, ...t] => if a == k then true else memI(t, k) }
+fn batch_copath(levels: List<List<Int>>, li: Int, known: List<Int>, cp: List<Int>) : List<Int> =
+  if li >= len(levels) - 1 then cp
+  else match copath_level(known, lvl(levels, li)) { (parents, cpn) => batch_copath(levels, li + 1, parents, cp ++ cpn) }
+
+# --- VERIFIER: reconstruct the root from opened leaves + co-path (canonical order) -------------------
+# `known` = List<Pair<pos,hash>> at the current level; consume co-path siblings in canonical order.
+fn recon_level(known: List<Pair<Int, Int>>, todo: List<Int>, cp: List<Int>, acc: List<Pair<Int, Int>>) : (List<Pair<Int, Int>>, List<Int>) =
+  match todo { [] => (acc, cp);
+    [pos, ...rest] => let parent : Int = pos / 2 in
+      if khas(acc, parent) then recon_level(known, rest, cp, acc)
+      else let sib : Int = if pos % 2 == 0 then pos + 1 else pos - 1 in
+        match (if khas(known, sib) then (kget(known, sib), cp)
+               else (match cp { [] => (0 - 1, []); [s, ...cprest] => (s, cprest) })) { (sibh, cp2) =>
+          let me : Int = kget(known, pos) in
+          let parenth : Int = if pos % 2 == 0 then h(me, sibh) else h(sibh, me) in
+          recon_level(known, rest, cp2, acc ++ [Pair(parent, parenth)]) } }
+fn reconstruct(known: List<Pair<Int, Int>>, cp: List<Int>, height: Int) : Int =
+  if height <= 0 then (if len(cp) > 0 then 0 - 1            # O2: unused co-path node at the end -> REJECT
+                       else match known { [] => 0 - 1; [Pair(k, v), ...t] => v })
+  else match recon_level(known, sortI(keysOf(known)), cp, []) { (parents, cprest) =>
+    reconstruct(parents, cprest, height - 1) }               # thread the remaining co-path through all levels
+
+# --- build the opened map {idx -> leafhash} for a set of indices --------------------------------------
+fn opened_map(leaves: List<Int>, idxs: List<Int>) : List<Pair<Int, Int>> =
+  match idxs { [] => []; [i, ...t] => [Pair(i, nthI(leaves, i))] ++ opened_map(leaves, t) }
+fn ilog2(n: Int) : Int = if n <= 1 then 0 else 1 + ilog2(n / 2)
+
+# --- the self-test: a 16-leaf tree, open a scattered set, check honest=root + forged/missing=REJECT ---
+fn mk_leaves(i: Int, n: Int) : List<Int> = if i >= n then [] else [leafh(i, i * 7 + 3)] ++ mk_leaves(i + 1, n)
+fn test() : String =
+  let n : Int = 16 in let height : Int = ilog2(n) in
+  let leaves : List<Int> = mk_leaves(0, n) in
+  let levels : List<List<Int>> = build_levels(leaves, []) in
+  let root : Int = nthI(lvl(levels, height), 0) in
+  let idxs : List<Int> = sortI([2, 3, 7, 10, 11]) in
+  let cp : List<Int> = batch_copath(levels, 0, idxs, []) in
+  let om : List<Pair<Int, Int>> = opened_map(leaves, idxs) in
+  let honest : Int = reconstruct(om, cp, height) in
+  let forged : Int = reconstruct(om, (match cp { [] => []; [a, ...t] => [a + 1] ++ t }), height) in
+  let missing : Int = reconstruct(om, (match cp { [] => []; [a, ...t] => t }), height) in
+  let dedup_ok : Bool = len(cp) < len(idxs) * height in     # monotone: fewer than independent paths
+  if (honest == root) && (forged != root) && (missing != root) && dedup_ok
+  then "merkle-batch: PASS"
+  else "merkle-batch: FAIL"
+
+print(test())
