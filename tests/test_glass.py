@@ -1845,6 +1845,22 @@ def main() -> int:
             print(f"        rc={_ns.returncode}  out: {_ns.stdout.strip()[-260:]}  err: {_ns.stderr.strip()[-150:]}")
             failures += 1
 
+    # --zk hiding on a LARGE circuit (v5.118 audit-HIGH fix): a comparison is ~700 gates, so the old
+    # `targetN - glen(gs)` gave ZERO dummy rows yet still labelled the proof "zero-knowledge". zk_pad_k
+    # now floors the dummy-row count at 256 (> the ~170 opening surface), so --zk genuinely hides any
+    # circuit size. This gate is also the first to exercise the (previously untested) --zk path.
+    with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _zkf:
+        _zkf.write("a < b\n")
+        _zk_path = _zkf.name
+    _zk = subprocess.run([sys.executable, GLASS, "prove", "--zk", _zk_path, "a=3", "b=5"],
+                         capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_zk, "--zk hiding on a ~700-gate comparison ACCEPTs with genuine padding (audit-HIGH fix)"):
+        zk_ok = (_zk.returncode == 0) and ("proof:   ACCEPT" in _zk.stdout) and ("zero-knowledge" in _zk.stdout)
+        print(f"  {'OK ' if zk_ok else 'FAIL'}  --zk hiding on a ~700-gate comparison ACCEPTs with genuine padding (audit-HIGH fix)")
+        if not zk_ok:
+            print(f"        rc={_zk.returncode}  out: {_zk.stdout.strip()[-260:]}  err: {_zk.stderr.strip()[-150:]}")
+            failures += 1
+
     # The unboxed single-Int Goldilocks field (goldw_*) must agree with the trusted
     # base-2^16 limb field (gold_*) and obey the field laws — the load-bearing
     # correctness of the "unbox the field" speed cut. (Interpreter check; the native
@@ -2110,7 +2126,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 72)  # +72: ... + let-alias-callee-ACCEPT + let-alias-callee-false-claim-REJECT + selector-let-callee-ACCEPT + selector-let-callee-false-claim-REJECT + bitwise-and-ACCEPT + bitwise-or-ACCEPT + bitwise-xor-ACCEPT + bitwise-oob-ABSTAIN + bitwise-false-claim-REJECT + bitwise-bitmask-subset-1 + bitwise-bitmask-missing-0 + tuple-result-ACCEPT + record-result-ACCEPT + tuple-nonscalar-component-ABSTAIN
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 73)  # +73: ... + bitwise-and-ACCEPT + bitwise-or-ACCEPT + bitwise-xor-ACCEPT + bitwise-oob-ABSTAIN + bitwise-false-claim-REJECT + bitwise-bitmask-subset-1 + bitwise-bitmask-missing-0 + tuple-result-ACCEPT + record-result-ACCEPT + tuple-nonscalar-component-ABSTAIN + zk-hiding-large-circuit-ACCEPT
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

@@ -1864,7 +1864,7 @@ fn gprove_zk(src: String, inputs: List<Pair<String, List<Int>>>, claimedR: List<
 # the multi-wire (string result) ZK path: pad the multi-wire claim with random dummy rows, same verify_b3.
 fn build_claim_zk_mw(src: String, inputs: List<Pair<String, List<Int>>>, claimedRs: List<List<Int>>, seed: Int, targetN: Int) : Build =
   match build_claim_mw(src, inputs, claimedRs) { Build(n, gs, w) =>
-    let k : Int = targetN - glen(gs) in
+    let k : Int = zk_pad_k(targetN, glen(gs)) in
     Build(n + 3 * k, gs ++ zk_dummy_gates(n, k), w ++ zk_dummy_wit(seed, k, 1)) }
 fn gprove_zk_mw(src: String, inputs: List<Pair<String, List<Int>>>, claimedRs: List<List<Int>>, seed: Int, targetN: Int) : Bool =
   match build_claim_zk_mw(src, inputs, claimedRs, seed, targetN) { Build(n, gs, w) => verify_b3(gs, prove_b3(gs, w)) }
@@ -1890,9 +1890,18 @@ fn build_claim_pub(src: String, inputs: List<Pair<String, List<Int>>>, pubs: Lis
 fn zk_dummy_gates(base: Int, k: Int) : List<Gate> = if k <= 0 then [] else [GAdd(base + 2, base, base + 1)] ++ zk_dummy_gates(base + 3, k - 1)
 fn zk_dummy_wit(seed: Int, k: Int, i: Int) : List<List<Int>> =
   if k <= 0 then [] else let a : List<Int> = lane0(hashg(glit(seed), glit(2 * i))) in let b : List<Int> = lane0(hashg(glit(seed), glit(2 * i + 1))) in [a, b, fadd(a, b)] ++ zk_dummy_wit(seed, k - 1, i + 1)
+# zk_pad_k: how many random dummy rows the ZK trace gets. The hiding argument needs the dummy-row
+# count to EXCEED the ~170-value opening surface (2*fri_queries + the OOD/trace openings), so the
+# query/OOD openings reveal only random rows, not the witness. The old `targetN - glen(gs)` went
+# <= 0 (ZERO hiding) for any circuit with >= targetN gates — silently producing a NON-hiding proof
+# still labelled "zero-knowledge" (the v5.118 audit's HIGH finding). Floor it at 256 (> the opening
+# surface, with margin) so hiding holds for ANY circuit size; bigger circuits get a bigger (but
+# genuinely hiding) ZK proof. The randomness is still an idealized PRG (mask-RNG), an honest-scope
+# caveat that stands until retired.
+fn zk_pad_k(targetN: Int, ngates: Int) : Int = let kb : Int = targetN - ngates in if kb < 256 then 256 else kb
 fn build_claim_zk(src: String, inputs: List<Pair<String, List<Int>>>, claimedR: List<Int>, seed: Int, targetN: Int) : Build =
   match build_claim_m(src, inputs, claimedR) { Build(n, gs, w) =>
-    let k : Int = targetN - glen(gs) in
+    let k : Int = zk_pad_k(targetN, glen(gs)) in
     Build(n + 3 * k, gs ++ zk_dummy_gates(n, k), w ++ zk_dummy_wit(seed, k, 1)) }
 
 # --- PENTECOST SERIALIZER (north-star "let the verifier be two", v5.64.0) --------

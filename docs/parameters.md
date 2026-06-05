@@ -1,5 +1,14 @@
 # Parameters & concrete soundness
 
+> ⚠️ **Stale-default note (2026-06-04 audit).** The "as built" table below predates the v5.46 default
+> switch and the v5.70 hash migration. The **live default `glass prove` is Goldilocks (p = 2⁶⁴−2³²+1)
+> with the Poseidon2 hash** and the witness-free `verify_b3` — *not* the Baby-Bear + MiMC path this
+> document's tables describe (that path still exists behind `--baby-bear`). The Goldilocks parameters
+> and the conjectural-vs-unique-decoding distinction in §1 below are current; treat the security level
+> as **80-bit (unique-decoding)**, the ~135-bit list-decoding figure as *conjectural*. See
+> [`security-audit-2026-06.md`](security-audit-2026-06.md) and the `CHANGELOG`; a full refresh of the
+> tables is tracked. Nothing here lifts the UNAUDITED / do-not-protect-real-value banner.
+
 `docs/soundness.md` says, plainly, that Glass's cryptographic parameters are
 *educational-grade*. This document makes that precise: it writes down every
 parameter of the two proving paths, the standard FRI soundness bound, and the
