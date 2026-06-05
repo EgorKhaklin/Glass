@@ -231,18 +231,28 @@ buildable next-session work; 5–6 are large/gated; 7–8 are rigor and the hard
    count) — `emit_hash` ⇄ `rd_hash` in lockstep, all 8 fixtures regenerated via the new
    [`fuzz/regen_corpus.py`](../fuzz/regen_corpus.py) (emit→Pentecost-verify→write), Name re-rooted, the
    native round-trip `difftest.sh` fixed (it had bit-rotted to a SIGSEGV on a stale input type) and
-   green. Result: `a<b` 552k → **448k tokens (−18.9%)**. **Remaining (ranked):** (a) **wire `difftest.sh`
-   into the suite** as a permanent native-round-trip gate (now that it passes) — closes the
-   "green-but-broken" hazard for *future* format changes; (b) **Merkle-path deduplication** — the larger
+   green. Result: `a<b` 552k → **448k tokens (−18.9%)**. **Remaining (ranked):** (a) ✅ **wired `difftest.sh`
+   into the suite** as a permanent native-round-trip gate *(v5.123)* — the green-but-broken hazard for
+   *future* format changes is now caught automatically; (b) **Merkle-path deduplication** — the larger
    (~10×) structural lever (a multiproof over shared path nodes; touches `verify_b3`'s in-memory shape,
    multi-session); (c) base-2^31 limbs — deferred (a cross-lane combine overflows `int64`; the safe
    per-lane form yields a smaller win than the count-drop already shipped).
 
-8. **R2 formal follow-ons** *(medium; not gateable).* A formal MDS/round-count cryptanalysis
+8. **Test-suite performance (test-infra).** *(medium; not soundness-critical; the practical blocker.)*
+   A full `tests/test_glass.py` run takes **hours** on a loaded machine: each of the ~50 heavy `glass
+   prove` gates shells to `run_native.sh`, which (re)builds `native_glassc` from scratch — so the
+   self-hosting compiler is rebuilt dozens of times per suite. v5.123 made the suite *complete* under
+   load (timeout-guard → a hung gate SKIPs instead of hanging forever), but the inherent per-gate
+   rebuild cost remains. The lever: **build `native_glassc` once per suite and reuse it across the prove
+   gates** (a content-addressed cache keyed on `glassc.glass`+`prism.glass`+`quartz.py`, or a suite-level
+   warm-up that the gates reuse) — could turn hours into minutes. Touches the bootstrap-critical
+   `run_native.sh`, so it earns its own careful change (must keep the fixpoint byte-identical).
+
+9. **R2 formal follow-ons** *(medium; not gateable).* A formal MDS/round-count cryptanalysis
    and a formal Fiat-Shamir separation argument — reviewed prose, no differential-testable
    artifact, partly subsumed by the external-audit boundary.
 
-9. **External audit + Poseidon cryptanalysis** *(the hard boundary — not in-repo work).*
+10. **External audit + Poseidon cryptanalysis** *(the hard boundary — not in-repo work).*
    The only path from research-grade to production-soundness. Listed to keep the roadmap
    honest about what in-repo work can and cannot achieve; a builder cannot pick this.
 
