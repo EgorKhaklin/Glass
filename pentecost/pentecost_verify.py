@@ -309,7 +309,10 @@ def parse(path):
         n = rd(); limbs = [rd() for _ in range(n)]
         return sum(l << (16*i) for i, l in enumerate(limbs)) % P
     def rd_g2(): return (rd_fe(), rd_fe())
-    def rd_hash(): return [rd_fe() for _ in range(4)]    # a digest = 4 lanes
+    def rd_lane16():                                     # v5.122.0: a hash lane = FIXED 4 base-2^16 limbs,
+        limbs = [rd() for _ in range(4)]                 # NO count prefix (mirror of emit_lanes16 in the bridge).
+        return sum(l << (16*i) for i, l in enumerate(limbs)) % P
+    def rd_hash(): return [rd_lane16() for _ in range(4)]  # a digest = 4 lanes x fixed 4 limbs (16 total)
     def rd_path():
         n = rd(); return [rd_hash() for _ in range(n)]
     def rd_qopen(): return (rd_g2(), rd_g2(), rd_path(), rd_path())

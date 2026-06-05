@@ -30,7 +30,7 @@ bridge = open(sys.argv[1]).read()
 machinery = bridge[:bridge.find("# --- demo")]
 sys.stdout.write(machinery + (
   '\nlet _usrc : String = "a + b"\n'
-  'let _inp : List<Pair<String, Int>> = [Pair("a", 3), Pair("b", 5)]\n'
+  'let _inp : List<Pair<String, List<Int>>> = [Pair("a", [3]), Pair("b", [5])]\n'
   'let _rv : List<List<Int>> = gref_m_checked(_usrc, _inp)\n'
   'let _r : List<Int> = vh(_rv)\n'
   'let _ : String = print(gprove_emit(_usrc, _inp, _r))\n'
@@ -58,7 +58,7 @@ def verdict(tokens):
 
 honest = verdict(toks)
 pi = toks.index("PROOF")
-t_root = toks[:]; t_root[pi + 3] = str(int(t_root[pi + 3]) + 1)          # perturb root1 lane0 limb0
+t_root = toks[:]; t_root[pi + 1] = str(int(t_root[pi + 1]) + 1)          # perturb root1 lane0 limb0 (v5.122: no count prefix -> pi+1 is limb0)
 t_claim = toks[:]; t_claim[9] = "9"                                       # claim a+b == 9, not 8
 t_open = toks[:]; t_open[-2] = str(int(t_open[-2]) + 1)                   # perturb a deep opening token
 

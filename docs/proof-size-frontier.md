@@ -4,6 +4,12 @@
 can't. Grounded in the live FRI/security code + an adversarial red-team. Research-grade, UNAUDITED —
 nothing here changes that.*
 
+> **Update (v5.122):** the **first serialization increment shipped** — a denser hash encoding (fixed
+> 16 base-2^16 limbs per digest, dropping the always-`"4"` per-lane count). Measured: `a<b` 552k →
+> **448k tokens (−18.9%)**, soundness-neutral, `emit_hash`⇄`rd_hash` only. The next levers are
+> Merkle-path deduplication (the ~10× structural win) and wiring `difftest.sh` into the suite as a
+> permanent native-round-trip gate. See §3 and `docs/roadmap.md` item 7.
+
 ## TL;DR
 
 - **The grind/query *parameter* lever is NO-GO** as a proof-size play: it buys at most ~4–5%, sits at

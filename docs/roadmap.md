@@ -224,13 +224,19 @@ buildable next-session work; 5–6 are large/gated; 7–8 are rigor and the hard
    differential oracle**. A force-multiplier (unblocks #5 and heavy demos), but a structural
    rewrite — the "do it when the dogfood pain bites" background project.
 
-7. **Proof-size reduction (serialization).** *(medium; soundness-neutral; dedicated proof-format
-   change).* A single comparison proof is ~552k tokens, ~94.9% of which is Merkle-path hash data
-   ([`docs/proof-size-frontier.md`](proof-size-frontier.md)). The grind/query *parameter* lever is
-   NO-GO (~5%, brittle). The real win is a **denser field-element encoding + Merkle-path
-   deduplication** — soundness-neutral, ~20–40%+ — but it changes the portable proof format, so it
-   must land in lockstep across `emit_proofb3` and Pentecost's `parse`, regenerate all 8 corpus
-   fixtures, and re-root the Name. (The design verdict + the grind-overstatement guard shipped v5.120.)
+7. **Proof-size reduction (serialization).** *(soundness-neutral; proof-format change.)* A comparison
+   proof was ~552k tokens, ~94.5% of which is hash-digest data ([`docs/proof-size-frontier.md`](proof-size-frontier.md)).
+   The grind/query *parameter* lever is NO-GO (~5%, brittle, v5.120). **First increment shipped v5.122:**
+   a **denser hash encoding** (fixed 16 base-2^16 limbs per digest, dropping the always-`"4"` per-lane
+   count) — `emit_hash` ⇄ `rd_hash` in lockstep, all 8 fixtures regenerated via the new
+   [`fuzz/regen_corpus.py`](../fuzz/regen_corpus.py) (emit→Pentecost-verify→write), Name re-rooted, the
+   native round-trip `difftest.sh` fixed (it had bit-rotted to a SIGSEGV on a stale input type) and
+   green. Result: `a<b` 552k → **448k tokens (−18.9%)**. **Remaining (ranked):** (a) **wire `difftest.sh`
+   into the suite** as a permanent native-round-trip gate (now that it passes) — closes the
+   "green-but-broken" hazard for *future* format changes; (b) **Merkle-path deduplication** — the larger
+   (~10×) structural lever (a multiproof over shared path nodes; touches `verify_b3`'s in-memory shape,
+   multi-session); (c) base-2^31 limbs — deferred (a cross-lane combine overflows `int64`; the safe
+   per-lane form yields a smaller win than the count-drop already shipped).
 
 8. **R2 formal follow-ons** *(medium; not gateable).* A formal MDS/round-count cryptanalysis
    and a formal Fiat-Shamir separation argument — reviewed prose, no differential-testable

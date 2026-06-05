@@ -1954,7 +1954,16 @@ fn emit_int(x: Int) : String = int_to_string(x) ++ " "
 fn emit_limbs(xs: List<Int>) : String = match xs { [] => ""; [h, ...t] => emit_int(h) ++ emit_limbs(t) }
 fn emit_fe(x: List<Int>) : String = let t : List<Int> = trim(x) in emit_int(len(t)) ++ emit_limbs(t)
 fn emit_lanes(ls: List<List<Int>>) : String = match ls { [] => ""; [h, ...t] => emit_fe(h) ++ emit_lanes(t) }
-fn emit_hash(h: List<Int>) : String = emit_lanes(to_lanes(h))                 # 16-limb hash -> 4 lane fe's
+# v5.122.0 proof-size cut (denser hash encoding): a digest = 4 lanes, and a Goldilocks lane is
+# ALWAYS < p < 2^64 = at most 4 base-2^16 limbs. So emit a FIXED 16 limbs (4 lanes x pad4l-to-4) and
+# DROP the per-lane `count` prefix — the count was a pure length-prefix (emit_fe trims trailing-zero
+# high limbs); a zero-padded fixed-16 layout is lossless (rd_hash reconstructs each lane via
+# sum(limb_i << 16i) mod p). Measured: hash material is ~94% of a proof and every hash-lane is 4 limbs,
+# so the count tokens are pure overhead (always "4") => ~19% fewer tokens on the comparison proof.
+# DIGEST-LOCAL: emit_fe / emit_lanes stay count-bearing and BYTE-IDENTICAL for non-hash field elements
+# (g2 coords, TOpenB scalar openings, gate constants). Mirrored EXACTLY by rd_hash in pentecost_verify.py.
+fn emit_lanes16(ls: List<List<Int>>) : String = match ls { [] => ""; [h, ...t] => emit_limbs(pad4l(first4(h))) ++ emit_lanes16(t) }
+fn emit_hash(h: List<Int>) : String = emit_lanes16(to_lanes(h))               # 16-limb hash -> 16 raw base-2^16 limbs (no per-lane count)
 fn emit_g2(g: G2) : String = match g { G2(a0, a1) => emit_fe(a0) ++ emit_fe(a1) }
 fn emit_hlist(p: List<List<Int>>) : String = match p { [] => ""; [h, ...t] => emit_hash(h) ++ emit_hlist(t) }
 fn emit_path(p: List<List<Int>>) : String = emit_int(len(p)) ++ emit_hlist(p)
