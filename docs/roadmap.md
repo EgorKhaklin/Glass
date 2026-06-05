@@ -233,10 +233,16 @@ buildable next-session work; 5–6 are large/gated; 7–8 are rigor and the hard
    native round-trip `difftest.sh` fixed (it had bit-rotted to a SIGSEGV on a stale input type) and
    green. Result: `a<b` 552k → **448k tokens (−18.9%)**. **Remaining (ranked):** (a) ✅ **wired `difftest.sh`
    into the suite** as a permanent native-round-trip gate *(v5.123)* — the green-but-broken hazard for
-   *future* format changes is now caught automatically; (b) **Merkle-path deduplication** — the larger
-   (~10×) structural lever (a multiproof over shared path nodes; touches `verify_b3`'s in-memory shape,
-   multi-session); (c) base-2^31 limbs — deferred (a cross-lane combine overflows `int64`; the safe
-   per-lane form yields a smaller win than the count-drop already shipped).
+   *future* format changes is now caught automatically; (b) **Merkle-path deduplication — designed,
+   verdict GO** ([`docs/merkle-dedup-design.md`](merkle-dedup-design.md)): a per-tree sorted-index batch
+   multiproof. **Measured 65% / 2.86× smaller proof** on `a<b` (the docs' old ~10× was a small-domain
+   artifact — corrected). *Monotone* (never larger, no break-even — helps **every** proof, unlike LogUp)
+   with one new soundness obligation (O3 canonical node order). But it's a deliberate proof-*format*
+   break — `verify_b3` IS in the lockstep this time — so it's a **gated 3-stage, multi-session** change
+   (trace trees → FRI `bopen` → re-root Name; the O3 green-but-broken trap needs witness3/dogfood +
+   forged-frontier REJECT, not difftest alone). The **dominant buildable proof-size frontier**, and it
+   *de-risks* H3 (a 2.86× proof = ~⅓ the in-circuit Merkle hashing); (c) base-2^31 limbs — deferred (a
+   cross-lane combine overflows `int64`; the safe per-lane form yields a smaller win than the count-drop).
 
 8. **Test-suite performance (test-infra).** *(medium; not soundness-critical.)* A full
    `tests/test_glass.py` run is **slow** (~tens of minutes): each of the ~50 heavy `glass prove` gates
