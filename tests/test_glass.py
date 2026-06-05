@@ -1578,19 +1578,58 @@ def main() -> int:
         if not vdf_ok:
             print(f"        rc={_vdf.returncode}  out: {_vdf.stdout.strip()[-260:]}  err: {_vdf.stderr.strip()[-150:]}")
             failures += 1
-    # Soundness guard 1: an `if` returning strings of DIFFERENT widths would mux to the shorter and
-    # prove a CORRUPTED value — so muxw ABSTAINs (loud refusal), never silently truncates.
+    # Unequal-width string results (v5.121): an `if`/`match` returning strings of DIFFERENT widths now
+    # LOWERS soundly — the bridge NUL-pads the shorter branch (codepoint 0, a value real chars 32..126
+    # never take) and decode_str stops at the sentinel, so the selected branch reveals its true text.
+    # private_risk has four nested ifs of lengths 8/4/6/3; score=95 -> "CRITICAL" (the longest), score
+    # hidden. (Until v5.121 this ABSTAINed and branches had to be hand-padded, as private_verdict does.)
     import tempfile as _tf_sr
-    with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _uf:
-        _uf.write('fn lab(s: Int) : String = if s >= 700 then "approved" else "review"\nlab(score)\n')
-        _uneq_path = _uf.name
-    _uneq = subprocess.run([sys.executable, GLASS, "prove", _uneq_path, "score=820"],
-                           capture_output=True, text=True, cwd=ROOT)
-    if not _heavy_skipped(_uneq, "string-valued result: unequal-width if-branches ABSTAIN (no silent truncation)"):
-        uneq_ok = ("verdict: ABSTAIN" in _uneq.stdout) and ("proof:   ACCEPT" not in _uneq.stdout)
-        print(f"  {'OK ' if uneq_ok else 'FAIL'}  string-valued result: unequal-width if-branches ABSTAIN (no silent truncation)")
-        if not uneq_ok:
-            print(f"        rc={_uneq.returncode}  out: {_uneq.stdout.strip()[-260:]}  err: {_uneq.stderr.strip()[-150:]}")
+    _rk_path = os.path.join(EX, "prove", "private_risk.glass")
+    _rk = subprocess.run([sys.executable, GLASS, "prove", _rk_path, "score=95", "--cross-check"],
+                         capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_rk, 'unequal-width strings: private_risk score=95 -> "CRITICAL" ACCEPT (NUL-padded if-mux, score hidden)'):
+        rk_ok = (_rk.returncode == 0) and ('result:  "CRITICAL"' in _rk.stdout) and ("ACCEPT" in _rk.stdout) and ("THIRD LINEAGE AGREES" in _rk.stdout)
+        print(f"  {'OK ' if rk_ok else 'FAIL'}  unequal-width strings: private_risk score=95 -> \"CRITICAL\" ACCEPT (NUL-padded if-mux, score hidden)")
+        if not rk_ok:
+            print(f"        rc={_rk.returncode}  out: {_rk.stdout.strip()[-260:]}  err: {_rk.stderr.strip()[-150:]}")
+            failures += 1
+    # The shortest band, to show the nested if genuinely selects (not a constant) across widths.
+    _rk2 = subprocess.run([sys.executable, GLASS, "prove", _rk_path, "score=10", "--cross-check"],
+                          capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_rk2, 'unequal-width strings: private_risk score=10 -> "LOW" (the shortest band selects)'):
+        rk2_ok = (_rk2.returncode == 0) and ('result:  "LOW"' in _rk2.stdout) and ("THIRD LINEAGE AGREES" in _rk2.stdout)
+        print(f"  {'OK ' if rk2_ok else 'FAIL'}  unequal-width strings: private_risk score=10 -> \"LOW\" (the shortest band selects)")
+        if not rk2_ok:
+            print(f"        rc={_rk2.returncode}  out: {_rk2.stdout.strip()[-260:]}  err: {_rk2.stderr.strip()[-150:]}")
+            failures += 1
+    # The latent-bug regression (v5.121): a `match` with unequal-width string arms used to SILENTLY
+    # TRUNCATE to the last arm's width — `match s { 0 => "approved"; _ => "no" }` at s=0 attested the
+    # corrupted "ap" yet ACCEPTed (a source<->circuit divergence only --witness3 caught). accw now keeps
+    # the longer accumulator + decode stops at NUL, so it attests the true "approved" and witness3 AGREES.
+    with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _ufm:
+        _ufm.write('fn lab(s: Int) : String = match s { 0 => "approved"; _ => "no" }\nlab(score)\n')
+        _mtrunc_path = _ufm.name
+    _mt = subprocess.run([sys.executable, GLASS, "prove", _mtrunc_path, "score=0", "--cross-check"],
+                         capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_mt, 'unequal-width match: s=0 -> "approved" ACCEPT (was silently truncated to "ap"; v5.121 fix)'):
+        mt_ok = (_mt.returncode == 0) and ('result:  "approved"' in _mt.stdout) and ("ACCEPT" in _mt.stdout) and ("THIRD LINEAGE AGREES" in _mt.stdout)
+        print(f"  {'OK ' if mt_ok else 'FAIL'}  unequal-width match: s=0 -> \"approved\" ACCEPT (was silently truncated to \"ap\"; v5.121 fix)")
+        if not mt_ok:
+            print(f"        rc={_mt.returncode}  out: {_mt.stdout.strip()[-260:]}  err: {_mt.stderr.strip()[-150:]}")
+            failures += 1
+    # Soundness guard: an unequal-width mux that is NOT both flat strings — here a tuple carrying a
+    # variable-length string field — still ABSTAINs (is_str_expr is false for ETuple/ECtor), so a
+    # structured value is never NUL-corrupted. Only provably-flat strings take the padding path.
+    with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _ufs:
+        _ufs.write('fn pick(c: Int) : (String, Int) = if c >= 1 then ("ab", 1) else ("xyz", 2)\npick(flag)\n')
+        _struct_path = _ufs.name
+    _st = subprocess.run([sys.executable, GLASS, "prove", _struct_path, "flag=1"],
+                         capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_st, "unequal-width mux: a structured (tuple-with-string) value ABSTAINs (not NUL-corrupted)"):
+        st_ok = ("verdict: ABSTAIN" in _st.stdout) and ("proof:   ACCEPT" not in _st.stdout)
+        print(f"  {'OK ' if st_ok else 'FAIL'}  unequal-width mux: a structured (tuple-with-string) value ABSTAINs (not NUL-corrupted)")
+        if not st_ok:
+            print(f"        rc={_st.returncode}  out: {_st.stdout.strip()[-260:]}  err: {_st.stderr.strip()[-150:]}")
             failures += 1
     # Soundness guard 2: a multi-wire result that is NOT a string and NOT a tuple/record-of-scalars —
     # an ADT (a tagged constructor value) — is not bindable as a public claim, so it ABSTAINs rather
@@ -2126,7 +2165,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 73)  # +73: ... + bitwise-and-ACCEPT + bitwise-or-ACCEPT + bitwise-xor-ACCEPT + bitwise-oob-ABSTAIN + bitwise-false-claim-REJECT + bitwise-bitmask-subset-1 + bitwise-bitmask-missing-0 + tuple-result-ACCEPT + record-result-ACCEPT + tuple-nonscalar-component-ABSTAIN + zk-hiding-large-circuit-ACCEPT
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 76)  # +76: ... + tuple-result-ACCEPT + record-result-ACCEPT + tuple-nonscalar-component-ABSTAIN + zk-hiding-large-circuit-ACCEPT + v5.121: unequal-width-risk-CRITICAL-ACCEPT + unequal-width-risk-LOW + unequal-width-match-truncation-fix-ACCEPT (replaced the old unequal-width-if-ABSTAIN; structured-tuple-string-ABSTAIN retained)
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

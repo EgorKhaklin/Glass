@@ -1,0 +1,22 @@
+# Prove a risk BAND of a PRIVATE score, revealing only the band WORD — and the words have DIFFERENT
+# lengths. Until v5.121 an `if`/`match` over strings of unequal length ABSTAINed: the branches had to
+# be padded to equal width by hand (as private_verdict.glass does, with its four 4-letter verdicts).
+# Now the bridge NUL-pads the shorter branch with a codepoint-0 sentinel and decode stops there, so
+# the natural, varying-length words just lower — and the four nested `if`s here all differ in length.
+#
+#   glass prove examples/prove/private_risk.glass score=95   # -> "CRITICAL", ACCEPT
+#   glass prove examples/prove/private_risk.glass score=70   # -> "HIGH",     ACCEPT
+#   glass prove examples/prove/private_risk.glass score=40   # -> "MEDIUM",   ACCEPT
+#   glass prove examples/prove/private_risk.glass score=10   # -> "LOW",      ACCEPT
+#
+# The band word is bound as the public result; the score it was computed from stays in the witness.
+# The selected branch is the only thing revealed — the verifier learns the band, never the number.
+# The Third Witness (glass.py) recomputes the same word, confirming the circuit selected the band the
+# source dictates — not a corrupted muxing of the branches.
+fn classify(s: Int) : String =
+  if s >= 90 then "CRITICAL"
+  else if s >= 60 then "HIGH"
+  else if s >= 30 then "MEDIUM"
+  else "LOW"
+
+classify(score)

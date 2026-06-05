@@ -188,12 +188,17 @@ buildable next-session work; 5–6 are large/gated; 7–8 are rigor and the hard
    soft range-predication (the `v` vs `v+p` canonical-form attack reproduces the
    crown-jewel silent-wrong-ACCEPT class). Keep the hard `range_k` + ABSTAIN guard.
 
-3. **String-result follow-ups** *(small–medium; low-risk, bridge-only).* A **string `--claim`**
-   landed *v5.111* (a false string result REJECTs, a wrong-length claim ABSTAINs), and a
-   **portable string-proof `--emit`** landed *v5.112* (`gprove_emit_mw` — the second verifier
-   Pentecost now checks the string-*valued* proof shape, with a tamper-checked corpus fixture).
-   **Remaining:** **unequal-width `if`-branches via length-tagged padding** (today they ABSTAIN).
-   Additive, gateable (`cgen == heval == seval` + a corpus fixture), no `verify_b3` soundness change.
+3. **String-result follow-ups — ✅ COMPLETE.** A **string `--claim`** landed *v5.111* (a false
+   string result REJECTs, a wrong-length claim ABSTAINs); a **portable string-proof `--emit`**
+   landed *v5.112* (`gprove_emit_mw` — the second verifier Pentecost checks the string-*valued*
+   proof shape, with a tamper-checked corpus fixture); and **unequal-width `if`/`match` branches**
+   landed *v5.121* via NUL-termination (the shorter branch is padded with codepoint-0, `decode_str`
+   stops at the sentinel) — which also fixed a latent `accw` silent-truncation bug that attested a
+   corrupted string. **Residual (deep corner, sound):** an `if`/`match` whose branches are a
+   *structure carrying a variable-length string field* (e.g. `if c then ("ab", 1) else ("xyz", 2)`)
+   is not a flat string, so it **ABSTAINs** rather than NUL-corrupt — a faithful refusal, not a gap
+   to close unless a real workload needs structured-with-variable-string results (then: a
+   length-tagged value model, a string-model change for a fresh session).
 
 4. **Computed higher-order callees. ✅ LANDED v5.113.0 (+ let-alias v5.114.0).** A function value
    chosen *at runtime* (`(if c then g else h)(x)`) — the last refused bridge construct — lowers by

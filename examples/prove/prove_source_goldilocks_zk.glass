@@ -1401,14 +1401,22 @@ fn muxw_go(wc: Int, vt: List<Int>, vf: List<Int>, b: Build) : (List<Int>, Build)
   match vt { [] => ([], b); [t, ...tr] => match vf { [] => ([], b); [f, ...fr] =>
     match mks(t, f, b) { (wd, b1) => match mkm(wc, wd, b1) { (wcd, b2) => match mka(f, wcd, b2) { (wo, b3) =>
     match muxw_go(wc, tr, fr, b3) { (rest, b4) => ([wo] ++ rest, b4) } } } } } }
-# An `if` mux over MULTI-WIRE branches (strings, ADTs, tuples) must have EQUAL widths: muxw_go
-# recurses in lockstep and STOPS at the shorter branch, so unequal widths would silently TRUNCATE
-# the longer one to a corrupted value (e.g. `if c then "approved" else "review"` -> 6 muxed wires
-# mixing the two). Refuse that loudly (ABSTAIN) rather than prove a truncated result. Scalar ifs
-# (1 wire each) and equal-width string/ADT/tuple ifs are unaffected — the common case is untouched.
-fn muxw(wc: Int, vt: List<Int>, vf: List<Int>, b: Build) : (List<Int>, Build) =
+# An `if` mux over MULTI-WIRE branches (strings, ADTs, tuples): muxw_go recurses in lockstep and
+# STOPS at the shorter branch, so UNEQUAL widths would silently TRUNCATE the longer to a corrupted
+# value. `mux_if` handles that by branch TYPE. By well-typedness both arms share a type, so the ONLY
+# way widths differ is STRINGS (width = codepoint count, not type-fixed; ADTs are twidth-padded, tuples
+# fixed-arity). When both branches are flat STRING expressions (is_str_expr) we NUL-pad the shorter to
+# the longer with codepoint-0 wires (a value real codepoints — 32..126 — never take) and mux at equal
+# width; decode_str (v5.121) stops at the first NUL, so the shorter branch decodes back to its true
+# text. `if c then "APPROVED" else "DENIED"` now lowers soundly. An unequal-width mux that is NOT both
+# flat strings (e.g. a record/ADT carrying a variable-length string field — a deep corner) still
+# ABSTAINs loudly rather than corrupt. Scalar ifs and equal-width string/ADT/tuple ifs are byte-identical.
+fn mux_if(wc: Int, t: Expr, f: Expr, vt: List<Int>, vf: List<Int>, b: Build) : (List<Int>, Build) =
   if ilenI(vt) == ilenI(vf) then muxw_go(wc, vt, vf, b)
-  else error("glass prove: an `if` returns values of different wire widths (e.g. strings of different lengths) — muxing them would truncate to the shorter and prove a CORRUPTED value, so this ABSTAINs. Pad the branches to equal length.")
+  else if is_str_expr(t) && is_str_expr(f)
+    then (let mx : Int = if ilenI(vt) >= ilenI(vf) then ilenI(vt) else ilenI(vf) in
+          match padv_g(vt, mx, b) { (pvt, b1) => match padv_g(vf, mx, b1) { (pvf, b2) => muxw_go(wc, pvt, pvf, b2) } })
+    else error("glass prove: an `if` returns multi-wire values of DIFFERENT widths that are not both flat strings (e.g. ADT/record variants with different shapes, or a structure carrying a variable-length string field) — muxing them would corrupt the value, so this ABSTAINs.")
 
 # --- strings as multi-wire codepoint values (v5.101) -------------------------
 # "strings can't be field-proven" was the long-standing refusal. The cut: a string IS a value,
@@ -1423,6 +1431,23 @@ fn muxw(wc: Int, vt: List<Int>, vf: List<Int>, b: Build) : (List<Int>, Build) =
 # proof). The scalar (width-1) `==` path is preserved byte-for-byte, so every prior arithmetic /
 # comparison proof, the corpus fixtures, and the Name are unchanged.
 fn is_strfn(n: String) : Bool = (n == "string_length") || (n == "substring")
+# is_str_expr: a CONSERVATIVE, syntactic "is this expression a FLAT string value?" used to gate the
+# unequal-width NUL-padding mux (v5.121). True only for forms whose result is certainly a flat list of
+# codepoint wires — a literal, a `++` of strings, a `substring(..)` slice, or an if/match/let whose
+# leaves are all strings. NOT true for a bare variable or a call (type unknown without an env) — those
+# stay equal-width-or-ABSTAIN (sound: a false negative only forgoes the pad, never corrupts). NOT true
+# for ADT/tuple/record constructors, so a structure carrying a string field is never NUL-padded.
+fn is_str_expr(e: Expr) : Bool =
+  match e {
+    EStr(s) => true;
+    EConcat(x, y) => is_str_expr(x) && is_str_expr(y);
+    EIf(c, t, f) => is_str_expr(t) && is_str_expr(f);
+    ELet(nm, v, body) => is_str_expr(body);
+    EMatch(scrut, arms) => all_arms_str(arms);
+    EApp(g, a) => match unwind_app(EApp(g, a), []) { (hd, args) => match hd { EVar(nm) => nm == "substring"; _ => false } };
+    _ => false }
+fn all_arms_str(arms: List<Pair<Pattern, Expr>>) : Bool =
+  match arms { [] => true; [Pair(p, body), ...r] => is_str_expr(body) && all_arms_str(r) }
 fn ascii_tbl(u: Int) : String = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
 fn char_code(c: String) : Int = match string_index_of(ascii_tbl(0), c) { Some(idx) => 32 + idx; None => error("glass prove: a proven string has a non-printable / non-ASCII character (only codepoints 32..126 lower to the field) — ABSTAIN, not a wrong proof") }
 fn str_cps(s: String, i: Int, n: Int) : List<Int> = if i >= n then [] else [char_code(substring(s, i, i + 1))] ++ str_cps(s, i + 1, n)
@@ -1622,7 +1647,7 @@ fn cgen(e: Expr, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: 
     EAnd(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match mkm(vhi(vx), vhi(vy), b2) { (wo, b3) => ([wo], b3) } } };
     EOr(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match mka(vhi(vx), vhi(vy), b2) { (ws, b3) => match mkm(vhi(vx), vhi(vy), b3) { (wp, b4) => match mks(ws, wp, b4) { (wo, b5) => ([wo], b5) } } } } };
     EUNot(x) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match mkc(glit(1), b1) { (wone, b2) => match mks(wone, vhi(vx), b2) { (wo, b3) => ([wo], b3) } } };
-    EIf(c, t, f) => match cgen(c, cenv, fns, types, b) { (vc, b1) => match cgen(t, cenv, fns, types, b1) { (vt, b2) => match cgen(f, cenv, fns, types, b2) { (vf, b3) => muxw(vhi(vc), vt, vf, b3) } } };
+    EIf(c, t, f) => match cgen(c, cenv, fns, types, b) { (vc, b1) => match cgen(t, cenv, fns, types, b1) { (vt, b2) => match cgen(f, cenv, fns, types, b2) { (vf, b3) => mux_if(vhi(vc), t, f, vt, vf, b3) } } };
     ELet(nm, v, body) => match cgen(v, cenv, fns, types, b) { (vv, b1) => cgen(body, [Pair(nm, vv)] ++ cenv, fns, types, b1) };
     ECtor(name, args) => match mkc(glit(ctag(types, name)), b) { (wtag, b1) => match cgen_fields(args, ctor_argtypes(types, name), cenv, fns, types, b1) { (fws, b2) => ([wtag] ++ fws, b2) } };
     ETuple(elems) => cgen_fields(elems, scalar_types_e(elems), cenv, fns, types, b);
@@ -1667,8 +1692,16 @@ fn cbind(p: Pattern, sv: List<Int>, types: List<TypeDecl>, cenv: List<Pair<Strin
 fn cbind_fields(ps: List<Pattern>, tys: List<Type>, sv: List<Int>, off: Int, types: List<TypeDecl>, cenv: List<Pair<String, List<Int>>>) : List<Pair<String, List<Int>>> =
   match ps { [] => cenv; [p, ...prest] => match tys { [] => cenv; [t, ...trest] =>
     let wt : Int = twidth(t, types, 12) in cbind_fields(prest, trest, sv, off + wt, types, cbind(p, slwi(sv, off, wt), types, cenv)) } }
+# accw accumulates each match arm's body wires, weighted by its 0/1 effective selector `eff`, into the
+# running `result` (the muxed value). v5.121: when an arm body is SHORTER than the accumulated result
+# (unequal-width string arms), KEEP the result tail — `[] => (result, b)` — instead of the old
+# `([], b)` that TRUNCATED it to the shorter arm and silently proved a CORRUPTED string (e.g.
+# `match s { 0 => "approved"; _ => "no" }` at s=0 attested "ap"). With the tail kept, an unmatched
+# arm's positions stay 0 (NUL) and decode_str stops there, so the matched arm decodes to its true text.
+# Equal-width arms (every ADT/tuple/scalar match, and equal-length string arms) are byte-identical: the
+# longer/shorter cases never trigger, so this is a pure fix to the unequal-width path.
 fn accw(result: List<Int>, eff: Int, body: List<Int>, b: Build) : (List<Int>, Build) =
-  match body { [] => ([], b); [bi, ...br] => match mkm(eff, bi, b) { (contrib, b1) =>
+  match body { [] => (result, b); [bi, ...br] => match mkm(eff, bi, b) { (contrib, b1) =>
     match result { [] => match accw([], eff, br, b1) { (rest, b2) => ([contrib] ++ rest, b2) };
       [ri, ...rr] => match mka(ri, contrib, b1) { (nri, b2) => match accw(rr, eff, br, b2) { (rest, b3) => ([nri] ++ rest, b3) } } } } }
 fn cgen_match(arms: List<Pair<Pattern, Expr>>, sv: List<Int>, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: List<TypeDecl>, matched: Int, result: List<Int>, b: Build) : (List<Int>, Build) =
@@ -1838,8 +1871,13 @@ fn decode_char(code: Int) : String =
   if code < 32 then error("glass prove: a string result has a non-printable codepoint (< 32) — only 32..126 lower to the field; ABSTAIN")
   else if code > 126 then error("glass prove: a string result has a non-printable codepoint (> 126) — only 32..126 lower to the field; ABSTAIN")
   else substring(ascii_tbl(0), code - 32, code - 31)
+# decode_str: render a string result's codepoint wires to text. v5.121: STOP at the first NUL
+# (codepoint 0) — the sentinel the unequal-width string mux (mux_if / accw) pads the shorter branch
+# with. Real codepoints are 32..126, so 0 is unambiguous and a normal (un-padded) string decodes
+# byte-identically (it contains no 0, so the stop never triggers). This is what lets an unequal-width
+# `if`/`match` over strings reveal the SELECTED branch's true text rather than its NUL-padded form.
 fn decode_str(rv: List<List<Int>>) : String =
-  match rv { [] => ""; [w, ...r] => decode_char(bn_small_to_int(w)) ++ decode_str(r) }
+  match rv { [] => ""; [w, ...r] => let c : Int = bn_small_to_int(w) in if c == 0 then "" else decode_char(c) ++ decode_str(r) }
 fn gprove_m(src: String, inputs: List<Pair<String, List<Int>>>, claimedR: List<Int>, seed: Int) : Bool =
   match build_claim_m(src, inputs, claimedR) { Build(n, gs, w) => prove_stark(gs, w, seed) }
 # the multi-wire (string result) FAST self-check: bind every output wire, then the witness self-check.
