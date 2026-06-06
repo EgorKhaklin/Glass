@@ -4,11 +4,16 @@
 can't. Grounded in the live FRI/security code + an adversarial red-team. Research-grade, UNAUDITED —
 nothing here changes that.*
 
-> **Update (v5.122):** the **first serialization increment shipped** — a denser hash encoding (fixed
-> 16 base-2^16 limbs per digest, dropping the always-`"4"` per-lane count). Measured: `a<b` 552k →
-> **448k tokens (−18.9%)**, soundness-neutral, `emit_hash`⇄`rd_hash` only. The next levers are
-> Merkle-path deduplication (the ~10× structural win) and wiring `difftest.sh` into the suite as a
-> permanent native-round-trip gate. See §3 and `docs/roadmap.md` item 7.
+> **Update (v5.125) — the serialization frontier's big levers are COMPLETE.** Three increments shipped:
+> (1) v5.122 denser hash encoding (fixed 16 base-2^16 limbs/digest, drop the always-`"4"` count); (2)
+> v5.124 batched **trace** Merkle openings; (3) v5.125 batched **FRI** Merkle openings (see
+> [`merkle-dedup-design.md`](merkle-dedup-design.md)). Measured end-to-end: `a<b` **552,366 → 154,199
+> tokens (−72.1%, 3.58×)** — the Merkle-dedup portion alone is **2.91×** (NB: the earlier "~10×" estimate
+> was a small-domain artifact; the validated figure on representative proofs is ~2.86×/65%, which the
+> result matches). All soundness-neutral (same proof data, denser encoding) and gated across both
+> verifiers + the suite. The only remaining serialization lever is base-2^31 limbs — **deferred** (a
+> cross-lane combine overflows int64; the safe per-lane form is a smaller win than what shipped). The
+> param/grind lever stays NO-GO (§1). See `docs/roadmap.md` item 7.
 
 ## TL;DR
 
