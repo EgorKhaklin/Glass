@@ -1,13 +1,14 @@
 # Parameters & concrete soundness
 
-> ⚠️ **Stale-default note (2026-06-04 audit).** The "as built" table below predates the v5.46 default
-> switch and the v5.70 hash migration. The **live default `glass prove` is Goldilocks (p = 2⁶⁴−2³²+1)
-> with the Poseidon2 hash** and the witness-free `verify_b3` — *not* the Baby-Bear + MiMC path this
-> document's tables describe (that path still exists behind `--baby-bear`). The Goldilocks parameters
-> and the conjectural-vs-unique-decoding distinction in §1 below are current; treat the security level
-> as **80-bit (unique-decoding)**, the ~135-bit list-decoding figure as *conjectural*. See
-> [`security-audit-2026-06.md`](security-audit-2026-06.md) and the `CHANGELOG`; a full refresh of the
-> tables is tracked. Nothing here lifts the UNAUDITED / do-not-protect-real-value banner.
+> **Default = Goldilocks + Poseidon2 (refreshed 2026-06-06).** The **live default `glass prove` is
+> Goldilocks (p = 2⁶⁴−2³²+1) with the Poseidon2 hash** (byte-exact to Plonky3) and the witness-free
+> `verify_b3` — that is the column the table below now leads with. The earlier Baby-Bear + MiMC path
+> remains behind `--baby-bear` (its 2³¹ value space — secrets brute-forceable independent of the proof —
+> is the binding weakness there, kept for comparison). Security level: **80-bit (unique-decoding)**, with
+> the ~135-bit list-decoding figure *conjectural* (proximity-gap). Proof size: a comparison proof `a<b`
+> is ~154k stream tokens after the v5.122 denser-hash encoding + v5.124/125 Merkle-path deduplication
+> (552k → 154k, −72%; see [`merkle-dedup-design.md`](merkle-dedup-design.md)). Nothing here lifts the
+> UNAUDITED / do-not-protect-real-value banner. See [`security-audit-2026-06.md`](security-audit-2026-06.md).
 
 `docs/soundness.md` says, plainly, that Glass's cryptographic parameters are
 *educational-grade*. This document makes that precise: it writes down every
@@ -23,15 +24,16 @@ answer is "weak," it says so.
 > list-decoding** query soundness (up from ~3–4 bits raw, ~25–28 after the first
 > pass). The **default Baby Bear path** is now **also ρ=1/8** (~53 provable / ~96
 > list-decoding bits, v5.43) — but its **2³¹ value space** (a secret is brute-forceable
-> independent of the proof) is the binding weakness there, not the FRI. Neither path
-> yet uses a vetted in-STARK hash (still MiMC), and an external audit remains; §4 has
-> the recipe.
+> independent of the proof) is the binding weakness there, not the FRI. The **default
+> Goldilocks path uses Poseidon2** (byte-exact to Plonky3's vectors; the `--baby-bear`
+> legacy path still uses MiMC) — but Poseidon2 is **un-cryptanalyzed here**, and an
+> external audit remains; §4 has the recipe.
 
 ---
 
 ## 1. The parameters, as built
 
-| Parameter | Default (`glass prove`) | `glass prove --goldilocks` |
+| Parameter | `--baby-bear` (legacy) | **Default `glass prove` (Goldilocks)** |
 |---|---|---|
 | Base field | Baby Bear, p = 2³¹−2²⁷+1 | Goldilocks, p = 2⁶⁴−2³²+1 |
 | **Value space** | **~2³¹ (secrets brute-forceable; wraps >2.1·10⁹)** | **~2⁶⁴** |
@@ -41,7 +43,7 @@ answer is "weak," it says so.
 | **Rate ρ = deg/domain** | **= 1/8** | **= 1/8** |
 | **FRI queries ℓ** | **64** | **82** |
 | Fold challenge (Fiat-Shamir) | F_{p⁴} ≈ 2¹²⁴ | F_{p²} ≈ 2¹²⁸ |
-| Hash | MiMC, 16 rounds (x⁵) | MiMC, 4 rounds (x⁷) |
+| Hash | MiMC, 16 rounds (x⁵) | **Poseidon2 (t=12, R_F=8/R_P=22, x⁷; byte-exact to Plonky3)** |
 | ZK blinding | random low-degree mask | degree-16 mask |
 | Grinding (PoW) | none | **12 bits** |
 

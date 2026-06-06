@@ -221,7 +221,10 @@ buildable next-session work; 5–6 are large/gated; 7–8 are rigor and the hard
    independently deferred.** Next SHIPPABLE blocks: **B1 ✅ LANDED v5.126** —
    `merkle_fold_member.glass` composes in-circuit Merkle membership + the exact FRI fold in ONE circuit
    (two openings authenticated AND folded; `fx=10,fmx=20,β=7,x=1 → fold=−20`); **B2** full Poseidon2 one
-   node in-circuit (~1,900 gates, fits the ceiling); **B3** the chunking harness (= #6 in H3-shaped form, = T2).
+   node in-circuit (~1,900 gates, fits the ceiling — *feasibility confirmed*: its ~2^64 round constants
+   exceed int64 source literals but lower correctly as `hi·2³²+lo`, verified; it's a large generated scalar
+   build — the bridge lowers scalars not arrays — for a focused session); **B3** the chunking harness
+   (= #6 in H3-shaped form, = T2).
    The recursive verifier's *arithmetic* is done; only the prover's *throughput* stands between Glass and a
    verifier that verifies itself.
 
