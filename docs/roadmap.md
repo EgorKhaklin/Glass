@@ -220,11 +220,12 @@ buildable next-session work; 5–6 are large/gated; 7–8 are rigor and the hard
    accumulation substrate T2) — NOT on LogUp (#1), which is the wrong cost class for the hash core and stays
    independently deferred.** Next SHIPPABLE blocks: **B1 ✅ LANDED v5.126** —
    `merkle_fold_member.glass` composes in-circuit Merkle membership + the exact FRI fold in ONE circuit
-   (two openings authenticated AND folded; `fx=10,fmx=20,β=7,x=1 → fold=−20`); **B2** full Poseidon2 one
-   node in-circuit (~1,900 gates, fits the ceiling — *feasibility confirmed*: its ~2^64 round constants
-   exceed int64 source literals but lower correctly as `hi·2³²+lo`, verified; it's a large generated scalar
-   build — the bridge lowers scalars not arrays — for a focused session); **B3** the chunking harness
-   (= #6 in H3-shaped form, = T2).
+   (two openings authenticated AND folded; `fx=10,fmx=20,β=7,x=1 → fold=−20`); **B2 ✅ LANDED v5.127** —
+   `poseidon2_node.glass` is the REAL production Poseidon2 (t=12, 30 rounds, 130 constants, M_E/M_I) as a
+   ~1.9k-gate provable circuit, cross-checked against `pentecost/poseidon.py` on all 12 lanes (the ~2^64
+   constants lower as `hi·2³²+lo`); the honest per-node cost anchor (confirms the ~1.9k/perm estimate).
+   **B3** the chunking/accumulation harness (= #6 in H3-shaped form, = T2) — the load-bearing lever that
+   would erase the ~580× gap; the remaining piece.
    The recursive verifier's *arithmetic* is done; only the prover's *throughput* stands between Glass and a
    verifier that verifies itself.
 

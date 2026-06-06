@@ -2145,6 +2145,20 @@ def main() -> int:
             print(f"        rc={_mfp.returncode}  out: {_mfp.stdout.strip()[-220:]}  err: {_mfp.stderr.strip()[-120:]}")
             failures += 1
 
+    # H3 milestone B2 (v5.127) — the REAL production Poseidon2 (t=12, 30 rounds, 130 constants, M_E/M_I)
+    # as a provable ~1.9k-gate circuit (vs merkle_member's reduced toy hash). poseidon2_node_check.py
+    # proves it for input lanes 0..11 and cross-checks all 12 output lanes against the independent
+    # from-scratch Poseidon2 spec (pentecost/poseidon.py) -- the right oracle, since the x^7 chains +
+    # ~2^64 constants make the circuit faithful but NOT witness3-agreeing. The honest per-node cost anchor
+    # for the H3 recursive-verifier estimate. (Native prove ~1-2 min; SKIPs on an env signal-kill.)
+    _pn = _prove_run([sys.executable, os.path.join("fuzz", "poseidon2_node_check.py")])
+    if not _heavy_skipped(_pn, "H3: real Poseidon2 (t=12, 30 rounds) in-circuit == independent spec on all 12 lanes"):
+        pn_ok = (_pn.returncode == 0) and ("POSEIDON2-NODE: PASS" in _pn.stdout or "POSEIDON2-NODE: SKIP" in _pn.stdout)
+        print(f"  {'OK ' if pn_ok else 'FAIL'}  H3: real Poseidon2 (t=12, 30 rounds) in-circuit == independent spec on all 12 lanes")
+        if not pn_ok:
+            print(f"        rc={_pn.returncode}  out: {(_pn.stdout + _pn.stderr).strip()[-260:]}")
+            failures += 1
+
     # Adversarial fuzz of the second witness: a TAMPERED proof must never verify. tamper_pentecost.py
     # perturbs random single tokens of a committed honest proof and asserts the independent Pentecost
     # verifier REJECTs every one (0 wrong-ACCEPTs). A 1600-tamper/16-seed campaign (workflow whrym5q4r,
@@ -2224,7 +2238,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 78)  # +78: ... + v5.121 unequal-width-risk/match-fix + v5.123 native-round-trip-difftest-in-suite + v5.126 H3-B1 authenticated-FRI-fold (membership+fold composed)
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 79)  # +79: ... + v5.121 unequal-width-risk/match-fix + v5.123 native-round-trip-difftest-in-suite + v5.126 H3-B1 authenticated-FRI-fold + v5.127 H3-B2 real-Poseidon2-in-circuit-vs-spec
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

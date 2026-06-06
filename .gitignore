@@ -36,6 +36,9 @@ ENV/
 *~
 .DS_Store
 
+# Local Claude Code session data (not part of the project)
+.claude/
+
 # Coverage
 htmlcov/
 .tox/
