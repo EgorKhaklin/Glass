@@ -1666,6 +1666,29 @@ def main() -> int:
         if not tup_ok:
             print(f"        rc={_tup.returncode}  out: {_tup.stdout.strip()[-260:]}  err: {_tup.stderr.strip()[-150:]}")
             failures += 1
+    # Soundness guard 3 (v5.128): a built-in List<Int> threaded through a function and indexed used to
+    # lower to a SILENT WRONG circuit. prism desugars [a,b,c]/[h,...t] to Cons/Nil ECtor/PCtor, but the
+    # built-in List type is in no source TypeDecl, so ctag/ctor_argtypes returned tag 0 / no fields for
+    # BOTH Cons and Nil -> every list pattern collapsed to the [] arm and the proof attested 0 (ACCEPT),
+    # caught only by --witness3 (DIVERGENCE). Now ctag/ctor_argtypes ABSTAIN on ANY undeclared ctor: a
+    # built-in list in proven position is refused loudly, never silently proven 0. (Declared ADTs like
+    # map_prove's IntList still resolve and ACCEPT -- verified by the higher-order gate above.) The
+    # refusal fires DURING lowering (pre-STARK), so this gate is fast.
+    with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _uf3:
+        _uf3.write("fn dbl(xs: List<Int>) : List<Int> = match xs { [] => []; [h, ...t] => [h + h, ...dbl(t)] }\n"
+                   "fn idx0(xs: List<Int>) : Int = match xs { [] => 0; [h, ...t] => h }\n"
+                   "idx0(dbl(dbl([3, 5, 7])))\n")
+        _lst_path = _uf3.name
+    _lst = _prove_run([sys.executable, GLASS, "prove", _lst_path],
+                          capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_lst, "built-in List threaded into a proof ABSTAINs (undeclared Cons/Nil, not silently proven 0)"):
+        lst_ok = (("verdict: ABSTAIN" in _lst.stdout)
+                  and ("undeclared constructor" in (_lst.stdout + _lst.stderr))
+                  and ("proof:   ACCEPT" not in _lst.stdout))
+        print(f"  {'OK ' if lst_ok else 'FAIL'}  built-in List threaded into a proof ABSTAINs (undeclared Cons/Nil, not silently proven 0)")
+        if not lst_ok:
+            print(f"        rc={_lst.returncode}  out: {_lst.stdout.strip()[-260:]}  err: {_lst.stderr.strip()[-150:]}")
+            failures += 1
 
     # String --claim (v5.111): assert a SPECIFIC string result. The claimed string's codepoints are
     # bound (not the computed result), so a FALSE claim makes the circuit unsatisfiable and the
@@ -2238,7 +2261,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 79)  # +79: ... + v5.121 unequal-width-risk/match-fix + v5.123 native-round-trip-difftest-in-suite + v5.126 H3-B1 authenticated-FRI-fold + v5.127 H3-B2 real-Poseidon2-in-circuit-vs-spec
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 80)  # +80: ... + v5.121 unequal-width-risk/match-fix + v5.123 native-round-trip-difftest-in-suite + v5.126 H3-B1 authenticated-FRI-fold + v5.127 H3-B2 real-Poseidon2-in-circuit-vs-spec + v5.128 builtin-list-threading-ABSTAIN (no silent proof-of-0)
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

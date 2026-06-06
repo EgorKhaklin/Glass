@@ -297,6 +297,13 @@ proof.
 - **Mainstream DX (package manager, IDE plugins)** — matters for adoption, not for the
   frontier edge. A partial DX pass (prelude, diagnostics, `glass help`, the plain-name
   surface) has shipped.
+- **Faithfully lowering built-in `List<T>` in a proof** — the bridge proves *declared* recursive
+  ADTs (`type IntList = | Nil | Cons(Int, IntList)`, as in `map_prove.glass`) but not the built-in
+  `List<T>` literal/spread, because its `Cons`/`Nil` live in no source `TypeDecl`. As of *v5.128* an
+  undeclared constructor **ABSTAINs loudly** (no silent proof-of-0), so this is *safe*, just not
+  *supported*. Supporting it means monomorphizing `List<T>` onto that same ADT machinery (element
+  type, recursion-depth `twidth` bound) — a real but bounded feature; the declared-ADT form is the
+  workaround today, so it is low priority.
 
 ## Success criteria (the Glass discipline)
 
@@ -421,9 +428,14 @@ The forward map is above; this is the rear-view, one line per era. Full detail p
   onto Goldilocks; F_{p²} challenge space; statement-binding Fiat-Shamir; the witness-free
   `verify_b3` became the CLI default. The founding thesis — *write Glass, get a zero-knowledge
   proof* — realized for first-order pure Glass.
-- **Soundness hardening (v5.52–v5.57).** Faithful boolean lowering with loud refusal (fixing a
+- **Soundness hardening (v5.52–v5.57, v5.128).** Faithful boolean lowering with loud refusal (fixing a
   silent proven-0 regression); reference-interpreter fixes (effect rows, lexer, exhaustiveness,
-  int64/C agreement).
+  int64/C agreement). *v5.128:* the same class, found while building B2 — a **built-in `List<Int>`**
+  threaded into a proof had its desugared `Cons`/`Nil` constructors (absent from any source `TypeDecl`)
+  collapse to tag 0, silently proving `0`; `ctag`/`ctor_argtypes` now ABSTAIN on any undeclared
+  constructor. (Faithfully *lowering* built-in lists — monomorphizing `List<T>` onto the ADT machinery
+  that already proves declared ADTs like `map_prove.glass`'s `IntList` — is an open feature, distinct
+  from this make-it-safe refusal.)
 - **The prover speed cuts (v5.59–v5.62).** Poseidon intrinsic, O(n log n) LDE, O(1) wire indexing,
   a deep-recursion stack flag — making the range gadget (and the whole two-verifier path) affordable.
 - **The verification stack (v5.63–v5.79).** The Measuring Reed, Pentecost (verifier-be-two), the
