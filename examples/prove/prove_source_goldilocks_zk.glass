@@ -676,6 +676,53 @@ fn stark_root(gates: List<Gate>, w: List<List<Int>>, seed: Int) : List<Int> =
 # a trace commitment + the OOD/DEEP quotient identity + a copy/permutation argument.
 type QOpen = | QOpen(G2, G2, List<List<Int>>, List<List<Int>>)            # one query, one layer: lx, lmx, path_lx, path_lmx
 type Proof = | Proof(List<List<Int>>, List<G2>, Int, List<List<QOpen>>)   # roots, final, nonce, openings[query][layer]
+# v5.125 Stage 2: the FRI openings (ProofB3 only) are BATCHED per LAYER. Per (query,layer) we keep only
+# the opened VALUES (QVal: lx, lmx) — the fold-chain inputs — and each FRI layer's tree is opened ONCE as
+# a multiproof: BFri carries qvals[query][layer] + one shared co-path per layer. The verifier reconstructs
+# each layer root (vfri_recon, reusing recon_root) and runs the per-query fold chain (vq_b3) with NO
+# per-query Merkle path. The FRI domains nest as powers of two, so a query's layer-L index is p % half_L.
+type QVal = | QVal(G2, G2)
+type BFri = | BFri(List<List<QVal>>, List<List<List<Int>>>)               # qvals[query][layer], copath[layer]
+# PROVER: per-query opened values (no paths) + one co-path per FRI layer over its opened-index set.
+fn extract_qvals(layers: List<Layer>, p: Int) : List<QVal> =
+  match layers { [] => [];
+    [Layer(cw, dom, root, beta, levels), ...rest] =>
+      let half : Int = len(cw) / 2 in let j : Int = p % half in
+      [QVal(nth2(cw, j), nth2(cw, j + half))] ++ extract_qvals(rest, j) }
+fn extract_qvals_all(layers: List<Layer>, queries: List<Int>) : List<List<QVal>> =
+  match queries { [] => []; [p, ...rest] => [extract_qvals(layers, p)] ++ extract_qvals_all(layers, rest) }
+fn fri_copaths(layers: List<Layer>, queries: List<Int>) : List<List<List<Int>>> =
+  match layers { [] => [];
+    [Layer(cw, dom, root, beta, levels), ...rest] =>
+      let half : Int = len(cw) / 2 in
+      [bcopath(levels, 0, oidx_of(queries, half), [])] ++ fri_copaths(rest, queries) }
+fn extract_bfri(layers: List<Layer>, queries: List<Int>) : BFri =
+  BFri(extract_qvals_all(layers, queries), fri_copaths(layers, queries))
+# VERIFIER: reconstruct each FRI layer root from the opened values + co-path (FRI leaf = lhash(value)).
+fn nth_qval(qv: List<QVal>, i: Int) : QVal = match qv { [] => QVal(G2([], []), G2([], [])); [x, ...r] => if i == 0 then x else nth_qval(r, i - 1) }
+fn frimap(qvals: List<List<QVal>>, queries: List<Int>, lyr: Int, half: Int, acc: List<Pair<Int, List<Int>>>) : List<Pair<Int, List<Int>>> =
+  match qvals { [] => acc; [row, ...rr] => match queries { [] => acc; [p, ...qr] =>
+    match nth_qval(row, lyr) { QVal(lx, lmx) => let j : Int = p % half in
+      frimap(rr, qr, lyr, half, mapput(mapput(acc, j, lhash(lx)), j + half, lhash(lmx))) } } }
+fn vfri_recon(qvals: List<List<QVal>>, queries: List<Int>, lcopaths: List<List<List<Int>>>, broots: List<List<Int>>, doms: List<List<List<Int>>>, lyr: Int, lyrs: Int) : Bool =
+  if lyr >= lyrs then true
+  else let domL : List<List<Int>> = wnth3(doms, lyr) in let half : Int = llen(domL) / 2 in let height : Int = ilog2(llen(domL)) in
+    if recon_ok(frimap(qvals, queries, lyr, half, []), wnth3(lcopaths, lyr), height, wnth(broots, lyr))
+    then vfri_recon(qvals, queries, lcopaths, broots, doms, lyr + 1, lyrs) else false
+# per-query FRI fold chain (no Merkle — that is now done in bulk by vfri_recon); ties each layer's fold
+# to the next layer's opened value, exactly as vq did, but reading QVal and skipping merkle_verify.
+fn vq_b3(qv: List<QVal>, betas: List<G2>, doms: List<List<List<Int>>>, final: List<G2>, p: Int, finv2: List<Int>) : Bool =
+  match qv { [] => true;
+    [QVal(lx, lmx), ...orest] =>
+      match betas { [] => false; [beta, ...brest] =>
+      match doms { [] => false; [dom, ...drest] =>
+        let half : Int = llen(dom) / 2 in let j : Int = p % half in
+        let next_half : Int = match drest { [] => 0; [nd, ...nn] => llen(nd) / 2 } in
+        let nextv : G2 = match orest { [] => nth2(final, j); [QVal(nlx, nlmx), ...more] => if j < next_half then nlx else nlmx } in
+        let folded : G2 = fold_pair2(lx, lmx, wnth(dom, j), beta, finv2) in
+        if geq2(folded, nextv) then vq_b3(orest, brest, drest, final, j, finv2) else false } } }
+fn qvlen(xs: List<List<QVal>>) : Int = match xs { [] => 0; [x, ...r] => 1 + qvlen(r) }
+fn qval1len(xs: List<QVal>) : Int = match xs { [] => 0; [x, ...r] => 1 + qval1len(r) }
 fn fri_layers(d: Int) : Int = ilog2(fri_dsize(d) / fri_final(0))         # #FRI layers = log2(16N/8) = log2(2N)
 fn qopen_len(xs: List<QOpen>) : Int = match xs { [] => 0; [x, ...r] => 1 + qopen_len(r) }
 fn openings_len(xs: List<List<QOpen>>) : Int = match xs { [] => 0; [x, ...r] => 1 + openings_len(r) }
@@ -879,7 +926,7 @@ fn tamper_strace(proof: ProofS) : ProofS = match proof { ProofS(tr, lz, rz, oz, 
 # rebuilds each trace root from the opened leaves + its co-path (recon_ok); FRI `bopen` stays per-query.
 type TLeaf = | TLeaf(List<Int>, List<Int>, List<Int>, G2, G2, List<Int>, List<Int>, List<Int>, G2, G2)
 type TBatch = | TBatch(List<TLeaf>, List<List<Int>>, List<List<Int>>, List<List<Int>>)
-type ProofB3 = | ProofB3(List<Int>, List<Int>, List<Int>, G2, G2, G2, G2, G2, G2, List<List<Int>>, List<G2>, Int, List<List<QOpen>>, TBatch)
+type ProofB3 = | ProofB3(List<Int>, List<Int>, List<Int>, G2, G2, G2, G2, G2, G2, List<List<Int>>, List<G2>, Int, BFri, TBatch)
 fn comb_lro(l: List<Int>, r: List<Int>, o: List<Int>) : List<Int> = hashg(hashg(l, r), o)
 # CUT THE ROPE 3: was O(m²) — wnth(lcw,i)/wnth(rcw,i)/wnth(ocw,i) each an O(i) cons-walk per leaf,
 # x m=32n leaves. Now a single lock-step walk of the three codewords (O(m), no indexing).
@@ -969,7 +1016,7 @@ fn prove_b3(gates: List<Gate>, w: List<List<Int>>) : ProofB3 =
   match commit_g(bcw, coset, [], ts4, finv([2])) { (blayers, bfinal) =>
     let base_seed : List<Int> = absorb_final(transcript_seed_g(blayers, ts4), bfinal) in let nz : Int = grind(base_seed) in let ground : List<Int> = hashg(base_seed, glit(nz)) in
     let queries : List<Int> = sample_queries_g(ground, fri_queries(n), fri_dsize(n)) in
-    ProofB3(root1, root2, root3, lz, rz, oz, qz, zz, zwz, roots_of(blayers), bfinal, nz, extract_all(blayers, queries), extract_tbatch(lcw, rcw, ocw, qcw, zcw, lev1, lev2, lev3, queries, m)) }
+    ProofB3(root1, root2, root3, lz, rz, oz, qz, zz, zwz, roots_of(blayers), bfinal, nz, extract_bfri(blayers, queries), extract_tbatch(lcw, rcw, ocw, qcw, zcw, lev1, lev2, lev3, queries, m)) }
 fn tllen(xs: List<TLeaf>) : Int = match xs { [] => 0; [x, ...r] => 1 + tllen(r) }
 fn mapput(m: List<Pair<Int, List<Int>>>, k: Int, v: List<Int>) : List<Pair<Int, List<Int>>> = if khasL(m, k) then m else m ++ [Pair(k, v)]
 # build the index->leafhash map for trace tree `which` (1=LRO/root1, 3=quotient/root3, 2=Z/root2) from the
@@ -989,21 +1036,22 @@ fn vb3_trace(tleaves: List<TLeaf>, queries: List<Int>, cp1: List<List<Int>>, cp3
   && recon_ok(tmap_go(tleaves, queries, half, 2, []), cp2, h, root2)
 # per-query DEEP checks (the trace Merkle binding is now done in bulk by vb3_trace; here we only tie the
 # opened trace leaves to the FRI layer-0 value and run the per-query FRI fold vq).
-fn vb3_q1(boq: List<QOpen>, toq: TLeaf, broots: List<List<Int>>, betas: List<G2>, doms: List<List<List<Int>>>, bfinal: List<G2>, coset: List<List<Int>>, lz: G2, rz: G2, oz: G2, qz: G2, zz: G2, zwz: G2, z: G2, wz: G2, gamd: G2, m: Int, p: Int, lyrs: Int, finv2: List<Int>) : Bool =
+fn vb3_q1(qv: List<QVal>, toq: TLeaf, betas: List<G2>, doms: List<List<List<Int>>>, bfinal: List<G2>, coset: List<List<Int>>, lz: G2, rz: G2, oz: G2, qz: G2, zz: G2, zwz: G2, z: G2, wz: G2, gamd: G2, m: Int, p: Int, lyrs: Int, finv2: List<Int>) : Bool =
   let half : Int = m / 2 in let j : Int = p % half in
   match toq { TLeaf(lj, rj, oj, qj, zj, ljh, rjh, ojh, qjh, zjh) =>
     let bj : G2 = deep_batch_b3(lj, rj, oj, qj, zj, wnth(coset, j), lz, rz, oz, qz, zz, zwz, z, wz, gamd) in
     let bjh : G2 = deep_batch_b3(ljh, rjh, ojh, qjh, zjh, wnth(coset, j + half), lz, rz, oz, qz, zz, zwz, z, wz, gamd) in
-    let recon : Bool = match boq { [] => false; [QOpen(blx, blmx, pp1, pp2), ...rest] => geq2(bj, blx) && geq2(bjh, blmx) } in
-    recon && (qopen_len(boq) == lyrs) && vq(boq, broots, betas, doms, bfinal, p, finv2) }
-fn vb3_qs(bopen: List<List<QOpen>>, tleaves: List<TLeaf>, broots: List<List<Int>>, betas: List<G2>, doms: List<List<List<Int>>>, bfinal: List<G2>, coset: List<List<Int>>, lz: G2, rz: G2, oz: G2, qz: G2, zz: G2, zwz: G2, z: G2, wz: G2, gamd: G2, m: Int, queries: List<Int>, lyrs: Int, finv2: List<Int>) : Bool =
-  match bopen { [] => match queries { [] => match tleaves { [] => true; _ => false }; _ => false };
-    [boq, ...brest] => match tleaves { [] => false; [toq, ...trest] => match queries { [] => false; [p, ...qrest] =>
-      if vb3_q1(boq, toq, broots, betas, doms, bfinal, coset, lz, rz, oz, qz, zz, zwz, z, wz, gamd, m, p, lyrs, finv2)
-      then vb3_qs(brest, trest, broots, betas, doms, bfinal, coset, lz, rz, oz, qz, zz, zwz, z, wz, gamd, m, qrest, lyrs, finv2) else false } } }
+    let recon : Bool = match qv { [] => false; [QVal(blx, blmx), ...rest] => geq2(bj, blx) && geq2(bjh, blmx) } in
+    recon && (qval1len(qv) == lyrs) && vq_b3(qv, betas, doms, bfinal, p, finv2) }
+fn vb3_qs(qvals: List<List<QVal>>, tleaves: List<TLeaf>, betas: List<G2>, doms: List<List<List<Int>>>, bfinal: List<G2>, coset: List<List<Int>>, lz: G2, rz: G2, oz: G2, qz: G2, zz: G2, zwz: G2, z: G2, wz: G2, gamd: G2, m: Int, queries: List<Int>, lyrs: Int, finv2: List<Int>) : Bool =
+  match qvals { [] => match queries { [] => match tleaves { [] => true; _ => false }; _ => false };
+    [qv, ...brest] => match tleaves { [] => false; [toq, ...trest] => match queries { [] => false; [p, ...qrest] =>
+      if vb3_q1(qv, toq, betas, doms, bfinal, coset, lz, rz, oz, qz, zz, zwz, z, wz, gamd, m, p, lyrs, finv2)
+      then vb3_qs(brest, trest, betas, doms, bfinal, coset, lz, rz, oz, qz, zz, zwz, z, wz, gamd, m, qrest, lyrs, finv2) else false } } }
 fn verify_b3(gates: List<Gate>, proof: ProofB3) : Bool =
   match proof { ProofB3(root1, root2, root3, lz, rz, oz, qz, zz, zwz, broots, bfinal, nonce, bopen, topen) =>
    match topen { TBatch(tleaves, cp1, cp3, cp2) =>
+   match bopen { BFri(qvals, lcopaths) =>
     let n : Int = ng(gates) in let m : Int = fri_dsize(n) in let coset : List<List<Int>> = fri_coset(n) in let lyrs : Int = fri_layers(n) in let omega : List<Int> = root_pow2(ilog2(n)) in
     let stmt : List<Int> = stmt_seed_of(gates) in let pc : List<List<List<Int>>> = public_cols(gates, n) in let pm : List<List<List<Int>>> = perm_cols(gates, n) in
     let ts1 : List<Int> = hashg(stmt, root1) in let beta : G2 = beta_p_of(ts1) in let gamp : G2 = gam_p_of(ts1) in
@@ -1014,9 +1062,10 @@ fn verify_b3(gates: List<Gate>, proof: ProofB3) : Bool =
     let ground : List<Int> = hashg(base_seed, glit(nonce)) in let doms : List<List<List<Int>>> = build_doms(coset, lyrs) in
     let queries : List<Int> = sample_queries_g(ground, fri_queries(n), fri_dsize(n)) in
     let id_ok : Bool = geq2(qz, qcombined_z(pc, pm, lz, rz, oz, zz, zwz, beta, gamp, alpha, z, n)) in
-    let struct_ok : Bool = (llen(broots) == lyrs) && (len(bfinal) == fri_final(0)) && (openings_len(bopen) == fri_queries(n)) && (tllen(tleaves) == fri_queries(n)) && pow_ok(ground) && is_const2(bfinal) in
+    let struct_ok : Bool = (llen(broots) == lyrs) && (len(bfinal) == fri_final(0)) && (qvlen(qvals) == fri_queries(n)) && (tllen(tleaves) == fri_queries(n)) && pow_ok(ground) && is_const2(bfinal) in
     id_ok && struct_ok && vb3_trace(tleaves, queries, cp1, cp3, cp2, m, root1, root2, root3)
-      && vb3_qs(bopen, tleaves, broots, betas, doms, bfinal, coset, lz, rz, oz, qz, zz, zwz, z, wz, gamd, m, queries, lyrs, finv([2])) } }
+      && vfri_recon(qvals, queries, lcopaths, broots, doms, 0, lyrs)
+      && vb3_qs(qvals, tleaves, betas, doms, bfinal, coset, lz, rz, oz, qz, zz, zwz, z, wz, gamd, m, queries, lyrs, finv([2])) } } }
 # prove_b3 from RAW column values (not a single witness w) — lets us build a
 # wiring-INCONSISTENT-but-per-row-valid trace to demonstrate the B3 gap is closed.
 fn q_cw_cols(pc: List<List<List<Int>>>, ll: List<List<Int>>, rr: List<List<Int>>, oo: List<List<Int>>, coset: List<List<Int>>, n: Int) : List<List<Int>> =
@@ -1049,7 +1098,7 @@ fn prove_b3_cols(gates: List<Gate>, lvals: List<List<Int>>, rvals: List<List<Int
   match commit_g(bcw, coset, [], ts4, finv([2])) { (blayers, bfinal) =>
     let base_seed : List<Int> = absorb_final(transcript_seed_g(blayers, ts4), bfinal) in let nz : Int = grind(base_seed) in let ground : List<Int> = hashg(base_seed, glit(nz)) in
     let queries : List<Int> = sample_queries_g(ground, fri_queries(n), fri_dsize(n)) in
-    ProofB3(root1, root2, root3, lz, rz, oz, qz, zz, zwz, roots_of(blayers), bfinal, nz, extract_all(blayers, queries), extract_tbatch(lcw, rcw, ocw, qcw, zcw, lev1, lev2, lev3, queries, m)) }
+    ProofB3(root1, root2, root3, lz, rz, oz, qz, zz, zwz, roots_of(blayers), bfinal, nz, extract_bfri(blayers, queries), extract_tbatch(lcw, rcw, ocw, qcw, zcw, lev1, lev2, lev3, queries, m)) }
 
 # --- bridge: parse, inline calls, lower the arithmetic subset to gates -------
 fn fn_body_of(fns: List<FnDecl>, name: String) : Expr = match fns { [] => error("glass prove: internal — body of resolved function '" ++ name ++ "' not found"); [FnDecl(fnm, tps, ty, body), ...rest] => if fnm == name then body else fn_body_of(rest, name) }
@@ -2046,6 +2095,14 @@ fn emit_qlist_go(qs: List<QOpen>) : String = match qs { [] => ""; [q, ...t] => e
 fn emit_qlist(qs: List<QOpen>) : String = emit_int(len(qs)) ++ emit_qlist_go(qs)
 fn emit_bopen_go(b: List<List<QOpen>>) : String = match b { [] => ""; [ql, ...t] => emit_qlist(ql) ++ emit_bopen_go(t) }
 fn emit_bopen(b: List<List<QOpen>>) : String = emit_int(len(b)) ++ emit_bopen_go(b)
+# v5.125: batched FRI opening — per-query opened values (no paths) + one co-path per layer
+fn emit_qval(q: QVal) : String = match q { QVal(lx, lmx) => emit_g2(lx) ++ emit_g2(lmx) }
+fn emit_qvrow_go(qs: List<QVal>) : String = match qs { [] => ""; [q, ...t] => emit_qval(q) ++ emit_qvrow_go(t) }
+fn emit_qvrow(qs: List<QVal>) : String = emit_int(len(qs)) ++ emit_qvrow_go(qs)
+fn emit_qvals_go(b: List<List<QVal>>) : String = match b { [] => ""; [row, ...t] => emit_qvrow(row) ++ emit_qvals_go(t) }
+fn emit_lcopaths_go(cps: List<List<List<Int>>>) : String = match cps { [] => ""; [cp, ...t] => emit_path(cp) ++ emit_lcopaths_go(t) }
+fn emit_bfri(b: BFri) : String = match b { BFri(qvals, lcopaths) =>
+  emit_int(qvlen(qvals)) ++ emit_qvals_go(qvals) ++ emit_int(l3len(lcopaths)) ++ emit_lcopaths_go(lcopaths) }
 fn emit_g2list_go(gs: List<G2>) : String = match gs { [] => ""; [g, ...t] => emit_g2(g) ++ emit_g2list_go(t) }
 fn emit_g2list(gs: List<G2>) : String = emit_int(len(gs)) ++ emit_g2list_go(gs)
 fn emit_tleaf(tl: TLeaf) : String = match tl { TLeaf(lj, rj, oj, qj, zj, ljh, rjh, ojh, qjh, zjh) =>
@@ -2070,7 +2127,7 @@ fn emit_proofb3(gates: List<Gate>, p: ProofB3) : String =
   ++ "PROOF " ++ emit_hash(root1) ++ emit_hash(root2) ++ emit_hash(root3)
   ++ emit_g2(lz) ++ emit_g2(rz) ++ emit_g2(oz) ++ emit_g2(qz) ++ emit_g2(zz) ++ emit_g2(zwz)
   ++ emit_roots(broots) ++ emit_g2list(bfinal) ++ emit_int(nonce)
-  ++ emit_bopen(bopen) ++ emit_topen(topen) }
+  ++ emit_bfri(bopen) ++ emit_topen(topen) }
 fn emit_roots(p: List<List<Int>>) : String = emit_int(len(p)) ++ emit_hlist(p)
 # serialize a freshly-built+proven claim (gprove_sound throws ProofB3 away; here we KEEP it)
 fn gprove_emit(src: String, inputs: List<Pair<String, List<Int>>>, claimedR: List<Int>) : String =

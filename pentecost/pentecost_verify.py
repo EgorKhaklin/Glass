@@ -284,21 +284,46 @@ def vb3_trace(tleaves, queries, cp1, cp3, cp2, m, root1, root2, root3):
     return (recon_root(tmap(tleaves, queries, half, 1), cp1, h) == root1
             and recon_root(tmap(tleaves, queries, half, 3), cp3, h) == root3
             and recon_root(tmap(tleaves, queries, half, 2), cp2, h) == root2)
-def vb3_q1(boq, toq, broots, betas, doms, bfinal, coset,
+# v5.125 Stage 2: the FRI openings are BATCHED per layer (mirror of Glass vfri_recon / vq_b3).
+def vfri_recon(qvals, queries, lcopaths, broots, doms, lyrs):
+    for L in range(lyrs):
+        domL = doms[L]; half = len(domL) // 2; height = ilog2(len(domL))
+        mp = {}
+        for row, p in zip(qvals, queries):
+            lx, lmx = row[L]
+            j = p % half
+            mp.setdefault(j, lhash(lx)); mp.setdefault(j + half, lhash(lmx))
+        if recon_root(mp, lcopaths[L], height) != broots[L]: return False
+    return True
+def vq_b3(qv, betas, doms, final, p, finv2):                # FRI fold chain, no per-query Merkle path
+    for layer in range(len(qv)):
+        lx, lmx = qv[layer]
+        dom = doms[layer]; half = len(dom)//2; j = p % half
+        if layer == len(qv)-1:
+            nextv = final[j]
+        else:
+            next_half = len(doms[layer+1])//2
+            nxt = qv[layer+1]
+            nextv = nxt[0] if j < next_half else nxt[1]
+        folded = fold_pair2(lx, lmx, dom[j], betas[layer], finv2)
+        if not geq2(folded, nextv): return False
+        p = j
+    return True
+def vb3_q1(qv, toq, betas, doms, bfinal, coset,
            lz, rz, oz, qz, zz, zwz, z, wz, gamd, m, p, lyrs, finv2):
     half = m // 2; j = p % half
     (lj,rj,oj,qj,zj, ljh,rjh,ojh,qjh,zjh) = toq
     bj  = deep_batch_b3(lj, rj, oj, qj, zj,    coset[j],      lz,rz,oz,qz,zz,zwz, z,wz,gamd)
     bjh = deep_batch_b3(ljh,rjh,ojh,qjh,zjh,   coset[j+half], lz,rz,oz,qz,zz,zwz, z,wz,gamd)
-    blx, blmx = boq[0][0], boq[0][1]
+    blx, blmx = qv[0][0], qv[0][1]
     if not (geq2(bj, blx) and geq2(bjh, blmx)): return False
-    if len(boq) != lyrs: return False
-    return vq(boq, broots, betas, doms, bfinal, p, finv2)
-def vb3_qs(bopen, tleaves, broots, betas, doms, bfinal, coset,
+    if len(qv) != lyrs: return False
+    return vq_b3(qv, betas, doms, bfinal, p, finv2)
+def vb3_qs(qvals, tleaves, betas, doms, bfinal, coset,
            lz, rz, oz, qz, zz, zwz, z, wz, gamd, m, queries, lyrs, finv2):
-    if not (len(bopen) == len(tleaves) == len(queries)): return False
-    for boq, toq, p in zip(bopen, tleaves, queries):
-        if not vb3_q1(boq, toq, broots, betas, doms, bfinal, coset,
+    if not (len(qvals) == len(tleaves) == len(queries)): return False
+    for qv, toq, p in zip(qvals, tleaves, queries):
+        if not vb3_q1(qv, toq, betas, doms, bfinal, coset,
                       lz, rz, oz, qz, zz, zwz, z, wz, gamd, m, p, lyrs, finv2): return False
     return True
 
@@ -331,13 +356,15 @@ def verify_b3(gates, proof):
     doms = build_doms(coset, lyrs)
     queries = sample_queries_g(ground, fri_queries(), fri_dsize(n))
     id_ok = geq2(qz, qcombined_z(pc, pm, lz, rz, oz, zz, zwz, beta, gamp, alpha, z, n))
+    (qvals, lcopaths) = bopen
     struct_ok = (len(broots) == lyrs and len(bfinal) == fri_final()
-                 and len(bopen) == fri_queries() and len(tleaves) == fri_queries()
+                 and len(qvals) == fri_queries() and len(tleaves) == fri_queries()
                  and pow_ok(ground) and is_const2(bfinal))
     if not (id_ok and struct_ok): return (False, id_ok, struct_ok)
     trace_ok = vb3_trace(tleaves, queries, cp1, cp3, cp2, m, root1, root2, root3)
-    qok = trace_ok and vb3_qs(bopen, tleaves, broots, betas, doms, bfinal, coset,
-                              lz, rz, oz, qz, zz, zwz, z, wz, gamd, m, queries, lyrs, finv(2))
+    fri_ok = trace_ok and vfri_recon(qvals, queries, lcopaths, broots, doms, lyrs)
+    qok = fri_ok and vb3_qs(qvals, tleaves, betas, doms, bfinal, coset,
+                            lz, rz, oz, qz, zz, zwz, z, wz, gamd, m, queries, lyrs, finv(2))
     return (id_ok and struct_ok and qok, id_ok, struct_ok and qok)
 
 # ---------------------------------------------------------------- proof parser
@@ -354,11 +381,13 @@ def parse(path):
     def rd_hash(): return [rd_lane16() for _ in range(4)]  # a digest = 4 lanes x fixed 4 limbs (16 total)
     def rd_path():
         n = rd(); return [rd_hash() for _ in range(n)]
-    def rd_qopen(): return (rd_g2(), rd_g2(), rd_path(), rd_path())
-    def rd_layerlist():
-        n = rd(); return [rd_qopen() for _ in range(n)]
-    def rd_bopen():
-        n = rd(); return [rd_layerlist() for _ in range(n)]
+    def rd_qval(): return (rd_g2(), rd_g2())              # v5.125: opened FRI values only (no path)
+    def rd_qvrow():
+        n = rd(); return [rd_qval() for _ in range(n)]
+    def rd_bopen():                                       # batched FRI: qvals[query][layer] + co-path[layer]
+        nq = rd(); qvals = [rd_qvrow() for _ in range(nq)]
+        nc = rd(); lcopaths = [rd_path() for _ in range(nc)]
+        return (qvals, lcopaths)
     def rd_tleaf():                                       # v5.124: per-query trace LEAF VALUES only (no paths)
         return (rd_fe(),rd_fe(),rd_fe(), rd_g2(), rd_g2(),
                 rd_fe(),rd_fe(),rd_fe(), rd_g2(), rd_g2())

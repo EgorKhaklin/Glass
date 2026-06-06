@@ -235,13 +235,15 @@ buildable next-session work; 5–6 are large/gated; 7–8 are rigor and the hard
    into the suite** as a permanent native-round-trip gate *(v5.123)* — the green-but-broken hazard for
    *future* format changes is now caught automatically; (b) **Merkle-path deduplication** ([`docs/merkle-dedup-design.md`](merkle-dedup-design.md)): a per-tree
    sorted-index batch multiproof — *monotone* (never larger, no break-even, helps **every** proof, unlike
-   LogUp), but a proof-*format* break (`verify_b3` IS in the lockstep). **Stage 1 — batched TRACE trees —
-   LANDED v5.124** (`a<b` 448k → 382k, −14.8%; `a+b` −43%; O3 canonical reconstruction validated in both
-   languages first, byte-identical Glass `verify_b3` ⇄ Pentecost, all soundness gates green). **Stage 2 —
-   the FRI `bopen`** (the larger ~53% lever) is the remaining piece (same recon machinery, applied per
-   FRI layer). Combined the two reach the design's measured ~2.86× / 65%; *de-risks* H3 (a smaller proof
-   = less in-circuit Merkle hashing); (c) base-2^31 limbs — deferred (a cross-lane combine overflows
-   `int64`; the safe per-lane form yields a smaller win than the count-drop).
+   LogUp), but a proof-*format* break (`verify_b3` IS in the lockstep). **✅ COMPLETE.** Stage 1 (batched
+   TRACE trees) LANDED v5.124 and Stage 2 (batched FRI `bopen`) LANDED v5.125. **Measured end-to-end:
+   `a<b` 448k → 154k tokens (−65.6%, a 2.91× smaller proof)**, matching the design's ~2.86×/65%; `a+b`
+   −91%. O3 canonical reconstruction was validated in both languages before either stage; byte-identical
+   Glass `verify_b3` ⇄ Pentecost; all soundness gates green (Stage-0 loud-break, difftest, corpus_check
+   8/8 tamper-checked, fixpoint, suite 480/480). Isolated to `ProofB3` (the standalone `Proof`/`ProofS`
+   demos keep `QOpen`). This *de-risks* H3 (a 2.9× smaller proof = ~⅓ the in-circuit Merkle hashing).
+   (c) base-2^31 limbs — still deferred (a cross-lane combine overflows `int64`; the safe per-lane form
+   yields a smaller win than the count-drop already shipped, and Merkle dedup was the dominant lever).
 
 8. **Test-suite performance (test-infra).** *(medium; not soundness-critical.)* A full
    `tests/test_glass.py` run is **slow** (~tens of minutes): each of the ~50 heavy `glass prove` gates
