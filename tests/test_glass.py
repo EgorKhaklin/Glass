@@ -2128,6 +2128,23 @@ def main() -> int:
         print(f"        {(_mmp.stdout + _mmp.stderr).strip()[-200:]}")
         failures += 1
 
+    # H3 milestone B1 (v5.126) — AUTHENTICATED FRI FOLD: two openings are each Merkle-authenticated AND
+    # consumed by the exact FRI fold in ONE proven circuit (the structural heart of recursion). The
+    # public result is (root_fx, root_fmx, fold); the fold of fx=10,fmx=20,beta=7,x=1 is exactly
+    # (10+20)/2 + 7*(10-20)/2 = 15-35 = -20, computed mod p via the supplied field inverses. A native
+    # prove (the int64-overflowing x^7 + huge inverses make this circuit-faithful, NOT witness3-agreeing,
+    # like merkle_member). ACCEPT + the exact result pins the composed circuit; a lowering regression
+    # would change the fold or the roots.
+    _mfp = _prove_run([sys.executable, GLASS, "prove", os.path.join(EX, "prove", "merkle_fold_member.glass"),
+                       "fx=10", "fmx=20", "sa=3", "da=0", "sc=5", "dc=1", "beta=7", "x=1",
+                       "inv2=9223372034707292161", "inv2x=9223372034707292161"])
+    if not _heavy_skipped(_mfp, "H3: authenticated FRI fold (membership + exact fold composed in one circuit) -> ACCEPT, fold=-20"):
+        mf_ok = ("proof:   ACCEPT" in _mfp.stdout) and ("3264941531247994665, 6297486681267911818, -20)" in _mfp.stdout)
+        print(f"  {'OK ' if mf_ok else 'FAIL'}  H3: authenticated FRI fold (membership + exact fold composed in one circuit) -> ACCEPT, fold=-20")
+        if not mf_ok:
+            print(f"        rc={_mfp.returncode}  out: {_mfp.stdout.strip()[-220:]}  err: {_mfp.stderr.strip()[-120:]}")
+            failures += 1
+
     # Adversarial fuzz of the second witness: a TAMPERED proof must never verify. tamper_pentecost.py
     # perturbs random single tokens of a committed honest proof and asserts the independent Pentecost
     # verifier REJECTs every one (0 wrong-ACCEPTs). A 1600-tamper/16-seed campaign (workflow whrym5q4r,
@@ -2207,7 +2224,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 77)  # +77: ... + zk-hiding-large-circuit-ACCEPT + v5.121: unequal-width-risk-CRITICAL/LOW + unequal-width-match-truncation-fix + v5.123: native-round-trip-difftest-in-suite (emit<->Pentecost; skip-on-stall)
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 78)  # +78: ... + v5.121 unequal-width-risk/match-fix + v5.123 native-round-trip-difftest-in-suite + v5.126 H3-B1 authenticated-FRI-fold (membership+fold composed)
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

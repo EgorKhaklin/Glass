@@ -218,9 +218,10 @@ buildable next-session work; 5–6 are large/gated; 7–8 are rigor and the hard
    19M gates post-dedup, ~98% Poseidon2, vs ~32k rows; one permutation ≈ ~1,900 gates). Dedup moved the gate
    ~2.8× — groundwork, not the closer. **Gated on substrate perf (#6: a higher ceiling T1, or a chunking/
    accumulation substrate T2) — NOT on LogUp (#1), which is the wrong cost class for the hash core and stays
-   independently deferred.** Next SHIPPABLE blocks (feasible now, no trigger): **B1** compose membership +
-   fold-check into one authenticated circuit (`merkle_fold_member.glass`); **B2** full Poseidon2 one node
-   in-circuit (~1,900 gates, fits the ceiling); **B3** the chunking harness (= #6 in H3-shaped form, = T2).
+   independently deferred.** Next SHIPPABLE blocks: **B1 ✅ LANDED v5.126** —
+   `merkle_fold_member.glass` composes in-circuit Merkle membership + the exact FRI fold in ONE circuit
+   (two openings authenticated AND folded; `fx=10,fmx=20,β=7,x=1 → fold=−20`); **B2** full Poseidon2 one
+   node in-circuit (~1,900 gates, fits the ceiling); **B3** the chunking harness (= #6 in H3-shaped form, = T2).
    The recursive verifier's *arithmetic* is done; only the prover's *throughput* stands between Glass and a
    verifier that verifies itself.
 

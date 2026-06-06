@@ -1,0 +1,43 @@
+# H3 milestone B1 — AUTHENTICATED FRI FOLD: membership + fold, composed in ONE circuit.
+#
+# The two recursive-verifier half-blocks existed apart: in-circuit Merkle membership
+# (merkle_member.glass) and the FRI fold-check (prove_recursion.glass). A real recursive verifier must
+# do BOTH at once — re-hash each opened codeword value up its authentication path AND feed the
+# *authenticated* values into the FRI fold — within the proven circuit. This is the first circuit where
+# an opening is verified against a commitment AND consumed by the fold in the same proof: the structural
+# heart of recursion, at toy scale (the reduced x^7+3x3-MDS hash from merkle_member keeps the trace
+# small enough to dogfood; full Poseidon2 per node is the gated next step — see docs/h3-feasibility.md).
+#
+#   glass prove examples/prove/merkle_fold_member.glass \
+#       fx=10 fmx=20 sa=3 da=0 sc=5 dc=1 beta=7 x=1 inv2=9223372034707292161 inv2x=9223372034707292161
+#
+# fx, f(-x) and their Merkle siblings are PRIVATE; the PUBLIC result is the triple
+# (root_fx, root_fmx, fold): "I know two codeword openings that authenticate to these layer roots and
+# whose FRI fold is F." A real verifier then checks root_fx == root_fmx == the committed layer root and
+# fold == the next layer's opening. inv2/inv2x are the field inverses of 2 and 2x (Goldilocks
+# p = 2^64-2^32+1, so inv2 = (p+1)/2 = 9223372034707292161); the circuit reduces mod p at every gate, so
+# the fold is the EXACT FRI fold (f(x)+f(-x))/2 + beta*(f(x)-f(-x))/(2x). NB: the nested x^7 hash chains
+# overflow signed int64, so the reference interpreter diverges from the mod-p circuit (the benign
+# "int64 wraparound the field does not share" class — see merkle_member.glass); this is a circuit-faithful
+# showcase, gated on ACCEPT, not on Third-Witness agreement.
+fn sb(x: Int) : Int = let x2 : Int = x * x in let x4 : Int = x2 * x2 in (x4 * x2) * x   # x^7 S-box
+# one reduced 2-to-1 compression (3 full rounds, 3x3 circulant MDS, x^7) — from merkle_member.glass
+fn compress(l: Int, r: Int) : Int =
+  let a1 : Int = sb(l + 1) in let b1 : Int = sb(r + 2) in let c1 : Int = sb(0 + 3) in
+  let a2 : Int = 2 * a1 + 3 * b1 + c1 in let b2 : Int = a1 + 2 * b1 + 3 * c1 in let c2 : Int = 3 * a1 + b1 + 2 * c1 in
+  let a3 : Int = sb(a2 + 4) in let b3 : Int = sb(b2 + 5) in let c3 : Int = sb(c2 + 6) in
+  let a4 : Int = 2 * a3 + 3 * b3 + c3 in let b4 : Int = a3 + 2 * b3 + 3 * c3 in let c4 : Int = 3 * a3 + b3 + 2 * c3 in
+  let a5 : Int = sb(a4 + 7) in let b5 : Int = sb(b4 + 8) in let c5 : Int = sb(c4 + 9) in
+  2 * a5 + 3 * b5 + c5
+# authenticate one opening one level up: direction d picks left/right child order
+fn auth(leaf: Int, sib: Int, d: Int) : Int = if d == 0 then compress(leaf, sib) else compress(sib, leaf)
+# the EXACT FRI fold of the two authenticated openings: (fx + fmx)/2 + beta*(fx - fmx)/(2x).
+# Division is multiplication by the supplied field inverses (the circuit checks nothing here; in full
+# recursion `fold` is constrained by the next layer's Merkle-verified opening — see header).
+fn fold(fx: Int, fmx: Int, beta: Int, x: Int, inv2: Int, inv2x: Int) : Int =
+  (fx + fmx) * inv2 + beta * ((fx - fmx) * inv2x)
+# result: (root the f(x) opening authenticates to, root the f(-x) opening authenticates to, the fold)
+fn claim(fx: Int, fmx: Int, sa: Int, da: Int, sc: Int, dc: Int, beta: Int, x: Int, inv2: Int, inv2x: Int) : (Int, Int, Int) =
+  (auth(fx, sa, da), auth(fmx, sc, dc), fold(fx, fmx, beta, x, inv2, inv2x))
+
+claim(fx, fmx, sa, da, sc, dc, beta, x, inv2, inv2x)
