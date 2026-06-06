@@ -209,13 +209,20 @@ buildable next-session work; 5–6 are large/gated; 7–8 are rigor and the hard
    the `let` over the selector — the dual of `push_app` (*v5.115*). The bridge now has **zero refused
    call forms**: named, runtime-chosen, let-aliased, and let-selector callees all lower soundly.
 
-5. **H3 — full recursive STARK verifier** *(large; performance-gated; native-primary).*
-   The two building blocks have landed: the FRI **fold-check as a circuit**
-   (`prove_recursion*.glass`) and in-circuit **Merkle membership**
-   ([`merkle_member.glass`](../examples/prove/merkle_member.glass), *v5.72*). Remaining:
-   full Poseidon2 per node, composing membership with the fold-check, and
-   **`verify_b3`-as-a-circuit** — all gated on a faster prover or LogUp (#1) relieving the
-   per-node hash cost. High value, but correctly *downstream* of #1.
+5. **H3 — full recursive STARK verifier** *(feasibility verdict: NO-GO today — a measured defer; see
+   [`docs/h3-feasibility.md`](h3-feasibility.md)).* The two half-blocks have landed (FRI **fold-check as a
+   circuit** `prove_recursion*.glass`; in-circuit **Merkle membership** `merkle_member.glass`, reduced hash).
+   Re-assessed after the Merkle dedup (which shrank proofs ~2.9×): **expressibility is GREEN** (every op
+   lowers; only modular-inverse needs the routine inverse-as-advice rewrite; NTT is prover-only; Poseidon2
+   is pure `+`/`*`), but the **size is ~580× over the practical prover ceiling** (`verify_b3`-as-circuit ≈
+   19M gates post-dedup, ~98% Poseidon2, vs ~32k rows; one permutation ≈ ~1,900 gates). Dedup moved the gate
+   ~2.8× — groundwork, not the closer. **Gated on substrate perf (#6: a higher ceiling T1, or a chunking/
+   accumulation substrate T2) — NOT on LogUp (#1), which is the wrong cost class for the hash core and stays
+   independently deferred.** Next SHIPPABLE blocks (feasible now, no trigger): **B1** compose membership +
+   fold-check into one authenticated circuit (`merkle_fold_member.glass`); **B2** full Poseidon2 one node
+   in-circuit (~1,900 gates, fits the ceiling); **B3** the chunking harness (= #6 in H3-shaped form, = T2).
+   The recursive verifier's *arithmetic* is done; only the prover's *throughput* stands between Glass and a
+   verifier that verifies itself.
 
 6. **Substrate performance (P)** *(large; multi-pass; not soundness-critical).* `glass.py`
    is a tree-walker (multi-hour for heavy STARKs), so `native_glassc` (~10–40×) is the
