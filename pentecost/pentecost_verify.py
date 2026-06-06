@@ -243,25 +243,62 @@ def vq(oq, roots, betas, doms, final, p, finv2):
         if not geq2(folded, nextv): return False
         p = j
     return True
-def vb3_q1(boq, toq, root1, root2, root3, broots, betas, doms, bfinal, coset,
+# v5.124 Stage 1: the trace Merkle binding is BATCHED. Reconstruct each trace root from the opened
+# leaves (at their indices) + a minimal co-path, replacing the per-query independent paths. Byte-identical
+# to the Glass verify_b3 (recon_root / vb3_trace / vb3_qs); validated in fuzz/merkle_batch_proto.py.
+def oidx_of(queries, half):                              # canonical sorted opened-leaf positions {j, j+half}
+    s = set()
+    for p in queries:
+        j = p % half; s.add(j); s.add(j + half)
+    return sorted(s)
+def recon_root(known, cp, height):                      # known: {pos: digest}; cp: list of digests (canonical order)
+    ci = 0
+    for _ in range(height):
+        acc = {}
+        for pos in sorted(known.keys()):
+            parent = pos // 2
+            if parent in acc: continue
+            sib = pos ^ 1
+            if sib in known:
+                sibh = known[sib]
+            else:
+                if ci >= len(cp): return None            # co-path under-run -> REJECT
+                sibh = cp[ci]; ci += 1
+            me = known[pos]
+            acc[parent] = hashg(me, sibh) if pos % 2 == 0 else hashg(sibh, me)
+        known = acc
+    if ci != len(cp) or len(known) != 1: return None     # over-run / not collapsed to one root -> REJECT
+    return next(iter(known.values()))
+def tmap(tleaves, queries, half, which):                # index->leafhash for trace tree (1=LRO,3=quot,2=Z)
+    mp = {}
+    for tl, p in zip(tleaves, queries):
+        (lj,rj,oj,qj,zj, ljh,rjh,ojh,qjh,zjh) = tl
+        j = p % half
+        if which == 1:   hj, hjh = comb_lro(lj,rj,oj), comb_lro(ljh,rjh,ojh)
+        elif which == 3: hj, hjh = lhash(qj), lhash(qjh)
+        else:            hj, hjh = lhash(zj), lhash(zjh)
+        mp.setdefault(j, hj); mp.setdefault(j + half, hjh)
+    return mp
+def vb3_trace(tleaves, queries, cp1, cp3, cp2, m, root1, root2, root3):
+    half = m // 2; h = ilog2(m)
+    return (recon_root(tmap(tleaves, queries, half, 1), cp1, h) == root1
+            and recon_root(tmap(tleaves, queries, half, 3), cp3, h) == root3
+            and recon_root(tmap(tleaves, queries, half, 2), cp2, h) == root2)
+def vb3_q1(boq, toq, broots, betas, doms, bfinal, coset,
            lz, rz, oz, qz, zz, zwz, z, wz, gamd, m, p, lyrs, finv2):
     half = m // 2; j = p % half
-    (lj,rj,oj,qj,zj, p1j,p3j,p2j, ljh,rjh,ojh,qjh,zjh, p1jh,p3jh,p2jh) = toq
-    if not merkle_verify_h(comb_lro(lj,rj,oj),   j,      p1j,  root1): return False
-    if not merkle_verify_h(comb_lro(ljh,rjh,ojh), j+half, p1jh, root1): return False
-    if not merkle_verify_g(qj, j, p3j, root3) or not merkle_verify_g(qjh, j+half, p3jh, root3): return False
-    if not merkle_verify_g(zj, j, p2j, root2) or not merkle_verify_g(zjh, j+half, p2jh, root2): return False
+    (lj,rj,oj,qj,zj, ljh,rjh,ojh,qjh,zjh) = toq
     bj  = deep_batch_b3(lj, rj, oj, qj, zj,    coset[j],      lz,rz,oz,qz,zz,zwz, z,wz,gamd)
     bjh = deep_batch_b3(ljh,rjh,ojh,qjh,zjh,   coset[j+half], lz,rz,oz,qz,zz,zwz, z,wz,gamd)
     blx, blmx = boq[0][0], boq[0][1]
     if not (geq2(bj, blx) and geq2(bjh, blmx)): return False
     if len(boq) != lyrs: return False
     return vq(boq, broots, betas, doms, bfinal, p, finv2)
-def vb3_qs(bopen, topen, root1, root2, root3, broots, betas, doms, bfinal, coset,
+def vb3_qs(bopen, tleaves, broots, betas, doms, bfinal, coset,
            lz, rz, oz, qz, zz, zwz, z, wz, gamd, m, queries, lyrs, finv2):
-    if not (len(bopen) == len(topen) == len(queries)): return False
-    for boq, toq, p in zip(bopen, topen, queries):
-        if not vb3_q1(boq, toq, root1, root2, root3, broots, betas, doms, bfinal, coset,
+    if not (len(bopen) == len(tleaves) == len(queries)): return False
+    for boq, toq, p in zip(bopen, tleaves, queries):
+        if not vb3_q1(boq, toq, broots, betas, doms, bfinal, coset,
                       lz, rz, oz, qz, zz, zwz, z, wz, gamd, m, p, lyrs, finv2): return False
     return True
 
@@ -280,6 +317,7 @@ def is_const2(cw):  return all(geq2(x, cw[0]) for x in cw) if cw else True
 # --------------------------------------------------------------------- verify_b3
 def verify_b3(gates, proof):
     (root1, root2, root3, lz, rz, oz, qz, zz, zwz, broots, bfinal, nonce, bopen, topen) = proof
+    (tleaves, cp1, cp3, cp2) = topen
     n = ng(gates); m = fri_dsize(n); coset = fri_coset(n); lyrs = fri_layers(n)
     omega = root_pow2(ilog2(n))
     stmt = stmt_seed_of(gates); pc = public_cols(gates, n); pm = perm_cols(gates, n)
@@ -294,11 +332,12 @@ def verify_b3(gates, proof):
     queries = sample_queries_g(ground, fri_queries(), fri_dsize(n))
     id_ok = geq2(qz, qcombined_z(pc, pm, lz, rz, oz, zz, zwz, beta, gamp, alpha, z, n))
     struct_ok = (len(broots) == lyrs and len(bfinal) == fri_final()
-                 and len(bopen) == fri_queries() and len(topen) == fri_queries()
+                 and len(bopen) == fri_queries() and len(tleaves) == fri_queries()
                  and pow_ok(ground) and is_const2(bfinal))
     if not (id_ok and struct_ok): return (False, id_ok, struct_ok)
-    qok = vb3_qs(bopen, topen, root1, root2, root3, broots, betas, doms, bfinal, coset,
-                 lz, rz, oz, qz, zz, zwz, z, wz, gamd, m, queries, lyrs, finv(2))
+    trace_ok = vb3_trace(tleaves, queries, cp1, cp3, cp2, m, root1, root2, root3)
+    qok = trace_ok and vb3_qs(bopen, tleaves, broots, betas, doms, bfinal, coset,
+                              lz, rz, oz, qz, zz, zwz, z, wz, gamd, m, queries, lyrs, finv(2))
     return (id_ok and struct_ok and qok, id_ok, struct_ok and qok)
 
 # ---------------------------------------------------------------- proof parser
@@ -320,11 +359,13 @@ def parse(path):
         n = rd(); return [rd_qopen() for _ in range(n)]
     def rd_bopen():
         n = rd(); return [rd_layerlist() for _ in range(n)]
-    def rd_topenb():
-        return (rd_fe(),rd_fe(),rd_fe(), rd_g2(), rd_g2(), rd_path(),rd_path(),rd_path(),
-                rd_fe(),rd_fe(),rd_fe(), rd_g2(), rd_g2(), rd_path(),rd_path(),rd_path())
-    def rd_topen():
-        n = rd(); return [rd_topenb() for _ in range(n)]
+    def rd_tleaf():                                       # v5.124: per-query trace LEAF VALUES only (no paths)
+        return (rd_fe(),rd_fe(),rd_fe(), rd_g2(), rd_g2(),
+                rd_fe(),rd_fe(),rd_fe(), rd_g2(), rd_g2())
+    def rd_topen():                                       # batched trace opening: leaves + 3 shared co-paths
+        n = rd(); tleaves = [rd_tleaf() for _ in range(n)]
+        cp1 = rd_path(); cp3 = rd_path(); cp2 = rd_path()
+        return (tleaves, cp1, cp3, cp2)
     def rd_g2list():
         n = rd(); return [rd_g2() for _ in range(n)]
     def rd_roots():

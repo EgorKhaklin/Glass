@@ -529,6 +529,52 @@ fn path_of_levels(levels: List<List<List<Int>>>, li: Int, index: Int) : List<Lis
        let sib : List<Int> = if index % 2 == 0 then wnth(level, index + 1) else wnth(level, index - 1) in
        [sib] ++ path_of_levels(levels, li + 1, index / 2)
 fn merkle_path_levels(levels: List<List<List<Int>>>, index: Int) : List<List<Int>> = path_of_levels(levels, 0, index)
+# --- Merkle batch-opening (v5.124, proof-size Stage 1): reconstruct a tree root from the opened leaves
+# (at their indices) + a MINIMAL co-path node set, replacing the per-query independent sibling paths.
+# Validated standalone in examples/prove/merkle_batch_difftest.glass + fuzz/merkle_batch_proto.py.
+# Canonical bottom-up sweep over the memoized levels; even position = LEFT input to hashg (matching
+# fold_path_g / level_up_g). The opened-index set is Fiat-Shamir-derived and recomputed by the verifier,
+# so NO index tokens are transmitted (the co-path is consumed in the same canonical order both sides).
+fn insI(a: Int, xs: List<Int>) : List<Int> = match xs { [] => [a]; [b, ...t] => if a <= b then [a] ++ xs else [b] ++ insI(a, t) }
+fn sortI(xs: List<Int>) : List<Int> = match xs { [] => []; [a, ...t] => insI(a, sortI(t)) }
+fn memI(xs: List<Int>, k: Int) : Bool = match xs { [] => false; [a, ...t] => if a == k then true else memI(t, k) }
+fn unionI(xs: List<Int>, a: Int) : List<Int> = if memI(xs, a) then xs else xs ++ [a]
+fn oidx_go(queries: List<Int>, half: Int, acc: List<Int>) : List<Int> =
+  match queries { [] => acc; [p, ...rest] => let j : Int = p % half in oidx_go(rest, half, unionI(unionI(acc, j), j + half)) }
+# the canonical sorted set of opened leaf positions {j, j+half : query p}, recomputed by the verifier
+fn oidx_of(queries: List<Int>, half: Int) : List<Int> = sortI(oidx_go(queries, half, []))
+# PROVER: minimal co-path over the levels. `known` = positions reconstructible at this level; a sibling
+# digest is emitted iff not itself known (i.e. not opened/reconstructible). Canonical: ascending position.
+fn bcp_go(todo: List<Int>, known: List<Int>, nodes: List<List<Int>>, parents: List<Int>, cp: List<List<Int>>) : (List<Int>, List<List<Int>>) =
+  match todo { [] => (parents, cp);
+    [pos, ...rest] => let parent : Int = pos / 2 in
+      if memI(parents, parent) then bcp_go(rest, known, nodes, parents, cp)
+      else let sib : Int = if pos % 2 == 0 then pos + 1 else pos - 1 in
+        let cp2 : List<List<Int>> = if memI(known, sib) then cp else cp ++ [wnth(nodes, sib)] in
+        bcp_go(rest, known, nodes, parents ++ [parent], cp2) }
+fn bcopath(levels: List<List<List<Int>>>, li: Int, known: List<Int>, cp: List<List<Int>>) : List<List<Int>> =
+  if li >= l3len(levels) - 1 then cp
+  else match bcp_go(sortI(known), known, wnth3(levels, li), [], []) { (parents, cpn) => bcopath(levels, li + 1, parents, cp ++ cpn) }
+# VERIFIER: reconstruct the root. `known` = List<Pair<pos, digest>>; co-path siblings consumed in the
+# same canonical order. An under-run uses [] (-> wrong root -> REJECT); an over-run leaves leftover cp.
+fn khasL(m: List<Pair<Int, List<Int>>>, k: Int) : Bool = match m { [] => false; [Pair(kk, vv), ...t] => if kk == k then true else khasL(t, k) }
+fn kgetL(m: List<Pair<Int, List<Int>>>, k: Int) : List<Int> = match m { [] => []; [Pair(kk, vv), ...t] => if kk == k then vv else kgetL(t, k) }
+fn keysL(m: List<Pair<Int, List<Int>>>) : List<Int> = match m { [] => []; [Pair(k, v), ...t] => [k] ++ keysL(t) }
+fn rec_go(known: List<Pair<Int, List<Int>>>, todo: List<Int>, cp: List<List<Int>>, acc: List<Pair<Int, List<Int>>>) : (List<Pair<Int, List<Int>>>, List<List<Int>>) =
+  match todo { [] => (acc, cp);
+    [pos, ...rest] => let parent : Int = pos / 2 in
+      if khasL(acc, parent) then rec_go(known, rest, cp, acc)
+      else let sib : Int = if pos % 2 == 0 then pos + 1 else pos - 1 in
+        match (if khasL(known, sib) then (kgetL(known, sib), cp) else (match cp { [] => ([], []); [s, ...cprest] => (s, cprest) })) { (sibh, cp2) =>
+          let me : List<Int> = kgetL(known, pos) in
+          let ph : List<Int> = if pos % 2 == 0 then hashg(me, sibh) else hashg(sibh, me) in
+          rec_go(known, rest, cp2, acc ++ [Pair(parent, ph)]) } }
+fn recon_root(known: List<Pair<Int, List<Int>>>, cp: List<List<Int>>, height: Int) : (List<Int>, List<List<Int>>) =
+  if height <= 0 then (match known { [] => []; [Pair(k, v), ...t] => v }, cp)
+  else match rec_go(known, sortI(keysL(known)), cp, []) { (parents, cprest) => recon_root(parents, cprest, height - 1) }
+# reconstruct + check: root must match AND the co-path must be exactly consumed (no over-run -> no malleability)
+fn recon_ok(known: List<Pair<Int, List<Int>>>, cp: List<List<Int>>, height: Int, root: List<Int>) : Bool =
+  match recon_root(known, cp, height) { (rr, leftover) => bn_eq(rr, root) && (llen(leftover) == 0) }
 type Layer = | Layer(List<G2>, List<List<Int>>, List<Int>, G2, List<List<List<Int>>>)
 # tseed is threaded through the fold: tseed -> hashg(tseed, root_i) before each
 # fold, and beta_i is derived from that updated seed. So beta_i depends on the
@@ -826,15 +872,20 @@ fn tamper_strace(proof: ProofS) : ProofS = match proof { ProofS(tr, lz, rz, oz, 
 # challenge): T1{l,r,o} -> beta,gamma_p -> T2{Z} -> alpha -> T3{Q} -> z(OOD). Q combines
 # the gate, recurrence, and boundary constraints with powers of alpha. DEEP-FRI batches
 # {l,r,o,Q,Z} (Z bound at z AND omega*z). Verifier checks qz == combined-quotient(z).
-type TOpenB = | TOpenB(List<Int>, List<Int>, List<Int>, G2, G2, List<List<Int>>, List<List<Int>>, List<List<Int>>, List<Int>, List<Int>, List<Int>, G2, G2, List<List<Int>>, List<List<Int>>, List<List<Int>>)
-type ProofB3 = | ProofB3(List<Int>, List<Int>, List<Int>, G2, G2, G2, G2, G2, G2, List<List<Int>>, List<G2>, Int, List<List<QOpen>>, List<TOpenB>)
+# v5.124 Stage 1: the trace opening is BATCHED. Per query we keep only the LEAF VALUES (TLeaf: lro+q+z
+# at j and j+half) — the deep-check inputs, unchanged — and the 3 trace Merkle trees (root1-LRO,
+# root3-quotient, root2-Z) are opened ONCE each as a batch multiproof: TBatch carries the per-query
+# leaves + one shared co-path per tree (replacing the former 6 independent per-query paths). The verifier
+# rebuilds each trace root from the opened leaves + its co-path (recon_ok); FRI `bopen` stays per-query.
+type TLeaf = | TLeaf(List<Int>, List<Int>, List<Int>, G2, G2, List<Int>, List<Int>, List<Int>, G2, G2)
+type TBatch = | TBatch(List<TLeaf>, List<List<Int>>, List<List<Int>>, List<List<Int>>)
+type ProofB3 = | ProofB3(List<Int>, List<Int>, List<Int>, G2, G2, G2, G2, G2, G2, List<List<Int>>, List<G2>, Int, List<List<QOpen>>, TBatch)
 fn comb_lro(l: List<Int>, r: List<Int>, o: List<Int>) : List<Int> = hashg(hashg(l, r), o)
 # CUT THE ROPE 3: was O(m²) — wnth(lcw,i)/wnth(rcw,i)/wnth(ocw,i) each an O(i) cons-walk per leaf,
 # x m=32n leaves. Now a single lock-step walk of the three codewords (O(m), no indexing).
 fn trace_leaf_lro(lcw: List<List<Int>>, rcw: List<List<Int>>, ocw: List<List<Int>>, i: Int, m: Int) : List<List<Int>> =
   match lcw { [] => []; [lh, ...lt] => match rcw { [] => []; [rh, ...rt] => match ocw { [] => []; [oh, ...ot] =>
     [comb_lro(lh, rh, oh)] ++ trace_leaf_lro(lt, rt, ot, i + 1, m) } } }
-fn tblen(xs: List<TOpenB>) : Int = match xs { [] => 0; [x, ...r] => 1 + tblen(r) }
 fn absorb6(ts: List<Int>, a: G2, b: G2, c: G2, d: G2, e: G2, f: G2) : List<Int> = absorb_g2(absorb_g2(absorb_g2(absorb_g2(absorb_g2(absorb_g2(ts, a), b), c), d), e), f)
 # absorb the final folded codeword into the transcript BEFORE sampling queries
 # (standard BCS/ethSTARK; closes the second FS-PARTIAL gap — the query positions now
@@ -881,12 +932,17 @@ fn build_b_b3_go(lv: List<List<Int>>, rv: List<List<Int>>, ov: List<List<Int>>, 
   if i >= m then [] else [deep_batch_b3(vget(lv, i), vget(rv, i), vget(ov, i), vget(qv, i), vget(zv, i), vget(cv, i), lz, rz, oz, qz, zz, zwz, z, wz, gam)] ++ build_b_b3_go(lv, rv, ov, qv, zv, cv, lz, rz, oz, qz, zz, zwz, z, wz, gam, i + 1, m)
 fn build_b_b3(lcw: List<List<Int>>, rcw: List<List<Int>>, ocw: List<List<Int>>, qcw: List<G2>, zcw: List<G2>, coset: List<List<Int>>, lz: G2, rz: G2, oz: G2, qz: G2, zz: G2, zwz: G2, z: G2, wz: G2, gam: G2, i: Int, m: Int) : List<G2> =
   build_b_b3_go(to_vec(lcw), to_vec(rcw), to_vec(ocw), to_vec(qcw), to_vec(zcw), to_vec(coset), lz, rz, oz, qz, zz, zwz, z, wz, gam, 0, m)
-fn extract_tb1(lcw: List<List<Int>>, rcw: List<List<Int>>, ocw: List<List<Int>>, qcw: List<G2>, zcw: List<G2>, lev1: List<List<List<Int>>>, lev2: List<List<List<Int>>>, lev3: List<List<List<Int>>>, p: Int, m: Int) : TOpenB =
+fn extract_tl1(lcw: List<List<Int>>, rcw: List<List<Int>>, ocw: List<List<Int>>, qcw: List<G2>, zcw: List<G2>, p: Int, m: Int) : TLeaf =
   let half : Int = m / 2 in let j : Int = p % half in
-  TOpenB(wnth(lcw, j), wnth(rcw, j), wnth(ocw, j), nth2(qcw, j), nth2(zcw, j), merkle_path_levels(lev1, j), merkle_path_levels(lev3, j), merkle_path_levels(lev2, j),
-         wnth(lcw, j + half), wnth(rcw, j + half), wnth(ocw, j + half), nth2(qcw, j + half), nth2(zcw, j + half), merkle_path_levels(lev1, j + half), merkle_path_levels(lev3, j + half), merkle_path_levels(lev2, j + half))
-fn extract_tb(lcw: List<List<Int>>, rcw: List<List<Int>>, ocw: List<List<Int>>, qcw: List<G2>, zcw: List<G2>, lev1: List<List<List<Int>>>, lev2: List<List<List<Int>>>, lev3: List<List<List<Int>>>, queries: List<Int>, m: Int) : List<TOpenB> =
-  match queries { [] => []; [p, ...rest] => [extract_tb1(lcw, rcw, ocw, qcw, zcw, lev1, lev2, lev3, p, m)] ++ extract_tb(lcw, rcw, ocw, qcw, zcw, lev1, lev2, lev3, rest, m) }
+  TLeaf(wnth(lcw, j), wnth(rcw, j), wnth(ocw, j), nth2(qcw, j), nth2(zcw, j),
+        wnth(lcw, j + half), wnth(rcw, j + half), wnth(ocw, j + half), nth2(qcw, j + half), nth2(zcw, j + half))
+fn extract_tls(lcw: List<List<Int>>, rcw: List<List<Int>>, ocw: List<List<Int>>, qcw: List<G2>, zcw: List<G2>, queries: List<Int>, m: Int) : List<TLeaf> =
+  match queries { [] => []; [p, ...rest] => [extract_tl1(lcw, rcw, ocw, qcw, zcw, p, m)] ++ extract_tls(lcw, rcw, ocw, qcw, zcw, rest, m) }
+# build the batched trace opening: per-query leaf values + one shared co-path per trace tree (lev1=LRO/root1,
+# lev3=quotient/root3, lev2=Z/root2), over the canonical opened-leaf set {j, j+half}.
+fn extract_tbatch(lcw: List<List<Int>>, rcw: List<List<Int>>, ocw: List<List<Int>>, qcw: List<G2>, zcw: List<G2>, lev1: List<List<List<Int>>>, lev2: List<List<List<Int>>>, lev3: List<List<List<Int>>>, queries: List<Int>, m: Int) : TBatch =
+  let oidx : List<Int> = oidx_of(queries, m / 2) in
+  TBatch(extract_tls(lcw, rcw, ocw, qcw, zcw, queries, m), bcopath(lev1, 0, oidx, []), bcopath(lev3, 0, oidx, []), bcopath(lev2, 0, oidx, []))
 fn prove_b3(gates: List<Gate>, w: List<List<Int>>) : ProofB3 =
   let n : Int = ng(gates) in let m : Int = fri_dsize(n) in let coset : List<List<Int>> = fri_coset(n) in let rot : Int = m / n in let omega : List<Int> = root_pow2(ilog2(n)) in
   let stmt : List<Int> = stmt_seed_of(gates) in let pc : List<List<List<Int>>> = public_cols(gates, n) in let pm : List<List<List<Int>>> = perm_cols(gates, n) in
@@ -913,24 +969,41 @@ fn prove_b3(gates: List<Gate>, w: List<List<Int>>) : ProofB3 =
   match commit_g(bcw, coset, [], ts4, finv([2])) { (blayers, bfinal) =>
     let base_seed : List<Int> = absorb_final(transcript_seed_g(blayers, ts4), bfinal) in let nz : Int = grind(base_seed) in let ground : List<Int> = hashg(base_seed, glit(nz)) in
     let queries : List<Int> = sample_queries_g(ground, fri_queries(n), fri_dsize(n)) in
-    ProofB3(root1, root2, root3, lz, rz, oz, qz, zz, zwz, roots_of(blayers), bfinal, nz, extract_all(blayers, queries), extract_tb(lcw, rcw, ocw, qcw, zcw, lev1, lev2, lev3, queries, m)) }
-fn vb3_q1(boq: List<QOpen>, toq: TOpenB, root1: List<Int>, root2: List<Int>, root3: List<Int>, broots: List<List<Int>>, betas: List<G2>, doms: List<List<List<Int>>>, bfinal: List<G2>, coset: List<List<Int>>, lz: G2, rz: G2, oz: G2, qz: G2, zz: G2, zwz: G2, z: G2, wz: G2, gamd: G2, m: Int, p: Int, lyrs: Int, finv2: List<Int>) : Bool =
+    ProofB3(root1, root2, root3, lz, rz, oz, qz, zz, zwz, roots_of(blayers), bfinal, nz, extract_all(blayers, queries), extract_tbatch(lcw, rcw, ocw, qcw, zcw, lev1, lev2, lev3, queries, m)) }
+fn tllen(xs: List<TLeaf>) : Int = match xs { [] => 0; [x, ...r] => 1 + tllen(r) }
+fn mapput(m: List<Pair<Int, List<Int>>>, k: Int, v: List<Int>) : List<Pair<Int, List<Int>>> = if khasL(m, k) then m else m ++ [Pair(k, v)]
+# build the index->leafhash map for trace tree `which` (1=LRO/root1, 3=quotient/root3, 2=Z/root2) from the
+# per-query leaf values: each query contributes its leaves at j and j+half. mapput dedups by index (a
+# position opened by two queries carries the same codeword value; a mismatch is caught by the deep-tie below).
+fn tmap_go(tleaves: List<TLeaf>, queries: List<Int>, half: Int, which: Int, acc: List<Pair<Int, List<Int>>>) : List<Pair<Int, List<Int>>> =
+  match tleaves { [] => acc; [TLeaf(lj, rj, oj, qj, zj, ljh, rjh, ojh, qjh, zjh), ...tr] => match queries { [] => acc; [p, ...qr] =>
+    let j : Int = p % half in
+    let hj : List<Int> = if which == 1 then comb_lro(lj, rj, oj) else if which == 3 then lhash(qj) else lhash(zj) in
+    let hjh : List<Int> = if which == 1 then comb_lro(ljh, rjh, ojh) else if which == 3 then lhash(qjh) else lhash(zjh) in
+    tmap_go(tr, qr, half, which, mapput(mapput(acc, j, hj), j + half, hjh)) } }
+# reconstruct + check all 3 trace roots from the batched opened leaves + their co-paths
+fn vb3_trace(tleaves: List<TLeaf>, queries: List<Int>, cp1: List<List<Int>>, cp3: List<List<Int>>, cp2: List<List<Int>>, m: Int, root1: List<Int>, root2: List<Int>, root3: List<Int>) : Bool =
+  let half : Int = m / 2 in let h : Int = ilog2(m) in
+  recon_ok(tmap_go(tleaves, queries, half, 1, []), cp1, h, root1)
+  && recon_ok(tmap_go(tleaves, queries, half, 3, []), cp3, h, root3)
+  && recon_ok(tmap_go(tleaves, queries, half, 2, []), cp2, h, root2)
+# per-query DEEP checks (the trace Merkle binding is now done in bulk by vb3_trace; here we only tie the
+# opened trace leaves to the FRI layer-0 value and run the per-query FRI fold vq).
+fn vb3_q1(boq: List<QOpen>, toq: TLeaf, broots: List<List<Int>>, betas: List<G2>, doms: List<List<List<Int>>>, bfinal: List<G2>, coset: List<List<Int>>, lz: G2, rz: G2, oz: G2, qz: G2, zz: G2, zwz: G2, z: G2, wz: G2, gamd: G2, m: Int, p: Int, lyrs: Int, finv2: List<Int>) : Bool =
   let half : Int = m / 2 in let j : Int = p % half in
-  match toq { TOpenB(lj, rj, oj, qj, zj, p1j, p3j, p2j, ljh, rjh, ojh, qjh, zjh, p1jh, p3jh, p2jh) =>
-    let mk1 : Bool = merkle_verify_h(comb_lro(lj, rj, oj), j, p1j, root1) && merkle_verify_h(comb_lro(ljh, rjh, ojh), j + half, p1jh, root1) in
-    let mk3 : Bool = merkle_verify_g(qj, j, p3j, root3) && merkle_verify_g(qjh, j + half, p3jh, root3) in
-    let mk2 : Bool = merkle_verify_g(zj, j, p2j, root2) && merkle_verify_g(zjh, j + half, p2jh, root2) in
+  match toq { TLeaf(lj, rj, oj, qj, zj, ljh, rjh, ojh, qjh, zjh) =>
     let bj : G2 = deep_batch_b3(lj, rj, oj, qj, zj, wnth(coset, j), lz, rz, oz, qz, zz, zwz, z, wz, gamd) in
     let bjh : G2 = deep_batch_b3(ljh, rjh, ojh, qjh, zjh, wnth(coset, j + half), lz, rz, oz, qz, zz, zwz, z, wz, gamd) in
     let recon : Bool = match boq { [] => false; [QOpen(blx, blmx, pp1, pp2), ...rest] => geq2(bj, blx) && geq2(bjh, blmx) } in
-    mk1 && mk3 && mk2 && recon && (qopen_len(boq) == lyrs) && vq(boq, broots, betas, doms, bfinal, p, finv2) }
-fn vb3_qs(bopen: List<List<QOpen>>, topen: List<TOpenB>, root1: List<Int>, root2: List<Int>, root3: List<Int>, broots: List<List<Int>>, betas: List<G2>, doms: List<List<List<Int>>>, bfinal: List<G2>, coset: List<List<Int>>, lz: G2, rz: G2, oz: G2, qz: G2, zz: G2, zwz: G2, z: G2, wz: G2, gamd: G2, m: Int, queries: List<Int>, lyrs: Int, finv2: List<Int>) : Bool =
-  match bopen { [] => match queries { [] => match topen { [] => true; _ => false }; _ => false };
-    [boq, ...brest] => match topen { [] => false; [toq, ...trest] => match queries { [] => false; [p, ...qrest] =>
-      if vb3_q1(boq, toq, root1, root2, root3, broots, betas, doms, bfinal, coset, lz, rz, oz, qz, zz, zwz, z, wz, gamd, m, p, lyrs, finv2)
-      then vb3_qs(brest, trest, root1, root2, root3, broots, betas, doms, bfinal, coset, lz, rz, oz, qz, zz, zwz, z, wz, gamd, m, qrest, lyrs, finv2) else false } } }
+    recon && (qopen_len(boq) == lyrs) && vq(boq, broots, betas, doms, bfinal, p, finv2) }
+fn vb3_qs(bopen: List<List<QOpen>>, tleaves: List<TLeaf>, broots: List<List<Int>>, betas: List<G2>, doms: List<List<List<Int>>>, bfinal: List<G2>, coset: List<List<Int>>, lz: G2, rz: G2, oz: G2, qz: G2, zz: G2, zwz: G2, z: G2, wz: G2, gamd: G2, m: Int, queries: List<Int>, lyrs: Int, finv2: List<Int>) : Bool =
+  match bopen { [] => match queries { [] => match tleaves { [] => true; _ => false }; _ => false };
+    [boq, ...brest] => match tleaves { [] => false; [toq, ...trest] => match queries { [] => false; [p, ...qrest] =>
+      if vb3_q1(boq, toq, broots, betas, doms, bfinal, coset, lz, rz, oz, qz, zz, zwz, z, wz, gamd, m, p, lyrs, finv2)
+      then vb3_qs(brest, trest, broots, betas, doms, bfinal, coset, lz, rz, oz, qz, zz, zwz, z, wz, gamd, m, qrest, lyrs, finv2) else false } } }
 fn verify_b3(gates: List<Gate>, proof: ProofB3) : Bool =
   match proof { ProofB3(root1, root2, root3, lz, rz, oz, qz, zz, zwz, broots, bfinal, nonce, bopen, topen) =>
+   match topen { TBatch(tleaves, cp1, cp3, cp2) =>
     let n : Int = ng(gates) in let m : Int = fri_dsize(n) in let coset : List<List<Int>> = fri_coset(n) in let lyrs : Int = fri_layers(n) in let omega : List<Int> = root_pow2(ilog2(n)) in
     let stmt : List<Int> = stmt_seed_of(gates) in let pc : List<List<List<Int>>> = public_cols(gates, n) in let pm : List<List<List<Int>>> = perm_cols(gates, n) in
     let ts1 : List<Int> = hashg(stmt, root1) in let beta : G2 = beta_p_of(ts1) in let gamp : G2 = gam_p_of(ts1) in
@@ -941,8 +1014,9 @@ fn verify_b3(gates: List<Gate>, proof: ProofB3) : Bool =
     let ground : List<Int> = hashg(base_seed, glit(nonce)) in let doms : List<List<List<Int>>> = build_doms(coset, lyrs) in
     let queries : List<Int> = sample_queries_g(ground, fri_queries(n), fri_dsize(n)) in
     let id_ok : Bool = geq2(qz, qcombined_z(pc, pm, lz, rz, oz, zz, zwz, beta, gamp, alpha, z, n)) in
-    let struct_ok : Bool = (llen(broots) == lyrs) && (len(bfinal) == fri_final(0)) && (openings_len(bopen) == fri_queries(n)) && (tblen(topen) == fri_queries(n)) && pow_ok(ground) && is_const2(bfinal) in
-    id_ok && struct_ok && vb3_qs(bopen, topen, root1, root2, root3, broots, betas, doms, bfinal, coset, lz, rz, oz, qz, zz, zwz, z, wz, gamd, m, queries, lyrs, finv([2])) }
+    let struct_ok : Bool = (llen(broots) == lyrs) && (len(bfinal) == fri_final(0)) && (openings_len(bopen) == fri_queries(n)) && (tllen(tleaves) == fri_queries(n)) && pow_ok(ground) && is_const2(bfinal) in
+    id_ok && struct_ok && vb3_trace(tleaves, queries, cp1, cp3, cp2, m, root1, root2, root3)
+      && vb3_qs(bopen, tleaves, broots, betas, doms, bfinal, coset, lz, rz, oz, qz, zz, zwz, z, wz, gamd, m, queries, lyrs, finv([2])) } }
 # prove_b3 from RAW column values (not a single witness w) — lets us build a
 # wiring-INCONSISTENT-but-per-row-valid trace to demonstrate the B3 gap is closed.
 fn q_cw_cols(pc: List<List<List<Int>>>, ll: List<List<Int>>, rr: List<List<Int>>, oo: List<List<Int>>, coset: List<List<Int>>, n: Int) : List<List<Int>> =
@@ -975,7 +1049,7 @@ fn prove_b3_cols(gates: List<Gate>, lvals: List<List<Int>>, rvals: List<List<Int
   match commit_g(bcw, coset, [], ts4, finv([2])) { (blayers, bfinal) =>
     let base_seed : List<Int> = absorb_final(transcript_seed_g(blayers, ts4), bfinal) in let nz : Int = grind(base_seed) in let ground : List<Int> = hashg(base_seed, glit(nz)) in
     let queries : List<Int> = sample_queries_g(ground, fri_queries(n), fri_dsize(n)) in
-    ProofB3(root1, root2, root3, lz, rz, oz, qz, zz, zwz, roots_of(blayers), bfinal, nz, extract_all(blayers, queries), extract_tb(lcw, rcw, ocw, qcw, zcw, lev1, lev2, lev3, queries, m)) }
+    ProofB3(root1, root2, root3, lz, rz, oz, qz, zz, zwz, roots_of(blayers), bfinal, nz, extract_all(blayers, queries), extract_tbatch(lcw, rcw, ocw, qcw, zcw, lev1, lev2, lev3, queries, m)) }
 
 # --- bridge: parse, inline calls, lower the arithmetic subset to gates -------
 fn fn_body_of(fns: List<FnDecl>, name: String) : Expr = match fns { [] => error("glass prove: internal — body of resolved function '" ++ name ++ "' not found"); [FnDecl(fnm, tps, ty, body), ...rest] => if fnm == name then body else fn_body_of(rest, name) }
@@ -1961,7 +2035,7 @@ fn emit_lanes(ls: List<List<Int>>) : String = match ls { [] => ""; [h, ...t] => 
 # sum(limb_i << 16i) mod p). Measured: hash material is ~94% of a proof and every hash-lane is 4 limbs,
 # so the count tokens are pure overhead (always "4") => ~19% fewer tokens on the comparison proof.
 # DIGEST-LOCAL: emit_fe / emit_lanes stay count-bearing and BYTE-IDENTICAL for non-hash field elements
-# (g2 coords, TOpenB scalar openings, gate constants). Mirrored EXACTLY by rd_hash in pentecost_verify.py.
+# (g2 coords, TLeaf scalar openings, gate constants). Mirrored EXACTLY by rd_hash in pentecost_verify.py.
 fn emit_lanes16(ls: List<List<Int>>) : String = match ls { [] => ""; [h, ...t] => emit_limbs(pad4l(first4(h))) ++ emit_lanes16(t) }
 fn emit_hash(h: List<Int>) : String = emit_lanes16(to_lanes(h))               # 16-limb hash -> 16 raw base-2^16 limbs (no per-lane count)
 fn emit_g2(g: G2) : String = match g { G2(a0, a1) => emit_fe(a0) ++ emit_fe(a1) }
@@ -1974,11 +2048,14 @@ fn emit_bopen_go(b: List<List<QOpen>>) : String = match b { [] => ""; [ql, ...t]
 fn emit_bopen(b: List<List<QOpen>>) : String = emit_int(len(b)) ++ emit_bopen_go(b)
 fn emit_g2list_go(gs: List<G2>) : String = match gs { [] => ""; [g, ...t] => emit_g2(g) ++ emit_g2list_go(t) }
 fn emit_g2list(gs: List<G2>) : String = emit_int(len(gs)) ++ emit_g2list_go(gs)
-fn emit_topenb(tb: TOpenB) : String = match tb { TOpenB(lj, rj, oj, qj, zj, p1j, p3j, p2j, ljh, rjh, ojh, qjh, zjh, p1jh, p3jh, p2jh) =>
-  emit_fe(lj) ++ emit_fe(rj) ++ emit_fe(oj) ++ emit_g2(qj) ++ emit_g2(zj) ++ emit_path(p1j) ++ emit_path(p3j) ++ emit_path(p2j)
-  ++ emit_fe(ljh) ++ emit_fe(rjh) ++ emit_fe(ojh) ++ emit_g2(qjh) ++ emit_g2(zjh) ++ emit_path(p1jh) ++ emit_path(p3jh) ++ emit_path(p2jh) }
-fn emit_topen_go(ts: List<TOpenB>) : String = match ts { [] => ""; [tb, ...t] => emit_topenb(tb) ++ emit_topen_go(t) }
-fn emit_topen(ts: List<TOpenB>) : String = emit_int(len(ts)) ++ emit_topen_go(ts)
+fn emit_tleaf(tl: TLeaf) : String = match tl { TLeaf(lj, rj, oj, qj, zj, ljh, rjh, ojh, qjh, zjh) =>
+  emit_fe(lj) ++ emit_fe(rj) ++ emit_fe(oj) ++ emit_g2(qj) ++ emit_g2(zj)
+  ++ emit_fe(ljh) ++ emit_fe(rjh) ++ emit_fe(ojh) ++ emit_g2(qjh) ++ emit_g2(zjh) }
+fn emit_tleaves_go(ts: List<TLeaf>) : String = match ts { [] => ""; [tl, ...t] => emit_tleaf(tl) ++ emit_tleaves_go(t) }
+# the batched trace opening: the per-query leaf values, then one shared co-path per trace tree
+# (root1-LRO, root3-quotient, root2-Z). A co-path is a count-prefixed hash list (emit_path).
+fn emit_topen(tb: TBatch) : String = match tb { TBatch(tleaves, cp1, cp3, cp2) =>
+  emit_int(len(tleaves)) ++ emit_tleaves_go(tleaves) ++ emit_path(cp1) ++ emit_path(cp3) ++ emit_path(cp2) }
 fn emit_gate(g: Gate) : String = match g {
   GConst(o, c) => emit_int(1) ++ emit_int(o) ++ emit_fe(c);
   GAdd(o, a, b) => emit_int(2) ++ emit_int(o) ++ emit_int(a) ++ emit_int(b);
