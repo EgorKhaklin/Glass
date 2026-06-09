@@ -1689,6 +1689,44 @@ def main() -> int:
         if not lst_ok:
             print(f"        rc={_lst.returncode}  out: {_lst.stdout.strip()[-260:]}  err: {_lst.stderr.strip()[-150:]}")
             failures += 1
+    # Soundness guard 4 (v5.129): an OUT-OF-BOUNDS substring used to OVER-READ — substring("ab",0,5)
+    # lowered to a 5-wire slice whose OOB tail read nthI's default = wire 0 = the FIRST input codepoint,
+    # attesting "abaaa" while the source (glass.py b_substring) CLAMPS to "ab"; the SOUND verify_b3
+    # ACCEPTed the wrong string, caught only by --witness3. substr_bounds now reproduces b_substring
+    # EXACTLY (clamp both bounds to the width), so the circuit value EQUALS the reference -> the Third
+    # Witness AGREES (and a false predicate like substring(key,0,8)=="sk-live-" can no longer be made
+    # to pass for a short key). The clamp is a no-op for in-bounds slices (private_prefix/email above).
+    with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _ufoob:
+        _ufoob.write("fn f(s: String) : String = substring(s, 0, 5)\nf(inp)\n")
+        _oob_path = _ufoob.name
+    _oob = _prove_run([sys.executable, GLASS, "prove", _oob_path, "inp=ab", "--cross-check"],
+                          capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_oob, 'substring OOB now CLAMPS to the reference ("ab", not over-read "abaaa") -> Third Witness AGREES'):
+        oob_ok = ((_oob.returncode == 0) and ('result:  "ab"' in _oob.stdout)
+                  and ("ACCEPT" in _oob.stdout) and ("THIRD LINEAGE AGREES" in _oob.stdout)
+                  and ("abaaa" not in _oob.stdout))
+        print(f"  {'OK ' if oob_ok else 'FAIL'}  substring OOB now CLAMPS to the reference (\"ab\", not over-read \"abaaa\") -> Third Witness AGREES")
+        if not oob_ok:
+            print(f"        rc={_oob.returncode}  out: {_oob.stdout.strip()[-260:]}  err: {_oob.stderr.strip()[-150:]}")
+            failures += 1
+    # Soundness guard 5 (v5.129): an INVERTED substring (start > end) used to produce an empty slice
+    # silently, which then reached the SCALAR claim binder (build_claim_m) and bound wire 0 VACUOUSLY
+    # (mks(vhi([])=0, 0)=0), ACCEPTing an arbitrary claim. substr_bounds now ABSTAINs on start>end
+    # (matching b_substring's raise), and build_claim_m/build_claim_pub now guard ilenI(outws)==1. The
+    # program ABSTAINs (pre-STARK), never a vacuous ACCEPT.
+    with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _ufinv:
+        _ufinv.write("fn f(s: String) : String = substring(s, 5, 2)\nf(inp)\n")
+        _inv_path = _ufinv.name
+    _inv = _prove_run([sys.executable, GLASS, "prove", _inv_path, "inp=ab"],
+                          capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_inv, "substring start>end ABSTAINs (no silent empty slice -> no vacuous wire-0 claim bind)"):
+        inv_ok = (("verdict: ABSTAIN" in _inv.stdout)
+                  and ("start > end" in (_inv.stdout + _inv.stderr))
+                  and ("proof:   ACCEPT" not in _inv.stdout))
+        print(f"  {'OK ' if inv_ok else 'FAIL'}  substring start>end ABSTAINs (no silent empty slice -> no vacuous wire-0 claim bind)")
+        if not inv_ok:
+            print(f"        rc={_inv.returncode}  out: {_inv.stdout.strip()[-260:]}  err: {_inv.stderr.strip()[-150:]}")
+            failures += 1
 
     # String --claim (v5.111): assert a SPECIFIC string result. The claimed string's codepoints are
     # bound (not the computed result), so a FALSE claim makes the circuit unsatisfiable and the
@@ -2261,7 +2299,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 80)  # +80: ... + v5.121 unequal-width-risk/match-fix + v5.123 native-round-trip-difftest-in-suite + v5.126 H3-B1 authenticated-FRI-fold + v5.127 H3-B2 real-Poseidon2-in-circuit-vs-spec + v5.128 builtin-list-threading-ABSTAIN (no silent proof-of-0)
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 82)  # +82: ... + v5.123 native-round-trip-difftest-in-suite + v5.126 H3-B1 authenticated-FRI-fold + v5.127 H3-B2 real-Poseidon2-in-circuit-vs-spec + v5.128 builtin-list-threading-ABSTAIN + v5.129 substring-OOB-clamp + start>end-ABSTAIN (no silent wrong-string / vacuous-claim)
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures

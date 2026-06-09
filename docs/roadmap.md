@@ -145,6 +145,23 @@ native-difftest byte-identity checks run separately. Suite **453/453**; Name `25
 Ranked by value × tractability for a builder choosing the next session. Items 1–4 are
 buildable next-session work; 5–6 are large/gated; 7–8 are rigor and the hard boundary.
 
+0. **Soundness hardening — audit hole B (layout over-width). *Do before frontier work.*** *(medium;
+   soundness-critical; broad blast radius — its own gated pass.)* A v5.128–129 audit ([memory
+   `project_bridge_soundness_audit`]; substring/claim holes A+C fixed in v5.129) confirmed a third
+   silent wrong-ACCEPT, caught only by `--witness3`: a recursive-ADT **value** can be *wider* than its
+   static `twidth` (e.g. `Cons(7,Nil)` = 27 wires vs `twidth(IntList)` = 25, since each level pads its
+   tail to the full width then wraps), so a field *following* a recursive field mis-aligns onto a pad
+   wire and reads `0` — `second(MkPair(Cons(7,Nil), inp))` proves `0`, not the input. Latent for the
+   common list-fold (the over-wide tail is always `Nil` zero-pad, read only at correct head offsets),
+   surfaces when a field follows a recursive/ADT field. Sibling: `twidth`'s `_ => 1` arm mis-lays-out a
+   `String` field embedded in a record/ADT (`{s:String,n:Int}` reads `n` at the wrong offset), and
+   `scalar_types_e/_p` hardcode `TyInt` per tuple element. **Fix = ABSTAIN, not silent:** `padv_g`/`padw`
+   error on over-width; `twidth` errors on `TyStr`/`TyVar`/`TyFn`/`TyRefine` (no fixed type-width); the
+   field-slice callers assert `off + wt <= ilenI(sv)`. `twidth` feeds heval *and* cgen identically, so
+   the misalignment is invisible to the internal cross-checks — only the Third Witness sees it; gate
+   with a Pentecost corpus fixture + a `fuzz_soundness` family over aggregates-with-a-recursive/String
+   field. Verify `record_stats`/`record_field`/ADT proofs still ACCEPT.
+
 1. **LogUp in-circuit range integration — *the headline frontier*** *(large;
    soundness-critical; multi-session).* Replace the bridge's per-operand bit-decomposition
    range gadget (`range_k`/`lt_build`, ~600k-token comparison/division proofs) with a

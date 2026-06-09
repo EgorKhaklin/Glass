@@ -1390,7 +1390,7 @@ fn heval_fields(args: List<Expr>, tys: List<Type>, env: List<Pair<String, List<L
 fn heval_strfn(fname: String, args: List<Expr>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>) : (List<List<Int>>, List<List<Int>>) =
   if fname == "string_length"
   then (match args { [s] => match heval(s, env, fns, types) { (sv, hs) => ([glit(llen(sv))], hs) }; _ => error("glass prove: string_length expects exactly 1 argument") })
-  else (match args { [s, lo, hi] => match heval(s, env, fns, types) { (sv, hs) => let l : Int = cval_h(lo, env) in (slw(sv, l, cval_h(hi, env) - l), hs) }; _ => error("glass prove: substring expects exactly 3 arguments") })
+  else (match args { [s, lo, hi] => match heval(s, env, fns, types) { (sv, hs) => match substr_bounds(cval_h(lo, env), cval_h(hi, env), llen(sv)) { (a, bb) => (slw(sv, a, bb - a), hs) } }; _ => error("glass prove: substring expects exactly 3 arguments") })
 fn heval_call(body: Expr, args: List<Expr>, ccenv: List<Pair<String, List<List<Int>>>>, fcenv: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>) : (List<List<Int>>, List<List<Int>>) =
   match body {
     ELam(p, inner) => match args { [] => heval(body, ccenv, fns, types); [a, ...rest] => match heval(a, fcenv, fns, types) { (va, ha) => match heval_call(inner, rest, [Pair(p, va)] ++ ccenv, fcenv, fns, types) { (vr, hr) => (vr, ha ++ hr) } } };
@@ -1491,7 +1491,7 @@ fn seval_fields(args: List<Expr>, tys: List<Type>, env: List<Pair<String, List<L
 fn seval_strfn(fname: String, args: List<Expr>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>, fenv: List<Pair<String, String>>, fuel: Int) : List<List<Int>> =
   if fname == "string_length"
   then (match args { [s] => [glit(llen(seval(s, env, fns, types, fenv, fuel)))]; _ => error("glass prove: string_length expects exactly 1 argument") })
-  else (match args { [s, lo, hi] => let sv : List<List<Int>> = seval(s, env, fns, types, fenv, fuel) in let l : Int = cval_h(lo, env) in slw(sv, l, cval_h(hi, env) - l); _ => error("glass prove: substring expects exactly 3 arguments") })
+  else (match args { [s, lo, hi] => let sv : List<List<Int>> = seval(s, env, fns, types, fenv, fuel) in match substr_bounds(cval_h(lo, env), cval_h(hi, env), llen(sv)) { (a, bb) => slw(sv, a, bb - a) }; _ => error("glass prove: substring expects exactly 3 arguments") })
 # seval_call mirrors inline_fn: a fn-valued arg (resolvable in the CALLER's f_fenv) binds the param
 # into the CALLEE's c_fenv (no fuel decrement); a value arg is seval'd in the caller's env and binds
 # into ccenv. ccenv/c_fenv start empty (fresh callee scope); fcenv/f_fenv are the caller's.
@@ -1514,6 +1514,17 @@ fn gref_h(src: String) : List<List<Int>> = match parse_prog(src) { Program(types
 # from prove_source_adt_zk's cgen; mk_eq_g is the Goldilocks is-zero gadget.
 fn slwi(sv: List<Int>, off: Int, w: Int) : List<Int> = if w <= 0 then [] else [nthI(sv, off)] ++ slwi(sv, off + 1, w - 1)
 fn vhi(v: List<Int>) : Int = nthI(v, 0)
+# substring bounds matching glass.py's b_substring EXACTLY (the reference semantics every lowering must
+# reproduce): a negative OR inverted (start > end) index is an error (the reference raises); otherwise
+# both bounds CLAMP to the value's width n and the slice is [a, b). WITHOUT this the slice over-reads
+# and OOB cells take nthI/wnth's default = wire 0 = the FIRST input codepoint, so `substring("ab",0,5)`
+# attests "abaaa" while the source computes "ab" — a SILENT wrong string the SOUND verify_b3 ACCEPTs
+# (caught only by --witness3). The clamp makes the circuit value EQUAL the reference for EVERY input
+# (in-bounds slices are byte-identical; OOB clamps identically; negative/inverted ABSTAINs).
+fn substr_bounds(l: Int, h: Int, n: Int) : (Int, Int) =
+  if (l < 0) || (h < 0) then error("glass prove: substring negative index — ABSTAIN (the reference interpreter raises here; never reads past the string into wire 0)")
+  else if l > h then error("glass prove: substring start > end — ABSTAIN (the reference interpreter raises here)")
+  else (if l > n then n else l, if h > n then n else h)
 fn cenv_get(cenv: List<Pair<String, List<Int>>>, name: String) : List<Int> = match cenv { [] => [0 - 1]; [Pair(k, v), ...r] => if k == name then v else cenv_get(r, name) }
 fn padv_g(v: List<Int>, target: Int, b: Build) : (List<Int>, Build) = if ilenI(v) >= target then (v, b) else match mkc(glit(0), b) { (z, b1) => padv_g(v ++ [z], target, b1) }
 fn mk_eq_g(wx: Int, wy: Int, b: Build) : (Int, Build) =
@@ -1798,7 +1809,7 @@ fn cgen_call(body: Expr, args: List<Expr>, ccenv: List<Pair<String, List<Int>>>,
 fn cgen_strfn(fname: String, args: List<Expr>, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: List<TypeDecl>, b: Build) : (List<Int>, Build) =
   if fname == "string_length"
   then (match args { [s] => match cgen(s, cenv, fns, types, b) { (sv, b1) => match mkc(glit(ilenI(sv)), b1) { (w, b2) => ([w], b2) } }; _ => error("glass prove: string_length expects exactly 1 argument") })
-  else (match args { [s, lo, hi] => match cgen(s, cenv, fns, types, b) { (sv, b1) => let l : Int = cval_c(lo, cenv) in (slwi(sv, l, cval_c(hi, cenv) - l), b1) }; _ => error("glass prove: substring expects exactly 3 arguments") })
+  else (match args { [s, lo, hi] => match cgen(s, cenv, fns, types, b) { (sv, b1) => match substr_bounds(cval_c(lo, cenv), cval_c(hi, cenv), ilenI(sv)) { (a, bb) => (slwi(sv, a, bb - a), b1) } }; _ => error("glass prove: substring expects exactly 3 arguments") })
 fn psel(p: Pattern, sv: List<Int>, types: List<TypeDecl>, b: Build) : (Int, Build) =
   match p { PWild => mkc(glit(1), b); PVar(x) => mkc(glit(1), b);
     PInt(n) => match mkc(glit(n), b) { (wn, b1) => mk_eq_g(vhi(sv), wn, b1) };
@@ -1970,7 +1981,9 @@ fn gref_m_checked(src: String, inputs: List<Pair<String, List<Int>>>) : List<Lis
 # claim-bind the scalar result (first output component) to claimedR
 fn build_claim_m(src: String, inputs: List<Pair<String, List<Int>>>, claimedR: List<Int>) : Build =
   match build_multi_m(src, inputs) { (outws, b) =>
-    match mkc(claimedR, b) { (wR, b1) => match mks(vhi(outws), wR, b1) { (wd, b2) => mke(wd, b2) } } }
+    if ilenI(outws) == 1
+    then match mkc(claimedR, b) { (wR, b1) => match mks(vhi(outws), wR, b1) { (wd, b2) => mke(wd, b2) } }
+    else error("glass prove: a SCALAR claim reached the binder but the result lowered to a non-scalar wire layout (empty or multi-wire) — ABSTAIN rather than vacuously bind wire 0 (an EMPTY layout makes mks(vhi([])=0, 0)=0, which would ACCEPT an ARBITRARY claim)") }
 # --- MULTI-WIRE result claim (v5.110): bind EVERY output wire, not just the first ----------------
 # A scalar (Int/Bool) result is one wire; a STRING result is several (one codepoint wire per char).
 # build_claim_m above pins only outws[0] — fine for a scalar, but for a string it would publish just
@@ -2040,7 +2053,9 @@ fn bind_inputs(pubs: List<Pair<Int, List<Int>>>, b: Build) : Build =
   match pubs { [] => b; [Pair(wire, value), ...rest] => bind_inputs(rest, bind_input(wire, value, b)) }
 fn build_claim_pub(src: String, inputs: List<Pair<String, List<Int>>>, pubs: List<Pair<Int, List<Int>>>, claimedR: List<Int>) : Build =
   match build_multi_m(src, inputs) { (outws, b) =>
-    match mkc(claimedR, b) { (wR, b1) => match mks(vhi(outws), wR, b1) { (wd, b2) => bind_inputs(pubs, mke(wd, b2)) } } }
+    if ilenI(outws) == 1
+    then match mkc(claimedR, b) { (wR, b1) => match mks(vhi(outws), wR, b1) { (wd, b2) => bind_inputs(pubs, mke(wd, b2)) } }
+    else error("glass prove: a SCALAR claim reached the public binder but the result lowered to a non-scalar wire layout (empty or multi-wire) — ABSTAIN rather than vacuously bind wire 0") }
 # --- ZK via RANDOMIZED TRACE (full integration, the cleaner route): append k dummy
 # GAdd(o,a,b) gates on FRESH wires with random satisfying witness (o = a + b). Each is
 # sound-NEUTRAL (the gate holds, so the quotient is unaffected; a,b,o are fresh -> sigma
