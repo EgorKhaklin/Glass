@@ -158,6 +158,17 @@ buildable next-session work; 5–6 are large/gated; 7–8 are rigor and the hard
    field can precede another, or an embedded String) is a larger feature; today they are safe-by-refusal.
    `scalar_types_e/_p` hardcode `TyInt` per tuple element — a tuple with a *non-last* variable-width
    element is caught by the over-width guard; a *last* one is the same deferred "support it" feature.
+   **Forgery-resistance audit (2026-06-10): clean — 0 structural gaps.** A complementary read-only sweep
+   (can a *cheating* prover get a false statement ACCEPTed?) over gate-constraint enforcement, range/divmod
+   advice-pinning, public binding, Fiat-Shamir order, and two-verifier lockstep found **no** structural
+   forgery path: the DEEP-ALI binding (`id_ok` + per-query deep-tie + FRI low-degree test), grand-product
+   closure (transition on all rows incl. wrap), bit-decomposition pinning, and claim binding are all sound
+   and lockstep-identical. Residual risk is **cryptanalytic** (FRI proximity-gap margin, Poseidon2
+   collision-resistance) — the external audit (#10), not structural. **One defense-in-depth hardening
+   surfaced (NOT a live hole — not reachable on the shipped CLI):** `divmod_build`'s `b=0` dead-branch
+   soundness leans on the *external* `gref_m_checked` (seval+heval refuse a live `b=0`) rather than pure
+   in-circuit constraints; making it in-circuit-sound (so no future call path reaching `verify_b3` can
+   bypass it) is the highest-value next structural-hardening target. Bounded; gated like A/B/C.
 
 1. **LogUp in-circuit range integration — *the headline frontier*** *(large;
    soundness-critical; multi-session).* Replace the bridge's per-operand bit-decomposition
