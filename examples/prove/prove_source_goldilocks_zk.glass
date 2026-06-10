@@ -1315,9 +1315,22 @@ fn cbind_rec(declfs: List<Pair<String, Type>>, listed: List<String>, sv: List<In
     let cenv2 : List<Pair<String, List<Int>>> = if smem(listed, nm) then [Pair(nm, slwi(sv, off, w))] ++ cenv else cenv in
     cbind_rec(r, listed, sv, off + w, types, cenv2) }
 fn scalar_types_e(xs: List<Expr>) : List<Type> = match xs { [] => []; [x, ...r] => [TyInt] ++ scalar_types_e(r) }
-fn twidth(ty: Type, types: List<TypeDecl>, fuel: Int) : Int = if fuel <= 0 then 1 else match ty { TyAdt(name, args) => match find_record(types, name) { [] => (match find_type(types, name) { [] => 1; cs => 1 + max_ctor_width(cs, types, fuel - 1) }); rfs => ctor_wsum(rec_ftypes(rfs), types, fuel - 1) }; TyRec(fs) => ctor_wsum(rec_ftypes(fs), types, fuel - 1); TyTuple(tys) => ctor_wsum(tys, types, fuel - 1); _ => 1 }
+fn twidth(ty: Type, types: List<TypeDecl>, fuel: Int) : Int = if fuel <= 0 then 1 else match ty { TyAdt(name, args) => match find_record(types, name) { [] => (match find_type(types, name) { [] => 1; cs => 1 + max_ctor_width(cs, types, fuel - 1) }); rfs => ctor_wsum(rec_ftypes(rfs), types, fuel - 1) }; TyRec(fs) => ctor_wsum(rec_ftypes(fs), types, fuel - 1); TyTuple(tys) => ctor_wsum(tys, types, fuel - 1); TyStr => error("glass prove: a String has no fixed type-determined wire width (it is codepoint-count dependent), so it cannot be laid out at a fixed offset as a FIELD of an ADT/record/tuple — a width-1 slot would mis-offset the following fields (or truncate the string to one codepoint) and silently attest a WRONG value. ABSTAIN. A String is provable as a standalone result/input, not embedded in an aggregate."); _ => 1 }
 fn ctor_wsum(args: List<Type>, types: List<TypeDecl>, fuel: Int) : Int = match args { [] => 0; [a, ...r] => twidth(a, types, fuel) + ctor_wsum(r, types, fuel) }
 fn max_ctor_width(ctors: List<CtorDecl>, types: List<TypeDecl>, fuel: Int) : Int = match ctors { [] => 0; [CtorDecl(cn, ats), ...r] => let w : Int = ctor_wsum(ats, types, fuel) in let rw : Int = max_ctor_width(r, types, fuel) in if w >= rw then w else rw }
+# HOLE B (v5.130) — fixed-width layout overflow guard. A constructor/record/tuple lays each field at a
+# FIXED slot width `twidth(t, 12)` and reads the NEXT field at `off + that width`. But a value can be
+# WIDER than its slot: `twidth` decrements fuel per recursive level while construction pads at a flat
+# fuel 12, so a recursive-ADT value (e.g. Cons(7,Nil) = 27 wires vs twidth(IntList)=25) over-runs its
+# slot. If such an over-wide value is FOLLOWED by another field, that field is read at a shifted offset
+# — onto the overflow wires — and the circuit silently attests a WRONG value (caught only by --witness3).
+# It is BENIGN when the over-wide field is LAST (nothing follows; a head-reading fold like map_prove still
+# works, the consumer just truncates trailing pad). So: ABSTAIN iff an over-wide field is NON-LAST.
+fn has_more_e(xs: List<Expr>) : Bool = match xs { [] => false; [x, ...r] => true }
+fn assert_field_fits(actual: Int, slot: Int, more: Bool) : Bool =
+  if more && (actual > slot)
+  then error("glass prove: a constructed field value is WIDER than its declared type's fixed wire width AND is FOLLOWED by another field — the fixed-width layout would read the following field at a shifted offset, onto this value's overflow wires, and silently attest a WRONG value (a recursive ADT or variable-width field exceeding its twidth slot). ABSTAIN. Put the variable-width/recursive field LAST in the constructor/record/tuple, or refactor the type.")
+  else true
 
 # --- R1b stage 1: heval, the reference evaluator (SPEC) for ADTs over Goldilocks --
 # A value is multi-wire: scalar [v]; ADT Ctor(a,b) -> [tag, fa, fb]; tuple [a, b].
@@ -1383,7 +1396,7 @@ fn heval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, t
     _ => error("glass prove: unsupported expression in the prove bridge (heval) — only + - * == != && || ! < > <= >= / % (range-bounded) and if/let/match/ADT/calls lower to the field circuit; strings and records have no faithful field lowering and are refused, not silently proven as 0") }
 fn heval_fields(args: List<Expr>, tys: List<Type>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>) : (List<List<Int>>, List<List<Int>>) =
   match args { [] => ([], []); [a, ...arest] => match tys { [] => ([], []); [t, ...trest] =>
-    match heval(a, env, fns, types) { (va, ha) => match heval_fields(arest, trest, env, fns, types) { (vr, hr) =>
+    match heval(a, env, fns, types) { (va, ha) => let _ : Bool = assert_field_fits(llen(va), twidth(t, types, 12), has_more_e(arest)) in match heval_fields(arest, trest, env, fns, types) { (vr, hr) =>
       (padw(va, twidth(t, types, 12)) ++ vr, ha ++ hr) } } } }
 # string intrinsics in the reference evaluator: string_length -> the (static) wire count; substring
 # -> a static wire slice (bounds via cval_h). Both structural — they read the multi-wire value.
@@ -1486,7 +1499,7 @@ fn seval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, t
     _ => error("glass prove: unsupported expression in the prove bridge (seval guard) — only + - * == != && || ! < > <= >= / % (range-bounded) and if/let/match/ADT/calls lower to the field circuit; strings and records are refused, not silently proven as 0") }
 fn seval_fields(args: List<Expr>, tys: List<Type>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>, fenv: List<Pair<String, String>>, fuel: Int) : List<List<Int>> =
   match args { [] => []; [a, ...arest] => match tys { [] => []; [t, ...trest] =>
-    padw(seval(a, env, fns, types, fenv, fuel), twidth(t, types, 12)) ++ seval_fields(arest, trest, env, fns, types, fenv, fuel) } }
+    let sva : List<List<Int>> = seval(a, env, fns, types, fenv, fuel) in let _ : Bool = assert_field_fits(llen(sva), twidth(t, types, 12), has_more_e(arest)) in padw(sva, twidth(t, types, 12)) ++ seval_fields(arest, trest, env, fns, types, fenv, fuel) } }
 # string intrinsics in the guard evaluator (mirrors heval_strfn so the guard's value matches).
 fn seval_strfn(fname: String, args: List<Expr>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>, fenv: List<Pair<String, String>>, fuel: Int) : List<List<Int>> =
   if fname == "string_length"
@@ -1800,7 +1813,7 @@ fn cgen(e: Expr, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: 
     _ => error("glass prove: unsupported expression in the prove bridge (cgen) — only + - * == != && || ! < > <= >= / % (range-bounded) and if/let/match/ADT/calls lower to the field circuit; strings and records are refused, not silently built as a 0 circuit") }
 fn cgen_fields(args: List<Expr>, tys: List<Type>, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: List<TypeDecl>, b: Build) : (List<Int>, Build) =
   match args { [] => ([], b); [a, ...arest] => match tys { [] => ([], b); [t, ...trest] =>
-    match cgen(a, cenv, fns, types, b) { (va, b1) => match padv_g(va, twidth(t, types, 12), b1) { (pva, b2) =>
+    match cgen(a, cenv, fns, types, b) { (va, b1) => let _ : Bool = assert_field_fits(ilenI(va), twidth(t, types, 12), has_more_e(arest)) in match padv_g(va, twidth(t, types, 12), b1) { (pva, b2) =>
     match cgen_fields(arest, trest, cenv, fns, types, b2) { (vr, b3) => (pva ++ vr, b3) } } } } }
 fn cgen_call(body: Expr, args: List<Expr>, ccenv: List<Pair<String, List<Int>>>, fcenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: List<TypeDecl>, b: Build) : (List<Int>, Build) =
   match body { ELam(p, inner) => match args { [] => cgen(body, ccenv, fns, types, b); [a, ...rest] => match cgen(a, fcenv, fns, types, b) { (va, b1) => cgen_call(inner, rest, [Pair(p, va)] ++ ccenv, fcenv, fns, types, b1) } }; _ => cgen(body, ccenv, fns, types, b) }

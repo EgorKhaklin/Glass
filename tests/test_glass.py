@@ -1727,6 +1727,41 @@ def main() -> int:
         if not inv_ok:
             print(f"        rc={_inv.returncode}  out: {_inv.stdout.strip()[-260:]}  err: {_inv.stderr.strip()[-150:]}")
             failures += 1
+    # Soundness guard 6 (v5.130, audit hole B1) — a recursive-ADT value can be WIDER than its fixed
+    # `twidth` slot (Cons(7,Nil)=27 wires vs twidth(IntList)=25, since twidth decrements fuel per level
+    # while construction pads flat). When such an over-wide field is FOLLOWED by another field, the
+    # following field was read at a shifted offset (onto the overflow wires) -> silent wrong value:
+    # second(MkPair(Cons(7,Nil), inp)) proved 0, not inp. The *_fields lowering now ABSTAINs on a NON-LAST
+    # over-width field. (BENIGN when the recursive field is LAST -> map_prove still ACCEPTs 13, gated above.)
+    with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _ufb1:
+        _ufb1.write("type IntList = | Nil | Cons(Int, IntList)\ntype Pair2 = | MkPair(IntList, Int)\n"
+                    "fn second(p: Pair2) : Int = match p { MkPair(l, x) => x }\nsecond(MkPair(Cons(7, Nil), inp))\n")
+        _b1_path = _ufb1.name
+    _b1 = _prove_run([sys.executable, GLASS, "prove", _b1_path, "inp=99"], capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_b1, "ADT layout: a non-last field WIDER than its twidth slot ABSTAINs (recursive-ADT overflow, not silent 0)"):
+        b1_ok = (("verdict: ABSTAIN" in _b1.stdout) and ("WIDER than" in (_b1.stdout + _b1.stderr))
+                 and ("proof:   ACCEPT" not in _b1.stdout))
+        print(f"  {'OK ' if b1_ok else 'FAIL'}  ADT layout: a non-last field WIDER than its twidth slot ABSTAINs (recursive-ADT overflow, not silent 0)")
+        if not b1_ok:
+            print(f"        rc={_b1.returncode}  out: {_b1.stdout.strip()[-260:]}  err: {_b1.stderr.strip()[-150:]}")
+            failures += 1
+    # Soundness guard 7 (v5.130, audit hole B2) — a String FIELD embedded in a record/ADT/tuple has no
+    # fixed type-determined wire width (it is codepoint-count dependent), so a width-1 twidth slot
+    # mis-offset the following fields (or truncated the string): getn(Box{s:"hello", n:inp}) read a
+    # codepoint of "hello" instead of inp. twidth now ABSTAINs on a String field. (Standalone String
+    # inputs/results are unaffected -- private_prefix/email/reveal_prefix gated above.)
+    with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _ufb2:
+        _ufb2.write("type Box = { s: String, n: Int }\nfn getn(b: Box) : Int = match b { Box { s, n } => n }\n"
+                    "getn(Box { s: \"hello\", n: inp })\n")
+        _b2_path = _ufb2.name
+    _b2 = _prove_run([sys.executable, GLASS, "prove", _b2_path, "inp=42"], capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_b2, "ADT layout: a String FIELD in a record/ADT ABSTAINs (no fixed wire width, not a mis-offset read)"):
+        b2_ok = (("verdict: ABSTAIN" in _b2.stdout) and ("fixed type-determined wire width" in (_b2.stdout + _b2.stderr))
+                 and ("proof:   ACCEPT" not in _b2.stdout))
+        print(f"  {'OK ' if b2_ok else 'FAIL'}  ADT layout: a String FIELD in a record/ADT ABSTAINs (no fixed wire width, not a mis-offset read)")
+        if not b2_ok:
+            print(f"        rc={_b2.returncode}  out: {_b2.stdout.strip()[-260:]}  err: {_b2.stderr.strip()[-150:]}")
+            failures += 1
 
     # String --claim (v5.111): assert a SPECIFIC string result. The claimed string's codepoints are
     # bound (not the computed result), so a FALSE claim makes the circuit unsatisfiable and the
@@ -2299,7 +2334,7 @@ def main() -> int:
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 82)  # +82: ... + v5.123 native-round-trip-difftest-in-suite + v5.126 H3-B1 authenticated-FRI-fold + v5.127 H3-B2 real-Poseidon2-in-circuit-vs-spec + v5.128 builtin-list-threading-ABSTAIN + v5.129 substring-OOB-clamp + start>end-ABSTAIN (no silent wrong-string / vacuous-claim)
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 84)  # +84: ... + v5.126 H3-B1 + v5.127 H3-B2 real-Poseidon2 + v5.128 builtin-list-threading-ABSTAIN + v5.129 substring-OOB-clamp + start>end-ABSTAIN + v5.130 ADT-layout-overflow-ABSTAIN (recursive-ADT non-last + String-field, no silent mis-offset)
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures
