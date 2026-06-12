@@ -77,9 +77,11 @@ commitment binding (now a 4-lane ~256-bit node hash → ~128-bit; was the ~32-bi
 (prefix-monotone, re-derived — but the `transcript_seed_g ≡ seed_from_roots` invariant is
 hand-maintained, not asserted); parameter substitution (now bound into `stmt_seed`); the
 extension field (`x²−7` assumed irreducible); **the compiler/arithmetization bridge** —
-`unroll`/`resolve_fn` silently lower unresolved or fuel-exhausted calls to `EInt(0)`, so a
-mis-parsed/unresolved call becomes a *proven 0* with no error; side channels (limb field
-not constant-time); the ZK mask RNG (Poseidon-seeded PRG, an ideal-RNG idealization).
+an *unresolved/unsupported* call now ABSTAINs loudly (the silent proven-0 was fixed; only a
+*fuel-exhausted* call still lowers to `EInt(0)`, and the CLI's `seval` guard refuses that on
+the honest path — the malicious direct-call path remains, see "out of the threat model");
+side channels (limb field not constant-time); the ZK mask RNG (Poseidon-seeded PRG, an
+ideal-RNG idealization).
 
 **Explicitly out of the threat model:** compiler correctness (proves the *gate-circuit's*
 out = R, not faithful lowering of the source) — including **bounded symbolic unrolling**: the
@@ -113,15 +115,19 @@ via `build_claim_pub`, a wrong public value REJECTs); constant-time; the conject
 
 ## Audit scope (the checklist; discipline-tagged)
 
-1. **[cryptanalysis]** Poseidon-over-Goldilocks at these exact parameters (x⁷, R_P=22, the
-   MDS, the 360 round constants) — **and the single-lane 2-to-1 squeeze width.** *The
-   irreducible, highest-leverage item.*
+1. **[cryptanalysis]** the in-STARK hash at these exact parameters — **Poseidon2 over
+   Goldilocks** (Plonky3-exact: t=12, R_F=8/R_P=22, x⁷, the 130 published round constants;
+   the default since the parameters refresh, see `docs/parameters.md`) — **and the 4-lane
+   (256-bit) squeeze/compression width** (the #1 finding's fix; verify it actually yields
+   ~128-bit collision resistance). *The irreducible, highest-leverage item.*
 2. **[conjecture-validation]** the FRI proximity-gap / decoding-to-capacity assumption at δ<1−√ρ.
 3. **[formal-methods]** a machine-checked or peer-reviewed FS-in-ROM round-by-round
    soundness **and** ZK proof for this exact 5-phase transcript.
 4. **[code-review]** constant-time / side-channel review of the limb field.
 5. **[code-review]** the arithmetization↔source bridge (cgen) for faithful lowering;
-   the silent `EInt(0)` lowering of unresolved/fuel-exhausted calls.
+   the `EInt(0)` lowering of *fuel-exhausted* calls (unresolved/unsupported calls now
+   refuse loudly; three lowering holes + an inlining capture were found and closed
+   in-repo, v5.128–v5.132 — see the addendum below).
 6. **[code-review]** confirm the deployed verifier is the independent witness-free
    `verify_b3` path, not a self-check; and the native TCB (Boehm GC memory-safety).
 7. **[design]** the public-input boundary / input-pinning semantics; the explicit
@@ -138,10 +144,34 @@ This package is the bridge *to* that audit; it is not a substitute for it.
 
 **Auditor, start here:** (1) pin the target (`verify_b3` — now the default Goldilocks
 `glass prove` path via `gprove_sound`; `--fast` self-check and `--baby-bear` are out of
-scope). (2) Attack Poseidon — the single load-bearing primitive, including the 64-bit
-squeeze width; if its RO model is false, nothing else matters. Everything else (the thin
-68+12 margin, the hash-width cap, with-replacement sampling, the bridge's unresolved /
-unsupported-call lowering — now a loud `error`, was a silent `EInt(0)` proven-0 (deep
-recursion past the unroll fuel now also REFUSES loudly on the honest CLI path via the
-`seval` guard, though the malicious/bypass path can still prove a truncated circuit) — and
-the missing z-in-coset guard) is itemized above but secondary to those two.
+scope). (2) Attack Poseidon2 — the single load-bearing primitive, including whether the
+4-lane squeeze actually delivers ~128-bit binding; if its RO model is false, nothing else
+matters. Everything else (the thin 68+12 margin, the historical hash-width cap,
+with-replacement sampling, the bridge's unresolved / unsupported-call lowering — now a loud
+`error`, was a silent `EInt(0)` proven-0 (deep recursion past the unroll fuel now also
+REFUSES loudly on the honest CLI path via the `seval` guard, though the malicious/bypass
+path can still prove a truncated circuit) — and the missing z-in-coset guard) is itemized
+above but secondary to those two.
+
+## Addendum — what changed since this package was written (v5.128–v5.133)
+
+The package above remains the audit frame; these are the material updates an auditor
+should know, all gated in the suite:
+
+- **Three silent wrong-ACCEPT lowerings found and closed** (an internal soundness sweep):
+  out-of-bounds `substring` over-read (v5.129, attacker-reachable), fixed-width layout-slot
+  overflow mis-offsetting the next field (v5.130), and a vacuous scalar claim bind (v5.129).
+  An undeclared-constructor lowering (built-in `List` silently proving 0) closed in v5.128.
+- **A forgery-resistance audit (2026-06-10) found 0 structural gaps** across gate
+  enforcement, advice pinning, public binding, FS order, and two-verifier lockstep. Its one
+  defense-in-depth item — the `b=0` divmod sub-circuit left the quotient advice free — is
+  closed (v5.131, `isz·q == 0`); the gate is a **real forged prover** (a malicious bridge
+  copy via the `GLASS_BRIDGE_DIR` harness hook) that ACCEPTed pre-fix and REJECTs now.
+- **A live wrong-lowering caught by the Third Witness**: call-inlining capture
+  (`gcd(48,18)` attested 18; truth 6). Fixed with capture-avoiding two-phase binding
+  (v5.132); capture-free programs lower byte-identically (verified against the committed
+  proof corpus). The fuzzer gained a seventh family (capture shapes) so the class cannot
+  return silently.
+- **The verdict is machine-readable**: `glass prove` exits 0 ACCEPT / 1 ABSTAIN / 2 REJECT /
+  3 Third-Witness DIVERGENCE (v5.132–v5.133) — a script can no longer mistake a REJECT or a
+  detected divergence for success.

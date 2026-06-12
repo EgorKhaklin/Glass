@@ -37,12 +37,22 @@ steps to production.
   in `verify_b3`.
 - **The Third Witness** re-runs the source under the reference interpreter (a lineage independent of
   the bridge's evaluator *and* its circuit lowering), catching a source↔circuit lowering gap the two
-  circuit-verifiers cannot.
-- **Differential fuzzing** across the program families + boundary inputs + 1,600 adversarial tampers,
+  circuit-verifiers cannot. A detected divergence is a **hard failure** (exit 3); the prove verdict is
+  exposed as exit codes — 0 ACCEPT / 1 ABSTAIN / 2 REJECT / 3 DIVERGENCE (v5.133).
+- **Differential fuzzing** across seven program families (arithmetic, comparison, signed, strings,
+  records, computed callees, capture shapes) + boundary inputs + 1,600 adversarial tampers,
   with zero wrong-ACCEPTs; a **self-hosting fixpoint** (`native_glassc` reproduces its own source +
-  output byte-identically); a content-addressed **Name** over the whole core.
-- An **internal adversarial audit** (2026-06): 0 critical, no live soundness hole in the reachable
-  prover paths (1 high — a ZK mislabelling in `--zk` — found and fixed in v5.118).
+  output byte-identically); a content-addressed **Name** over the whole core; an **adversarial-prover
+  harness** (`GLASS_BRIDGE_DIR`) that gates soundness fixes with real forged witnesses, not just
+  regressions.
+- **Internal adversarial audits** (2026-06, ongoing): the initial sweep found 0 critical / 1 high (a
+  ZK mislabelling in `--zk`, fixed v5.118). A follow-up soundness audit found **three silent
+  wrong-ACCEPT lowerings** (substring over-read, layout-slot overflow, vacuous claim bind) — all
+  closed (v5.128–v5.130). A forgery-resistance audit (2026-06-10) found **0 structural gaps**; its one
+  defense-in-depth item (a free divmod quotient in the `b=0` sub-circuit) was closed in v5.131 and is
+  gated by a forged prover that ACCEPTed pre-fix. The Third Witness then caught a **real wrong
+  lowering in the wild** — call-inlining capture (`gcd(48,18)` attested 18, truth 6) — fixed v5.132.
+  Every finding so far has been the instruments working: caught in-repo, closed, and pinned by a gate.
 
 **Assumed / not verifiable in-repo** (the hard boundary):
 

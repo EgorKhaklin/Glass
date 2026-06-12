@@ -173,7 +173,7 @@ glass/
 ├── name/ ledger/ seal/   # content-addressed identity · append-only verdict ledger · selective disclosure
 ├── fuzz/             # soundness fuzzers — random + adversarial tamper/claim campaigns
 ├── docs/             # tour, spec, self-hosting, soundness, roadmap
-├── tests/            # the regression suite (476/476)
+├── tests/            # the regression suite (487/487)
 └── playground.html   # browser playground (Pyodide)
 ```
 
