@@ -1170,14 +1170,33 @@ fn unroll_recfields(lit: List<Pair<String, Expr>>, fns: List<FnDecl>, fenv: List
   match lit { [] => []; [Pair(k, v), ...r] => [Pair(k, unroll(v, fns, fenv, fuel))] ++ unroll_recfields(r, fns, fenv, fuel) }
 fn unroll_arms(arms: List<Pair<Pattern, Expr>>, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: Int) : List<Pair<Pattern, Expr>> =
   match arms { [] => []; [Pair(p, b), ...r] => [Pair(p, unroll(b, fns, fenv, fuel))] ++ unroll_arms(r, fns, fenv, fuel) }
+# Capture-avoiding call inlining (v5.132). The old shape bound each argument DIRECTLY to its
+# parameter as a sequential ELet nest — ELet(p1, arg1, ELet(p2, arg2, body)) — so an argument
+# expression referencing an EARLIER parameter's NAME was captured by the just-bound parameter
+# instead of the caller's variable: in gcd's `gcd(b, a % b)` the `a` inside `a % b` resolved to
+# the new a (= caller's b), computing b % b = 0 — the circuit attested gcd(48,18) = 18 while the
+# source computes 6 (STARK-valid wrong lowering, flagged by the Third Witness as DIVERGENCE; the
+# same capture existed in the fn-NAMESPACE: a later arg calling a name an earlier fn-param shadows
+# resolved through the extended fenv). The fix is two-phase: (1) every value argument is unrolled
+# against the CALLER's fenv and bound to a reserved temp `q9p_<param>` (user code never binds q9p_*;
+# nested inlines shadow their own temps harmlessly), then (2) all parameters are aliased to their
+# temps: ELet(q9p_p1, arg1, ELet(q9p_p2, arg2, ELet(p1, q9p_p1, ELet(p2, q9p_p2, body)))). fn-args
+# and record types (addrec) also resolve against the caller fenv (cfenv) while the BODY fenv (bfenv)
+# accumulates the param bindings. An ELet binds wires, not gates, so capture-free programs lower to
+# the IDENTICAL gate stream — proofs are byte-identical (checked against the committed corpus).
+fn tmpn(p: String) : String = "q9p_" ++ p
+fn inline_params(ps: List<String>, e: Expr) : Expr =
+  match ps { [] => e; [p, ...r] => ELet(p, EVar(tmpn(p)), inline_params(r, e)) }
 fn inline_fn(body: Expr, args: List<Expr>, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: Int) : Expr =
+  inline_go(body, args, fns, fenv, fenv, fuel, [])
+fn inline_go(body: Expr, args: List<Expr>, fns: List<FnDecl>, cfenv: List<Pair<String, String>>, bfenv: List<Pair<String, String>>, fuel: Int, ps: List<String>) : Expr =
   match body {
     ELam(p, inner) => match args {
-      [] => unroll(inner, fns, fenv, fuel - 1);
-      [a, ...rest] => if is_fn_arg(a, fns, fenv)
-        then inline_fn(inner, rest, fns, [Pair(p, arg_fn_name(a, fns, fenv))] ++ fenv, fuel)
-        else (let ua : Expr = unroll(a, fns, fenv, fuel) in ELet(p, ua, inline_fn(inner, rest, fns, addrec(p, rtype_of(ua, fenv), fenv), fuel))) };
-    _ => unroll(body, fns, fenv, fuel - 1) }
+      [] => inline_params(ps, unroll(inner, fns, bfenv, fuel - 1));
+      [a, ...rest] => if is_fn_arg(a, fns, cfenv)
+        then inline_go(inner, rest, fns, cfenv, [Pair(p, arg_fn_name(a, fns, cfenv))] ++ bfenv, fuel, ps)
+        else (let ua : Expr = unroll(a, fns, cfenv, fuel) in ELet(tmpn(p), ua, inline_go(inner, rest, fns, cfenv, addrec(p, rtype_of(ua, cfenv), bfenv), fuel, ps ++ [p]))) };
+    _ => inline_params(ps, unroll(body, fns, bfenv, fuel - 1)) }
 # Signed comparison intrinsics. slt/sle/sgt/sge(a,b) compare a,b as SIGNED integers in
 # [-2^31, 2^31). They DESUGAR to the existing unsigned ordering gadget with a +2^31 offset:
 # the monotonic shift maps the signed range into [0,2^32) (a negative a = p-|a| becomes

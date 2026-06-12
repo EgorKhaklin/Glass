@@ -1358,6 +1358,54 @@ def main() -> int:
         finally:
             _sh_fg.rmtree(_fg_dir, ignore_errors=True)
 
+    # CAPTURE-AVOIDING INLINING (v5.132): inline_fn used to bind call arguments as a sequential ELet
+    # nest, so an argument referencing an EARLIER parameter's NAME was captured by the just-bound
+    # parameter — `gcd(b, a % b)` computed b % b, and the circuit attested gcd(48,18)=18 while the
+    # source computes 6 (a STARK-valid wrong lowering, caught ONLY by the Third Witness). The minimal
+    # shape: top(a,b) calls g(b, a-b) — the `a` in `a-b` must be the CALLER's a (10), not the bound
+    # first parameter (3). Truth: g(3, 7) = 307; the captured lowering proved 300. (~30s native.)
+    with tempfile.NamedTemporaryFile("w", suffix=".glass", delete=False) as _cpf:
+        _cpf.write("fn g(a: Int, b: Int) : Int = a * 100 + b\n"
+                   "fn top(a: Int, b: Int) : Int = g(b, a - b)\n\ntop(x, y)\n")
+        _cp_path = _cpf.name
+    _cp = _prove_run([sys.executable, GLASS, "prove", "--cross-check", _cp_path, "x=10", "y=3"],
+                     capture_output=True, text=True, cwd=ROOT)
+    if not _heavy_skipped(_cp, "capture-avoiding inlining: g(b, a-b) binds the CALLER's a (307, Third Witness AGREES)"):
+        cp_ok = (_cp.returncode == 0) and ("result:  307" in _cp.stdout) and ("THIRD LINEAGE AGREES" in _cp.stdout)
+        print(f"  {'OK ' if cp_ok else 'FAIL'}  capture-avoiding inlining: g(b, a-b) binds the CALLER's a (307, Third Witness AGREES)")
+        if not cp_ok:
+            print(f"        rc={_cp.returncode}  out: {_cp.stdout.strip()[-200:]}  err: {_cp.stderr.strip()[-150:]}")
+            failures += 1
+
+    # ...and the COUNTERFACTUAL + the loud Third Witness (v5.132): a bridge copy with tmpn regressed
+    # to the identity reproduces the OLD capturing lowering exactly (the param "temp" aliases itself),
+    # so the same program proves the WRONG 300 and the Third Witness must flag DIVERGENCE — and a
+    # detected divergence is now a HARD FAILURE: `glass prove --cross-check` exits 3, not 0. This gate
+    # pins both: the divergence detection and its exit code. (~30s native.)
+    _cl_old = 'fn tmpn(p: String) : String = "q9p_" ++ p'
+    with open(os.path.join(EX, "prove", "prove_source_goldilocks_zk.glass")) as _bf2:
+        _bridge_src2 = _bf2.read()
+    if _cl_old not in _bridge_src2:
+        print("  FAIL  regressed-capture bridge DIVERGEs with exit code 3 — tmpn moved in the bridge; update this gate")
+        failures += 1
+    else:
+        _cl_dir = tempfile.mkdtemp()
+        try:
+            with open(os.path.join(_cl_dir, "prove_source_goldilocks_zk.glass"), "w") as _cf:
+                _cf.write(_bridge_src2.replace(_cl_old, "fn tmpn(p: String) : String = p"))
+            _clenv = dict(os.environ); _clenv["GLASS_BRIDGE_DIR"] = _cl_dir
+            _cl = _prove_run([sys.executable, GLASS, "prove", "--cross-check", _cp_path, "x=10", "y=3"],
+                             capture_output=True, text=True, cwd=ROOT, env=_clenv)
+            if not _heavy_skipped(_cl, "regressed-capture bridge: Third Witness flags DIVERGENCE and exits 3 (a divergence is loud)"):
+                cl_ok = (_cl.returncode == 3) and ("DIVERGENCE" in _cl.stdout) and ("THIRD LINEAGE AGREES" not in _cl.stdout)
+                print(f"  {'OK ' if cl_ok else 'FAIL'}  regressed-capture bridge: Third Witness flags DIVERGENCE and exits 3 (a divergence is loud)")
+                if not cl_ok:
+                    print(f"        rc={_cl.returncode}  out: {_cl.stdout.strip()[-200:]}  err: {_cl.stderr.strip()[-150:]}")
+                    failures += 1
+        finally:
+            _sh_fg.rmtree(_cl_dir, ignore_errors=True)
+    os.unlink(_cp_path)
+
     # Higher-order proving (v5.87): the seval guard resolves function-valued parameters via fenv
     # (mirroring unroll), so a higher-order program — `map(inc, xs)` — is GUARDED and PROVEN instead
     # of spuriously refused (it ABSTAINed before, because seval couldn't resolve the `f` callee that

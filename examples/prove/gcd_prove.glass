@@ -7,6 +7,10 @@
 #
 #   glass prove --cross-check examples/prove/gcd_prove.glass x=48 y=18    # gcd(48,18) = 6
 #
+# (Until v5.132 this lowered WRONG — inline_fn's sequential let-binding captured the `a` in
+#  `gcd(b, a % b)`, so the circuit attested 18; the Third Witness caught the divergence. The
+#  capture-avoiding inlining makes this header true end-to-end: 6, ACCEPT, three lineages agree.)
+#
 # NOTE: the proof circuit is large — recursion unrolls to the fuel bound (8 levels),
 # each carrying a full modulo gadget (~hundreds of range-decomposition gates), so the
 # native STARK is heavy (minutes). The reference interpreter confirms the semantics

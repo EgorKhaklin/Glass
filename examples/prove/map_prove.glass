@@ -20,4 +20,4 @@ fn inc(n: Int) : Int = n + 1
 fn map(f: (Int) -> Int, l: IntList) : IntList = match l { Nil => Nil; Cons(h, t) => Cons(f(h), map(f, t)) }
 fn suml(l: IntList) : Int = match l { Nil => 0; Cons(h, t) => h + suml(t) }
 
-suml(map(inc, Cons(inp, Cons(2, Cons(3, Nil)))))      # sum of [inp+1, 3, 4] = inp + 9
+suml(map(inc, Cons(inp, Cons(2, Cons(3, Nil)))))      # sum of [inp+1, 3, 4] = inp + 8

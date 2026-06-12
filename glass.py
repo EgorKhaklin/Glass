@@ -1,5 +1,5 @@
 """
-Glass v5.131.0 — reference implementation.
+Glass v5.132.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -3866,7 +3866,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.131.0 — interactive REPL")
+    print("Glass v5.132.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -4087,7 +4087,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.131.0")
+        print("Glass 5.132.0")
     elif sys.argv[1] in ("help", "--help", "-h"):
         # Plain, professional command listing. The thematic names are aliases
         # (docs/naming.md) — this surface keeps the esoteric layer optional.
@@ -4450,6 +4450,7 @@ def main() -> None:
                 print(f'witness3: THIRD LINEAGE AGREES — the reference interpreter (glass.py, independent of the bridge\'s evaluator and its circuit lowering) independently computes f(inputs) = "{_res_str}". Three lineages agree on the SEMANTICS of this string result — closing the source<->circuit gap that verify_b3 and Pentecost, both verifying the circuit, cannot see.')
             else:
                 print(f'witness3: DIVERGENCE — the proof attests the string "{_ps}" but the reference interpreter computes f(inputs) = "{_res_str}". The proof is STARK-valid, yet the lowered circuit\'s string result differs from the source — a genuine source<->circuit mismatch. Worth investigating.')
+                sys.exit(3)  # a detected source<->circuit divergence is a hard failure, not a footnote
         elif goldilocks and "--witness3" in sys.argv[2:] and _res_struct is not None:
             # TUPLE/RECORD result: compare each revealed component to the reference's, modulo the prime
             # (the same reconciliation the scalar witness uses). _refvals are the reference components.
@@ -4465,6 +4466,7 @@ def main() -> None:
                 print(f"witness3: THIRD LINEAGE AGREES — the reference interpreter (glass.py, independent of the bridge's evaluator and its circuit lowering) independently computes the {len(_refvals)} components {_refvals} (mod the Goldilocks prime). Three lineages agree on the SEMANTICS of this {_res_struct[0]} result — closing the source<->circuit gap that verify_b3 and Pentecost, both verifying the circuit, cannot see.")
             else:
                 print(f"witness3: DIVERGENCE — the proof's components {_pcomps} differ from the reference interpreter's {_refvals} (even modulo the prime). A genuine source<->circuit mismatch on a structured result. Worth investigating.")
+                sys.exit(3)  # a detected source<->circuit divergence is a hard failure, not a footnote
         elif goldilocks and "--witness3" in sys.argv[2:]:
             import re as _re3
             _m3 = _re3.search(r"result:\s*(-?[0-9]+)", _proc.stdout or "")
@@ -4484,6 +4486,7 @@ def main() -> None:
                 print(f"witness3: THIRD LINEAGE AGREES — the reference interpreter (glass.py, independent of the bridge\'s evaluator and its circuit lowering) independently computes f(inputs) = {_r3} (= the proven result mod the Goldilocks prime). Three lineages agree on the SEMANTICS — closing the source<->circuit gap that verify_b3 and Pentecost, both verifying the circuit, cannot see.")
             else:
                 print(f"witness3: DIVERGENCE — the proof attests {_rp} but the reference interpreter computes f(inputs) = {_r3}, and they differ EVEN MODULO the Goldilocks prime. The proof is STARK-valid, yet the lowered circuit\'s semantics differ from the source — a genuine source<->circuit or domain mismatch (e.g. an int64 wraparound the field does not share). Worth investigating.")
+                sys.exit(3)  # a detected source<->circuit divergence is a hard failure, not a footnote
     elif sys.argv[1] in ("fingerprint", "name"):
         # Content-addressed canonical identity (thematic name: "the Name"): one Poseidon-Merkle
         # root over the self-hosting core + prover/verifier bridge + the second verifier

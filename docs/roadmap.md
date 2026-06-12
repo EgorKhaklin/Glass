@@ -172,6 +172,14 @@ buildable next-session work; 5–6 are large/gated; 7–8 are rigor and the hard
    `a/0=0, a%0=a`), so no future call path reaching `verify_b3` can ride the freedom. Gated by a real
    forged-prover suite gate: a malicious bridge copy hinting `q=7` (internally consistent everywhere
    else, via the new `GLASS_BRIDGE_DIR` harness hook) ACCEPTed pre-fix and REJECTs now.
+   **Inlining capture: ✅ CLOSED (v5.132).** Gating v5.131 surfaced (via the Third Witness, exactly as
+   designed) that `inline_fn`'s sequential ELet binding **captured**: in `gcd(b, a % b)` the `a` inside
+   `a % b` bound to the just-inlined parameter, so the circuit attested `gcd(48,18) = 18` vs the source's
+   6 — STARK-valid wrong lowering (heval+cgen shared the captured unroll; seval and the reference both
+   computed 6). Fixed by two-phase capture-avoiding binding (caller-fenv arg resolution + `q9p_` temps,
+   value AND fn namespaces); capture-free programs lower byte-identically (corpus differential). A
+   `--cross-check` DIVERGENCE now **exits 3** (was: printed, exit 0). Gates: capture shape 307+AGREES,
+   regressed-capture bridge → DIVERGENCE + rc 3, gcd headline 6+AGREES.
 
 1. **LogUp in-circuit range integration — *the headline frontier*** *(large;
    soundness-critical; multi-session).* Replace the bridge's per-operand bit-decomposition
