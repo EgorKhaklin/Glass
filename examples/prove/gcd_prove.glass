@@ -13,7 +13,7 @@
 #
 # NOTE: the proof circuit is large — recursion unrolls to the fuel bound (8 levels),
 # each carrying a full modulo gadget (~hundreds of range-decomposition gates), so the
-# native STARK is heavy (minutes). The reference interpreter confirms the semantics
+# native STARK is heavy (tens of minutes of CPU — fuel-8 unroll = 8 full divmod gadgets). The reference interpreter confirms the semantics
 # instantly (`--cross-check` / the suite's Third-Witness gate); a faster prover (the
 # lookup-range argument on the roadmap) is what makes deep recursive divmod practical.
 

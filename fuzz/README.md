@@ -8,11 +8,14 @@ private inputs, proves each with `glass prove --witness3`, and checks THE soundn
 
 So a program PASSES unless it is ACCEPTed *and* the Third Witness disagrees (reconciled mod p).
 **ABSTAIN** (the gadget refusing an out-of-range/unlowerable program) and **REJECT** (a disproof)
-are *sound* outcomes, not failures — only a wrong ACCEPT is a violation. Four families are
+are *sound* outcomes, not failures — only a wrong ACCEPT is a violation. Seven families are
 generated: arithmetic expressions, comparison/boolean control flow, the signed gadgets
-(`slt`/`sle`/`sgt`/`sge`, `sdiv`/`smod` over negatives), and **strings** (`++`/`substring`/
-`string_length`/`==`, the multi-wire codepoint lowering) — the gadget-bearing, least-fuzzed
-lowerings. Inputs are small and shallow so results stay where field and int64
+(`slt`/`sle`/`sgt`/`sge`, `sdiv`/`smod` over negatives), **strings** (`++`/`substring`/
+`string_length`/`==`, the multi-wire codepoint lowering), **records** (construct + destructure),
+**computed callees** (runtime-chosen / let-aliased fn names), and **capture shapes** (calls whose
+later arguments reference an earlier parameter's name — the v5.132 inlining-capture class, in both
+the value and fn namespaces; added because none of the other families ever generated it). Inputs
+are small and shallow so results stay where field and int64
 coincide mod p — a divergence there is a *real* bug, not the documented domain difference.
 
 ```bash

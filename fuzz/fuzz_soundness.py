@@ -79,6 +79,30 @@ def gen_computed_callee(rng):
     return ("fn g0(x: Int) : Int = x + x\nfn g1(x: Int) : Int = x + 1\n"
             "fn run(a: Int, b: Int, c: Int) : Int = %s\nrun(a, b, c)" % body)
 
+# CAPTURE-SHAPE family (v5.133): calls whose LATER arguments reference EARLIER parameter NAMES of
+# the same call — the exact shape the v5.132 inlining-capture bug hid in (gcd(b, a % b): sequential
+# let-binding bound the callee's `a` before evaluating `a % b`, so the argument saw the just-bound
+# parameter, not the caller's variable; the circuit attested gcd(48,18)=18). None of the first six
+# families ever generated this shape, which is why the class survived — this family exists so it
+# can never come back silently. The wrapper top(a,b,c) gives the caller its OWN a/b/c (the capture
+# needs the caller to bind the same names, as recursion does), and the callee weights its first
+# parameter (*10/*100) so a captured re-binding is value-visible to the witness3 differential.
+# Two sub-shapes: the VALUE namespace (g's arg2 has a free `a`) and the FN namespace (ap's later
+# arg calls a top-level fn that ap's first parameter shadows: ap(k, f(..)) must not become k(k(..))).
+def gen_capture_prog(rng):
+    if rng.random() < 0.6:
+        w = rng.choice([10, 100])
+        e1 = "(%s %s %s)" % (rng.choice(["b", "c"]), rng.choice(["+", "*"]), rng.choice(["c", "1", "2"]))
+        e2 = "(a %s %s)" % (rng.choice(["+", "-"]), rng.choice(["a", "b", "c", "3"]))
+        return ("fn g(a: Int, b: Int) : Int = a * %d + b\n"
+                "fn top(a: Int, b: Int, c: Int) : Int = g(%s, %s)\n"
+                "top(a, b, c)" % (w, e1, e2))
+    inner = "(%s %s %s)" % (rng.choice(VARS), rng.choice(["+", "*"]), rng.choice(VARS))
+    return ("fn f(x: Int) : Int = x + 1\nfn k(x: Int) : Int = x + x\n"
+            "fn ap(f: (Int) -> Int, a: Int) : Int = f(a)\n"
+            "fn top(a: Int, b: Int, c: Int) : Int = ap(k, f(%s))\n"
+            "top(a, b, c)" % inner)
+
 def gen_expr(rng, depth):
     if depth <= 0 or rng.random() < 0.35:
         return rng.choice(VARS) if rng.random() < 0.7 else str(rng.randint(0, 9))
@@ -125,7 +149,7 @@ def run(n, seed, boundary=False):
         # In boundary mode only the GADGET-bearing families (comparison + signed), whose operands
         # are range-guarded — a raw arithmetic product over near-2^32 inputs is a benign int64-vs-
         # field wrap (documented), not a soundness bug, so the arithmetic family is excluded there.
-        fam = (1 + (i % 2)) if boundary else (i % 6)
+        fam = (1 + (i % 2)) if boundary else (i % 7)
         if fam == 0:
             expr = gen_expr(rng, 3)
         elif fam == 1:
@@ -136,8 +160,10 @@ def run(n, seed, boundary=False):
             expr = gen_string(rng, 1)
         elif fam == 4:
             expr = gen_record_prog(rng)
-        else:
+        elif fam == 5:
             expr = gen_computed_callee(rng)
+        else:
+            expr = gen_capture_prog(rng)
         if boundary:
             # signed family may use negatives; unsigned families draw from the non-negative seams.
             pool = BOUNDARY if fam == 2 else [x for x in BOUNDARY if x >= 0]
@@ -182,10 +208,10 @@ def run_differential(n, seed):
     guarantee is fuzzed across the gadget-bearing lowerings, not just `a+b`. (A signed proof is large,
     ~550k tokens, so emit is the slow step; keep N modest.)"""
     rng = random.Random(seed)
-    print(f"# differential fuzz: {n} programs (arithmetic + comparison + signed + string + record + computed-callee), Glass-prove vs independent Pentecost (seed {seed})")
+    print(f"# differential fuzz: {n} programs (arithmetic + comparison + signed + string + record + computed-callee + capture-shape), Glass-prove vs independent Pentecost (seed {seed})")
     ok = True
     for i in range(n):
-        fam = i % 6
+        fam = i % 7
         if fam == 0:
             expr = gen_expr(rng, 3)
         elif fam == 1:
@@ -196,8 +222,10 @@ def run_differential(n, seed):
             expr = gen_string(rng, 1)
         elif fam == 4:
             expr = gen_record_prog(rng)
-        else:
+        elif fam == 5:
             expr = gen_computed_callee(rng)
+        else:
+            expr = gen_capture_prog(rng)
         lo = -20 if fam == 2 else 0
         inputs = {v: rng.randint(lo, 20) for v in VARS}
         path = f"/tmp/fuzzd_{i}.glass"
