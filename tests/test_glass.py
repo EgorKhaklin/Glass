@@ -7,6 +7,13 @@ import subprocess
 import sys
 import os
 
+# Glass requires Python >= 3.10 (pyproject.toml). On an older interpreter the suite "runs" but
+# every quartz (compile) gate dies on a `dict | None` annotation TypeError — 176 cryptic FAILs
+# instead of one clear message. Fail fast and loudly instead (macOS /usr/bin/python3 is 3.9).
+if sys.version_info < (3, 10):
+    sys.exit(f"tests/test_glass.py: Python >= 3.10 required (running {sys.version.split()[0]}); "
+             "try python3.12")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 GLASS = os.path.join(ROOT, "glass.py")
@@ -1317,6 +1324,39 @@ def main() -> int:
         if not wc_ok:
             print(f"        rc={_wc.returncode}  out: {_wc.stdout.strip()[-200:]}  err: {_wc.stderr.strip()[-150:]}")
             failures += 1
+
+    # FORGED-PROVER divmod soundness (v5.131, the forgery-resistance audit's one finding): in the
+    # b==0 sub-circuit (a dead-branch divide-by-zero) the quotient q is ADVICE. Before v5.131 it was
+    # a FREE [0,2^32) value — a malicious prover binary hinting q=7 produced an internally-consistent
+    # witness (identity a == 0*7 + r holds with r=a; the range bits decompose 7) that verify_b3
+    # ACCEPTed (verified on the pre-fix bridge), exactly the freedom an a/0 forgery would ride on any
+    # future path where the b==0 quotient goes live. The isz*q == 0 pin makes the b==0 witness UNIQUE
+    # (q=0, r=a). This gate IS that malicious prover: a copy of the bridge with the q-hint forged to 7
+    # (GLASS_BRIDGE_DIR points the CLI at it); every downstream wire recomputes consistently, so the
+    # ONLY violated constraint is the pin — the proof must REJECT. (Goldilocks native, ~15s.)
+    import shutil as _sh_fg
+    _fg_line = "let qi : Int = if bi <= 0 then 0 else ai / bi"
+    with open(os.path.join(EX, "prove", "prove_source_goldilocks_zk.glass")) as _bf:
+        _bridge_src = _bf.read()
+    if _fg_line not in _bridge_src:
+        print("  FAIL  forged prover (q-hint=7 in the b==0 sub-circuit) REJECTs — the q-hint line moved in the bridge; update this gate")
+        failures += 1
+    else:
+        _fg_dir = tempfile.mkdtemp()
+        try:
+            with open(os.path.join(_fg_dir, "prove_source_goldilocks_zk.glass"), "w") as _ff:
+                _ff.write(_bridge_src.replace(_fg_line, _fg_line.replace("then 0", "then 7")))
+            _fenv = dict(os.environ); _fenv["GLASS_BRIDGE_DIR"] = _fg_dir
+            _fg = _prove_run([sys.executable, GLASS, "prove", _db_path, "a=7", "b=0"],
+                             capture_output=True, text=True, cwd=ROOT, env=_fenv)
+            if not _heavy_skipped(_fg, "forged prover (q-hint=7 in the b==0 sub-circuit) REJECTs — divmod advice is PINNED, not free"):
+                fg_ok = ("proof:   REJECT" in _fg.stdout) and ("proof:   ACCEPT" not in _fg.stdout)
+                print(f"  {'OK ' if fg_ok else 'FAIL'}  forged prover (q-hint=7 in the b==0 sub-circuit) REJECTs — divmod advice is PINNED, not free")
+                if not fg_ok:
+                    print(f"        rc={_fg.returncode}  out: {_fg.stdout.strip()[-200:]}  err: {_fg.stderr.strip()[-150:]}")
+                    failures += 1
+        finally:
+            _sh_fg.rmtree(_fg_dir, ignore_errors=True)
 
     # Higher-order proving (v5.87): the seval guard resolves function-valued parameters via fenv
     # (mirroring unroll), so a higher-order program — `map(inc, xs)` — is GUARDED and PROVEN instead

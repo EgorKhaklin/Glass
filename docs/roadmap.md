@@ -164,11 +164,14 @@ buildable next-session work; 5–6 are large/gated; 7–8 are rigor and the hard
    forgery path: the DEEP-ALI binding (`id_ok` + per-query deep-tie + FRI low-degree test), grand-product
    closure (transition on all rows incl. wrap), bit-decomposition pinning, and claim binding are all sound
    and lockstep-identical. Residual risk is **cryptanalytic** (FRI proximity-gap margin, Poseidon2
-   collision-resistance) — the external audit (#10), not structural. **One defense-in-depth hardening
-   surfaced (NOT a live hole — not reachable on the shipped CLI):** `divmod_build`'s `b=0` dead-branch
-   soundness leans on the *external* `gref_m_checked` (seval+heval refuse a live `b=0`) rather than pure
-   in-circuit constraints; making it in-circuit-sound (so no future call path reaching `verify_b3` can
-   bypass it) is the highest-value next structural-hardening target. Bounded; gated like A/B/C.
+   collision-resistance) — the external audit (#10), not structural. **Its one defense-in-depth finding
+   is ✅ CLOSED (v5.131):** `divmod_build`'s `b=0` dead-branch left the quotient advice `q` FREE in
+   [0,2^32) (the `r<b` assert is predicated on the in-circuit `nz` bit and goes vacuous at `b=0`) —
+   soundness leaned on the *external* `gref_m_checked` (seval+heval refuse a live `b=0`). The predicated
+   pin `isz·q == 0` now makes the `b=0` witness UNIQUE in-circuit (`q=0, r=a`, matching heval's totalized
+   `a/0=0, a%0=a`), so no future call path reaching `verify_b3` can ride the freedom. Gated by a real
+   forged-prover suite gate: a malicious bridge copy hinting `q=7` (internally consistent everywhere
+   else, via the new `GLASS_BRIDGE_DIR` harness hook) ACCEPTed pre-fix and REJECTs now.
 
 1. **LogUp in-circuit range integration — *the headline frontier*** *(large;
    soundness-critical; multi-session).* Replace the bridge's per-operand bit-decomposition

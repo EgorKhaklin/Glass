@@ -1751,13 +1751,18 @@ fn lt_build(wx: Int, wy: Int, b: Build) : (Int, Build) =
 # b != 0 (nz=1) r < b is enforced, so the divisor is forced >= 1 and (q,r) is the unique integer
 # division (products stay < the Goldilocks prime since q,b,r < 2^32, so field == integer identity).
 # When b == 0 (nz=0) the r < b assert goes VACUOUS (nz*(1-(r<b)) == 0 holds for nz=0) and the identity
-# reduces to a == r (the honest witness sets q=0, r=a) — a SATISFIABLE sub-circuit. This is the
-# predication paradigm shift: a divide-by-zero in a DEAD branch (cgen builds both `if` arms) no longer
-# poisons the circuit — the mux discards its garbage q, and the live result proves. A LIVE divide-by-
-# zero is still refused by the seval guard (it short-circuits to the taken path and abstains on b==0),
-# so the unconstrained-q-when-b==0 case is never selected. nz is computed from b in-circuit (mk_eq_g
-# is-zero), so it cannot be faked to escape the r < b constraint when b != 0. No verify_b3/Pentecost
-# change — pure GMul+GEqZero predication in the existing gate model.
+# reduces to a == r — a SATISFIABLE sub-circuit. This is the predication paradigm shift: a divide-by-
+# zero in a DEAD branch (cgen builds both `if` arms) no longer poisons the circuit — the mux discards
+# its garbage q, and the live result proves. A LIVE divide-by-zero is still refused by the seval guard
+# (it short-circuits to the taken path and abstains on b==0). nz is computed from b in-circuit (mk_eq_g
+# is-zero, sound BOTH directions: wz*wd==0 forces wz=0 when b!=0, and wz is a computed wire forced to 1
+# when b==0), so it cannot be faked in either direction. The b==0 witness is UNIQUE (v5.131 defense-in-
+# depth, the forgery-resistance audit's one finding): isz*q == 0 pins q=0 when b==0, so the identity
+# then forces r=a — without this pin q was a free [0,2^32) advice in the b==0 sub-circuit, and any
+# future call path reaching verify_b3 with a LIVE b==0 could have claimed an arbitrary quotient for
+# a/0. In-circuit semantics is now total and deterministic: a/0 = 0, a%0 = a (matching the honest hint
+# below, so every existing witness still satisfies it). No verify_b3/Pentecost change — pure
+# GMul+GEqZero predication in the existing gate model.
 fn divmod_build(wa: Int, wb: Int, b: Build) : (Int, Int, Build) =
   let ai : Int = bn_small_to_int(bwire(b, wa)) in
   let bi : Int = bn_small_to_int(bwire(b, wb)) in
@@ -1779,7 +1784,9 @@ fn divmod_build(wa: Int, wb: Int, b: Build) : (Int, Int, Build) =
   match mks(wone, wlt, b13) { (wd2, b14) =>
   match mkm(wnz, wd2, b14) { (wg, b15) =>
   let b16 : Build = mke(wg, b15) in
-  (wq, wr, b16) } } } } } } } } } } } }
+  match mkm(wisz, wq, b16) { (wqz, b17) =>
+  let b18 : Build = mke(wqz, b17) in
+  (wq, wr, b18) } } } } } } } } } } } } }
 
 fn cgen(e: Expr, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: List<TypeDecl>, b: Build) : (List<Int>, Build) =
   match e {

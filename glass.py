@@ -1,5 +1,5 @@
 """
-Glass v5.130.0 — reference implementation.
+Glass v5.131.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -3866,7 +3866,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.130.0 — interactive REPL")
+    print("Glass v5.131.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -4087,7 +4087,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.130.0")
+        print("Glass 5.131.0")
     elif sys.argv[1] in ("help", "--help", "-h"):
         # Plain, professional command listing. The thematic names are aliases
         # (docs/naming.md) — this surface keeps the esoteric layer optional.
@@ -4200,7 +4200,10 @@ def main() -> None:
         # an idealized PRG (a disclosed honest-scope caveat). Used only by the --zk gprove_zk* calls.
         _zk_seed = int.from_bytes(os.urandom(4), "big") % (1 << 31)
         here = os.path.dirname(os.path.abspath(__file__))
-        bridge_dir = os.path.join(here, "examples", "prove")
+        # GLASS_BRIDGE_DIR: the adversarial-prover test harness hook. Soundness gates point this at a
+        # FORGED copy of the bridge (e.g. a malicious q-hint in divmod_build) to check that verify_b3
+        # REJECTs a cheating prover's internally-consistent witness. Not a user-facing knob.
+        bridge_dir = os.environ.get("GLASS_BRIDGE_DIR") or os.path.join(here, "examples", "prove")
         esc = usrc.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
         # Goldilocks: each input is a MULTI-WIRE value — an Int -> [v], a string -> its codepoints
         # [c0, c1, ..] (one private wire per char). Baby Bear stays int-only (no string support there).
