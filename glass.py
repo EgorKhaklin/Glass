@@ -1,5 +1,5 @@
 """
-Glass v5.134.0 — reference implementation.
+Glass v5.135.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -3866,7 +3866,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.134.0 — interactive REPL")
+    print("Glass v5.135.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -4087,7 +4087,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.134.0")
+        print("Glass 5.135.0")
     elif sys.argv[1] in ("help", "--help", "-h"):
         # Plain, professional command listing. The thematic names are aliases
         # (docs/naming.md) — this surface keeps the esoteric layer optional.
@@ -4206,6 +4206,14 @@ def main() -> None:
         # REJECTs a cheating prover's internally-consistent witness. Not a user-facing knob.
         bridge_dir = os.environ.get("GLASS_BRIDGE_DIR") or os.path.join(here, "examples", "prove")
         esc = usrc.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+        # run_native.sh re-bootstraps the native compiler with $PYTHON when glassc.glass changed —
+        # and quartz.py needs Python >= 3.10 (`X | None` annotations). macOS /usr/bin/python3 is 3.9,
+        # so passing an inadequate sys.executable turned a routine re-bootstrap into a cryptic
+        # TypeError mid-prove. Pass ourselves only when adequate; otherwise run_native.sh falls back
+        # to its own lookup (python3.12, then python3).
+        _native_env = {**os.environ}
+        if sys.version_info >= (3, 10):
+            _native_env["PYTHON"] = sys.executable
         # Goldilocks: each input is a MULTI-WIRE value — an Int -> [v], a string -> its codepoints
         # [c0, c1, ..] (one private wire per char). Baby Bear stays int-only (no string support there).
         def _mw_vals(v):
@@ -4243,8 +4251,7 @@ def main() -> None:
                 _f.write(_ed)
             print("Glass prove --emit %s  [field: Goldilocks (2^64)]\n" % emit_path)
             _ep = subprocess.run(["bash", os.path.join(here, "examples", "selfhost", "run_native.sh"), _et],
-                                 check=False, capture_output=True, text=True,
-                                 env={**os.environ, "PYTHON": sys.executable})
+                                 check=False, capture_output=True, text=True, env=_native_env)
             if _ep.returncode != 0:
                 sys.stderr.write(_ep.stderr or "")
                 print("\nverdict: ABSTAIN  (Glass refused to lower this statement — no proof emitted.)")
@@ -4407,7 +4414,7 @@ def main() -> None:
             # verdict line, which the GENERATED DRIVER prints (glass.py never computes it itself).
             # The result/proof block prints at the end of the run anyway, so nothing is lost.
             _proc = subprocess.run(["bash", os.path.join(here, "examples", "selfhost", "run_native.sh"), _tmp],
-                           check=False, env={**os.environ, "PYTHON": sys.executable},
+                           check=False, env=_native_env,
                            capture_output=True, text=True)
             sys.stdout.write(_proc.stdout or ""); sys.stderr.write(_proc.stderr or "")
             if _proc.returncode != 0:
