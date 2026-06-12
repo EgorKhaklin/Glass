@@ -1319,7 +1319,9 @@ def main() -> int:
                          capture_output=True, text=True, cwd=ROOT)
     os.unlink(_wc_path)
     if not _heavy_skipped(_wc, "wrong divmod claim REJECTs (claim 17/5=4; true is 3 — no proof of a false quotient)"):
-        wc_ok = ("proof:   REJECT" in _wc.stdout) and ("proof:   ACCEPT" not in _wc.stdout)
+        # v5.133 exit-code contract: a REJECT exits 2 (0=ACCEPT, 1=ABSTAIN, 2=REJECT, 3=DIVERGENCE),
+        # so scripts can branch on the verdict without parsing — pinned here on the REJECT path.
+        wc_ok = ("proof:   REJECT" in _wc.stdout) and ("proof:   ACCEPT" not in _wc.stdout) and (_wc.returncode == 2)
         print(f"  {'OK ' if wc_ok else 'FAIL'}  wrong divmod claim REJECTs (claim 17/5=4; true is 3 — no proof of a false quotient)")
         if not wc_ok:
             print(f"        rc={_wc.returncode}  out: {_wc.stdout.strip()[-200:]}  err: {_wc.stderr.strip()[-150:]}")

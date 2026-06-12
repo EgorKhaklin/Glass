@@ -1,5 +1,5 @@
 """
-Glass v5.132.0 — reference implementation.
+Glass v5.133.0 — reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
@@ -3866,7 +3866,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.132.0 — interactive REPL")
+    print("Glass v5.133.0 — interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -4087,7 +4087,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.132.0")
+        print("Glass 5.133.0")
     elif sys.argv[1] in ("help", "--help", "-h"):
         # Plain, professional command listing. The thematic names are aliases
         # (docs/naming.md) — this surface keeps the esoteric layer optional.
@@ -4099,6 +4099,7 @@ def main() -> None:
             "      --cross-check             also re-execute under the reference interpreter\n"
             "      --emit <path>             write a portable proof instead of self-checking\n"
             "      --claim <R>               prove a SPECIFIC claimed result, an integer or a \"string\" (ACCEPT iff R is the true result; a false claim REJECTs)\n"
+            "      exit codes: 0 ACCEPT | 1 ABSTAIN (refusal/error) | 2 REJECT | 3 cross-check DIVERGENCE\n"
             "  glass verify <proof>          check a portable proof with the independent verifier\n"
             "  glass fingerprint [--check]   print/verify the content-addressed project identity\n"
             "  glass ledger <cmd>            append-only, tamper-evident proof-verdict ledger\n"
@@ -4402,11 +4403,13 @@ def main() -> None:
             with open(_tmp, "w") as _f:
                 _f.write(driver)
             _w3 = "--witness3" in sys.argv[2:]
+            # Output is always captured and relayed: the exit-code contract (see below) needs the
+            # verdict line, which the GENERATED DRIVER prints (glass.py never computes it itself).
+            # The result/proof block prints at the end of the run anyway, so nothing is lost.
             _proc = subprocess.run(["bash", os.path.join(here, "examples", "selfhost", "run_native.sh"), _tmp],
                            check=False, env={**os.environ, "PYTHON": sys.executable},
-                           capture_output=_w3, text=True if _w3 else None)
-            if _w3:
-                sys.stdout.write(_proc.stdout or ""); sys.stderr.write(_proc.stderr or "")
+                           capture_output=True, text=True)
+            sys.stdout.write(_proc.stdout or ""); sys.stderr.write(_proc.stderr or "")
             if _proc.returncode != 0:
                 # ABSTAIN — the third verdict. The native prover REFUSED before reaching a
                 # verdict (the bridge's loud `error`: an op with no faithful field lowering,
@@ -4487,6 +4490,13 @@ def main() -> None:
             else:
                 print(f"witness3: DIVERGENCE — the proof attests {_rp} but the reference interpreter computes f(inputs) = {_r3}, and they differ EVEN MODULO the Goldilocks prime. The proof is STARK-valid, yet the lowered circuit\'s semantics differ from the source — a genuine source<->circuit or domain mismatch (e.g. an int64 wraparound the field does not share). Worth investigating.")
                 sys.exit(3)  # a detected source<->circuit divergence is a hard failure, not a footnote
+        # The exit-code CONTRACT (v5.133), so scripts can branch on the verdict without parsing:
+        #   0 = ACCEPT   1 = ABSTAIN (refusal; also any infrastructure error)
+        #   2 = REJECT (verify_b3 ran and the proof FAILED — a disproof, e.g. a false --claim)
+        #   3 = Third-Witness DIVERGENCE (--cross-check only; takes precedence above).
+        # `if glass prove ...; then` used to treat a REJECT as success — the dangerous default.
+        if goldilocks and "proof:   REJECT" in (_proc.stdout or ""):
+            sys.exit(2)
     elif sys.argv[1] in ("fingerprint", "name"):
         # Content-addressed canonical identity (thematic name: "the Name"): one Poseidon-Merkle
         # root over the self-hosting core + prover/verifier bridge + the second verifier
