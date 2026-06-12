@@ -271,6 +271,16 @@ buildable next-session work; 5–6 are large/gated; 7–8 are rigor and the hard
    compiler exists; the proposed lever is to promote `native_glassc` to a **co-equal
    differential oracle**. A force-multiplier (unblocks #5 and heavy demos), but a structural
    rewrite — the "do it when the dogfood pain bites" background project.
+   **Profiled, not guessed (v5.134, sample(1) on live proves):** the native prover's ceiling is
+   **allocation — the Boehm GC is 75–85% of every sample window** (boxed `List<Int>` field
+   elements churning through the codeword layers; `q_list_concat` and strcmp tag-dispatch ~8%
+   each are the next tier). The generic 128-bit `% p` (`__udivmodti4`, up to ~44% of one phase
+   window) was eliminated in v5.134 by the Goldilocks fast reduction — **byte-identical proofs,
+   no end-to-end wall-clock change**, exactly because the GC is the binding constraint (Amdahl).
+   So the lever, in order: **unbox the field through the codeword layer** (u64 vectors end to
+   end in the bridge's hot paths — the fast reduction is its prerequisite groundwork, already
+   landed), then tag-dispatch without strcmp. `g_build_q_b3_go` and the Merkle leaf walks are
+   where the boxed traffic lives.
 
 7. **Proof-size reduction (serialization).** *(soundness-neutral; proof-format change.)* A comparison
    proof was ~552k tokens, ~94.5% of which is hash-digest data ([`docs/proof-size-frontier.md`](proof-size-frontier.md)).

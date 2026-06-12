@@ -176,40 +176,56 @@ fn cpre_3(unused: Int) : String =
   "  for (int i = n-1; i >= 0; i--) lst = q_cons(limbs[i], lst);\n" ++
   "  return lst;\n" ++
   "}\n" ++
+  "/* Fast canonical reduction mod p = 2^64-2^32+1 (the Plonky2 trick), for ANY 128-bit x:\n" ++
+  "   x = hi*2^64 + lo, hi = hh*2^32 + hl  =>  x === lo + hl*(2^32-1) - hh (mod p)\n" ++
+  "   (2^64 === 2^32-1, 2^96 === -1). Two bounded wrap-fixes + one conditional subtract give\n" ++
+  "   the SAME canonical [0,p) value as the generic % P for every 128-bit input (proofs stay\n" ++
+  "   byte-identical; unit-tested vs % P on 20M randoms + edges), without __udivmodti4\n" ++
+  "   (measured ~44% of prove samples in the field-heavy phase). */\n" ++
+  "static inline unsigned long long q_gold_red(unsigned __int128 x) {\n" ++
+  "  unsigned long long P = 18446744069414584321ULL, EPS = 4294967295ULL;\n" ++
+  "  unsigned long long lo = (unsigned long long)x, hi = (unsigned long long)(x >> 64);\n" ++
+  "  unsigned long long hh = hi >> 32, hl = hi & EPS;\n" ++
+  "  unsigned long long t0 = lo - hh; if (lo < hh) t0 -= EPS;\n" ++
+  "  unsigned long long t1 = hl * EPS;\n" ++
+  "  unsigned long long t2 = t0 + t1; if (t2 < t0) t2 += EPS;\n" ++
+  "  if (t2 >= P) t2 -= P;\n" ++
+  "  return t2;\n" ++
+  "}\n" ++
   "static long long q_gold_mul(long long a, long long b) {\n" ++
   "  unsigned long long P = 18446744069414584321ULL;\n" ++
   "  unsigned long long ai = (unsigned long long)q_gold_comb(a), bi = (unsigned long long)q_gold_comb(b);\n" ++
-  "  return q_gold_split((unsigned long long)(((unsigned __int128)ai * (unsigned __int128)bi) % P));\n" ++
+  "  return q_gold_split(q_gold_red((unsigned __int128)ai * (unsigned __int128)bi));\n" ++
   "}\n" ++
   "static long long q_gold_add(long long a, long long b) {\n" ++
   "  unsigned long long P = 18446744069414584321ULL;\n" ++
   "  unsigned long long ai = (unsigned long long)q_gold_comb(a), bi = (unsigned long long)q_gold_comb(b);\n" ++
-  "  return q_gold_split((unsigned long long)(((unsigned __int128)ai + (unsigned __int128)bi) % P));\n" ++
+  "  return q_gold_split(q_gold_red((unsigned __int128)ai + (unsigned __int128)bi));\n" ++
   "}\n" ++
   "static long long q_gold_sub(long long a, long long b) {\n" ++
   "  unsigned long long P = 18446744069414584321ULL;\n" ++
   "  unsigned long long ai = (unsigned long long)q_gold_comb(a), bi = (unsigned long long)q_gold_comb(b);\n" ++
-  "  return q_gold_split((unsigned long long)(((unsigned __int128)ai + (unsigned __int128)P - (unsigned __int128)bi) % P));\n" ++
+  "  return q_gold_split(q_gold_red((unsigned __int128)ai + (unsigned __int128)P - (unsigned __int128)bi));\n" ++
   "}\n" ++
   "/* UNBOXED Goldilocks: element = raw u64 bits in a signed long long. No comb/split\n" ++
   "   (no Cons-walk, no GC-alloc) — the whole point of the speed cut. Mirrors glass.py's goldw_*. */\n" ++
   "static long long q_goldw_mul(long long a, long long b) {\n" ++
   "  unsigned long long P = 18446744069414584321ULL;\n" ++
-  "  return (long long)(((unsigned __int128)(unsigned long long)a * (unsigned long long)b) % P);\n" ++
+  "  return (long long)q_gold_red((unsigned __int128)(unsigned long long)a * (unsigned long long)b);\n" ++
   "}\n" ++
   "static long long q_goldw_add(long long a, long long b) {\n" ++
   "  unsigned long long P = 18446744069414584321ULL;\n" ++
-  "  return (long long)(((unsigned __int128)(unsigned long long)a + (unsigned long long)b) % P);\n" ++
+  "  return (long long)q_gold_red((unsigned __int128)(unsigned long long)a + (unsigned long long)b);\n" ++
   "}\n" ++
   "static long long q_goldw_sub(long long a, long long b) {\n" ++
   "  unsigned long long P = 18446744069414584321ULL;\n" ++
-  "  return (long long)(((unsigned __int128)(unsigned long long)a + (unsigned __int128)P - (unsigned long long)b) % P);\n" ++
+  "  return (long long)q_gold_red((unsigned __int128)(unsigned long long)a + (unsigned __int128)P - (unsigned long long)b);\n" ++
   "}\n" ++
   "static long long q_goldw_inv(long long a) {\n" ++
   "  unsigned long long P = 18446744069414584321ULL;\n" ++
-  "  unsigned long long base = (unsigned long long)a % P; if (base == 0) return 0;\n" ++
+  "  unsigned long long base = (unsigned long long)a; if (base >= P) base -= P; if (base == 0) return 0;\n" ++
   "  unsigned long long e = P - 2, r = 1, b2 = base;\n" ++
-  "  while (e > 0) { if (e & 1) r = (unsigned long long)(((unsigned __int128)r * b2) % P); b2 = (unsigned long long)(((unsigned __int128)b2 * b2) % P); e >>= 1; }\n" ++
+  "  while (e > 0) { if (e & 1) r = q_gold_red((unsigned __int128)r * b2); b2 = q_gold_red((unsigned __int128)b2 * b2); e >>= 1; }\n" ++
   "  return (long long)r;\n" ++
   "}\n" ++
   "/* UNBOXED Poseidon-over-Goldilocks permutation (t=12, R_F=8, R_P=22, x^7 S-box), Plonky2-exact.\n" ++
@@ -222,19 +238,19 @@ fn cpre_4(unused: Int) : String =
   "static const unsigned long long Q_PCIRC[12] = {17ULL,15ULL,41ULL,16ULL,2ULL,28ULL,13ULL,13ULL,39ULL,18ULL,34ULL,20ULL};\n" ++
   "static unsigned long long q_psbox(unsigned long long x){\n" ++
   "  unsigned long long P=18446744069414584321ULL;\n" ++
-  "  unsigned long long x2=(unsigned long long)(((unsigned __int128)x*x)%P);\n" ++
-  "  unsigned long long x4=(unsigned long long)(((unsigned __int128)x2*x2)%P);\n" ++
-  "  unsigned long long x3=(unsigned long long)(((unsigned __int128)x*x2)%P);\n" ++
-  "  return (unsigned long long)(((unsigned __int128)x3*x4)%P);\n" ++
+  "  unsigned long long x2=q_gold_red((unsigned __int128)x*x);\n" ++
+  "  unsigned long long x4=q_gold_red((unsigned __int128)x2*x2);\n" ++
+  "  unsigned long long x3=q_gold_red((unsigned __int128)x*x2);\n" ++
+  "  return q_gold_red((unsigned __int128)x3*x4);\n" ++
   "}\n" ++
   "static void q_pmds(unsigned long long* st){\n" ++
   "  unsigned long long P=18446744069414584321ULL; unsigned long long out[12];\n" ++
-  "  for(int r=0;r<12;r++){ unsigned __int128 acc=0; for(int i=0;i<12;i++){ acc += (unsigned __int128)st[(i+r)%12]*Q_PCIRC[i]; } if(r==0){ acc += (unsigned __int128)st[0]*8ULL; } out[r]=(unsigned long long)(acc%P); }\n" ++
+  "  for(int r=0;r<12;r++){ unsigned __int128 acc=0; for(int i=0;i<12;i++){ acc += (unsigned __int128)st[(i+r)%12]*Q_PCIRC[i]; } if(r==0){ acc += (unsigned __int128)st[0]*8ULL; } out[r]=q_gold_red(acc); }\n" ++
   "  for(int i=0;i<12;i++) st[i]=out[i];\n" ++
   "}\n" ++
   "static void q_pround(unsigned long long* st,int rc,int isfull){\n" ++
   "  unsigned long long P=18446744069414584321ULL;\n" ++
-  "  for(int i=0;i<12;i++) st[i]=(unsigned long long)(((unsigned __int128)st[i]+Q_PARC[12*rc+i])%P);\n" ++
+  "  for(int i=0;i<12;i++) st[i]=q_gold_red((unsigned __int128)st[i]+Q_PARC[12*rc+i]);\n" ++
   "  if(isfull){ for(int i=0;i<12;i++) st[i]=q_psbox(st[i]); } else { st[0]=q_psbox(st[0]); }\n" ++
   "  q_pmds(st);\n" ++
   "}\n" ++
@@ -262,21 +278,21 @@ fn cpre_4(unused: Int) : String =
   "  { long long p = coeffs_xs; long long jj = 0;\n" ++
   "    while (p) { q_value_t* v=(q_value_t*)(intptr_t)p; if (strcmp(v->ctor,\"Cons\")) break; if (jj<mm) a[jj]=(unsigned long long)v->fields[0]; jj++; p=v->fields[1]; } }\n" ++
   "  { unsigned long long sh=(unsigned long long)shift_w, sp=1ULL;\n" ++
-  "    for (long long i=0;i<mm;i++){ a[i]=(unsigned long long)(((unsigned __int128)a[i]*sp)%P); sp=(unsigned long long)(((unsigned __int128)sp*sh)%P); } }\n"
+  "    for (long long i=0;i<mm;i++){ a[i]=q_gold_red((unsigned __int128)a[i]*sp); sp=q_gold_red((unsigned __int128)sp*sh); } }\n"
 fn cpre_5(unused: Int) : String =
   "  for (long long i=1,j=0;i<mm;i++){ long long bit=mm>>1; for(;j&bit;bit>>=1) j^=bit; j^=bit; if(i<j){ unsigned long long t=a[i]; a[i]=a[j]; a[j]=t; } }\n" ++
   "  { unsigned long long w=(unsigned long long)omega_w;\n" ++
   "    for (long long len=2; len<=mm; len<<=1){\n" ++
   "      unsigned long long wlen=1ULL, base=w; long long e=mm/len;\n" ++
-  "      while(e>0){ if(e&1) wlen=(unsigned long long)(((unsigned __int128)wlen*base)%P); base=(unsigned long long)(((unsigned __int128)base*base)%P); e>>=1; }\n" ++
+  "      while(e>0){ if(e&1) wlen=q_gold_red((unsigned __int128)wlen*base); base=q_gold_red((unsigned __int128)base*base); e>>=1; }\n" ++
   "      for (long long i=0;i<mm;i+=len){\n" ++
   "        unsigned long long wcur=1ULL;\n" ++
   "        for (long long k=0;k<(len>>1);k++){\n" ++
   "          unsigned long long u=a[i+k];\n" ++
-  "          unsigned long long t=(unsigned long long)(((unsigned __int128)a[i+k+(len>>1)]*wcur)%P);\n" ++
-  "          a[i+k]=(unsigned long long)(((unsigned __int128)u+t)%P);\n" ++
-  "          a[i+k+(len>>1)]=(unsigned long long)(((unsigned __int128)u+(unsigned __int128)P-t)%P);\n" ++
-  "          wcur=(unsigned long long)(((unsigned __int128)wcur*wlen)%P);\n" ++
+  "          unsigned long long t=q_gold_red((unsigned __int128)a[i+k+(len>>1)]*wcur);\n" ++
+  "          a[i+k]=q_gold_red((unsigned __int128)u+t);\n" ++
+  "          a[i+k+(len>>1)]=q_gold_red((unsigned __int128)u+(unsigned __int128)P-t);\n" ++
+  "          wcur=q_gold_red((unsigned __int128)wcur*wlen);\n" ++
   "        } } } }\n" ++
   "  { long long lst=(long long)(intptr_t)q_alloc(\"Nil\",0);\n" ++
   "    for (long long i=mm-1;i>=0;i--) lst=q_cons((long long)a[i], lst); return lst; }\n" ++
@@ -346,8 +362,8 @@ fn cpre_p2(unused: Int) : String =
   "static const unsigned long long Q_P2_EF[48] = {14306783492963476045ULL, 12653264875831356889ULL, 10887434669785806501ULL, 7221072982690633460ULL, 9953585853856674407ULL, 13497620366078753434ULL, 18140292631504202243ULL, 17311934738088402529ULL, 6686302214424395771ULL, 11193071888943695519ULL, 10233795775801758543ULL, 3362219552562939863ULL, 8595401306696186761ULL, 7753411262943026561ULL, 12415218859476220947ULL, 12517451587026875834ULL, 3257008032900598499ULL, 2187469039578904770ULL, 657675168296710415ULL, 8659969869470208989ULL, 12526098871288378639ULL, 12525853395769009329ULL, 15388161689979551704ULL, 7880966905416338909ULL, 2911694411222711481ULL, 6420652251792580406ULL, 323544930728360053ULL, 11718666476052241225ULL, 2449132068789045592ULL, 17993014181992530560ULL, 15161788952257357966ULL, 3788504801066818367ULL, 1282111773460545571ULL, 8849495164481705550ULL, 8380852402060721190ULL, 2161980224591127360ULL, 2440151485689245146ULL, 17521895002090134367ULL, 13821005335130766955ULL, 17513705631114265826ULL, 17068447856797239529ULL, 17964439003977043993ULL, 5685000919538239429ULL, 11615940660682589106ULL, 2522854885180605258ULL, 12584118968072796115ULL, 17841258728624635591ULL, 10821564568873127316ULL};\n" ++
   "static const unsigned long long Q_P2_IN[22] = {5395176197344543510ULL, 17941136338888340715ULL, 7559392505546762987ULL, 549633128904721280ULL, 15658455328409267684ULL, 10078371877170729592ULL, 2349868247408080783ULL, 13105911261634181239ULL, 12868653202234053626ULL, 9471330315555975806ULL, 4580289636625406680ULL, 13222733136951421572ULL, 4555032575628627551ULL, 7619130111929922899ULL, 4547848507246491777ULL, 5662043532568004632ULL, 15723873049665279492ULL, 13585630674756818185ULL, 6990417929677264473ULL, 6373257983538884779ULL, 1005856792729125863ULL, 17850970025369572891ULL};\n" ++
   "static const unsigned long long Q_P2_DIAG[12] = {18446744069414584319ULL, 1ULL, 2ULL, 9223372034707292161ULL, 3ULL, 4ULL, 9223372034707292160ULL, 18446744069414584318ULL, 18446744069414584317ULL, 13835058052060938241ULL, 4611686017353646080ULL, 16140901060737761281ULL};\n" ++
-  "static unsigned long long q_p2add(unsigned long long a, unsigned long long b){ unsigned long long P=18446744069414584321ULL; return (unsigned long long)(((unsigned __int128)a+b)%P); }\n" ++
-  "static unsigned long long q_p2mul(unsigned long long a, unsigned long long b){ unsigned long long P=18446744069414584321ULL; return (unsigned long long)(((unsigned __int128)a*b)%P); }\n" ++
+  "static unsigned long long q_p2add(unsigned long long a, unsigned long long b){ unsigned long long P=18446744069414584321ULL; return q_gold_red((unsigned __int128)a+b); }\n" ++
+  "static unsigned long long q_p2mul(unsigned long long a, unsigned long long b){ unsigned long long P=18446744069414584321ULL; return q_gold_red((unsigned __int128)a*b); }\n" ++
   "static unsigned long long q_p2sb(unsigned long long x){ unsigned long long x2=q_p2mul(x,x),x4=q_p2mul(x2,x2),x3=q_p2mul(x,x2); return q_p2mul(x3,x4); }\n" ++
   "static void q_p2_mext(unsigned long long* s){\n" ++
   "  for(int c=0;c<3;c++){ unsigned long long* x=s+4*c;\n" ++
