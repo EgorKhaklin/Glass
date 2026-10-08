@@ -9,9 +9,21 @@ Version numbering restarted at 1.0.0 when development resumed; the earlier 0.x t
 
 ## Unreleased
 
+### Fixed
+
+- The bridge's soundness gate, which asserts that `verify_b3` accepts honest proofs and rejects attacks, sat in a demo section that nothing ran: `glass prove`, the Lens difftest and the suite all cut the bridge before it, and it no longer typechecked. Its cases now live in `examples/prove/soundness_gate.glass`, and the suite runs them natively.
+
+### Added
+
+- A forged-proof case for the soundness gate: a proof whose quotient is the zero polynomial, so FRI accepts it and only `verify_b3`'s out-of-domain identity rejects it. Removing that identity from `verify_b3` now fails the suite.
+
 ### Changed
 
 - `glass prove` compiles the prover once and caches it, instead of compiling it for every proof. Compiling took about 18 of the 19.6 seconds a small proof needed; a cached proof of `hello_prove.glass` takes a quarter of a second. Each proof runs the cached binary on a job file in a private directory, so proofs no longer wait on one another. The output, exit code and emitted proof are byte-identical to the per-proof compile, which `GLASS_PROVE_UNCACHED=1` still selects.
+
+### Removed
+
+- Sixteen functions in the bridge that nothing called, three in the self-hosted compiler and parser, one in the interpreter, and the bridge's demo narrative.
 
 ## v1.0.0 - 2026-10-08 (development resumes; everything before it is one release)
 

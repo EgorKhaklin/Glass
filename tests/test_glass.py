@@ -1367,6 +1367,29 @@ def main() -> int:
     os.unlink(_cp_str)
     os.unlink(_cp_tup)
 
+    # The soundness gate (examples/prove/soundness_gate.glass): honest proofs verify and
+    # attacks are rejected through verify_b3 and the verifiers it grew from, including a
+    # wiring-inconsistent trace and a forged proof whose quotient is the zero polynomial
+    # (only the out-of-domain identity catches it). Every case is asserted inside the
+    # program; it runs natively on the bridge machinery, as `glass prove` does.
+    print("== soundness gate ==")
+    with open(os.path.join(EX, "prove", "prove_source_goldilocks_zk.glass")) as _sgf:
+        _sg_bridge = _sgf.read()
+    with open(os.path.join(EX, "prove", "soundness_gate.glass")) as _sgf:
+        _sg_cases = _sgf.read()
+    _sg_cut = _sg_bridge.find("# --- demo")
+    _sg_path = os.path.join(_tf_cp.gettempdir(), "glass_soundness_gate_%d.glass" % os.getpid())
+    with open(_sg_path, "w") as _sgf:
+        _sgf.write((_sg_bridge[:_sg_cut] if _sg_cut > 0 else _sg_bridge) + "\n" + _sg_cases)
+    _sg = _prove_run(["bash", os.path.join(EX, "selfhost", "run_native.sh"), _sg_path])
+    os.unlink(_sg_path)
+    if not _heavy_skipped(_sg, "soundness gate: 15 honest and attack cases through verify_b3"):
+        _sg_ok = (_sg.returncode == 0) and ("SOUNDNESS GATE PASSED: 15 cases" in _sg.stdout)
+        print(f"  {'OK ' if _sg_ok else 'FAIL'}  soundness gate: 15 honest and attack cases through verify_b3")
+        if not _sg_ok:
+            print(f"        rc={_sg.returncode} out: {_sg.stdout.strip()[-300:]} err: {_sg.stderr.strip()[-300:]}")
+            failures += 1
+
     # Dead-branch PREDICATION: cgen builds BOTH if-arms, so a divide-by-zero in a DEAD arm
     # (`if a==a then a else a%b`, b=0) used to poison the circuit. The division gadget now predicates
     # its `r < b` check on an in-circuit `b!=0` bit, so the dead `a%0` is vacuously satisfiable and the

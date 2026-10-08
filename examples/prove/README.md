@@ -28,6 +28,10 @@ Each demo's header comment gives its exact command and expected result.
   proof then runs that binary on a small job file (the program, its inputs, the mode and any
   claim). The first proof after a change to the bridge or the compiler takes about 20 seconds
   to compile; later proofs pay only for proving. `GLASS_PROVE_UNCACHED=1` compiles per proof.
+- [`soundness_gate.glass`](soundness_gate.glass): the cases the verifier must get right, run
+  natively by the suite: honest proofs, a different statement, a tampered nonce and trace, a
+  P=0 proof, a wiring-inconsistent trace, a wrong public input, and a forged proof with a zero
+  quotient. Each verdict is asserted.
 
 ## Demos for `glass prove`
 

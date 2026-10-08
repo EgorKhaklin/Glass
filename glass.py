@@ -198,9 +198,6 @@ class EffectRow:
     concrete: frozenset[str]
     vars: frozenset[str] = frozenset()
 
-    def is_pure(self) -> bool:
-        return not self.concrete and not self.vars
-
     def __str__(self) -> str:
         parts = sorted(self.concrete) + sorted(self.vars)
         if not parts: return ""

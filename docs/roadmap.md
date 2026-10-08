@@ -36,7 +36,7 @@ The platform every column stands on. Nothing here changes what a proof means; al
 
 - [ ] **Quartz's garbage-collection bug.** The compiler Quartz builds (gen1) loses live objects to the Boehm collector on large inputs (Prism, glassc itself) and fails at random; gen2, which Glass compiles itself into, does not. Until it is found, native builds run gen1 once with collection off and use gen2 after that. Gate: gen1 compiles Prism and glassc twenty times each with the collector on, and the fixpoint no longer sets `GC_DONT_GC`.
 - [ ] **A fast suite.** The prover is now compiled once and cached, not once per proof: a small proof went from 19.6 s to 0.24 s. What remains is proving itself. Measured on an 8-core, 16 GB laptop: a full run takes 53 minutes, 49 of them in 46 proofs of 20 seconds or more; the in-circuit Poseidon2 proof alone outlasts the 10-minute per-gate limit there (it completes on CI), and the divmod tuple, the string bands and signed division take 3 to 4 minutes each. Running proofs side by side is bounded by memory (one reaches 4 GB), so the gate needs a faster prover (Column 3) or a smaller set of heavy proofs on every change. Gate: a full run under 10 minutes, same verdicts.
-- [ ] **Second debloat.** Strip the remaining dev-diary prose from code comments (`v0.8.5 demo`, "since v5.88"), correct stale comments (for example those that still call Baby Bear the default field), and remove dead code paths. Gate: suite and fixpoint green, fingerprint re-rooted.
+- [x] **Second debloat.** Version tags and old milestone names are gone from code comments, stale comments are corrected (a demo that called itself zero-knowledge, verifiers called unshipped), and 20 functions nothing called are removed, along with the bridge's demo narrative, whose soundness cases now run as a gate.
 - [ ] **CI on Linux and macOS**, with the fixpoint, difftest and corpus check as required jobs.
 - [x] **Glass pinned in Tiresias.** Tiresias pins a Glass release by tag and by the SHA-256 of each Glass file it reads, fetches it on first use, refuses a differing checkout by name, and loads the verified interpreter by path. Gate: `tiresias glass --fetch` plus the engine round trip, in CI.
 - [ ] **Glass as a pip-installable package** with a small, versioned proving API (`glass.prove`), so Tiresias no longer slices a demo file at a marker. Needs a package layout for the runtime files (bridge, native compiler, Lens) and a fingerprint re-root.
@@ -74,7 +74,7 @@ The part no backend audit covers, and so the part that decides whether a proof m
 - [ ] **A written lowering specification**: for each construct, the circuit it becomes and the condition under which it is faithful (value ranges, recursion depth), and the refusal when it is not.
 - [ ] **Translation validation on every proof.** The cross-check already re-executes the source; make it the default for every `glass prove`, not an option, wherever the reference can evaluate the program.
 - [ ] **Per-gadget differential tests**: each gadget (comparison, division, signed arithmetic, strings, records, calls) evaluated as a circuit and as Glass on many random inputs, including the field's edge values.
-- [ ] **Mutation testing of the bridge**: a mutated bridge must be caught by some gate. Gate: no surviving mutant in the soundness-critical gadgets.
+- [ ] **Mutation testing of the bridge**: a mutated bridge must be caught by some gate. Gate: no surviving mutant in the soundness-critical gadgets. First results (2026-10-08): removing `verify_b3`'s out-of-domain identity is caught by the zero-quotient forgery in the soundness gate; removing its trace-opening Merkle check or its FRI-layer reconstruction is not yet caught by any gate.
 - [ ] **Fuzzing at scale in CI**: the seven program families run nightly with a growing seed corpus.
 
 ### Column 3: speed (Glass)
@@ -88,6 +88,7 @@ The native prover spends 75 to 85 percent of its time in the garbage collector, 
 
 ### Column 4: the language (Glass)
 
+- [ ] **Equality in compiled code.** Types are erased in the emitted C, so `==` calls a runtime guess: two words both at or above 2^32 are taken for strings and compared with `strcmp`. Two different Ints both at or above 2^32 therefore crash natively (or, if both happen to point at readable memory, compare wrongly) where the interpreter answers correctly. Gate: a native test comparing large Ints agrees with the interpreter, and the fixpoint holds.
 - [ ] **Signed overflow wraps in compiled code.** The interpreter wraps at 64 bits; the emitted C leaves signed overflow undefined. Compile with `-fwrapv` (Quartz and glassc). Gate: the suite, the fixpoint, and an overflow test that agrees in both.
 - [ ] **Strings as Unicode code points everywhere.** The interpreter counts code points, the emitted C counts bytes; make the native side match.
 - [ ] **A standard library** with a stable surface: lists, maps, strings, results, and a small numeric tower.

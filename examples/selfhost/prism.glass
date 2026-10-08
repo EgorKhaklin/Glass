@@ -281,12 +281,6 @@ fn contains_nl_between(s: String, i: Int, j: Int) : Bool =
   else if char_at(s, i) == "\n" then true
   else contains_nl_between(s, i + 1, j)
 
-# True if position j in s is at column 1. The first column of
-# the source is column 1; immediately after a newline is column 1.
-fn col_is_1(s: String, j: Int) : Bool =
-  if j == 0 then true
-  else char_at(s, j - 1) == "\n"
-
 fn read_int(s: String, i: Int, acc: Int) : (Int, Int) =
   if i >= string_length(s) then (acc, i)
   else

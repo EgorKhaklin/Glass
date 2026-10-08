@@ -630,17 +630,11 @@ fn gen_expr(e: Expr, venv: List<Pair<String, String>>, path: String)
     _ => ("", "0 /* glassc: unsupported expr */", "")
   }
 
-# Equality: Glass `==`/`!=` on STRINGS must be value (strcmp) equality, not C
-# pointer `==`. With erased types glassc can't always tell, but prism compares
-# strings against literals (`c == " "`), so a string-LITERAL operand selects
-# strcmp; otherwise (Int/Bool) plain C ==/!=.
-fn is_str_lit(e: Expr) : Bool = match e { EStr(s) => true; _ => false }
-
-# True if `e` is syntactically a list (a Cons/Nil constructor): used to pick
-# list vs string `++`.
-fn is_list_op(e: Expr) : Bool =
-  match e { ECtor(name, args) => name == "Cons" || name == "Nil"; _ => false }
-
+# Equality: Glass `==`/`!=` compiles to the runtime q_eq. Types are erased, so q_eq
+# guesses: equal words are equal, and two words both at or above 2^32 are taken for
+# string pointers and compared with strcmp. Two DIFFERENT Ints both >= 2^32 are
+# therefore misread as strings (a crash, or a wrong answer): a known bug, see the
+# roadmap (Column 4).
 fn gen_eq(a: Expr, b: Expr, venv: List<Pair<String, String>>, path: String, positive: Bool)
   : (String, String, String) =
   match gen_expr(a, venv, path ++ "0") {

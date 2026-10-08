@@ -1,0 +1,100 @@
+# --- the soundness gate: appended to the bridge machinery by the test suite ----
+#
+# Honest proofs must verify and attacks must be rejected, through the verifier the
+# default `glass prove` uses (verify_b3) and the two it grew out of (verify, then
+# verify_sound). Every case is asserted: a wrong verdict calls `error`, so the run
+# exits non-zero. tests/test_glass.py compiles the bridge with this file natively
+# and requires "SOUNDNESS GATE PASSED".
+#
+# The statement: f(a, b, c) = a * b + c over Goldilocks, with a = b = 100000 and
+# c = 99, so the result (10^10 + 99) does not fit the old 2^31 field.
+
+fn gate_ok(label: String) : String !{IO} = print("  ok  " ++ label)
+
+fn expect_accept(label: String, got: Bool) : String !{IO} =
+  if got then gate_ok(label) else error("SOUNDNESS GATE FAILED: " ++ label ++ " expected ACCEPT, got REJECT")
+
+fn expect_reject(label: String, got: Bool) : String !{IO} =
+  if got then error("SOUNDNESS GATE FAILED: " ++ label ++ " expected REJECT, got ACCEPT") else gate_ok(label)
+
+let msrc : String = "fn f(a: Int, b: Int, c: Int) : Int = a * b + c\nf(a, b, c)"
+let mins : List<Pair<String, Int>> = [Pair("a", 100000), Pair("b", 100000), Pair("c", 99)]
+let mins_m : List<Pair<String, List<Int>>> = ints_to_minput(mins)
+let mres : List<Int> = gref(msrc, mins)
+let _ : String = print("soundness gate: f(a, b, c) = a * b + c = " ++ bn_dec(mres))
+
+# Blinding hides the witness at openings (the mechanism --zk relies on; no FRI here).
+let _ : String = expect_accept("blinded openings differ from the raw witness and between masks", zk_hiding(777, 888))
+
+# The first independent verifier: re-derives every challenge from the gates and roots.
+let t1b : Build = build_claim_m(msrc, mins_m, mres)
+let t1gs : List<Gate> = build_gates(t1b)
+let t1w : List<List<Int>> = build_wit(t1b)
+let t1pp : Proof = prove_to_proof(t1gs, t1w, 11111)
+let t1bgs : List<Gate> = build_gates(build_claim_m(msrc, mins_m, glit(12345)))
+let _ : String = expect_accept("verify: honest proof", verify(t1gs, t1pp))
+let _ : String = expect_reject("verify: proof checked against a different statement (claim 12345)", verify(t1bgs, t1pp))
+let _ : String = expect_reject("verify: tampered nonce", verify(t1gs, tamper_nonce(t1pp)))
+
+# verify_sound: ties the committed quotient to the gate constraints row by row.
+let _ : String = expect_accept("verify_sound: honest proof", verify_sound(t1gs, prove_sound(t1gs, t1w)))
+let _ : String = expect_reject("verify_sound: a different statement", verify_sound(t1bgs, prove_sound(t1gs, t1w)))
+let _ : String = expect_reject("verify_sound: a P=0 proof with no witness", verify_sound(t1gs, prove_sound_evil(t1gs)))
+let _ : String = expect_reject("verify_sound: tampered trace opening", verify_sound(t1gs, tamper_strace(prove_sound(t1gs, t1w))))
+
+# verify_b3, the default verifier: adds the grand-product copy constraint.
+let _ : String = expect_accept("verify_b3: honest proof", verify_b3(t1gs, prove_b3(t1gs, t1w)))
+let _ : String = expect_reject("verify_b3: a different statement", verify_b3(t1bgs, prove_b3(t1gs, t1w)))
+
+# The wiring attack: wire 2 = w0 * w1, then wire 3 = wire 2 * wire 2. Row 0 outputs
+# wire 2 = 6 (2 * 3) but row 1 reads wire 2 = 5. Every row's gate holds (6 = 2 * 3,
+# 25 = 5 * 5), so a per-row check accepts; the copy constraint must not.
+let ev_gates : List<Gate> = [GMul(2, 0, 1), GMul(3, 2, 2), GHint(4)]
+let ev_l : List<List<Int>> = [glit(2), glit(5), glit(0), glit(0)]
+let ev_r : List<List<Int>> = [glit(3), glit(5), glit(0), glit(0)]
+let ev_o : List<List<Int>> = [glit(6), glit(25), glit(7), glit(0)]
+let _ : String = expect_accept("wiring attack: every row's gate holds (a per-row check would accept)", low_degree_quotient_cols(ev_gates, ev_l, ev_r, ev_o))
+let _ : String = expect_reject("verify_b3: wiring attack (wire 2 is 6 as an output, 5 as an input)", verify_b3(ev_gates, prove_b3_cols(ev_gates, ev_l, ev_r, ev_o)))
+
+# Public-input pinning: input wire 0 (a) bound to a public value in the statement.
+let _ : String = expect_accept("verify_b3: input a pinned to its true value 100000",
+  match build_claim_pub(msrc, mins_m, [Pair(0, glit(100000))], mres) { Build(pn, pgs, pw) => verify_b3(pgs, prove_b3(pgs, pw)) })
+let _ : String = expect_reject("verify_b3: input a pinned to a wrong value 99999",
+  match build_claim_pub(msrc, mins_m, [Pair(0, glit(99999))], mres) { Build(pn, pgs, pw) => verify_b3(pgs, prove_b3(pgs, pw)) })
+
+# A forged prover: prove_b3 with the quotient replaced by the zero polynomial, and the
+# claimed quotient value at the challenge point z set to zero to match. The zero
+# codeword is low-degree and its openings are consistent, so FRI and the DEEP tie
+# accept it; only the out-of-domain identity (the verifier recomputing the quotient
+# at z from the opened trace) catches that the witness does not satisfy the statement.
+fn prove_b3_zeroq(gates: List<Gate>, w: List<List<Int>>) : ProofB3 =
+  let n : Int = ng(gates) in let m : Int = fri_dsize(n) in let coset : List<List<Int>> = fri_coset(n) in let omega : List<Int> = root_pow2(ilog2(n)) in
+  let stmt : List<Int> = stmt_seed_of(gates) in
+  let cells : List<Pair<Int, Int>> = all_cells(gates, 0, n) in
+  let lvals : List<List<Int>> = lpad(c_l(gates, w), n) in let rvals : List<List<Int>> = lpad(c_r(gates, w), n) in let ovals : List<List<Int>> = lpad(c_o(gates, w), n) in
+  let ll : List<List<Int>> = icol(c_l(gates, w), n) in let rr : List<List<Int>> = icol(c_r(gates, w), n) in let oo : List<List<Int>> = icol(c_o(gates, w), n) in
+  let lcw : List<List<Int>> = lde(ll, n) in let rcw : List<List<Int>> = lde(rr, n) in let ocw : List<List<Int>> = lde(oo, n) in
+  let lev1 : List<List<List<Int>>> = build_levels_g(pad_pow2_g(trace_leaf_lro(lcw, rcw, ocw, 0, m)), []) in let root1 : List<Int> = root_of_levels(lev1) in
+  let ts1 : List<Int> = hashg(stmt, root1) in let beta : G2 = beta_p_of(ts1) in let gamp : G2 = gam_p_of(ts1) in
+  let zvals : List<G2> = z_build(lvals, rvals, ovals, cells, beta, gamp, G2([1], []), 0, n) in
+  let zr : List<List<Int>> = interp_n(reals(zvals), n) in let zi : List<List<Int>> = interp_n(imags(zvals), n) in
+  let zcw : List<G2> = eval_g2_on_dom(zr, zi, coset) in
+  let lev2 : List<List<List<Int>>> = merkle_levels_g(zcw) in let root2 : List<Int> = root_of_levels(lev2) in
+  let ts2 : List<Int> = hashg(ts1, root2) in
+  let qcw : List<G2> = zeros_cw(m) in
+  let lev3 : List<List<List<Int>>> = merkle_levels_g(qcw) in let root3 : List<Int> = root_of_levels(lev3) in
+  let ts3 : List<Int> = hashg(ts2, root3) in let z : G2 = ood_of(ts3) in let wz : G2 = gmul2(z, emb(omega)) in
+  let lz : G2 = poly_eval_g(ll, z) in let rz : G2 = poly_eval_g(rr, z) in let oz : G2 = poly_eval_g(oo, z) in
+  let zz : G2 = poly_eval_g2(zr, zi, z) in let zwz : G2 = poly_eval_g2(zr, zi, wz) in
+  let qz : G2 = G2([], []) in
+  let ts4 : List<Int> = absorb6(ts3, lz, rz, oz, qz, zz, zwz) in let gamd : G2 = gamma_of(ts4) in
+  let bcw : List<G2> = build_b_b3(lcw, rcw, ocw, qcw, zcw, coset, lz, rz, oz, qz, zz, zwz, z, wz, gamd, 0, m) in
+  match commit_g(bcw, coset, [], ts4, finv([2])) { (blayers, bfinal) =>
+    let base_seed : List<Int> = absorb_final(transcript_seed_g(blayers, ts4), bfinal) in let nz : Int = grind(base_seed) in let ground : List<Int> = hashg(base_seed, glit(nz)) in
+    let queries : List<Int> = sample_queries_g(ground, fri_queries(n), fri_dsize(n)) in
+    ProofB3(root1, root2, root3, lz, rz, oz, qz, zz, zwz, roots_of(blayers), bfinal, nz, extract_bfri(blayers, queries), extract_tbatch(lcw, rcw, ocw, qcw, zcw, lev1, lev2, lev3, queries, m)) }
+
+let _ : String = expect_reject("verify_b3: forged proof of a false claim with a zero quotient", verify_b3(t1bgs, prove_b3_zeroq(t1bgs, t1w)))
+
+let _ : String = print("SOUNDNESS GATE PASSED: 15 cases as expected")
+"soundness gate"
