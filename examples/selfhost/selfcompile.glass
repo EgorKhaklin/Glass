@@ -1,5 +1,5 @@
 # =============================================================================
-# selfcompile.glass: Stage 5 endpoint
+# selfcompile.glass: the self-compile pipeline, driven from Glass
 #
 # End-to-end self-compile script. Takes Glass programs (either inline
 # source strings or files read from disk) and routes each through the
@@ -27,7 +27,7 @@
 #     which subprocess-invokes a fresh glass that runs quartz_parser.
 #   - quartz_parser self-cleans the trigger file after reading it, so
 #     subsequent default-mode invocations work cleanly.
-#   - True Stage 5 (prism interpreting quartz_parser) would require
+#   - Running quartz_parser under prism instead would require
 #     prism to support write_file/read_file/run_command builtins;
 #     deferred. The host-direct path here is operationally equivalent.
 # =============================================================================

@@ -1,5 +1,5 @@
 # =============================================================================
-# prove.glass: the first PROVE BRIDGE: a Glass expression -> a ZK proof (Phase 1)
+# prove.glass: the first prove bridge: a Glass expression -> a proof
 #
 # The frontier bet made concrete. You write a computation as a Glass expression
 # (a function body over field arithmetic); this:
@@ -8,15 +8,16 @@
 #      every subexpression becomes a wire, every operation a gate.
 #   3. PROVES "y = f(secret x)" with Frost's sound, non-interactive protocol
 #      (commit the witness -> Fiat-Shamir challenge -> random-linear-combination
-#      of the gate residuals == 0), revealing only the circuit and a commitment.
+#      of the gate residuals == 0). The commitment is unsalted, so this is not
+#      zero-knowledge.
 #
 # THE GLASS DISCIPLINE, applied: the reference evaluator (eval_expr) and the
 # compiled circuit (the witness it produces) MUST agree on the output wire: a
 # differential test between the language's meaning and the prover's circuit.
 #
-# This is the seam between the LANGUAGE and the PROVER. Phase 2 extends the
-# compiler to the full Glass AST (let/if/match) via prism; Phase 3 makes the
-# field cryptographic. Reuses Frost (field, hash, gates, RLC). Dogfoods.
+# This is the seam between the LANGUAGE and the PROVER. The source bridge
+# (prove_source_goldilocks_zk.glass) later took it to the full Glass AST via
+# prism, over a cryptographic field. Reuses Frost (field, hash, gates, RLC). Dogfoods.
 # =============================================================================
 
 # --- field + hash (from Frost) -----------------------------------------------
@@ -105,7 +106,7 @@ let f : Expr = Add(Add(Mul(Var(0), Var(0)), Var(0)), Const(5))
 let secret : List<Int> = [3]                       # the private input x = 3
 let spec : Int = eval_expr(f, secret)              # reference: 3*3 + 3 + 5 = 17
 
-let _ : String = print("--- prove.glass: a Glass expression -> a zero-knowledge proof ---")
+let _ : String = print("--- prove.glass: a Glass expression -> a proof ---")
 let _ : String = print("f(x) = x*x + x + 5,  secret x = 3")
 let _ : String = print("")
 let _ : String = print("1. reference evaluator says f(x) = " ++ int_to_string(spec))
@@ -131,7 +132,7 @@ let _ : String =
 
 let _ : String = print("")
 let _ : String = print("proved y = " ++ int_to_string(spec) ++
-                       " for a SECRET x, revealing only the circuit + a commitment to the witness.")
+                       " for x = 3; this demo checks the witness itself and hides nothing.")
 let _ : String = print("the language's meaning and the prover's circuit agree by construction.")
 
-"prove: the bridge: write a Glass expression, compile to a Frost circuit, get a ZK proof"
+"prove: the bridge: write a Glass expression, compile to a Frost circuit, get a proof"

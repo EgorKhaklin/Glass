@@ -2653,7 +2653,7 @@ def builtin_values() -> dict[str, Value]:
         # !{Process} effect. Invokes the external program `cmd` with
         # arguments `args` (a List<String>). Returns Result with a
         # 3-tuple on success (exit_code, stdout, stderr).
-        # This is what closes the loop on Stage 5: prism interprets
+        # With it the self-compile path closes: prism interprets
         # quartz_min, which produces C; write_file persists it;
         # run_command invokes cc, then the resulting binary.
         try:
@@ -3644,7 +3644,7 @@ fn snd<A, B>(p: Pair<A, B>) : B =
     Pair(_, b) => b
   }
 
-# String helpers built on the new v0.8 builtins.
+# String helpers built on the string builtins.
 fn string_contains(s: String, needle: String) : Bool =
   match string_index_of(s, needle) {
     None    => false;

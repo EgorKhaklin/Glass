@@ -243,7 +243,7 @@ def vq(oq, roots, betas, doms, final, p, finv2):
         if not geq2(folded, nextv): return False
         p = j
     return True
-# Proof-size Stage 1: the trace Merkle binding is BATCHED. Reconstruct each trace root from the opened
+# The trace Merkle binding is BATCHED. Reconstruct each trace root from the opened
 # leaves (at their indices) + a minimal co-path, replacing the per-query independent paths. Byte-identical
 # to the Glass verify_b3 (recon_root / vb3_trace / vb3_qs).
 def oidx_of(queries, half):                              # canonical sorted opened-leaf positions {j, j+half}
@@ -284,7 +284,7 @@ def vb3_trace(tleaves, queries, cp1, cp3, cp2, m, root1, root2, root3):
     return (recon_root(tmap(tleaves, queries, half, 1), cp1, h) == root1
             and recon_root(tmap(tleaves, queries, half, 3), cp3, h) == root3
             and recon_root(tmap(tleaves, queries, half, 2), cp2, h) == root2)
-# Proof-size Stage 2: the FRI openings are BATCHED per layer (mirror of Glass vfri_recon / vq_b3).
+# The FRI openings are BATCHED per layer (mirror of Glass vfri_recon / vq_b3).
 def vfri_recon(qvals, queries, lcopaths, broots, doms, lyrs):
     for L in range(lyrs):
         domL = doms[L]; half = len(domL) // 2; height = ilog2(len(domL))

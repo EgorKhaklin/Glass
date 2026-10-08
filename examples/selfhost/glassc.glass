@@ -1,10 +1,10 @@
 # =============================================================================
-# glassc.glass: Glass-in-Glass compiler (Phase B/C of the off-Python plan)
+# glassc.glass: Glass-in-Glass compiler
 #
 # Reuses prism's PROVEN frontend (lexer + parser) via `import`, and adds a
 # Glass→C backend that mirrors quartz.py's codegen, operating directly over
 # prism's core AST (Program / Expr / Pattern). This is the artifact that, once
-# compiled to native by quartz.py (Phase C2), lets Glass compile Glass with no
+# compiled to native by quartz.py, lets Glass compile Glass with no
 # Python in the loop.
 #
 # Driver: reads /tmp/in.glass, parses with prism's parse_program, emits C,

@@ -2368,13 +2368,13 @@ fn parse_and_show(label: String, src: String) : String !{File, Process} =
     Err(msg) => label ++ " FAILED: " ++ msg
   }
 
-# file-mode dispatch (Stage 5 endpoint). If /tmp/qp_input.glass
+# file-mode dispatch. If /tmp/qp_input.glass
 # exists, treat its contents as a Glass source string, compile it
 # through the same parse → C → cc → binary pipeline as the demos, and
 # print `COMPILED: <stdout>`. If the file doesn't exist, run the 26
 # regression demos.
 #
-# This is what makes Stage 5 work end-to-end: selfcompile.glass writes
+# This is what makes self-compilation work end to end: selfcompile.glass writes
 # a user program to /tmp/qp_input.glass, invokes glass on this file
 # via run_command, and reads the captured `COMPILED:` line. The whole
 # self-compile pipeline runs from Glass-driven scripts.

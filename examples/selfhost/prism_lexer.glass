@@ -318,5 +318,5 @@ fn tokenize(s: String) : List<Token> = tokenize_at(s, 0)
 
 # --- Parser -------------------------------------------------------------
 
-# Stage 4.5: tokenize the marker "let x = 5" and return its token count.
+# Self-check: tokenize the marker "let x = 5" and return its token count.
 tokenize("let x = 5")

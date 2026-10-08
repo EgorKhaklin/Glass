@@ -529,7 +529,7 @@ fn path_of_levels(levels: List<List<List<Int>>>, li: Int, index: Int) : List<Lis
        let sib : List<Int> = if index % 2 == 0 then wnth(level, index + 1) else wnth(level, index - 1) in
        [sib] ++ path_of_levels(levels, li + 1, index / 2)
 fn merkle_path_levels(levels: List<List<List<Int>>>, index: Int) : List<List<Int>> = path_of_levels(levels, 0, index)
-# --- Merkle batch-opening (proof-size Stage 1): reconstruct a tree root from the opened leaves
+# --- Merkle batch-opening: reconstruct a tree root from the opened leaves
 # (at their indices) + a MINIMAL co-path node set, replacing the per-query independent sibling paths.
 # Canonical bottom-up sweep over the memoized levels; even position = LEFT input to hashg (matching
 # fold_path_g / level_up_g). The opened-index set is Fiat-Shamir-derived and recomputed by the verifier,
@@ -675,7 +675,7 @@ fn stark_root(gates: List<Gate>, w: List<List<Int>>, seed: Int) : List<Int> =
 # a trace commitment + the OOD/DEEP quotient identity + a copy/permutation argument.
 type QOpen = | QOpen(G2, G2, List<List<Int>>, List<List<Int>>)            # one query, one layer: lx, lmx, path_lx, path_lmx
 type Proof = | Proof(List<List<Int>>, List<G2>, Int, List<List<QOpen>>)   # roots, final, nonce, openings[query][layer]
-# Proof-size Stage 2: the FRI openings (ProofB3 only) are BATCHED per LAYER. Per (query,layer) we keep only
+# The FRI openings (ProofB3 only) are BATCHED per LAYER. Per (query,layer) we keep only
 # the opened VALUES (QVal: lx, lmx), the fold-chain inputs, and each FRI layer's tree is opened ONCE as
 # a multiproof: BFri carries qvals[query][layer] + one shared co-path per layer. The verifier reconstructs
 # each layer root (vfri_recon, reusing recon_root) and runs the per-query fold chain (vq_b3) with NO
@@ -918,7 +918,7 @@ fn tamper_strace(proof: ProofS) : ProofS = match proof { ProofS(tr, lz, rz, oz, 
 # challenge): T1{l,r,o} -> beta,gamma_p -> T2{Z} -> alpha -> T3{Q} -> z(OOD). Q combines
 # the gate, recurrence, and boundary constraints with powers of alpha. DEEP-FRI batches
 # {l,r,o,Q,Z} (Z bound at z AND omega*z). Verifier checks qz == combined-quotient(z).
-# Proof-size Stage 1: the trace opening is BATCHED. Per query we keep only the LEAF VALUES (TLeaf: lro+q+z
+# The trace opening is BATCHED. Per query we keep only the LEAF VALUES (TLeaf: lro+q+z
 # at j and j+half) (the deep-check inputs, unchanged) and the 3 trace Merkle trees (root1-LRO,
 # root3-quotient, root2-Z) are opened ONCE each as a batch multiproof: TBatch carries the per-query
 # leaves + one shared co-path per tree (replacing the former 6 independent per-query paths). The verifier

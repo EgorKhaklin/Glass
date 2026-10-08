@@ -5290,7 +5290,7 @@ fn initial_envs(decls: List<TypeDecl>)
         TyFn(TyStr, TyAdt("Option", [TyInt]), pure_eff(0)),
         pure_eff(0))) in
   # string_contains : String -> String -> Bool
-  # Added for Stage 4.5: prism's own source uses this in
+  # prism's own source uses this in
   # is_digit / is_letter. Without it, prism can't compile its own source.
   let string_contains_scheme : Scheme =
     Scheme([], [],
@@ -5703,7 +5703,7 @@ let rec sum = fn(xs) -> match xs {
 sum(map(tick)([100, 200, 300]))")
 
 # Strings as a first-class type. The fundamental missing piece
-# for Stage 3 self-host: prism.glass's own source code is a String, and
+# for self-hosting: prism.glass's own source code is a String, and
 # without TyStr/VStr/EStr, prism.glass cannot interpret programs that
 # manipulate strings. This is the foundation.
 let _ : String = print("--- strings ---")
@@ -5725,7 +5725,7 @@ let _ : String = report("fn(s) -> s ++ \"!\"")
 # String access pattern: use match on field
 let _ : String = report("let r = { msg: \"hello\", n: 7 } in r.msg ++ \" world\"")
 
-# String-inspection builtins: the bridge to Stage 3. These let
+# String-inspection builtins: the bridge to self-hosting. These let
 # prism.glass programs read their own input character-by-character,
 # which is the foundation of a tokenizer.
 let _ : String = print("--- string builtins ---")
@@ -5964,7 +5964,7 @@ greeting ++ \", \" ++ name
 # prism.glass's exact surface syntax: top-level type decl, multiple
 # top-level fn decls (mutually recursive via eval_expr), pattern
 # matching on ADTs and tuples, generic List manipulation. This is
-# what Stage 3 self-host looks like in practice.
+# what self-hosting looks like in practice.
 let _ : String = report("
 # A tiny expression language
 type Expr = | EInt(Int)
@@ -6714,7 +6714,7 @@ let _ : String = match read_file("examples/features/xparam_refine_bad.glass") {
   Err(msg) => print("read error: " ++ msg)
 }
 
-# Stage 4.5: prism compiles a meaningful subset of its own source.
+# prism compiles a meaningful subset of its own source.
 # The subset is types + complete lexer chain (~320 lines), proving prism
 # can parse, type-check, AND evaluate self-referential Glass code.
 let _ : String = match read_file("examples/selfhost/prism_lexer.glass") {
@@ -6730,7 +6730,7 @@ let _ : String = match read_file("examples/selfhost/prism_lexer.glass") {
   Err(msg) => print("read error: " ++ msg)
 }
 
-# Stage 5 piece: prism interprets quartz_min.glass: a Glass program
+# prism interprets quartz_min.glass: a Glass program
 # that compiles a small subset of Glass to C source code. Demonstrates the
 # self-host-plus-native pipeline: prism interprets Quartz-in-Glass which
 # produces C; that C, fed to cc, becomes a native binary.
