@@ -1,12 +1,12 @@
 # =============================================================================
-# Geometry — Euler's polyhedron formula as a refinement, in Glass.
+# Geometry: Euler's polyhedron formula as a refinement, in Glass.
 #
 # Every convex polyhedron obeys Euler's formula exactly:
 #
 #       V − E + F = 2
 #
-# (vertices − edges + faces). The five Platonic solids — the only convex
-# regular polyhedra, known since antiquity — all satisfy it. It's a pure
+# (vertices − edges + faces). The five Platonic solids: the only convex
+# regular polyhedra, known since antiquity: all satisfy it. It's a pure
 # Int identity, so "is a valid polyhedron" becomes a REFINEMENT: a
 # Polyhedron's (v, e, f) is accepted only when v − e + f == 2.
 #
@@ -25,7 +25,7 @@ type Polyhedron = | Poly(Int, Int, Int)   # (vertices, edges, faces)
 fn euler(v: Int, e: Int, f: Int) : Int = v - e + f
 
 # The gate: only (v, e, f) with v − e + f == 2 is a polyhedron. The
-# refinement references the earlier params (cross-parameter, v4.56).
+# refinement references the earlier params (a cross-parameter refinement).
 fn make_poly(v: Int, e: Int, f: Int where (v - e + f == 2)) : Polyhedron =
   Poly(v, e, f)
 
@@ -53,7 +53,7 @@ let _ = report("octahedron  ", 6, 12, 8, 3, 4)
 let _ = report("dodecahedron", 20, 30, 12, 5, 3)
 let _ = report("icosahedron ", 12, 30, 20, 3, 5)
 
-# A real (non-Platonic) polyhedron still obeys Euler — a square pyramid:
+# A real (non-Platonic) polyhedron still obeys Euler: a square pyramid:
 # 5 vertices, 8 edges, 5 faces.  5 − 8 + 5 = 2.  (Not regular: {3,3,3,3,4}.)
 let _ = print("")
 let _ = print("=== A non-regular polyhedron still satisfies Euler ===")

@@ -1,5 +1,5 @@
 # =============================================================================
-# tinylang.glass — a tiny interpreter for an expression language,
+# tinylang.glass: a tiny interpreter for an expression language,
 # written entirely in the subset of Glass that prism.glass implements.
 #
 # This file is read from disk by prism.glass, compiled through
@@ -9,7 +9,7 @@
 #   glass.py interprets prism.glass interprets tinylang interprets a program.
 #
 # tinylang itself supports: integers, booleans, addition, multiplication,
-# less-than, if-then-else. No closures, no let, no functions — just
+# less-than, if-then-else. No closures, no let, no functions: just
 # enough to exercise prism.glass's ADT + pattern-matching + recursion
 # pipeline in the eval function.
 # =============================================================================

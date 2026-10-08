@@ -1,15 +1,15 @@
 # =============================================================================
-# Exact rational arithmetic, in Glass — the answer to "Glass has no floats".
+# Exact rational arithmetic, in Glass: the answer to "Glass has no floats".
 #
 # Several features (probability bounds, uncertainty measures) want
 # fractional values. Rather than fixed-point basis-points (lossy) or
 # floats (Glass has none), we add EXACT fractions as data:
 #
-#       Rat(num, den)   — always reduced, always den > 0
+#       Rat(num, den): always reduced, always den > 0
 #
 # A constructor `rat` normalizes any (num, den): pushes the sign onto
 # the numerator, then divides through by gcd. Addition, multiplication,
-# and comparison are exact — `1/3 + 1/6` is `1/2`, not `0.4999…`.
+# and comparison are exact: `1/3 + 1/6` is `1/2`, not `0.4999…`.
 #
 # This is the rationals decision made concrete: a Rational TYPE (pure
 # data + laws), reused by showcase/probability.glass.
@@ -32,7 +32,7 @@ fn rat(num: Int, den: Int where (den != 0)) : Rat =
 fn num(r: Rat) : Int = match r { Rat(n, _) => n }
 fn den(r: Rat) : Int = match r { Rat(_, d) => d }
 
-# Exact arithmetic — every result is renormalized via `rat`.
+# Exact arithmetic, every result is renormalized via `rat`.
 fn radd(a: Rat, b: Rat) : Rat =
   rat(num(a) * den(b) + num(b) * den(a), den(a) * den(b))
 fn rsub(a: Rat, b: Rat) : Rat =
@@ -50,7 +50,7 @@ fn rle(a: Rat, b: Rat) : Bool = num(a) * den(b) <= num(b) * den(a)
 fn show_rat(r: Rat) : String =
   int_to_string(num(r)) ++ "/" ++ int_to_string(den(r))
 
-let _ = print("=== Exact fractions — no rounding ===")
+let _ = print("=== Exact fractions: no rounding ===")
 let _ = print("  2/4 reduces to       " ++ show_rat(rat(2, 4)))
 let _ = print("  6/(-8) normalizes to " ++ show_rat(rat(6, 0 - 8)))
 let _ = print("  1/3 + 1/6 =          " ++ show_rat(radd(rat(1, 3), rat(1, 6))))

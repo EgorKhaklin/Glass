@@ -1,16 +1,16 @@
 # =============================================================================
-# v0.8.4 demo: infer.glass — Hindley-Milner type inference, in Glass.
+# infer.glass: Hindley-Milner type inference, in Glass.
 #
-# This is the algorithmic peak between v0.8 and v1.0 self-hosting.
+# This is the algorithmic core of the self-hosting path.
 # Algorithm W: type inference with let-polymorphism, written in pure
-# Glass. The previous typecheck.glass is monomorphic — every variable
+# Glass. The previous typecheck.glass is monomorphic, every variable
 # has one fixed type. This file shows let-polymorphism: a function
 # `id = fn(x) -> x` gets the polymorphic type `forall a. a -> a`, and
 # its uses get fresh type instantiations so `id(true)` and `id(42)`
 # coexist in the same program.
 #
 # Pure functional implementation. The substitution and the fresh-variable
-# counter are threaded explicitly through every call — Glass has no
+# counter are threaded explicitly through every call: Glass has no
 # mutation, so there's no other honest way. This is the same algorithm
 # every ML-family compiler implements; the demonstration is that Glass
 # can express it.
@@ -32,7 +32,7 @@ type Type =
   | TVar(Int)
   | TFn(Type, Type)
 
-# A type scheme: forall vars . body. Used for let-polymorphism — the
+# A type scheme: forall vars . body. Used for let-polymorphism: the
 # bound variables are the "quantified" ones that get instantiated fresh
 # at each use site.
 type Scheme = | Scheme(List<Int>, Type)
@@ -102,7 +102,7 @@ fn apply_sub(s: List<Pair<Int, Type>>, t: Type) : Type =
   }
 
 # Apply a substitution to a type, avoiding the listed type variables.
-# Used when applying substitutions to scheme bodies — quantified
+# Used when applying substitutions to scheme bodies: quantified
 # variables in a scheme are "fresh" within it and shouldn't be touched.
 fn apply_sub_avoid(s: List<Pair<Int, Type>>, t: Type, avoid: List<Int>) : Type =
   match t {
@@ -156,7 +156,7 @@ fn free_vars_env(
 # --- Occurs check --------------------------------------------------------
 
 # Does TVar(n) appear in t (after resolving via s)? If yes, binding
-# n to t would create an infinite type — reject.
+# n to t would create an infinite type: reject.
 fn occurs_in(n: Int, t: Type) : Bool =
   match t {
     TVar(m)   => m == n;
@@ -480,7 +480,7 @@ let p14 : Expr = EAdd(EInt(1), EBool(true))
 # Error: unbound
 let p15 : Expr = EVar("undefined")
 
-# v0.8.4 — recursive let. Even though we can't evaluate this (no
+# Recursive let. Even though we can't evaluate this (no
 # subtraction in the grammar means the recursion never terminates),
 # we CAN type-check it. HM infers Int -> Int for the recursive fn.
 #   let rec f = fn(n) -> if n < 1 then 1 else f(n) in f(5)
@@ -507,7 +507,7 @@ let p17 : Expr = ELetRec(
 
 # Polymorphic let rec is the subtle case: should the recursive name be
 # monomorphic (in scope of its definition) but polymorphic (in scope of
-# body)? Standard HM says yes — that's the "Mycroft" extension. Our
+# body)? Standard HM says yes: that's the "Mycroft" extension. Our
 # implementation matches this: x is monomorphic in its own body,
 # generalized for the let-body.
 # Here: let rec id = fn(x) -> x in id(42). id is polymorphic in the body.
@@ -539,14 +539,14 @@ let _ : String = report("let rec id=fn(x)->x in id(42)       ", p18)
 
 # What this file proves:
 #
-# Glass can express Algorithm W — the gold-standard type inference
-# algorithm — in pure functional code, with explicit state threading,
+# Glass can express Algorithm W: the gold-standard type inference
+# algorithm: in pure functional code, with explicit state threading,
 # in ~430 lines. The implementation handles let-polymorphism, occurs
 # check, full unification, and produces accurate principal types for
-# every test case. p5 (id used at two types) returns Int — the
+# every test case. p5 (id used at two types) returns Int: the
 # polymorphism IS working.
 #
-# This was the single algorithmic peak on the v1.0 self-host path.
+# This was the single algorithmic peak on the self-host path.
 # What remains is mostly volume: more language constructs (records,
 # sums, lists, tuples, refinements, effects), more parser productions,
 # more eval cases. None of them have HM's algorithmic depth.

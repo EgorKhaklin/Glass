@@ -4,11 +4,12 @@ Runs every example and every expected-failure case, prints a summary.
 """
 from __future__ import annotations
 import subprocess
+import signal
 import sys
 import os
 
 # Glass requires Python >= 3.10 (pyproject.toml). On an older interpreter the suite "runs" but
-# every quartz (compile) gate dies on a `dict | None` annotation TypeError — 176 cryptic FAILs
+# every quartz (compile) gate dies on a `dict | None` annotation TypeError: 176 cryptic FAILs
 # instead of one clear message. Fail fast and loudly instead (macOS /usr/bin/python3 is 3.9).
 if sys.version_info < (3, 10):
     sys.exit(f"tests/test_glass.py: Python >= 3.10 required (running {sys.version.split()[0]}); "
@@ -35,24 +36,39 @@ def run_file(path: str) -> tuple[int, str, str]:
     return p.returncode, p.stdout, p.stderr
 
 
-# A heavy native `glass prove` gate occasionally HANGS in a resource-starved env — the documented
+# A heavy native `glass prove` gate occasionally HANGS in a resource-starved env: the documented
 # under-load native-compile flake (a native subprocess deadlocks at 0% CPU). Without a timeout, the
 # suite's subprocess.run would block FOREVER on that one gate, so the whole suite never completes.
 # `_prove_run` bounds every prove gate: a hang past PROVE_TIMEOUT becomes a synthetic signal-like
-# result (rc=137), which `_heavy_skipped` treats as an env-limited SKIP (CI green) — exactly as it
+# result (rc=137), which `_heavy_skipped` treats as an env-limited SKIP (CI green): exactly as it
 # already does for a signal-KILLED heavy prove. A genuine regression still returns a verdict in time
-# and is evaluated normally; only a true hang is skipped (and logged — no silent cap). Legit heavy
+# and is evaluated normally; only a true hang is skipped (and logged: no silent cap). Legit heavy
 # proves finish in well under a minute, so a multi-minute timeout fires only on a real stall.
 PROVE_TIMEOUT = 600
 
 def _prove_run(args, **kw):
+    # Each gate runs in its own process group. A timeout kills the whole group: the
+    # `glass prove` child AND the native compiler and prover it spawned. Killing only
+    # the direct child left those running as orphans that held the CPU for hours and
+    # rewrote the native compiler's fixed /tmp files under later gates.
     kw.setdefault("capture_output", True)
     kw.setdefault("text", True)
     kw.setdefault("cwd", ROOT)
+    capture = kw.pop("capture_output")
+    if capture:
+        kw.setdefault("stdout", subprocess.PIPE)
+        kw.setdefault("stderr", subprocess.PIPE)
+    proc = subprocess.Popen(args, start_new_session=True, **kw)
     try:
-        return subprocess.run(args, timeout=PROVE_TIMEOUT, **kw)
+        out, err = proc.communicate(timeout=PROVE_TIMEOUT)
+        return subprocess.CompletedProcess(args, proc.returncode, stdout=out, stderr=err)
     except subprocess.TimeoutExpired:
-        return subprocess.CompletedProcess(args, 137, stdout="", stderr=f"TIMEOUT >{PROVE_TIMEOUT}s (native prove hung — env-limited)")
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.communicate()
+        return subprocess.CompletedProcess(args, 137, stdout="", stderr=f"TIMEOUT >{PROVE_TIMEOUT}s (native prove hung: env-limited)")
 
 
 # Examples that must succeed.
@@ -140,14 +156,14 @@ POSITIVE = [
     os.path.join(EX, "stage3", "safecalc.glass"),
 ]
 
-# (label, source, expected substring in stderr) — must fail with the right reason.
+# (label, source, expected substring in stderr): must fail with the right reason.
 NEGATIVE = [
-    # ---- v0.0.1 cases ----
-    # ---- Tzimtzum: a concealed value can never escape to an observable position ----
+    # ---- core type-checking cases ----
+    # ---- Concealment: a concealed value can never escape to an observable position ----
     ("conceal cannot be revealed by arithmetic",
      'conceal(5) + 1',
      "Concealed"),
-    ("conceal is opaque — no constructor, cannot be pattern-matched open",
+    ("conceal is opaque: no constructor, cannot be pattern-matched open",
      'match conceal(5) { Conceal(x) => x }',
      "unknown constructor"),
     ("fn return mismatch",
@@ -182,7 +198,7 @@ NEGATIVE = [
      'let r : Int = f(1)',
      "arity mismatch"),
 
-    # ---- v0.1 sum-type cases ----
+    # ---- sum-type cases ----
     ("non-exhaustive match on Option",
      'fn f(o: Option<Int>) : Int = match o { Some(x) => x }',
      "non-exhaustive match on Option"),
@@ -226,17 +242,17 @@ NEGATIVE = [
 
     ("ctor expects more fields",
      'let bad : Option<Int> = Some',
-     # Some has no args here — it's the bare ctor as a value, which has fn type;
+     # Some has no args here: it's the bare ctor as a value, which has fn type;
      # the annotation expects Option<Int>, not (Int) -> Option<Int>.
      "declared Option<Int>"),
 
-    # ---- v0.2 cases ----
+    # ---- prelude cases (Option, Pair) ----
     ("head returns Option, not raw",
      'let xs : List<Int> = [1, 2, 3]\n'
      'let bad : Int = head(xs)',
      "declared Int, inferred Option<Int>"),
 
-    ("Pair from prelude — type-arity check",
+    ("Pair from prelude: type-arity check",
      'let bad : Pair<Int> = Pair(1, 2)',
      "expects 2 arg"),
 
@@ -244,7 +260,7 @@ NEGATIVE = [
      'let bad : List<Pair<String, Int>> = [Pair("a", 1), Pair("b", "wrong")]',
      "list elements differ"),
 
-    # ---- v0.3 polymorphism soundness cases ----
+    # ---- polymorphism soundness cases ----
     ("can't treat type param as Int inside body",
      'fn bad<A>(x: A) : A = let y : A = 42 in y',
      "let-in y: declared A, inferred Int"),
@@ -263,8 +279,8 @@ NEGATIVE = [
      'let bad : Int = id(1, 2)',
      "arity mismatch"),
 
-    # ---- v0.4 refinement-type cases ----
-    # v1.2: refinements with constant args are discharged statically.
+    # ---- refinement-type cases ----
+    # Refinements with constant args are discharged statically.
     ("refinement violated at compile time (literal arg)",
      'fn d(a: Int, b: Int where (b != 0)) : Int = a / b\n'
      'let r : Int = d(10, 0)',
@@ -278,22 +294,22 @@ NEGATIVE = [
      'let r : Int = d(10, zero)',
      "refinement violated: b = 0"),
 
-    # v4.24: curried multi-param case where the refinement is on the
+    # Curried multi-param case where the refinement is on the
     # SECOND param and the arg is a let-bound variable (not a literal).
-    # Pinned down as a host-parity spec — prism's port mirrors this
-    # error shape via its v4.24 VRefinedClos wrapper.
-    ("refinement violated on second param at runtime (v4.24 host parity)",
+    # Pinned down as a host-parity spec: prism's port mirrors this
+    # error shape via its VRefinedClos wrapper.
+    ("refinement violated on second param at runtime (host parity)",
      "fn safe_add(a: Int, b: Int where (b != 0)) : Int = a + b\n"
      "let zero : Int = 0\n"
      "let r : Int = safe_add(10, zero)",
      "refinement violated: b = 0"),
 
-    # v4.25: return-type refinement violation. Host check has been in
-    # place since v1.3; prism's port mirrors this shape — the
+    # return-type refinement violation. The host checks it at
+    # runtime; prism's port mirrors this shape: the
     # VRefinedClos wrapper carries the return type forward across
     # curried applies and checks against the final value on the last
     # apply.
-    ("return refinement violated (multi-param, v4.25 host parity)",
+    ("return refinement violated (multi-param, host parity)",
      "fn diff(a: Int, b: Int) : Int where (result >= 0) = a - b\n"
      "let smaller : Int = 3\n"
      "let bigger : Int = 7\n"
@@ -312,13 +328,13 @@ NEGATIVE = [
      'let r : Int = f(if true then 0 else 10)',
      "refinement violated at compile time"),
 
-    # Return-type refinement violation at runtime (v1.3).
+    # Return-type refinement violation at runtime.
     ("return refinement violated at runtime",
      'fn negate(n: Int) : Int where (result >= 0) = 0 - n\n'
      'let r : Int = negate(5)',
      "refinement violated: result = -5 fails predicate"),
 
-    # v1.4: implication discharges (result >= 5) does NOT imply (n > 5),
+    # Implication discharges (result >= 5) does NOT imply (n > 5),
     # so the runtime check fires when at_least_five returns exactly 5.
     ("implication unsound: >= 5 should not imply > 5",
      'fn at_least_five(n: Int) : Int where (result >= 5) =\n'
@@ -339,7 +355,7 @@ NEGATIVE = [
      'let x : Int where (x > 100) = 5',
      "refinement violated: x = 5"),
 
-    # ---- v0.5 effect-tracking cases ----
+    # ---- effect-tracking cases ----
     ("pure fn performing IO without declaring",
      'fn loud() : Int = let _ : String = print("oops") in 42',
      "fn loud performs effect(s) ['IO']"),
@@ -352,7 +368,7 @@ NEGATIVE = [
      'fn s() : Int !{Random} = let _ : String = print("hi") in 0',
      "performs effect(s) ['IO']"),
 
-    # ---- v0.7 effect polymorphism + Inference ----
+    # ---- effect polymorphism + Inference ----
     ("pure fn can't use map with effectful callback (caller must declare effects)",
      'fn loud(n: Int) : Int !{IO} =\n'
      '  let _ : String = print("x") in n\n'
@@ -371,13 +387,13 @@ NEGATIVE = [
 
     # A body that propagates TWO distinct abstract effect rows but declares
     # only one used to be accepted (extend_effects dropped the 2nd row var),
-    # which let a fn that performs the 2nd effect be certified without it —
+    # which let a fn that performs the 2nd effect be certified without it:
     # a soundness hole. The dropped row must now surface as undeclared.
     ("fn propagating a 2nd abstract effect row can't hide it under a 1-var decl",
      'fn twice<E, F>(p: () -> Int !{E}, q: () -> Int !{F}) : Int !{E} = p() + q()',
      "not declared in {E}"),
 
-    # ---- v0.6 tuple cases ----
+    # ---- tuple cases ----
     ("tuple-arity mismatch in pattern",
      'let p : (Int, String) = (1, "x")\n'
      'fn f(p: (Int, String)) : Int = match p { (a, b, c) => a }',
@@ -391,11 +407,11 @@ NEGATIVE = [
      'fn f(n: Int) : Int = match n { (a, b) => a }',
      "tuple pattern against Int"),
 
-    # Mutual recursion success: this would have failed before v0.6.
+    # Mutual recursion success is a positive property, not a case here.
     # Tested via examples/queries.glass (bump <-> count_by_country) and
     # by being able to declare fns in source-independent order.
 
-    # ---- v0.7 effect polymorphism + Inference ----
+    # ---- effect polymorphism + Inference ----
     ("pure fn can't use polymorphic map with Inference callback",
      'fn pure_batch(xs: List<String>) : List<String> =\n'
      '  map(xs, fn(s: String) -> model_call(s))',
@@ -411,7 +427,7 @@ NEGATIVE = [
      'let _ : String = must_be_long("hi")',
      "refinement violated"),
 
-    # ---- v0.8 record cases ----
+    # ---- record cases ----
     ("record missing field",
      'type U = { id: Int, name: String }\n'
      'let u : U = U { id: 1 }',
@@ -443,7 +459,7 @@ NEGATIVE = [
      'let m : Maybe = Maybe { Nope: 1 }',
      "use Maybe(...) for constructor call"),
 
-    # ---- v0.8.1 string-ops cases ----
+    # ---- string-ops cases ----
     ("substring with negative index",
      'let s : String = substring("hello", -1, 3)',
      "negative index"),
@@ -452,89 +468,89 @@ NEGATIVE = [
      'let s : String = substring("hello", 4, 2)',
      "start > end"),
 
-    # ---- v4.47: refined-param lambda rejection ----
+    # ---- refined-param lambda rejection ----
     # The lambda's `where (x > 0)` runs at apply time. `let n = 0 - 3`
     # produces a non-literal so static discharge defers; the runtime
     # check then fires on n = -3 and the predicate fails.
-    ("refined-param lambda rejects bad arg (v4.47)",
+    ("refined-param lambda rejects bad arg",
      "let n : Int = 0 - 3\n"
      "let r : Int = (fn(x: Int where (x > 0)) -> x * 2)(n)\n"
      "r\n",
      "refinement violated"),
 
-    # ---- v4.48: refined SECOND param of a multi-arg lambda ----
+    # ---- refined SECOND param of a multi-arg lambda ----
     # First arg satisfies its refinement; the second fails. Pins
     # down that the per-param TyRefine check runs at each position,
     # not just the first.
-    ("multi-arg refined lambda rejects 2nd arg (v4.48)",
+    ("multi-arg refined lambda rejects 2nd arg",
      "let n : Int = 0\n"
      "let r : Int = (fn(a: Int where (a > 0), b: Int where (b > 0))"
      " -> a * b)(3, n)\n"
      "r\n",
      "b = 0 fails predicate"),
 
-    # ---- v4.51: && / || type-checked as Bool, Bool → Bool ----
+    # ---- && / || type-checked as Bool, Bool → Bool ----
     # Non-Bool operands must be rejected with a clear shape error.
-    ("&& rejects non-Bool operands (v4.51)",
+    ("&& rejects non-Bool operands",
      "let r : Bool = 1 && true\n",
      "expected Bool, Bool"),
 
-    # ---- v4.53: % type-checked as Int, Int → Int ----
-    ("% rejects non-Int operands (v4.53)",
+    # ---- % type-checked as Int, Int → Int ----
+    ("% rejects non-Int operands",
      "let r : Int = true % 2\n",
      "expected Int, Int"),
 
-    # ---- v4.54: ! requires a Bool operand ----
-    ("! rejects non-Bool operand (v4.54)",
+    # ---- ! requires a Bool operand ----
+    ("! rejects non-Bool operand",
      "let r : Bool = !5\n",
      "expected Bool"),
 
-    # ---- v4.56: cross-parameter refinement rejects bad input ----
+    # ---- cross-parameter refinement rejects bad input ----
     # hi=3, lo=10 → hi > lo is false. The check sees lo (earlier
     # param) and fires.
-    ("cross-param refinement rejects bad input (v4.56)",
+    ("cross-param refinement rejects bad input",
      "fn clamp(lo: Int, hi: Int where (hi > lo)) : Int = hi - lo\n"
      "let bad : Int = clamp(10, 3)\n"
      "bad\n",
      "refinement violated"),
 
-    # ---- v4.66: conservation-law refinement rejects minting ----
+    # ---- conservation-law refinement rejects minting ----
     # The gate `after == before` (cross-param) fails when a transition
     # creates value (175 → 200), so non-conservative transitions are
     # rejected at the boundary.
-    ("conservation refinement rejects minting (v4.66)",
+    ("conservation refinement rejects minting",
      "fn checked(before: Int, after: Int where (after == before)) : Int"
      " = after\n"
      "let bad : Int = checked(175, 200)\n"
      "bad\n",
      "refinement violated"),
 
-    # ---- v4.67: linear types — no cloning, no dropping ----
+    # ---- linear types: no cloning, no dropping ----
     # Using a linear resource twice is forbidden (no cloning).
-    ("linear resource rejects cloning (v4.67)",
+    ("linear resource rejects cloning",
      "fn f() : Int = let lin x = 5 in x + x\n"
      "f()\n",
      "no cloning"),
     # Dropping a linear resource (never using it) is forbidden.
-    ("linear resource rejects dropping (v4.67)",
+    ("linear resource rejects dropping",
      "fn f() : Int = let lin x = 5 in 99\n"
      "f()\n",
      "no dropping"),
     # Capturing a linear value in a closure can't guarantee single use.
-    ("linear resource rejects lambda capture (v4.67)",
+    ("linear resource rejects lambda capture",
      "fn f() : Int = let lin x = 5 in (fn(y: Int) -> x + y)(3)\n"
      "f()\n",
      "captured in a lambda"),
 
-    # ---- v4.69: field-level refinements rejected at construction ----
+    # ---- field-level refinements rejected at construction ----
     # A negative value can't be packed into a Pos.
-    ("refined ADT field rejects bad value (v4.69)",
+    ("refined ADT field rejects bad value",
      "type Pos = | Pos(n: Int where (n > 0))\n"
      "let bad = Pos(0 - 3)\n"
      "bad\n",
      "n = -3 fails predicate"),
     # Cross-field: hi must exceed lo; Range(10, 3) is rejected.
-    ("cross-field refinement rejects bad range (v4.69)",
+    ("cross-field refinement rejects bad range",
      "type Range = | Range(lo: Int, hi: Int where (hi > lo))\n"
      "let bad = Range(10, 3)\n"
      "bad\n",
@@ -568,8 +584,8 @@ def main() -> int:
     # (label, source, expected substring in stdout). Short programs that
     # pin down specific past bugs. Add a case when fixing a real bug.
     inline_positive = [
-        # Tzimtzum: conceal a value, compute within concealment (cmap), prove a property
-        # about it (concealed_in_range -> a PUBLIC Bool) — all without ever revealing it.
+        # Concealment: conceal a value, compute within concealment (cmap), prove a property
+        # about it (concealed_in_range -> a PUBLIC Bool): all without ever revealing it.
         ("Concealed<T>: provable-about, computable-within, never revealed",
          "fn add5(x: Int) : Int = x + 5\n"
          "let c : Concealed<Int> = cmap(conceal(20), add5)\n"
@@ -596,191 +612,189 @@ def main() -> int:
         ("neg modulo has dividend sign",        "let r : Int = (0 - 7) % 2\nr\n",  "r : Int = -1"),
         ("int64 overflow wraps (+)",            "let r : Int = 9223372036854775807 + 1\nr\n", "r : Int = -9223372036854775808"),
         ("shift count masked to 6 bits",        "let r : Int = bit_shl(1, 64)\nr\n", "r : Int = 1"),
-        # v4.21: parser used to greedily eat an LPAREN-starting next line as
+        # Parser used to greedily eat an LPAREN-starting next line as
         # call-continuation. `let s = id("hello")\n(n, s)` mis-parsed to
         # `id("hello")(n, s)` and crashed with "not a function: String".
         # The column-1 + new-line rule in parse_postfix stops it.
-        ("parens-after-let split (v4.21)",
+        ("parens-after-let split",
          'fn id<A>(x: A) : A = x\n'
          'let n = id(42)\n'
          'let s = id("hello")\n'
          'let p = (n, s)\n'
          'p\n',
          "(42, hello)"),
-        # v4.28: deep tail recursion. Without the trampoline-based TCE
-        # added in v4.28, count_down(15000) blows Python's recursion
+        # Deep tail recursion. Without the trampoline-based TCE
+        # in the evaluator, count_down(15000) blows Python's recursion
         # limit even with sys.setrecursionlimit(20000). The test verifies
         # both correctness and unbounded-depth tolerance. We use 25000 to
         # exceed any reasonable Python limit so the test FAILS if TCE is
         # ever accidentally removed.
-        ("deep tail recursion via TCE (v4.28)",
+        ("deep tail recursion via TCE",
          "fn count_down(n: Int) : Int =\n"
          "  if n == 0 then 0 else count_down(n - 1)\n"
          "let result : Int = count_down(25000)\n"
          "result\n",
          "result : Int = 0"),
-        # v4.28: tail-recursive sum_to with explicit accumulator. The
-        # arithmetic check pins down the *value* — confirms that env
+        # tail-recursive sum_to with explicit accumulator. The
+        # arithmetic check pins down the *value*: confirms that env
         # bindings (acc) flow correctly through the trampoline.
-        ("tail-recursive accumulator via TCE (v4.28)",
+        ("tail-recursive accumulator via TCE",
          "fn sum_to(n: Int, acc: Int) : Int =\n"
          "  if n == 0 then acc else sum_to(n - 1, acc + n)\n"
          "let result : Int = sum_to(50000, 0)\n"
          "result\n",
          "result : Int = 1250025000"),
-        # v4.23: prism runtime refinement check fires when static discharge
-        # defers. The host already enforces runtime checks (since v0.4); this
+        # Prism runtime refinement check fires when static discharge
+        # defers. The host already enforces runtime checks; this
         # test runs the same program through host to pin down the shape of the
         # error message that prism's port mirrors. The prism-side check is
-        # exercised end-to-end when prism.glass runs in the POSITIVE list —
+        # exercised end-to-end when prism.glass runs in the POSITIVE list:
         # its demo chain reads runtime_refine_bad.glass and prints the same
         # message, which surfaces in prism's stdout (not its exit code).
-        ("runtime refinement check (v4.23 host parity)",
+        ("runtime refinement check (host parity)",
          "fn positive_double(n: Int where (n > 0)) : Int = n * 2\n"
          "let x : Int = 21\n"
          "let r : Int = positive_double(x)\n"
          "r\n",
          "r : Int = 42"),
-        # v4.21 drift catch: AGENT.md §5 claimed sequential top-level lets
-        # using the same generic fn at different types fail to type-check.
-        # They don't — the symptom in §5's repro was the parens-after-let
-        # parser bug above. Pin both invariants down with a test.
-        ("sequential generic-fn instantiation (v4.21)",
+        # Sequential top-level lets using the same generic fn at different
+        # types type-check (a reported failure here was really the
+        # parens-after-let parser bug above). Pin both invariants down with a test.
+        ("sequential generic-fn instantiation",
          'fn id<A>(x: A) : A = x\n'
          'let n = id(42)\n'
          'let s = id("hello")\n'
          'let b = id(true)\n'
          'b\n',
          ": Bool = true"),
-        # v4.47: refined-param lambdas. Before v4.47 the host's
-        # parse_lambda called parse_params without accept_refinement,
-        # so `fn(x: Int where (x > 0)) -> ...` failed at the `where`
-        # token. Now the parser accepts the refinement and the
+        # refined-param lambdas. The host's parse_lambda accepts a
+        # refinement on each param, so `fn(x: Int where (x > 0)) -> ...`
+        # parses (rather than failing at the `where` token), and the
         # existing apply_fn TyRefine path checks the predicate at
         # call time. Positive case: 5 > 0 holds, body returns 10.
-        ("refined-param lambda accepts (v4.47)",
+        ("refined-param lambda accepts",
          "let r : Int = (fn(x: Int where (x > 0)) -> x * 2)(5)\n"
          "r\n",
          "r : Int = 10"),
-        # v4.47 capture-aware variant: the lambda closes over `k`
+        # Capture-aware variant: the lambda closes over `k`
         # AND has a refined param. Confirms ELamR (prism) / refined
         # Lambda (host) interoperates with closures, not just bare
-        # arithmetic — refinement check runs before capture lookup.
-        ("refined-param lambda with capture (v4.47)",
+        # arithmetic: refinement check runs before capture lookup.
+        ("refined-param lambda with capture",
          "let k : Int = 100\n"
          "let r : Int = (fn(x: Int where (x > 0)) -> x + k)(7)\n"
          "r\n",
          "r : Int = 107"),
-        # v4.48: multi-param lambdas. Three-arg variant pins down
+        # multi-param lambdas. Three-arg variant pins down
         # that the right-fold builds the chain correctly across more
         # than two params (a common edge of "did I get the
         # recursion-base-case right?").
-        ("three-arg lambda applied inline (v4.48)",
+        ("three-arg lambda applied inline",
          "let r : Int = (fn(a: Int, b: Int, c: Int) -> a + b + c)(1, 2, 3)\n"
          "r\n",
          "r : Int = 6"),
-        # v4.51: `&&` and `||` lex, parse, typecheck, evaluate. The
-        # bigger language win for v4.51 is that boolean combinators
-        # become legal in refinement predicates — pinning down basic
+        # `&&` and `||` lex, parse, typecheck, evaluate. The
+        # bigger language win is that boolean combinators
+        # become legal in refinement predicates: pinning down basic
         # eval here means the predicate machinery has solid ground.
-        ("&& and || basic truth tables (v4.51)",
+        ("&& and || basic truth tables",
          "let a : Bool = true && false\n"
          "let b : Bool = true || false\n"
          "let c : Bool = (3 > 0) && (3 < 100)\n"
          "let r : Bool = (a == false) && b && c\n"
          "r\n",
          "r : Bool = true"),
-        # v4.51 precedence pin-down: `&&` binds tighter than `||`.
+        # Precedence pin-down: `&&` binds tighter than `||`.
         # `false || true && false` must parse as
         # `false || (true && false)` = `false || false` = false.
         # If precedence were inverted it would be
         # `(false || true) && false` = `true && false` = false (same
-        # answer by luck) — so we need a discriminating case:
+        # answer by luck), so we need a discriminating case:
         # `true && false || true` parses as `(true && false) || true`
         # = `false || true` = true. Flipped would be
         # `true && (false || true)` = `true && true` = true (same).
         # The actually discriminating shape:
-        ("&& binds tighter than || (v4.51)",
+        ("&& binds tighter than ||",
          "let r : Bool = false || true && false\n"
          "r\n",
          "r : Bool = false"),
-        # v4.51 range refinement at runtime. `n > 0 && n < 100` is
-        # the canonical interval refinement; before this release a
-        # single-comparison was the only valid shape.
-        ("range refinement via && (v4.51)",
+        # Range refinement at runtime. `n > 0 && n < 100` is
+        # the canonical interval refinement (it needs `&&`: a
+        # single comparison cannot express it).
+        ("range refinement via &&",
          "fn middling(n: Int where (n > 0 && n < 100)) : Int = n + 1\n"
          "let r : Int = middling(50)\n"
          "r\n",
          "r : Int = 51"),
-        # v4.51 short-circuit semantics: the rhs of `&&` is NOT
+        # Short-circuit semantics: the rhs of `&&` is NOT
         # evaluated when lhs is false. We probe this by putting an
         # expression that WOULD raise (refinement violation) on the
         # rhs, then verify the program completes successfully.
-        ("&& short-circuits on false lhs (v4.51)",
+        ("&& short-circuits on false lhs",
          "fn pos(n: Int where (n > 0)) : Int = n\n"
          "let n : Int = 0\n"
          "let r : Bool = (n > 0) && (pos(n) > 0)\n"
          "r\n",
          "r : Bool = false"),
-        # v4.53: modulo as a basic arithmetic operator. Same precedence
+        # Modulo as a basic arithmetic operator. Same precedence
         # as `*` and `/`, so `1 + 17 % 5` parses as `1 + (17 % 5) = 3`.
-        ("basic modulo + precedence (v4.53)",
+        ("basic modulo + precedence",
          "let r : Int = 1 + 17 % 5\n"
          "r\n",
          "r : Int = 3"),
-        # v4.53: parity refinement. The canonical use of `%` in
-        # predicate position — `n % 2 == 0` enforces evenness.
-        ("parity refinement holds (v4.53)",
+        # Parity refinement. The canonical use of `%` in
+        # predicate position: `n % 2 == 0` enforces evenness.
+        ("parity refinement holds",
          "fn even_only(n: Int where (n % 2 == 0)) : Int = n + 1\n"
          "let r : Int = even_only(10)\n"
          "r\n",
          "r : Int = 11"),
-        # v4.54: unary NOT. Basic truth + double-negation + applied to
+        # Unary NOT. Basic truth + double-negation + applied to
         # a comparison. `!(3 > 5)` is true.
-        ("unary NOT basics (v4.54)",
+        ("unary NOT basics",
          "let a : Bool = !true\n"
          "let b : Bool = !!false\n"
          "let r : Bool = (a == false) && (b == false) && !(3 > 5)\n"
          "r\n",
          "r : Bool = true"),
-        # v4.54: NOT in a refinement predicate. `!(n == 0)` is the
+        # NOT in a refinement predicate. `!(n == 0)` is the
         # "anything but zero" guard; 5 satisfies it so 100/5 = 20.
-        ("NOT refinement holds (v4.54)",
+        ("NOT refinement holds",
          "fn nonzero(n: Int where (!(n == 0))) : Int = 100 / n\n"
          "let r : Int = nonzero(5)\n"
          "r\n",
          "r : Int = 20"),
-        # v4.55: arithmetic inside a refinement predicate. The host
-        # always handled this (full eval); v4.55 brings Quartz to
-        # parity. Pinned here so host + Quartz agree on the shape.
-        ("arithmetic in refinement predicate (v4.55)",
+        # Arithmetic inside a refinement predicate. The host
+        # handles this (full eval) and so does Quartz's predicate compiler.
+        # Pinned here so host + Quartz agree on the shape.
+        ("arithmetic in refinement predicate",
          "fn f(n: Int where (n * n >= 1 && n + 1 > 0)) : Int = n\n"
          "let r : Int = f(7)\n"
          "r\n",
          "r : Int = 7"),
-        # v4.56: cross-parameter refinement in the host. `hi > lo`
+        # cross-parameter refinement in the host. `hi > lo`
         # references the earlier param; host binds-and-checks in order
         # so `lo` is bound when `hi`'s check runs. clamp(3,10) = 7.
-        ("cross-parameter refinement holds (v4.56)",
+        ("cross-parameter refinement holds",
          "fn clamp(lo: Int, hi: Int where (hi > lo)) : Int = hi - lo\n"
          "let r : Int = clamp(3, 10)\n"
          "r\n",
          "r : Int = 7"),
-        # v4.48 composes with v4.47: two-arg lambda where BOTH params
+        # Multi-param + refined-param lambdas: two-arg lambda where BOTH params
         # are refined. The host's apply_fn checks each TyRefine at
         # call time; prism's port mirrors via two stacked VRefinedClos
         # wrappers. 3 > 0 and 4 > 0 hold, body returns 12.
-        ("two-arg refined lambda (v4.48)",
+        ("two-arg refined lambda",
          "let r : Int = (fn(a: Int where (a > 0), b: Int where (b > 0))"
          " -> a * b)(3, 4)\n"
          "r\n",
          "r : Int = 12"),
-        # v4.57: quantum-inspired measurement (showcase/quantum.glass).
+        # quantum-inspired measurement (showcase/quantum.glass).
         # Weighted collapse via cumulative buckets + `seed % total`.
         # Over seeds 0..99 a 9:1 superposition collapses to |0> exactly
-        # 90 times — measurement frequency tracks the weights, and the
+        # 90 times: measurement frequency tracks the weights, and the
         # whole thing is pure (seed threaded explicitly).
-        ("quantum measurement tracks weights (v4.57)",
+        ("quantum measurement tracks weights",
          "type Amp = | Amp(String, Int)\n"
          "fn tw(xs: List<Amp>) : Int =\n"
          "  fold(xs, 0, fn(a: Int, x: Amp) -> match x { Amp(_, w) => a + w })\n"
@@ -795,53 +809,53 @@ def main() -> int:
          "    if measure(bias, s) == \"|0>\" then a + 1 else a)\n"
          "hits\n",
          "hits : Int = 90"),
-        # v4.58 (Proportion & Form bundle): the golden fingerprint.
+        # The golden fingerprint.
         # |a² − a·b − b²| = 1 holds EXACTLY for consecutive Fibonacci
-        # pairs — here (34, 21) gives residue +1, the φ convergent test.
-        ("golden-ratio residue is +1 for Fibonacci pair (v4.58)",
+        # pairs: here (34, 21) gives residue +1, the φ convergent test.
+        ("golden-ratio residue is +1 for Fibonacci pair",
          "fn residue(a: Int, b: Int) : Int = a * a - a * b - b * b\n"
          "let r : Int = residue(34, 21)\n"
          "r\n",
          "r : Int = 1"),
-        # v4.58: Euler's formula as the polyhedron refinement. The
+        # Euler's formula as the polyhedron refinement. The
         # cross-param gate accepts the dodecahedron (20−30+12 = 2) and
         # the body returns V+E+F.
-        ("Euler polyhedron gate accepts dodecahedron (v4.58)",
+        ("Euler polyhedron gate accepts dodecahedron",
          "fn make_poly(v: Int, e: Int, f: Int where (v - e + f == 2)) : Int"
          " = v + e + f\n"
          "let r : Int = make_poly(20, 30, 12)\n"
          "r\n",
          "r : Int = 62"),
-        # v4.58: harmonic consonance via gcd-reduction. 6:4 reduces to
-        # 3:2 (perfect fifth) — reduced denominator 2 <= 4, consonant.
-        ("harmonic ratio reduces to perfect fifth (v4.58)",
+        # Harmonic consonance via gcd-reduction. 6:4 reduces to
+        # 3:2 (perfect fifth): reduced denominator 2 <= 4, consonant.
+        ("harmonic ratio reduces to perfect fifth",
          "fn gcd(a: Int, b: Int) : Int = if b == 0 then a else gcd(b, a % b)\n"
          "let rd : Int = 4 / gcd(6, 4)\n"
          "rd\n",
          "rd : Int = 2"),
-        # v4.59 (Self-Similarity & Spirals): the fractal self-similarity
+        # The fractal self-similarity
         # gate. Sierpinski triples each depth, so 27 is a valid successor
         # of 9 under branch 3 (cross-param refinement next == prev * 3).
-        ("fractal self-similarity gate (v4.59)",
+        ("fractal self-similarity gate",
          "fn next_level(prev: Int, branch: Int,"
          " next: Int where (next == prev * branch)) : Int = next\n"
          "let r : Int = next_level(9, 3, 27)\n"
          "r\n",
          "r : Int = 27"),
-        # v4.59: the golden-spiral peel is exact in Int —
+        # The golden-spiral peel is exact in Int:
         # F(n+1) − F(n) = F(n-1). For F(6)=8, F(5)=5: 8 − 5 = 3 = F(4).
         # The Σ-Fibonacci identity F(1)+…+F(n) = F(n+2) − 1 gives 20 at
         # n=6, pinned via the closed form.
-        ("golden spiral Fibonacci-sum identity (v4.59)",
+        ("golden spiral Fibonacci-sum identity",
          "fn fib(n: Int) : Int = if n < 2 then n else fib(n - 1) + fib(n - 2)\n"
          "let r : Int = fib(8) - 1\n"   # F(8)-1 = 21-1 = 20 = sum F(1..6)
          "r\n",
          "r : Int = 20"),
-        # v4.60 (Epistemic-games + symmetry): D₄ is non-abelian — the
+        # D₄ is non-abelian: the
         # dihedral group law makes r1·s0 ≠ s0·r1. Composing a quarter
         # turn with a reflection in each order gives different elements
         # (s3 vs s1 in our encoding), so their rotation indices differ.
-        ("D4 group is non-abelian (v4.60)",
+        ("D4 group is non-abelian",
          "fn mod4(n: Int) : Int = ((n % 4) + 4) % 4\n"
          "fn compose_k(k1: Int, f1: Bool, k2: Int, f2: Bool) : Int =\n"
          "  mod4((if f2 then 0 - k1 else k1) + k2)\n"
@@ -850,11 +864,11 @@ def main() -> int:
          "let r : Bool = rs != sr\n"
          "r\n",
          "r : Bool = true"),
-        # v4.60: epistemic knowledge — a child KNOWS their own state iff
+        # Epistemic knowledge: a child KNOWS their own state iff
         # all indistinguishable live worlds agree on it. In the muddy
         # world (M,M) with only {(M,M)} live, the single world fixes the
         # value, so the child knows (returns the mud value 1).
-        ("epistemic: knowledge from a singleton world set (v4.60)",
+        ("epistemic: knowledge from a singleton world set",
          "type World = | W(Int, Int)\n"
          "fn mud(c: Int, w: World) : Int ="
          " match w { W(a, b) => if c == 1 then a else b }\n"
@@ -864,12 +878,12 @@ def main() -> int:
          "let r : Bool = knows(1, W(1, 1), [W(1, 1)])\n"
          "r\n",
          "r : Bool = true"),
-        # v4.61 (Quantum II): destructive interference. Two paths with
+        # Destructive interference. Two paths with
         # opposite-phase amplitudes (+1 and −1) sum to amplitude 0, so
-        # the quantum probability |Σ aₖ|² = 0 — the outcome is
+        # the quantum probability |Σ aₖ|² = 0: the outcome is
         # impossible despite each path being individually possible. The
         # classical sum Σ|aₖ|² would be 2. This is the dark fringe.
-        ("destructive interference cancels (v4.61)",
+        ("destructive interference cancels",
          "type Cx = | Cx(Int, Int)\n"
          "fn cadd(a: Cx, b: Cx) : Cx ="
          " match a { Cx(ar, ai) => match b { Cx(br, bi) =>"
@@ -880,10 +894,10 @@ def main() -> int:
          "let r : Int = qprob([Cx(1, 0), Cx(0 - 1, 0)])\n"
          "r\n",
          "r : Int = 0"),
-        # v4.61: entanglement — in the Bell state |00>+|11> (weights
+        # Entanglement: in the Bell state |00>+|11> (weights
         # 1,0,0,1), measuring q1=0 leaves only the 00 branch, so q2 is
         # determined to 0 (the conditional weight for q2=1 is zero).
-        ("entanglement pins the partner qubit (v4.61)",
+        ("entanglement pins the partner qubit",
          "type Joint = | Joint(Int, Int, Int, Int)\n"
          "fn cond01(j: Joint) : Int ="   # q2=1 weight given q1=0
          " match j { Joint(w00, w01, w10, w11) => w01 }\n"
@@ -891,20 +905,20 @@ def main() -> int:
          "let r : Int = cond01(bell)\n"   # 0 ⇒ q2=1 impossible ⇒ q2 pinned to 0
          "r\n",
          "r : Int = 0"),
-        # v4.62 (Strategy & Worlds): the Prisoner's Dilemma tragedy —
+        # The Prisoner's Dilemma tragedy:
         # (Cooperate,Cooperate)=(3,3) Pareto-dominates the forced
         # equilibrium (Defect,Defect)=(1,1): both better off, yet
         # dominance forces the worse outcome.
-        ("Prisoner's Dilemma: equilibrium is Pareto-dominated (v4.62)",
+        ("Prisoner's Dilemma: equilibrium is Pareto-dominated",
          "fn pareto_dom(a1: Int, a2: Int, b1: Int, b2: Int) : Bool =\n"
          "  a1 >= b1 && a2 >= b2 && (a1 > b1 || a2 > b2)\n"
          "let r : Bool = pareto_dom(3, 3, 1, 1)\n"
          "r\n",
          "r : Bool = true"),
-        # v4.62: multi-world branching. Three coin flips multiply into
+        # multi-world branching. Three coin flips multiply into
         # 2³ = 8 worlds (the list-monad bind unions every branch); the
         # head-counts form the binomial row 1,3,3,1.
-        ("multi-world branching: 3 flips = 8 worlds (v4.62)",
+        ("multi-world branching: 3 flips = 8 worlds",
          "type World = | World(List<Int>)\n"
          "fn wof(w: World) : List<Int> = match w { World(xs) => xs }\n"
          "fn pure(x: Int) : World = World([x])\n"
@@ -918,10 +932,10 @@ def main() -> int:
          "let r : Int = len(wof(three))\n"
          "r\n",
          "r : Int = 8"),
-        # v4.63 (Rationals & Probability): exact fraction arithmetic.
-        # 1/3 + 1/6 reduces to exactly 1/2 — no rounding. The result is
+        # Exact fraction arithmetic.
+        # 1/3 + 1/6 reduces to exactly 1/2: no rounding. The result is
         # gcd-normalized, so num=1, den=2; we pin the numerator.
-        ("exact rational 1/3 + 1/6 = 1/2 (v4.63)",
+        ("exact rational 1/3 + 1/6 = 1/2",
          "type Rat = | Rat(Int, Int)\n"
          "fn gcd(a: Int, b: Int) : Int = if b == 0 then a else gcd(b, a % b)\n"
          "fn rat(n: Int, d: Int) : Int = n / gcd(n, d)\n"  # numerator of reduced n/d
@@ -929,40 +943,40 @@ def main() -> int:
          "let r : Int = rat(total, 18)\n"      # 9/18 → numerator 1
          "r\n",
          "r : Int = 1"),
-        # v4.63: Gini/collision uncertainty is exact and rational. For a
+        # Gini/collision uncertainty is exact and rational. For a
         # fair coin [1/2,1/2]:  1 − (1/4 + 1/4) = 1/2. We compute it over
         # a common denominator (4): numerator of 1 − 2/4 = 2, over 4.
-        ("Gini uncertainty of fair coin = 1/2 (v4.63)",
+        ("Gini uncertainty of fair coin = 1/2",
          "let sum_sq_num : Int = 1 + 1\n"   # (1/2)²+(1/2)² = 1/4+1/4 = 2/4
          "let u_num : Int = 4 - sum_sq_num\n"   # 1 − 2/4 = (4-2)/4 = 2/4 = 1/2
          "u_num\n",
          "u_num : Int = 2"),
-        # v4.64 (Time & Causality): the do-operator. Intervening
+        # The do-operator. Intervening
         # do(rain := false) recomputes wet = rain ∨ sprinkler from the
-        # structural equation — with sprinkler off, the grass is dry.
+        # structural equation, with sprinkler off, the grass is dry.
         # This is intervention, not observation: the equation re-runs.
-        ("counterfactual intervention dries the grass (v4.64)",
+        ("counterfactual intervention dries the grass",
          "fn wet(rain: Bool, sprinkler: Bool) : Bool = rain || sprinkler\n"
          "let actual : Bool = wet(true, false)\n"    # actually wet
          "let cf : Bool = wet(false, false)\n"       # do(rain:=false)
          "let r : Bool = actual && !cf\n"            # was wet, would be dry
          "r\n",
          "r : Bool = true"),
-        # v4.64: Ship of Theseus. After replacing all 4 planks, the
+        # Ship of Theseus. After replacing all 4 planks, the
         # original [1,2,3,4] and final [5,6,7,8] differ in every
-        # position — diff_count = 4, so strictly NOT the same (yet each
+        # position: diff_count = 4, so strictly NOT the same (yet each
         # step changed only one plank: continuous).
-        ("Ship of Theseus shares no original part (v4.64)",
+        ("Ship of Theseus shares no original part",
          "fn diff(a: List<Int>, b: List<Int>) : Int =\n"
          "  match a { [] => 0; [x, ...xs] => match b { [] => 0;"
          " [y, ...ys] => (if x == y then 0 else 1) + diff(xs, ys) } }\n"
          "let r : Int = diff([1, 2, 3, 4], [5, 6, 7, 8])\n"
          "r\n",
          "r : Int = 4"),
-        # v4.65 (Information & Observation): nested simulation depth.
+        # Nested simulation depth.
         # Sim(Sim(Add(3, Sim(4)))) is three realities deep, while the
         # value (7) is level-independent.
-        ("nested simulation depth (v4.65)",
+        ("nested simulation depth",
          "type Expr = | Lit(Int) | Add(Expr, Expr) | Sim(Expr)\n"
          "fn depth(e: Expr) : Int =\n"
          "  match e { Lit(_) => 0;"
@@ -972,10 +986,10 @@ def main() -> int:
          "let r : Int = depth(Sim(Sim(Add(Lit(3), Sim(Lit(4))))))\n"
          "r\n",
          "r : Int = 3"),
-        # v4.65: information-flow taint. Joining a public value with a
+        # information-flow taint. Joining a public value with a
         # secret one yields secret (Secret dominates the lattice), so
-        # the result is NOT publishable — non-interference by the join.
-        ("info-flow taint blocks publish (v4.65)",
+        # the result is NOT publishable: non-interference by the join.
+        ("info-flow taint blocks publish",
          "type Label = | Public | Secret\n"
          "fn join(a: Label, b: Label) : Bool =\n"   # returns is_public of join
          "  match a { Secret => false;"
@@ -983,10 +997,10 @@ def main() -> int:
          "let publishable : Bool = join(Public, Secret)\n"
          "publishable\n",
          "publishable : Bool = false"),
-        # v4.66 (Physical types): dimensional analysis. distance/time
+        # Dimensional analysis. distance/time
         # subtracts dimension vectors, so (1,0,0) ÷ (0,1,0) = (1,−1,0),
         # a velocity. We pin the time exponent of the result = −1.
-        ("dimensional division yields velocity (v4.66)",
+        ("dimensional division yields velocity",
          "type Dim = | Dim(Int, Int, Int)\n"
          "fn dsub(a: Dim, b: Dim) : Dim =\n"
          "  match a { Dim(l1, t1, m1) => match b { Dim(l2, t2, m2) =>"
@@ -996,34 +1010,34 @@ def main() -> int:
          "let r : Int = time_exp(v)\n"
          "r\n",
          "r : Int = -1"),
-        # v4.67 (Tier-3): linear types. A `let lin` resource consumed
+        # Linear types. A `let lin` resource consumed
         # exactly once type-checks and runs. Path-aware: using it once
         # in each if-branch is one use per execution path.
-        ("linear resource used once (v4.67)",
+        ("linear resource used once",
          "fn f(b: Bool) : Int =\n"
          "  let lin x = 5 in if b then x + 1 else x + 2\n"
          "let r : Int = f(true)\n"
          "r\n",
          "r : Int = 6"),
-        # v4.67: `lin` is a CONTEXTUAL keyword — a variable literally
+        # `lin` is a CONTEXTUAL keyword: a variable literally
         # named `lin` still works (it's only special as `let lin <id>`).
-        ("lin is a usable identifier (v4.67)",
+        ("lin is a usable identifier",
          "fn f() : Int = let lin = 7 in lin + 1\n"
          "let r : Int = f()\n"
          "r\n",
          "r : Int = 8"),
-        # v4.69: field-level refinement. A constructor field carries its
+        # field-level refinement. A constructor field carries its
         # own invariant; Pos(5) packs fine, and the value is positive by
         # construction so pos_value just reads it back.
-        ("refined ADT field accepts valid value (v4.69)",
+        ("refined ADT field accepts valid value",
          "type Pos = | Pos(n: Int where (n > 0))\n"
          "fn pos_value(x: Pos) : Int = match x { Pos(n) => n }\n"
          "let r : Int = pos_value(Pos(42))\n"
          "r\n",
          "r : Int = 42"),
-        # v4.69: cross-FIELD refinement — `hi` references earlier field
+        # cross-FIELD refinement: `hi` references earlier field
         # `lo`. Range(3,10) is well-formed; span is 7.
-        ("cross-field refinement accepts ordered range (v4.69)",
+        ("cross-field refinement accepts ordered range",
          "type Range = | Range(lo: Int, hi: Int where (hi > lo))\n"
          "fn span(r: Range) : Int = match r { Range(lo, hi) => hi - lo }\n"
          "let r : Int = span(Range(3, 10))\n"
@@ -1057,115 +1071,112 @@ def main() -> int:
             print(f"        stderr: {err.strip()[-200:]}")
             failures += 1
 
-    print("== prism runtime-check end-to-end (v4.23) ==")
+    print("== prism runtime-check end-to-end ==")
     # Run prism.glass and confirm BOTH the positive and negative
     # refinement runtime-check demo lines surface in stdout. This is the
-    # only test that exercises prism's own check_refine_runtime — the
+    # only test that exercises prism's own check_refine_runtime: the
     # host-level inline test above pins down the SHAPE of the message;
     # this one pins down that prism's port produces it.
     prism_rc, prism_out, prism_err = run_file(
         os.path.join(EX, "selfhost", "prism.glass")
     )
     prism_checks = [
-        ("prism runtime check accepts (v4.23)",
+        ("prism runtime check accepts",
          "examples/features/runtime_refine.glass ==> 42 : Int"),
-        ("prism runtime check rejects (v4.23)",
+        ("prism runtime check rejects",
          "examples/features/runtime_refine_bad.glass ==> "
          "refinement violated at runtime: n = 0 fails predicate"),
-        # v4.24: refinement on the SECOND param of a curried top-level fn.
-        # Pre-v4.24 prism silently let bad values through here because the
-        # check only fired on the first param. The VRefinedClos wrapper
+        # Refinement on the SECOND param of a curried top-level fn.
+        # A check that fired only on the first param would let bad values
+        # through here silently. The VRefinedClos wrapper
         # carries the remaining formals past the first apply so subsequent
         # applies still see their refinements.
         ("prism general list spread (self-host parity)",
          "examples/features/spread_general.glass ==> "
          "[0, 1, 2, 3, 4, 5, 1, 2, 4, 5] : List<Int>"),
-        ("prism curried-refine accepts (v4.24)",
+        ("prism curried-refine accepts",
          "examples/features/curried_refine.glass ==> 15 : Int"),
-        ("prism curried-refine rejects (v4.24)",
+        ("prism curried-refine rejects",
          "examples/features/curried_refine_bad.glass ==> "
          "refinement violated at runtime: b = 0 fails predicate"),
-        # v4.25: prism return-type refinement runtime check end-to-end.
+        # Prism return-type refinement runtime check end-to-end.
         # Positive case prints the tuple; negative case prints the
         # violation message for `result = -4`.
-        ("prism return-refine accepts (v4.25)",
+        ("prism return-refine accepts",
          "examples/features/return_refine.glass ==> (7, 7) : (Int, Int)"),
-        ("prism return-refine rejects (v4.25)",
+        ("prism return-refine rejects",
          "examples/features/return_refine_bad.glass ==> "
          "refinement violated at runtime: result = -4 fails predicate"),
-        # v4.26: prism's lexer/parser/eval gain `/`. Textbook
+        # prism's lexer/parser/eval gain `/`. Textbook
         # safe_div(a, b: Int where (b != 0)) now runs end-to-end in
         # prism; the runtime refinement check carries the divide-by-zero
         # invariant.
-        ("prism safe_div with division (v4.26)",
+        ("prism safe_div with division",
          "examples/features/safe_div.glass ==> (25, 20) : (Int, Int)"),
-        # v4.27: parens-after-let parser fix in prism. Bare `(r1, r2)`
+        # parens-after-let parser fix in prism. Bare `(r1, r2)`
         # at column 1 after `let r2 = ...` used to be chained as a call;
         # now it parses as a separate top-level tuple expression.
-        ("prism parens-after-let split (v4.27)",
+        ("prism parens-after-let split",
          "examples/features/parens_after_let.glass ==> (3, 7) : (Int, Int)"),
-        # v4.47: refined-param lambda runtime checks. The parser now
+        # refined-param lambda runtime checks. The parser now
         # accepts `where (pred)` after a lambda's typed param, and the
         # ELamR -> VRefinedClos path enforces the predicate on every
         # apply. Positive case returns 10; negative case prints the
         # standard "refinement violated at runtime" message via the
         # demo loop.
-        ("prism lambda-refine accepts (v4.47)",
+        ("prism lambda-refine accepts",
          "examples/features/lambda_refine.glass ==> 10 : Int"),
-        ("prism lambda-refine rejects (v4.47)",
+        ("prism lambda-refine rejects",
          "examples/features/lambda_refine_bad.glass ==> "
          "refinement violated at runtime: x = -3 fails predicate"),
-        # v4.48: multi-parameter lambdas in prism. Pre-v4.48 the
-        # parser bailed at the first comma in a lambda param list, so
-        # `fn(a, b) -> ...` never reached eval. The new parse_fn
+        # multi-parameter lambdas in prism. parse_fn
         # parses a comma-separated list and right-folds it into a
-        # nested ELam/ELamR chain — same shape as the host's curried
+        # nested ELam/ELamR chain: same shape as the host's curried
         # top-level fn encoding.
-        ("prism multi-arg lambda (v4.48)",
+        ("prism multi-arg lambda",
          "examples/features/lambda_multi.glass ==> 7 : Int"),
-        # v4.48 composes with v4.47: each param's refinement runs at
-        # its own apply step via the VRefinedClos wrapper from v4.24.
+        # Multi-param + refined-param lambdas: each param's refinement runs at
+        # its own apply step via the VRefinedClos wrapper.
         # 3 > 0 and 4 > 0 both hold, so the call returns 12.
-        ("prism multi-arg refined lambda (v4.48)",
+        ("prism multi-arg refined lambda",
          "examples/features/lambda_multi_refine.glass ==> 12 : Int"),
-        # v4.52: `&&` and `||` end-to-end through prism. v4.51 deferred
-        # prism's update; this is the closing case. Tokenizer recognizes
+        # `&&` and `||` end-to-end through prism. The tokenizer recognizes
         # `&&` / `||`, parser layers parse_or → parse_and → parse_compare
         # with C-style precedence, infer rejects non-Bool operands, eval
         # short-circuits. The interval refinement holds (50 in (0,100))
         # so middling returns 51.
-        ("prism && / || end-to-end via interval refinement (v4.52)",
+        ("prism && / || end-to-end via interval refinement",
          "examples/features/and_or.glass ==> 51 : Int"),
-        # v4.53: modulo end-to-end through prism. TPercent token,
+        # Modulo end-to-end through prism. TPercent token,
         # EMod variant, parse_mul_rest arm, infer/eval/eval_pred/
-        # alpha/equal arms — five sites mirroring EMul/EDiv. Parity
+        # alpha/equal arms: five sites mirroring EMul/EDiv. Parity
         # refinement `n % 2 == 0` is the canonical divisibility shape.
         # 10 is even, so even_only(10) returns 11.
-        ("prism modulo end-to-end via parity refinement (v4.53)",
+        ("prism modulo end-to-end via parity refinement",
          "examples/features/mod_refine.glass ==> 11 : Int"),
-        # v4.54: unary NOT end-to-end through prism. New parse_unary
+        # Unary NOT end-to-end through prism. New parse_unary
         # layer above parse_mul, EUNot variant, infer/eval/eval_pred/
         # alpha/equal arms. `!(n == 0)` refinement holds for 5, so
         # nonzero(5) = 100 / 5 = 20.
-        ("prism unary NOT end-to-end via refinement (v4.54)",
+        ("prism unary NOT end-to-end via refinement",
          "examples/features/not_refine.glass ==> 20 : Int"),
-        # v4.68: linear types ported to prism — prism self-hosts the
+        # Linear types ported to prism: prism self-hosts the
         # path-aware exactly-once check. A resource used once compiles;
         # a clone is rejected at parse time. Glass checking Glass's own
         # substructural discipline.
-        ("prism linear resource accepts single use (v4.68)",
+        ("prism linear resource accepts single use",
          "examples/features/linear_ok.glass ==> 50 : Int"),
-        ("prism linear resource rejects cloning (v4.68)",
+        ("prism linear resource rejects cloning",
          "examples/features/linear_clone.glass ==> "
          "linear variable token used 2 times (no cloning)"),
-        # v4.56: cross-parameter refinement through prism. The arg-env
+        # cross-parameter refinement through prism. The arg-env
         # threaded through VRefinedClos lets `hi > lo` resolve `lo`.
         # clamp(3, 10) = 7.
-        ("prism cross-param refinement accepts (v4.56)",
+        ("prism cross-param refinement accepts",
          "examples/features/xparam_refine.glass ==> 7 : Int"),
-        # And the bad case fires LOUDLY (not the pre-v4.56 silent skip
+        # And the bad case fires LOUDLY (not a silent skip
         # on unbound `lo`): clamp(10, 3) violates hi > lo.
-        ("prism cross-param refinement rejects (v4.56)",
+        ("prism cross-param refinement rejects",
          "examples/features/xparam_refine_bad.glass ==> "
          "refinement violated at runtime: hi = 3 fails predicate"),
     ]
@@ -1212,7 +1223,7 @@ def main() -> int:
     print("== statement-binding guard ==")
     # The FS transcript digest MUST depend on the statement (a different claimed
     # R or reordered gates -> a different seed). Pin it so the binding can never
-    # silently regress to a no-op — the exact failure mode of the v5.46.1
+    # silently regress to a no-op: the exact failure mode of an earlier
     # grinding bug, which lived in an untested path. Digest-only, interpreter, ~secs.
     rc, out, err = run_file(os.path.join(EX, "prove", "prove_source_goldilocks_bind_test.glass"))
     bind_ok = (rc == 0) and ("BIND-GUARD PASS" in out)
@@ -1226,7 +1237,7 @@ def main() -> int:
     print("== baby-bear prove guard ==")
     # The baby-bear prove bridge (prove_source_adt_zk.glass) is an
     # interpreter-only path the POSITIVE list and the bootstrap fixpoint don't
-    # exercise — so a v5.55.0 exhaustiveness tightening silently broke it (a
+    # exercise, so an exhaustiveness tightening once silently broke it (a
     # match on the imported 2-constructor TypeDecl handled only one ctor and
     # was no longer accepted as total). Pin an end-to-end ACCEPT so the bridge
     # stays type-checkable and sound. ~seconds, interpreter, --fast self-check.
@@ -1247,12 +1258,50 @@ def main() -> int:
             print(f"        stderr: {_bb.stderr.strip()[-200:]}")
         failures += 1
 
+    # The 2^31 path blinds with a fixed seed, so it hides nothing. Its output once
+    # called the proof zero-knowledge and said it revealed only the result, and it
+    # silently ignored --zk. It must say it is not zero-knowledge and refuse --zk.
+    _bb_proof = [l for l in _bb.stdout.splitlines() if l.startswith("proof:")]
+    _bb_inputs = [l for l in _bb.stdout.splitlines() if l.startswith("private inputs:")]
+    bb_honest = (len(_bb_proof) == 1 and "not zero-knowledge" in _bb_proof[0]
+                 and len(_bb_inputs) == 1 and "not zero-knowledge" in _bb_inputs[0])
+    print(f"  {'OK ' if bb_honest else 'FAIL'}  baby-bear verdict and inputs lines say the proof is not zero-knowledge")
+    if not bb_honest:
+        failures += 1
+    with tempfile.NamedTemporaryFile("w", suffix=".glass", delete=False) as _tf:
+        _tf.write("fn f(a: Int) : Int = a * a + 1\nf(inp)\n")
+        _bbz_path = _tf.name
+    _bbz = subprocess.run(
+        [sys.executable, GLASS, "prove", "--baby-bear", "--zk", _bbz_path, "inp=5"],
+        capture_output=True, text=True,
+    )
+    os.unlink(_bbz_path)
+    bbz_ok = ("--zk is a Goldilocks-path feature" in _bbz.stdout) and ("ACCEPT" not in _bbz.stdout) and (_bbz.returncode == 1)
+    print(f"  {'OK ' if bbz_ok else 'FAIL'}  baby-bear refuses --zk (no hiding on the 2^31 path), exit 1")
+    if not bbz_ok:
+        print(f"        rc={_bbz.returncode}; expected the refusal and exit 1")
+        failures += 1
+
+    # Exit-code contract: 0 means ACCEPT and nothing else. The refusals that run before
+    # the prover (an ill-typed program, a claim of the wrong type, a flag the field cannot
+    # honour) once printed ABSTAIN and exited 0, so a script read them as a proof.
+    with tempfile.NamedTemporaryFile("w", suffix=".glass", delete=False) as _tf:
+        _tf.write("fn f(a: Int) : Int = !a\nf(inp)\n")
+        _it_path = _tf.name
+    _it = subprocess.run([sys.executable, GLASS, "prove", _it_path, "inp=5"], capture_output=True, text=True)
+    os.unlink(_it_path)
+    it_ok = ("verdict: ABSTAIN" in _it.stdout) and (_it.returncode == 1)
+    print(f"  {'OK ' if it_ok else 'FAIL'}  an ill-typed program ABSTAINs with exit 1, never 0")
+    if not it_ok:
+        print(f"        rc={_it.returncode}; expected ABSTAIN and exit 1")
+        failures += 1
+
     # The baby-bear bridge lowered every UNSUPPORTED operator (comparisons,
-    # / %, strings, records) to a SILENT 0 — so `glass prove --baby-bear` on
+    # / %, strings, records) to a SILENT 0, so `glass prove --baby-bear` on
     # `a < b` certified `result: 0 ACCEPT`, a FALSE statement with a valid
     # proof (the silent-wrong-certification class). It must now REFUSE loudly,
     # never silently prove a wrong value. (The default Goldilocks path already
-    # refused comparisons since v5.52; this brings the toy path to parity.)
+    # refused comparisons; this brings the toy path to parity.)
     with tempfile.NamedTemporaryFile("w", suffix=".glass", delete=False) as _tf:
         _tf.write("fn lt(a: Int, b: Int) : Bool = a < b\nlt(a, b)\n")
         _cmp_path = _tf.name
@@ -1269,9 +1318,9 @@ def main() -> int:
         failures += 1
 
     # Heavy Goldilocks native proves: all 3 gates now RUN to completion on the GitHub runner (and macOS,
-    # and a linux/amd64 container) — confirmed 426/426 with real ACCEPT/REJECT verdicts. The Linux
-    # blockers were cleared in sequence: quartz GC compile (v5.91, no >7.6GB malloc-leak OOM), 512MB run
-    # stack (v5.92, no deep-recursion SIGSEGV), and v5.93's run_native.sh `grep -m1` fix — the last one
+    # and a linux/amd64 container): confirmed 426/426 with real ACCEPT/REJECT verdicts. The Linux
+    # blockers were cleared in sequence: quartz GC compile (no >7.6GB malloc-leak OOM), 512MB run
+    # stack (no deep-recursion SIGSEGV), and run_native.sh's `grep -m1` fix: the last one
     # was the runner-specific cause: run_native inlined prism via `grep|head -1`, and on hosts that
     # IGNORE SIGPIPE (GitHub runners) head closing the pipe made grep fail EPIPE (exit 2) under
     # `pipefail`+`set -e`, aborting run_native BEFORE the compile (rc=2, no binary) → the gate skipped.
@@ -1280,14 +1329,14 @@ def main() -> int:
     # produces a verdict and is evaluated normally. See reference_build_portability memory.
     def _heavy_skipped(proc, label):
         if proc.returncode >= 128:
-            print(f"  OK   {label}  (SKIPPED: native heavy-prove killed by signal rc={proc.returncode} — env-limited)")
+            print(f"  OK   {label}  (SKIPPED: native heavy-prove killed by signal rc={proc.returncode}: env-limited)")
             return True
         return False
 
-    # Dead-branch PREDICATION (v5.88): cgen builds BOTH if-arms, so a divide-by-zero in a DEAD arm
+    # Dead-branch PREDICATION: cgen builds BOTH if-arms, so a divide-by-zero in a DEAD arm
     # (`if a==a then a else a%b`, b=0) used to poison the circuit. The division gadget now predicates
     # its `r < b` check on an in-circuit `b!=0` bit, so the dead `a%0` is vacuously satisfiable and the
-    # live result PROVES — `result: 7, ACCEPT` (was ABSTAIN). Goldilocks native path (~15s).
+    # live result PROVES: `result: 7, ACCEPT` (was ABSTAIN). Goldilocks native path (~15s).
     _db_path = os.path.join(EX, "prove", "deadbranch_div.glass")
     _db = _prove_run([sys.executable, GLASS, "prove", _db_path, "a=7", "b=0"],
                          capture_output=True, text=True, cwd=ROOT)
@@ -1297,7 +1346,7 @@ def main() -> int:
         if not db_ok:
             print(f"        rc={_db.returncode}  out: {_db.stdout.strip()[-150:]}  err: {_db.stderr.strip()[-150:]}")
             failures += 1
-    # Soundness companion: a LIVE divide-by-zero (b=0 on the TAKEN path) must STILL ABSTAIN — the
+    # Soundness companion: a LIVE divide-by-zero (b=0 on the TAKEN path) must STILL ABSTAIN: the
     # predication only relaxes DEAD arms; seval short-circuits to the taken path and refuses b==0.
     with tempfile.NamedTemporaryFile("w", suffix=".glass", delete=False) as _lf:
         _lf.write("a % b\n"); _live_path = _lf.name
@@ -1309,39 +1358,39 @@ def main() -> int:
     if not lv_ok:
         print(f"        rc={_lv.returncode}  out: {_lv.stdout.strip()[-150:]}  err: {_lv.stderr.strip()[-150:]}")
         failures += 1
-    # WRONG-CLAIM REJECT for the divmod path (v5.89, audit-recommended): the v5.88 soundness rests on
+    # WRONG-CLAIM REJECT for the divmod path (audit-recommended): dead-branch predication's soundness rests on
     # the proven R being the circuit's OWN divmod output (build_claim_m pins output==claimedR). This
     # proves a FALSE division claim is REJECTed: `a/b` with a=17,b=5 claiming 4 (true is 3) -> verify_b3
-    # REJECT — the prover cannot forge a verifying proof of a wrong quotient. (Goldilocks native, ~55s.)
+    # REJECT: the prover cannot forge a verifying proof of a wrong quotient. (Goldilocks native, ~55s.)
     with tempfile.NamedTemporaryFile("w", suffix=".glass", delete=False) as _wf:
         _wf.write("a / b\n"); _wc_path = _wf.name
     _wc = _prove_run([sys.executable, GLASS, "prove", "--claim", "4", _wc_path, "a=17", "b=5"],
                          capture_output=True, text=True, cwd=ROOT)
     os.unlink(_wc_path)
-    if not _heavy_skipped(_wc, "wrong divmod claim REJECTs (claim 17/5=4; true is 3 — no proof of a false quotient)"):
-        # v5.133 exit-code contract: a REJECT exits 2 (0=ACCEPT, 1=ABSTAIN, 2=REJECT, 3=DIVERGENCE),
-        # so scripts can branch on the verdict without parsing — pinned here on the REJECT path.
+    if not _heavy_skipped(_wc, "wrong divmod claim REJECTs (claim 17/5=4; true is 3: no proof of a false quotient)"):
+        # Exit-code contract: a REJECT exits 2 (0=ACCEPT, 1=ABSTAIN, 2=REJECT, 3=DIVERGENCE),
+        # so scripts can branch on the verdict without parsing: pinned here on the REJECT path.
         wc_ok = ("proof:   REJECT" in _wc.stdout) and ("proof:   ACCEPT" not in _wc.stdout) and (_wc.returncode == 2)
-        print(f"  {'OK ' if wc_ok else 'FAIL'}  wrong divmod claim REJECTs (claim 17/5=4; true is 3 — no proof of a false quotient)")
+        print(f"  {'OK ' if wc_ok else 'FAIL'}  wrong divmod claim REJECTs (claim 17/5=4; true is 3: no proof of a false quotient)")
         if not wc_ok:
             print(f"        rc={_wc.returncode}  out: {_wc.stdout.strip()[-200:]}  err: {_wc.stderr.strip()[-150:]}")
             failures += 1
 
-    # FORGED-PROVER divmod soundness (v5.131, the forgery-resistance audit's one finding): in the
-    # b==0 sub-circuit (a dead-branch divide-by-zero) the quotient q is ADVICE. Before v5.131 it was
-    # a FREE [0,2^32) value — a malicious prover binary hinting q=7 produced an internally-consistent
+    # FORGED-PROVER divmod soundness (the forgery-resistance audit's one finding): in the
+    # b==0 sub-circuit (a dead-branch divide-by-zero) the quotient q is ADVICE. Before the pin it was
+    # a FREE [0,2^32) value: a malicious prover binary hinting q=7 produced an internally-consistent
     # witness (identity a == 0*7 + r holds with r=a; the range bits decompose 7) that verify_b3
     # ACCEPTed (verified on the pre-fix bridge), exactly the freedom an a/0 forgery would ride on any
     # future path where the b==0 quotient goes live. The isz*q == 0 pin makes the b==0 witness UNIQUE
     # (q=0, r=a). This gate IS that malicious prover: a copy of the bridge with the q-hint forged to 7
     # (GLASS_BRIDGE_DIR points the CLI at it); every downstream wire recomputes consistently, so the
-    # ONLY violated constraint is the pin — the proof must REJECT. (Goldilocks native, ~15s.)
+    # ONLY violated constraint is the pin: the proof must REJECT. (Goldilocks native, ~15s.)
     import shutil as _sh_fg
     _fg_line = "let qi : Int = if bi <= 0 then 0 else ai / bi"
     with open(os.path.join(EX, "prove", "prove_source_goldilocks_zk.glass")) as _bf:
         _bridge_src = _bf.read()
     if _fg_line not in _bridge_src:
-        print("  FAIL  forged prover (q-hint=7 in the b==0 sub-circuit) REJECTs — the q-hint line moved in the bridge; update this gate")
+        print("  FAIL  forged prover (q-hint=7 in the b==0 sub-circuit) REJECTs: the q-hint line moved in the bridge; update this gate")
         failures += 1
     else:
         _fg_dir = tempfile.mkdtemp()
@@ -1351,20 +1400,20 @@ def main() -> int:
             _fenv = dict(os.environ); _fenv["GLASS_BRIDGE_DIR"] = _fg_dir
             _fg = _prove_run([sys.executable, GLASS, "prove", _db_path, "a=7", "b=0"],
                              capture_output=True, text=True, cwd=ROOT, env=_fenv)
-            if not _heavy_skipped(_fg, "forged prover (q-hint=7 in the b==0 sub-circuit) REJECTs — divmod advice is PINNED, not free"):
+            if not _heavy_skipped(_fg, "forged prover (q-hint=7 in the b==0 sub-circuit) REJECTs: divmod advice is PINNED, not free"):
                 fg_ok = ("proof:   REJECT" in _fg.stdout) and ("proof:   ACCEPT" not in _fg.stdout)
-                print(f"  {'OK ' if fg_ok else 'FAIL'}  forged prover (q-hint=7 in the b==0 sub-circuit) REJECTs — divmod advice is PINNED, not free")
+                print(f"  {'OK ' if fg_ok else 'FAIL'}  forged prover (q-hint=7 in the b==0 sub-circuit) REJECTs: divmod advice is PINNED, not free")
                 if not fg_ok:
                     print(f"        rc={_fg.returncode}  out: {_fg.stdout.strip()[-200:]}  err: {_fg.stderr.strip()[-150:]}")
                     failures += 1
         finally:
             _sh_fg.rmtree(_fg_dir, ignore_errors=True)
 
-    # CAPTURE-AVOIDING INLINING (v5.132): inline_fn used to bind call arguments as a sequential ELet
+    # CAPTURE-AVOIDING INLINING: inline_fn used to bind call arguments as a sequential ELet
     # nest, so an argument referencing an EARLIER parameter's NAME was captured by the just-bound
-    # parameter — `gcd(b, a % b)` computed b % b, and the circuit attested gcd(48,18)=18 while the
-    # source computes 6 (a STARK-valid wrong lowering, caught ONLY by the Third Witness). The minimal
-    # shape: top(a,b) calls g(b, a-b) — the `a` in `a-b` must be the CALLER's a (10), not the bound
+    # parameter: `gcd(b, a % b)` computed b % b, and the circuit attested gcd(48,18)=18 while the
+    # source computes 6 (a STARK-valid wrong lowering, caught ONLY by the cross-check). The minimal
+    # shape: top(a,b) calls g(b, a-b): the `a` in `a-b` must be the CALLER's a (10), not the bound
     # first parameter (3). Truth: g(3, 7) = 307; the captured lowering proved 300. (~30s native.)
     with tempfile.NamedTemporaryFile("w", suffix=".glass", delete=False) as _cpf:
         _cpf.write("fn g(a: Int, b: Int) : Int = a * 100 + b\n"
@@ -1372,23 +1421,23 @@ def main() -> int:
         _cp_path = _cpf.name
     _cp = _prove_run([sys.executable, GLASS, "prove", "--cross-check", _cp_path, "x=10", "y=3"],
                      capture_output=True, text=True, cwd=ROOT)
-    if not _heavy_skipped(_cp, "capture-avoiding inlining: g(b, a-b) binds the CALLER's a (307, Third Witness AGREES)"):
-        cp_ok = (_cp.returncode == 0) and ("result:  307" in _cp.stdout) and ("THIRD LINEAGE AGREES" in _cp.stdout)
-        print(f"  {'OK ' if cp_ok else 'FAIL'}  capture-avoiding inlining: g(b, a-b) binds the CALLER's a (307, Third Witness AGREES)")
+    if not _heavy_skipped(_cp, "capture-avoiding inlining: g(b, a-b) binds the CALLER's a (307, cross-check AGREES)"):
+        cp_ok = (_cp.returncode == 0) and ("result:  307" in _cp.stdout) and ("AGREES" in _cp.stdout)
+        print(f"  {'OK ' if cp_ok else 'FAIL'}  capture-avoiding inlining: g(b, a-b) binds the CALLER's a (307, cross-check AGREES)")
         if not cp_ok:
             print(f"        rc={_cp.returncode}  out: {_cp.stdout.strip()[-200:]}  err: {_cp.stderr.strip()[-150:]}")
             failures += 1
 
-    # ...and the COUNTERFACTUAL + the loud Third Witness (v5.132): a bridge copy with tmpn regressed
+    # ...and the COUNTERFACTUAL + the loud cross-check: a bridge copy with tmpn regressed
     # to the identity reproduces the OLD capturing lowering exactly (the param "temp" aliases itself),
-    # so the same program proves the WRONG 300 and the Third Witness must flag DIVERGENCE — and a
+    # so the same program proves the WRONG 300 and the cross-check must flag DIVERGENCE, and a
     # detected divergence is now a HARD FAILURE: `glass prove --cross-check` exits 3, not 0. This gate
     # pins both: the divergence detection and its exit code. (~30s native.)
     _cl_old = 'fn tmpn(p: String) : String = "q9p_" ++ p'
     with open(os.path.join(EX, "prove", "prove_source_goldilocks_zk.glass")) as _bf2:
         _bridge_src2 = _bf2.read()
     if _cl_old not in _bridge_src2:
-        print("  FAIL  regressed-capture bridge DIVERGEs with exit code 3 — tmpn moved in the bridge; update this gate")
+        print("  FAIL  regressed-capture bridge DIVERGEs with exit code 3: tmpn moved in the bridge; update this gate")
         failures += 1
     else:
         _cl_dir = tempfile.mkdtemp()
@@ -1398,9 +1447,9 @@ def main() -> int:
             _clenv = dict(os.environ); _clenv["GLASS_BRIDGE_DIR"] = _cl_dir
             _cl = _prove_run([sys.executable, GLASS, "prove", "--cross-check", _cp_path, "x=10", "y=3"],
                              capture_output=True, text=True, cwd=ROOT, env=_clenv)
-            if not _heavy_skipped(_cl, "regressed-capture bridge: Third Witness flags DIVERGENCE and exits 3 (a divergence is loud)"):
-                cl_ok = (_cl.returncode == 3) and ("DIVERGENCE" in _cl.stdout) and ("THIRD LINEAGE AGREES" not in _cl.stdout)
-                print(f"  {'OK ' if cl_ok else 'FAIL'}  regressed-capture bridge: Third Witness flags DIVERGENCE and exits 3 (a divergence is loud)")
+            if not _heavy_skipped(_cl, "regressed-capture bridge: cross-check flags DIVERGENCE and exits 3 (a divergence is loud)"):
+                cl_ok = (_cl.returncode == 3) and ("DIVERGENCE" in _cl.stdout) and ("AGREES" not in _cl.stdout)
+                print(f"  {'OK ' if cl_ok else 'FAIL'}  regressed-capture bridge: cross-check flags DIVERGENCE and exits 3 (a divergence is loud)")
                 if not cl_ok:
                     print(f"        rc={_cl.returncode}  out: {_cl.stdout.strip()[-200:]}  err: {_cl.stderr.strip()[-150:]}")
                     failures += 1
@@ -1408,8 +1457,8 @@ def main() -> int:
             _sh_fg.rmtree(_cl_dir, ignore_errors=True)
     os.unlink(_cp_path)
 
-    # Higher-order proving (v5.87): the seval guard resolves function-valued parameters via fenv
-    # (mirroring unroll), so a higher-order program — `map(inc, xs)` — is GUARDED and PROVEN instead
+    # Higher-order proving: the seval guard resolves function-valued parameters via fenv
+    # (mirroring unroll), so a higher-order program (`map(inc, xs)`) is GUARDED and PROVEN instead
     # of spuriously refused (it ABSTAINed before, because seval couldn't resolve the `f` callee that
     # unroll+cgen handle). Goldilocks native path (~30s); proves the result and ACCEPTs.
     _ho_path = os.path.join(EX, "prove", "map_prove.glass")
@@ -1422,8 +1471,8 @@ def main() -> int:
             print(f"        rc={_ho.returncode}  out: {_ho.stdout.strip()[-200:]}  err: {_ho.stderr.strip()[-150:]}")
             failures += 1
 
-    # Signed comparison (v5.94): slt/sle/sgt/sge prove ordering over SIGNED integers in
-    # [-2^31, 2^31) — negatives included. They desugar to the existing unsigned range gadget
+    # Signed comparison: slt/sle/sgt/sge prove ordering over SIGNED integers in
+    # [-2^31, 2^31): negatives included. They desugar to the existing unsigned range gadget
     # via a monotonic +2^31 offset (no new gate, no verifier change), and a negative input is
     # now bound CANONICALLY (gin: p-|v|, not the non-canonical two's-complement limbs glit4(-5)
     # would give). slt(-5, 3) -> result 1, ACCEPT. Goldilocks native path (~30s).
@@ -1438,7 +1487,7 @@ def main() -> int:
             failures += 1
 
     # ...and a FALSE signed-comparison claim must REJECT: slt(-5, 3) is 1 (true), so claiming 0
-    # is unsatisfiable — the independent verify_b3 proves no false signed ordering. Goldilocks native.
+    # is unsatisfiable: the independent verify_b3 proves no false signed ordering. Goldilocks native.
     _scf = _prove_run([sys.executable, GLASS, "prove", _sc_path, "a=-5", "b=3", "--claim", "0"],
                           capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_scf, "wrong signed-comparison claim REJECTs (slt(-5,3)=1; claim 0 is false)"):
@@ -1448,11 +1497,11 @@ def main() -> int:
             print(f"        rc={_scf.returncode}  out: {_scf.stdout.strip()[-200:]}  err: {_scf.stderr.strip()[-150:]}")
             failures += 1
 
-    # Signed band membership (v5.95): the ZK range-membership pattern — prove a private value t is
+    # Signed band membership: the ZK range-membership pattern: prove a private value t is
     # within a signed band [-40, 125] without revealing it. Exercises a compound `sge(t,-40) && sle(t,125)`
-    # AND the canonical NEGATIVE-LITERAL lowering fixed in v5.95 (a `-40` literal previously lowered via
-    # the non-canonical glit(-40)=[-40] to a WRONG comparison — sge(20,-40) proved 0 instead of 1, a
-    # silent wrong result the Third Witness flagged as a source<->circuit DIVERGENCE). Now EInt(n<0) binds
+    # AND the canonical NEGATIVE-LITERAL lowering (a `-40` literal once lowered via
+    # the non-canonical glit(-40)=[-40] to a WRONG comparison: sge(20,-40) proved 0 instead of 1, a
+    # silent wrong result the cross-check flagged as a source<->circuit DIVERGENCE). Now EInt(n<0) binds
     # canonically (gin), so the band proves the right verdict. t=20 is in band -> result 1 ACCEPT; if the
     # negative-literal fix regressed, sge(20,-40) would be 0 and this gate would see result 0. Goldilocks native.
     _sb_path = os.path.join(EX, "prove", "signed_band.glass")
@@ -1465,20 +1514,20 @@ def main() -> int:
             print(f"        rc={_sb.returncode}  out: {_sb.stdout.strip()[-200:]}  err: {_sb.stderr.strip()[-150:]}")
             failures += 1
 
-    # Signed division/modulo (v5.96): sdiv/smod prove C99 truncated division (q toward zero, r with
+    # Signed division/modulo: sdiv/smod prove C99 truncated division (q toward zero, r with
     # the dividend's sign) over signed [-2^31, 2^31). The +2^31 offset that makes signed COMPARISON
-    # free does NOT compose for division, so sdiv/smod are built by SIGN-MAGNITUDE — but soundly, by
+    # free does NOT compose for division, so sdiv/smod are built by SIGN-MAGNITUDE, but soundly, by
     # composing already-lowered primitives (slt for the proven canonical sign, if/then/else for
     # magnitude+post-negate, the unsigned divmod_build core), NOT a sign-bit gadget (an adversarial
-    # design failed exactly there; the Third Witness catches such a wrong lowering). The result is the
+    # design failed exactly there; the cross-check catches such a wrong lowering). The result is the
     # canonical field element p-|r| for negatives; --cross-check confirms the signed value. Goldilocks
-    # native (~2x divmod). ACCEPT: sdiv(-17,5) = -3 with witness3 AGREEing on the signed -3.
+    # native (~2x divmod). ACCEPT: sdiv(-17,5) = -3 with cross-check AGREEing on the signed -3.
     _sd_path = os.path.join(EX, "prove", "signed_div.glass")
     _sd = _prove_run([sys.executable, GLASS, "prove", _sd_path, "a=-17", "b=5", "--cross-check"],
                          capture_output=True, text=True, cwd=ROOT)
-    if not _heavy_skipped(_sd, "signed division: sdiv(-17,5) = -3 ACCEPT (C99 trunc; Third Witness confirms -3)"):
+    if not _heavy_skipped(_sd, "signed division: sdiv(-17,5) = -3 ACCEPT (C99 trunc; cross-check confirms -3)"):
         sd_ok = (_sd.returncode == 0) and ("ACCEPT" in _sd.stdout) and ("result:  -3" in _sd.stdout) and ("f(inputs) = -3" in _sd.stdout) and ("DIVERGENCE" not in _sd.stdout)
-        print(f"  {'OK ' if sd_ok else 'FAIL'}  signed division: sdiv(-17,5) = -3 ACCEPT (C99 trunc; Third Witness confirms -3)")
+        print(f"  {'OK ' if sd_ok else 'FAIL'}  signed division: sdiv(-17,5) = -3 ACCEPT (C99 trunc; cross-check confirms -3)")
         if not sd_ok:
             print(f"        rc={_sd.returncode}  out: {_sd.stdout.strip()[-220:]}  err: {_sd.stderr.strip()[-150:]}")
             failures += 1
@@ -1494,76 +1543,76 @@ def main() -> int:
             print(f"        rc={_sdf.returncode}  out: {_sdf.stdout.strip()[-200:]}  err: {_sdf.stderr.strip()[-150:]}")
             failures += 1
 
-    # Signed utility intrinsics (v5.100): sabs(x)=|x|, smin/smax — composed from the proven slt + if
+    # Signed utility intrinsics: sabs(x)=|x|, smin/smax: composed from the proven slt + if
     # (no new gadget). The zero-knowledge PRIVATE-DISTANCE pattern sabs(a-b): prove |a-b| between two
-    # private values without revealing either. sabs(3-17) = 14, witness3-confirmed. Goldilocks native.
+    # private values without revealing either. sabs(3-17) = 14, cross-check confirmed. Goldilocks native.
     _pd = _prove_run([sys.executable, GLASS, "prove", os.path.join(EX, "prove", "private_distance.glass"),
                           "a=3", "b=17", "--cross-check"], capture_output=True, text=True, cwd=ROOT)
-    if not _heavy_skipped(_pd, "private distance: sabs(3 - 17) = 14 ACCEPT (|a-b| without revealing a,b)"):
-        pd_ok = (_pd.returncode == 0) and ("ACCEPT" in _pd.stdout) and ("result:  14" in _pd.stdout) and ("THIRD LINEAGE AGREES" in _pd.stdout)
-        print(f"  {'OK ' if pd_ok else 'FAIL'}  private distance: sabs(3 - 17) = 14 ACCEPT (|a-b| without revealing a,b)")
+    if not _heavy_skipped(_pd, "private distance: sabs(3 - 17) = 14 ACCEPT (|a-b| of private a,b)"):
+        pd_ok = (_pd.returncode == 0) and ("ACCEPT" in _pd.stdout) and ("result:  14" in _pd.stdout) and ("AGREES" in _pd.stdout)
+        print(f"  {'OK ' if pd_ok else 'FAIL'}  private distance: sabs(3 - 17) = 14 ACCEPT (|a-b| of private a,b)")
         if not pd_ok:
             print(f"        rc={_pd.returncode}  out: {_pd.stdout.strip()[-220:]}  err: {_pd.stderr.strip()[-150:]}")
             failures += 1
 
-    # Strings in zero-knowledge (v5.101): a string lowers as a MULTI-WIRE value — one codepoint
-    # wire per character — reusing the ADT/tuple layout; `++` is structural concat, `==` the
+    # Strings in zero-knowledge: a string lowers as a MULTI-WIRE value: one codepoint
+    # wire per character: reusing the ADT/tuple layout; `++` is structural concat, `==` the
     # per-codepoint is-zero gadget AND-folded, `substring` a static wire slice. No new gate type,
     # no verify_b3 change. The headline: a PRIVATE string predicate in ZK. Prove a private API key
     # has the public prefix "sk-live-" without revealing the key: substring(key,0,8)=="sk-live-"
-    # -> 1 ACCEPT, and the Third Witness (glass.py, independent of the bridge) AGREES. Goldilocks native.
+    # -> 1 ACCEPT, and the cross-check (glass.py, independent of the bridge) AGREES. Goldilocks native.
     _sp_path = os.path.join(EX, "prove", "private_prefix.glass")
     _sp = _prove_run([sys.executable, GLASS, "prove", _sp_path, 'key=sk-live-9f3a2c7e1b', "--cross-check"],
                          capture_output=True, text=True, cwd=ROOT)
-    if not _heavy_skipped(_sp, "strings in ZK: private key prefix substring(key,0,8)=='sk-live-' -> 1 ACCEPT (key hidden)"):
-        sp_ok = (_sp.returncode == 0) and ("ACCEPT" in _sp.stdout) and ("result:  1" in _sp.stdout) and ("THIRD LINEAGE AGREES" in _sp.stdout)
-        print(f"  {'OK ' if sp_ok else 'FAIL'}  strings in ZK: private key prefix substring(key,0,8)=='sk-live-' -> 1 ACCEPT (key hidden)")
+    if not _heavy_skipped(_sp, "private strings: private key prefix substring(key,0,8)=='sk-live-' -> 1 ACCEPT (key is a private input)"):
+        sp_ok = (_sp.returncode == 0) and ("ACCEPT" in _sp.stdout) and ("result:  1" in _sp.stdout) and ("AGREES" in _sp.stdout)
+        print(f"  {'OK ' if sp_ok else 'FAIL'}  private strings: private key prefix substring(key,0,8)=='sk-live-' -> 1 ACCEPT (key is a private input)")
         if not sp_ok:
             print(f"        rc={_sp.returncode}  out: {_sp.stdout.strip()[-220:]}  err: {_sp.stderr.strip()[-150:]}")
             failures += 1
-    # Discrimination: a NON-matching prefix must prove 0 (not always-1) — the per-codepoint equality
-    # actually compares. A test key -> result 0, ACCEPT, witness3 AGREES.
+    # Discrimination: a NON-matching prefix must prove 0 (not always-1): the per-codepoint equality
+    # actually compares. A test key -> result 0, ACCEPT, cross-check AGREES.
     _spt = _prove_run([sys.executable, GLASS, "prove", _sp_path, 'key=sk-test-0000000000', "--cross-check"],
                           capture_output=True, text=True, cwd=ROOT)
-    if not _heavy_skipped(_spt, "strings in ZK: non-matching prefix proves 0 (per-codepoint compare discriminates)"):
-        spt_ok = (_spt.returncode == 0) and ("result:  0" in _spt.stdout) and ("THIRD LINEAGE AGREES" in _spt.stdout)
-        print(f"  {'OK ' if spt_ok else 'FAIL'}  strings in ZK: non-matching prefix proves 0 (per-codepoint compare discriminates)")
+    if not _heavy_skipped(_spt, "private strings: non-matching prefix proves 0 (per-codepoint compare discriminates)"):
+        spt_ok = (_spt.returncode == 0) and ("result:  0" in _spt.stdout) and ("AGREES" in _spt.stdout)
+        print(f"  {'OK ' if spt_ok else 'FAIL'}  private strings: non-matching prefix proves 0 (per-codepoint compare discriminates)")
         if not spt_ok:
             print(f"        rc={_spt.returncode}  out: {_spt.stdout.strip()[-220:]}  err: {_spt.stderr.strip()[-150:]}")
             failures += 1
     # Soundness: a FALSE string-predicate claim must REJECT. is_live(live key) is 1 (true), so
-    # claiming 0 is unsatisfiable — the independent verify_b3 proves no false string predicate.
+    # claiming 0 is unsatisfiable: the independent verify_b3 proves no false string predicate.
     _spf = _prove_run([sys.executable, GLASS, "prove", "--claim", "0", _sp_path, 'key=sk-live-9f3a2c7e1b'],
                           capture_output=True, text=True, cwd=ROOT)
-    if not _heavy_skipped(_spf, "strings in ZK: false string-predicate claim REJECTs (is_live=1; claim 0 is false)"):
+    if not _heavy_skipped(_spf, "private strings: false string-predicate claim REJECTs (is_live=1; claim 0 is false)"):
         spf_ok = ("proof:   REJECT" in _spf.stdout) and ("proof:   ACCEPT" not in _spf.stdout)
-        print(f"  {'OK ' if spf_ok else 'FAIL'}  strings in ZK: false string-predicate claim REJECTs (is_live=1; claim 0 is false)")
+        print(f"  {'OK ' if spf_ok else 'FAIL'}  private strings: false string-predicate claim REJECTs (is_live=1; claim 0 is false)")
         if not spf_ok:
             print(f"        rc={_spf.returncode}  out: {_spf.stdout.strip()[-220:]}  err: {_spf.stderr.strip()[-150:]}")
             failures += 1
     # Computed-but-static substring bound + string_length: prove a PRIVATE email is at the org domain
-    # without revealing it — substring(email, string_length(email)-14, string_length(email))=="@setonhill.edu"
-    # -> 1 ACCEPT, witness3 AGREES (string_length is the build-time wire count; the slice offset folds to a constant).
+    # without revealing it: substring(email, string_length(email)-14, string_length(email))=="@setonhill.edu"
+    # -> 1 ACCEPT, cross-check AGREES (string_length is the build-time wire count; the slice offset folds to a constant).
     _se_path = os.path.join(EX, "prove", "private_email.glass")
     _se = _prove_run([sys.executable, GLASS, "prove", _se_path, 'email=ekhaklin@setonhill.edu', "--cross-check"],
                          capture_output=True, text=True, cwd=ROOT)
-    if not _heavy_skipped(_se, "strings in ZK: private email org-domain suffix -> 1 ACCEPT (string_length + substring)"):
-        se_ok = (_se.returncode == 0) and ("ACCEPT" in _se.stdout) and ("result:  1" in _se.stdout) and ("THIRD LINEAGE AGREES" in _se.stdout)
-        print(f"  {'OK ' if se_ok else 'FAIL'}  strings in ZK: private email org-domain suffix -> 1 ACCEPT (string_length + substring)")
+    if not _heavy_skipped(_se, "private strings: private email org-domain suffix -> 1 ACCEPT (string_length + substring)"):
+        se_ok = (_se.returncode == 0) and ("ACCEPT" in _se.stdout) and ("result:  1" in _se.stdout) and ("AGREES" in _se.stdout)
+        print(f"  {'OK ' if se_ok else 'FAIL'}  private strings: private email org-domain suffix -> 1 ACCEPT (string_length + substring)")
         if not se_ok:
             print(f"        rc={_se.returncode}  out: {_se.stdout.strip()[-220:]}  err: {_se.stderr.strip()[-150:]}")
             failures += 1
 
-    # String `match` / PStr (v5.102): a string-literal pattern selects via the v5.101 multi-wire
-    # per-codepoint equality gadget — provable allowlist membership / dispatch over a PRIVATE string.
+    # String `match` / PStr: a string-literal pattern selects via the multi-wire
+    # per-codepoint equality gadget: provable allowlist membership / dispatch over a PRIVATE string.
     # `match cmd { "deploy" => 1; "rollback" => 2; "status" => 3; _ => 0 }`: cmd="deploy" -> 1 ACCEPT,
-    # witness3 AGREES (the command stays a private witness). Goldilocks native path.
+    # cross-check AGREES (the command stays a private witness). Goldilocks native path.
     _al_path = os.path.join(EX, "prove", "private_allowlist.glass")
     _al = _prove_run([sys.executable, GLASS, "prove", _al_path, 'cmd=deploy', "--cross-check"],
                          capture_output=True, text=True, cwd=ROOT)
-    if not _heavy_skipped(_al, "string match: private cmd 'deploy' -> action 1 ACCEPT (allowlist dispatch, cmd hidden)"):
-        al_ok = (_al.returncode == 0) and ("result:  1" in _al.stdout) and ("ACCEPT" in _al.stdout) and ("THIRD LINEAGE AGREES" in _al.stdout)
-        print(f"  {'OK ' if al_ok else 'FAIL'}  string match: private cmd 'deploy' -> action 1 ACCEPT (allowlist dispatch, cmd hidden)")
+    if not _heavy_skipped(_al, "string match: private cmd 'deploy' -> action 1 ACCEPT (allowlist dispatch, cmd is a private input)"):
+        al_ok = (_al.returncode == 0) and ("result:  1" in _al.stdout) and ("ACCEPT" in _al.stdout) and ("AGREES" in _al.stdout)
+        print(f"  {'OK ' if al_ok else 'FAIL'}  string match: private cmd 'deploy' -> action 1 ACCEPT (allowlist dispatch, cmd is a private input)")
         if not al_ok:
             print(f"        rc={_al.returncode}  out: {_al.stdout.strip()[-220:]}  err: {_al.stderr.strip()[-150:]}")
             failures += 1
@@ -1571,7 +1620,7 @@ def main() -> int:
     _aln = _prove_run([sys.executable, GLASS, "prove", _al_path, 'cmd=hack', "--cross-check"],
                           capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_aln, "string match: non-member cmd 'hack' -> 0 (falls through _; no arm matches)"):
-        aln_ok = (_aln.returncode == 0) and ("result:  0" in _aln.stdout) and ("THIRD LINEAGE AGREES" in _aln.stdout)
+        aln_ok = (_aln.returncode == 0) and ("result:  0" in _aln.stdout) and ("AGREES" in _aln.stdout)
         print(f"  {'OK ' if aln_ok else 'FAIL'}  string match: non-member cmd 'hack' -> 0 (falls through _; no arm matches)")
         if not aln_ok:
             print(f"        rc={_aln.returncode}  out: {_aln.stdout.strip()[-220:]}  err: {_aln.stderr.strip()[-150:]}")
@@ -1586,16 +1635,16 @@ def main() -> int:
             print(f"        rc={_alf.returncode}  out: {_alf.stdout.strip()[-220:]}  err: {_alf.stderr.strip()[-150:]}")
             failures += 1
 
-    # Records (v5.103): a named record lowers like a tuple (multi-wire, decl order, twidth-padded, no
-    # tag). Construct (ENamedRec) + destructure (PRecord match) over PRIVATE values — structured data
+    # Records: a named record lowers like a tuple (multi-wire, decl order, twidth-padded, no
+    # tag). Construct (ENamedRec) + destructure (PRecord match) over PRIVATE values: structured data
     # flowing through a proof. `order` returns Stats { lo, hi } (sorted bounds), `span` matches it to
-    # prove hi-lo. x=3 y=8 -> 5 ACCEPT, witness3 AGREES; order normalizes (x=8 y=3 -> 5 too). Goldilocks native.
+    # prove hi-lo. x=3 y=8 -> 5 ACCEPT, cross-check AGREES; order normalizes (x=8 y=3 -> 5 too). Goldilocks native.
     _rs_path = os.path.join(EX, "prove", "record_stats.glass")
     _rs = _prove_run([sys.executable, GLASS, "prove", _rs_path, "x=3", "y=8", "--cross-check"],
                          capture_output=True, text=True, cwd=ROOT)
-    if not _heavy_skipped(_rs, "records: Stats{lo,hi} construct + match span = 5 ACCEPT (structured data in ZK)"):
-        rs_ok = (_rs.returncode == 0) and ("result:  5" in _rs.stdout) and ("ACCEPT" in _rs.stdout) and ("THIRD LINEAGE AGREES" in _rs.stdout)
-        print(f"  {'OK ' if rs_ok else 'FAIL'}  records: Stats{{lo,hi}} construct + match span = 5 ACCEPT (structured data in ZK)")
+    if not _heavy_skipped(_rs, "records: Stats{lo,hi} construct + match span = 5 ACCEPT (structured private data)"):
+        rs_ok = (_rs.returncode == 0) and ("result:  5" in _rs.stdout) and ("ACCEPT" in _rs.stdout) and ("AGREES" in _rs.stdout)
+        print(f"  {'OK ' if rs_ok else 'FAIL'}  records: Stats{{lo,hi}} construct + match span = 5 ACCEPT (structured private data)")
         if not rs_ok:
             print(f"        rc={_rs.returncode}  out: {_rs.stdout.strip()[-220:]}  err: {_rs.stderr.strip()[-150:]}")
             failures += 1
@@ -1609,16 +1658,16 @@ def main() -> int:
             print(f"        rc={_rsf.returncode}  out: {_rsf.stdout.strip()[-220:]}  err: {_rsf.stderr.strip()[-150:]}")
             failures += 1
 
-    # Record field access r.field (v5.104): the idiomatic dot-access lowers via a type-env (reusing
-    # the fenv slot, name -> "@rec:Type") + the v5.103 PRecord desugar. `solvent(a) = a.balance >= 100`
-    # over a PRIVATE Account proves solvency by reading the field directly — revealing only the verdict.
-    # bal=250 -> 1 ACCEPT, witness3 AGREES (balance + owner hidden). Goldilocks native.
+    # Record field access r.field: the idiomatic dot-access lowers via a type-env (reusing
+    # the fenv slot, name -> "@rec:Type") + the PRecord desugar. `solvent(a) = a.balance >= 100`
+    # over a PRIVATE Account proves solvency by reading the field directly: revealing only the verdict.
+    # bal=250 -> 1 ACCEPT, cross-check AGREES (balance + owner hidden). Goldilocks native.
     _rf_path = os.path.join(EX, "prove", "record_field.glass")
     _rf = _prove_run([sys.executable, GLASS, "prove", _rf_path, "bal=250", "own=7", "--cross-check"],
                          capture_output=True, text=True, cwd=ROOT)
-    if not _heavy_skipped(_rf, "record field access: solvent(a)=a.balance>=100 -> 1 ACCEPT (a.field read directly, hidden)"):
-        rf_ok = (_rf.returncode == 0) and ("result:  1" in _rf.stdout) and ("ACCEPT" in _rf.stdout) and ("THIRD LINEAGE AGREES" in _rf.stdout)
-        print(f"  {'OK ' if rf_ok else 'FAIL'}  record field access: solvent(a)=a.balance>=100 -> 1 ACCEPT (a.field read directly, hidden)")
+    if not _heavy_skipped(_rf, "record field access: solvent(a)=a.balance>=100 -> 1 ACCEPT (a.field read directly, private input)"):
+        rf_ok = (_rf.returncode == 0) and ("result:  1" in _rf.stdout) and ("ACCEPT" in _rf.stdout) and ("AGREES" in _rf.stdout)
+        print(f"  {'OK ' if rf_ok else 'FAIL'}  record field access: solvent(a)=a.balance>=100 -> 1 ACCEPT (a.field read directly, private input)")
         if not rf_ok:
             print(f"        rc={_rf.returncode}  out: {_rf.stdout.strip()[-220:]}  err: {_rf.stderr.strip()[-150:]}")
             failures += 1
@@ -1632,15 +1681,15 @@ def main() -> int:
             print(f"        rc={_rff.returncode}  out: {_rff.stdout.strip()[-220:]}  err: {_rff.stderr.strip()[-150:]}")
             failures += 1
 
-    # Capstone (v5.108): the whole arc COMPOSES — a private access-policy decision combining records
+    # Capstone: the whole arc COMPOSES: a private access-policy decision combining records
     # (Applicant), field access (a.age, a.region), ordering comparison (>=, <=), and string dispatch
     # (tier in an allowlist), all in one proven circuit. age/region/tier are PRIVATE; only the verdict
-    # is revealed. End-to-end composition test: eligible -> 1 ACCEPT + witness3 AGREES; false claim REJECTs.
+    # is revealed. End-to-end composition test: eligible -> 1 ACCEPT + cross-check AGREES; false claim REJECTs.
     _el_path = os.path.join(EX, "prove", "private_eligibility.glass")
     _el = _prove_run([sys.executable, GLASS, "prove", _el_path, "age0=29", "region0=3", "tier0=gold", "--cross-check"],
                          capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_el, "capstone: records + field access + comparison + string dispatch compose -> eligible=1 ACCEPT"):
-        el_ok = (_el.returncode == 0) and ("result:  1" in _el.stdout) and ("ACCEPT" in _el.stdout) and ("THIRD LINEAGE AGREES" in _el.stdout)
+        el_ok = (_el.returncode == 0) and ("result:  1" in _el.stdout) and ("ACCEPT" in _el.stdout) and ("AGREES" in _el.stdout)
         print(f"  {'OK ' if el_ok else 'FAIL'}  capstone: records + field access + comparison + string dispatch compose -> eligible=1 ACCEPT")
         if not el_ok:
             print(f"        rc={_el.returncode}  out: {_el.stdout.strip()[-260:]}  err: {_el.stderr.strip()[-150:]}")
@@ -1654,52 +1703,52 @@ def main() -> int:
             print(f"        rc={_elf.returncode}  out: {_elf.stdout.strip()[-260:]}  err: {_elf.stderr.strip()[-150:]}")
             failures += 1
 
-    # String-VALUED result (v5.110): a proven function can RETURN a string, not just a number / Bool.
+    # String-VALUED result: a proven function can RETURN a string, not just a number / Bool.
     # A string is multi-wire (one codepoint wire per char), so the proof binds EVERY output wire as
-    # the public claim (build_claim_mw) and DECODES it back to text — no `verify_b3`/Pentecost change
+    # the public claim (build_claim_mw) and DECODES it back to text: no `verify_b3`/Lens change
     # (a multi-wire claim is just more is-zero asserts). Selective disclosure: reveal_prefix reveals
-    # the first 8 chars of a PRIVATE key, the rest hidden. -> "sk-live-" ACCEPT, witness3 AGREES.
+    # the first 8 chars of a PRIVATE key, the rest hidden. -> "sk-live-" ACCEPT, cross-check AGREES.
     _rp_path = os.path.join(EX, "prove", "reveal_prefix.glass")
     _rpv = _prove_run([sys.executable, GLASS, "prove", _rp_path, "key=sk-live-9f3a2c7e1b", "--cross-check"],
                           capture_output=True, text=True, cwd=ROOT)
-    if not _heavy_skipped(_rpv, 'string-valued result: reveal_prefix -> "sk-live-" ACCEPT (string result bound + decoded, key hidden)'):
-        rpv_ok = (_rpv.returncode == 0) and ('result:  "sk-live-"' in _rpv.stdout) and ("ACCEPT" in _rpv.stdout) and ("THIRD LINEAGE AGREES" in _rpv.stdout)
-        print(f"  {'OK ' if rpv_ok else 'FAIL'}  string-valued result: reveal_prefix -> \"sk-live-\" ACCEPT (string result bound + decoded, key hidden)")
+    if not _heavy_skipped(_rpv, 'string-valued result: reveal_prefix -> "sk-live-" ACCEPT (string result bound + decoded, key is a private input)'):
+        rpv_ok = (_rpv.returncode == 0) and ('result:  "sk-live-"' in _rpv.stdout) and ("ACCEPT" in _rpv.stdout) and ("AGREES" in _rpv.stdout)
+        print(f"  {'OK ' if rpv_ok else 'FAIL'}  string-valued result: reveal_prefix -> \"sk-live-\" ACCEPT (string result bound + decoded, key is a private input)")
         if not rpv_ok:
             print(f"        rc={_rpv.returncode}  out: {_rpv.stdout.strip()[-260:]}  err: {_rpv.stderr.strip()[-150:]}")
             failures += 1
     # A string chosen by a PRIVATE comparison: verdict(score). Equal-width branches mux wire-by-wire;
     # the verdict WORD is revealed, the score hidden. score=820 -> "PASS", score=500 -> "FAIL" (the
-    # branch genuinely selects — not a constant), both ACCEPT + witness3 AGREES on the string.
+    # branch genuinely selects, not a constant), both ACCEPT + cross-check AGREES on the string.
     _vd_path = os.path.join(EX, "prove", "private_verdict.glass")
     _vdp = _prove_run([sys.executable, GLASS, "prove", _vd_path, "score=820", "--cross-check"],
                           capture_output=True, text=True, cwd=ROOT)
-    if not _heavy_skipped(_vdp, 'string-valued result: private score 820 -> "PASS" ACCEPT (verdict word revealed, score hidden)'):
-        vdp_ok = (_vdp.returncode == 0) and ('result:  "PASS"' in _vdp.stdout) and ("ACCEPT" in _vdp.stdout) and ("THIRD LINEAGE AGREES" in _vdp.stdout)
-        print(f"  {'OK ' if vdp_ok else 'FAIL'}  string-valued result: private score 820 -> \"PASS\" ACCEPT (verdict word revealed, score hidden)")
+    if not _heavy_skipped(_vdp, 'string-valued result: private score 820 -> "PASS" ACCEPT (verdict word revealed, score is a private input)'):
+        vdp_ok = (_vdp.returncode == 0) and ('result:  "PASS"' in _vdp.stdout) and ("ACCEPT" in _vdp.stdout) and ("AGREES" in _vdp.stdout)
+        print(f"  {'OK ' if vdp_ok else 'FAIL'}  string-valued result: private score 820 -> \"PASS\" ACCEPT (verdict word revealed, score is a private input)")
         if not vdp_ok:
             print(f"        rc={_vdp.returncode}  out: {_vdp.stdout.strip()[-260:]}  err: {_vdp.stderr.strip()[-150:]}")
             failures += 1
     _vdf = _prove_run([sys.executable, GLASS, "prove", _vd_path, "score=500", "--cross-check"],
                           capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_vdf, 'string-valued result: private score 500 -> "FAIL" (the if-over-strings branch selects)'):
-        vdf_ok = (_vdf.returncode == 0) and ('result:  "FAIL"' in _vdf.stdout) and ("THIRD LINEAGE AGREES" in _vdf.stdout)
+        vdf_ok = (_vdf.returncode == 0) and ('result:  "FAIL"' in _vdf.stdout) and ("AGREES" in _vdf.stdout)
         print(f"  {'OK ' if vdf_ok else 'FAIL'}  string-valued result: private score 500 -> \"FAIL\" (the if-over-strings branch selects)")
         if not vdf_ok:
             print(f"        rc={_vdf.returncode}  out: {_vdf.stdout.strip()[-260:]}  err: {_vdf.stderr.strip()[-150:]}")
             failures += 1
-    # Unequal-width string results (v5.121): an `if`/`match` returning strings of DIFFERENT widths now
-    # LOWERS soundly — the bridge NUL-pads the shorter branch (codepoint 0, a value real chars 32..126
+    # Unequal-width string results: an `if`/`match` returning strings of DIFFERENT widths now
+    # LOWERS soundly: the bridge NUL-pads the shorter branch (codepoint 0, a value real chars 32..126
     # never take) and decode_str stops at the sentinel, so the selected branch reveals its true text.
     # private_risk has four nested ifs of lengths 8/4/6/3; score=95 -> "CRITICAL" (the longest), score
-    # hidden. (Until v5.121 this ABSTAINed and branches had to be hand-padded, as private_verdict does.)
+    # hidden. (Branches need not be hand-padded to equal width, as private_verdict's happen to be.)
     import tempfile as _tf_sr
     _rk_path = os.path.join(EX, "prove", "private_risk.glass")
     _rk = _prove_run([sys.executable, GLASS, "prove", _rk_path, "score=95", "--cross-check"],
                          capture_output=True, text=True, cwd=ROOT)
-    if not _heavy_skipped(_rk, 'unequal-width strings: private_risk score=95 -> "CRITICAL" ACCEPT (NUL-padded if-mux, score hidden)'):
-        rk_ok = (_rk.returncode == 0) and ('result:  "CRITICAL"' in _rk.stdout) and ("ACCEPT" in _rk.stdout) and ("THIRD LINEAGE AGREES" in _rk.stdout)
-        print(f"  {'OK ' if rk_ok else 'FAIL'}  unequal-width strings: private_risk score=95 -> \"CRITICAL\" ACCEPT (NUL-padded if-mux, score hidden)")
+    if not _heavy_skipped(_rk, 'unequal-width strings: private_risk score=95 -> "CRITICAL" ACCEPT (NUL-padded if-mux, score is a private input)'):
+        rk_ok = (_rk.returncode == 0) and ('result:  "CRITICAL"' in _rk.stdout) and ("ACCEPT" in _rk.stdout) and ("AGREES" in _rk.stdout)
+        print(f"  {'OK ' if rk_ok else 'FAIL'}  unequal-width strings: private_risk score=95 -> \"CRITICAL\" ACCEPT (NUL-padded if-mux, score is a private input)")
         if not rk_ok:
             print(f"        rc={_rk.returncode}  out: {_rk.stdout.strip()[-260:]}  err: {_rk.stderr.strip()[-150:]}")
             failures += 1
@@ -1707,28 +1756,28 @@ def main() -> int:
     _rk2 = _prove_run([sys.executable, GLASS, "prove", _rk_path, "score=10", "--cross-check"],
                           capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_rk2, 'unequal-width strings: private_risk score=10 -> "LOW" (the shortest band selects)'):
-        rk2_ok = (_rk2.returncode == 0) and ('result:  "LOW"' in _rk2.stdout) and ("THIRD LINEAGE AGREES" in _rk2.stdout)
+        rk2_ok = (_rk2.returncode == 0) and ('result:  "LOW"' in _rk2.stdout) and ("AGREES" in _rk2.stdout)
         print(f"  {'OK ' if rk2_ok else 'FAIL'}  unequal-width strings: private_risk score=10 -> \"LOW\" (the shortest band selects)")
         if not rk2_ok:
             print(f"        rc={_rk2.returncode}  out: {_rk2.stdout.strip()[-260:]}  err: {_rk2.stderr.strip()[-150:]}")
             failures += 1
-    # The latent-bug regression (v5.121): a `match` with unequal-width string arms used to SILENTLY
-    # TRUNCATE to the last arm's width — `match s { 0 => "approved"; _ => "no" }` at s=0 attested the
-    # corrupted "ap" yet ACCEPTed (a source<->circuit divergence only --witness3 caught). accw now keeps
-    # the longer accumulator + decode stops at NUL, so it attests the true "approved" and witness3 AGREES.
+    # The latent-bug regression: a `match` with unequal-width string arms used to SILENTLY
+    # TRUNCATE to the last arm's width: `match s { 0 => "approved"; _ => "no" }` at s=0 attested the
+    # corrupted "ap" yet ACCEPTed (a source<->circuit divergence only --cross-check caught). accw now keeps
+    # the longer accumulator + decode stops at NUL, so it attests the true "approved" and cross-check AGREES.
     with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _ufm:
         _ufm.write('fn lab(s: Int) : String = match s { 0 => "approved"; _ => "no" }\nlab(score)\n')
         _mtrunc_path = _ufm.name
     _mt = _prove_run([sys.executable, GLASS, "prove", _mtrunc_path, "score=0", "--cross-check"],
                          capture_output=True, text=True, cwd=ROOT)
-    if not _heavy_skipped(_mt, 'unequal-width match: s=0 -> "approved" ACCEPT (was silently truncated to "ap"; v5.121 fix)'):
-        mt_ok = (_mt.returncode == 0) and ('result:  "approved"' in _mt.stdout) and ("ACCEPT" in _mt.stdout) and ("THIRD LINEAGE AGREES" in _mt.stdout)
-        print(f"  {'OK ' if mt_ok else 'FAIL'}  unequal-width match: s=0 -> \"approved\" ACCEPT (was silently truncated to \"ap\"; v5.121 fix)")
+    if not _heavy_skipped(_mt, 'unequal-width match: s=0 -> "approved" ACCEPT (was silently truncated to "ap")'):
+        mt_ok = (_mt.returncode == 0) and ('result:  "approved"' in _mt.stdout) and ("ACCEPT" in _mt.stdout) and ("AGREES" in _mt.stdout)
+        print(f"  {'OK ' if mt_ok else 'FAIL'}  unequal-width match: s=0 -> \"approved\" ACCEPT (was silently truncated to \"ap\")")
         if not mt_ok:
             print(f"        rc={_mt.returncode}  out: {_mt.stdout.strip()[-260:]}  err: {_mt.stderr.strip()[-150:]}")
             failures += 1
-    # Soundness guard: an unequal-width mux that is NOT both flat strings — here a tuple carrying a
-    # variable-length string field — still ABSTAINs (is_str_expr is false for ETuple/ECtor), so a
+    # Soundness guard: an unequal-width mux that is NOT both flat strings: here a tuple carrying a
+    # variable-length string field: still ABSTAINs (is_str_expr is false for ETuple/ECtor), so a
     # structured value is never NUL-corrupted. Only provably-flat strings take the padding path.
     with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _ufs:
         _ufs.write('fn pick(c: Int) : (String, Int) = if c >= 1 then ("ab", 1) else ("xyz", 2)\npick(flag)\n')
@@ -1741,10 +1790,10 @@ def main() -> int:
         if not st_ok:
             print(f"        rc={_st.returncode}  out: {_st.stdout.strip()[-260:]}  err: {_st.stderr.strip()[-150:]}")
             failures += 1
-    # Soundness guard 2: a multi-wire result that is NOT a string and NOT a tuple/record-of-scalars —
-    # an ADT (a tagged constructor value) — is not bindable as a public claim, so it ABSTAINs rather
+    # Soundness guard 2: a multi-wire result that is NOT a string and NOT a tuple/record-of-scalars:
+    # an ADT (a tagged constructor value): is not bindable as a public claim, so it ABSTAINs rather
     # than silently publish only its first wire (the old `vh` truncation). (Tuples/records of scalars
-    # ARE bindable since v5.117; ADTs are the residual multi-wire shape that still abstains.)
+    # ARE bindable; ADTs are the residual multi-wire shape that still abstains.)
     with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _uf2:
         _uf2.write("type Box = | B(Int) | C(Int)\nfn mk(a: Int) : Box = B(a)\nmk(x)\n")
         _tup_path = _uf2.name
@@ -1756,11 +1805,11 @@ def main() -> int:
         if not tup_ok:
             print(f"        rc={_tup.returncode}  out: {_tup.stdout.strip()[-260:]}  err: {_tup.stderr.strip()[-150:]}")
             failures += 1
-    # Soundness guard 3 (v5.128): a built-in List<Int> threaded through a function and indexed used to
+    # Soundness guard 3: a built-in List<Int> threaded through a function and indexed used to
     # lower to a SILENT WRONG circuit. prism desugars [a,b,c]/[h,...t] to Cons/Nil ECtor/PCtor, but the
     # built-in List type is in no source TypeDecl, so ctag/ctor_argtypes returned tag 0 / no fields for
     # BOTH Cons and Nil -> every list pattern collapsed to the [] arm and the proof attested 0 (ACCEPT),
-    # caught only by --witness3 (DIVERGENCE). Now ctag/ctor_argtypes ABSTAIN on ANY undeclared ctor: a
+    # caught only by --cross-check (DIVERGENCE). Now ctag/ctor_argtypes ABSTAIN on ANY undeclared ctor: a
     # built-in list in proven position is refused loudly, never silently proven 0. (Declared ADTs like
     # map_prove's IntList still resolve and ACCEPT -- verified by the higher-order gate above.) The
     # refusal fires DURING lowering (pre-STARK), so this gate is fast.
@@ -1779,10 +1828,10 @@ def main() -> int:
         if not lst_ok:
             print(f"        rc={_lst.returncode}  out: {_lst.stdout.strip()[-260:]}  err: {_lst.stderr.strip()[-150:]}")
             failures += 1
-    # Soundness guard 4 (v5.129): an OUT-OF-BOUNDS substring used to OVER-READ — substring("ab",0,5)
+    # Soundness guard 4: an OUT-OF-BOUNDS substring used to OVER-READ: substring("ab",0,5)
     # lowered to a 5-wire slice whose OOB tail read nthI's default = wire 0 = the FIRST input codepoint,
     # attesting "abaaa" while the source (glass.py b_substring) CLAMPS to "ab"; the SOUND verify_b3
-    # ACCEPTed the wrong string, caught only by --witness3. substr_bounds now reproduces b_substring
+    # ACCEPTed the wrong string, caught only by --cross-check. substr_bounds now reproduces b_substring
     # EXACTLY (clamp both bounds to the width), so the circuit value EQUALS the reference -> the Third
     # Witness AGREES (and a false predicate like substring(key,0,8)=="sk-live-" can no longer be made
     # to pass for a short key). The clamp is a no-op for in-bounds slices (private_prefix/email above).
@@ -1791,15 +1840,15 @@ def main() -> int:
         _oob_path = _ufoob.name
     _oob = _prove_run([sys.executable, GLASS, "prove", _oob_path, "inp=ab", "--cross-check"],
                           capture_output=True, text=True, cwd=ROOT)
-    if not _heavy_skipped(_oob, 'substring OOB now CLAMPS to the reference ("ab", not over-read "abaaa") -> Third Witness AGREES'):
+    if not _heavy_skipped(_oob, 'substring OOB now CLAMPS to the reference ("ab", not over-read "abaaa") -> cross-check AGREES'):
         oob_ok = ((_oob.returncode == 0) and ('result:  "ab"' in _oob.stdout)
-                  and ("ACCEPT" in _oob.stdout) and ("THIRD LINEAGE AGREES" in _oob.stdout)
+                  and ("ACCEPT" in _oob.stdout) and ("AGREES" in _oob.stdout)
                   and ("abaaa" not in _oob.stdout))
-        print(f"  {'OK ' if oob_ok else 'FAIL'}  substring OOB now CLAMPS to the reference (\"ab\", not over-read \"abaaa\") -> Third Witness AGREES")
+        print(f"  {'OK ' if oob_ok else 'FAIL'}  substring OOB now CLAMPS to the reference (\"ab\", not over-read \"abaaa\") -> cross-check AGREES")
         if not oob_ok:
             print(f"        rc={_oob.returncode}  out: {_oob.stdout.strip()[-260:]}  err: {_oob.stderr.strip()[-150:]}")
             failures += 1
-    # Soundness guard 5 (v5.129): an INVERTED substring (start > end) used to produce an empty slice
+    # Soundness guard 5: an INVERTED substring (start > end) used to produce an empty slice
     # silently, which then reached the SCALAR claim binder (build_claim_m) and bound wire 0 VACUOUSLY
     # (mks(vhi([])=0, 0)=0), ACCEPTing an arbitrary claim. substr_bounds now ABSTAINs on start>end
     # (matching b_substring's raise), and build_claim_m/build_claim_pub now guard ilenI(outws)==1. The
@@ -1817,7 +1866,7 @@ def main() -> int:
         if not inv_ok:
             print(f"        rc={_inv.returncode}  out: {_inv.stdout.strip()[-260:]}  err: {_inv.stderr.strip()[-150:]}")
             failures += 1
-    # Soundness guard 6 (v5.130, audit hole B1) — a recursive-ADT value can be WIDER than its fixed
+    # Soundness guard 6 (audit hole B1): a recursive-ADT value can be WIDER than its fixed
     # `twidth` slot (Cons(7,Nil)=27 wires vs twidth(IntList)=25, since twidth decrements fuel per level
     # while construction pads flat). When such an over-wide field is FOLLOWED by another field, the
     # following field was read at a shifted offset (onto the overflow wires) -> silent wrong value:
@@ -1835,7 +1884,7 @@ def main() -> int:
         if not b1_ok:
             print(f"        rc={_b1.returncode}  out: {_b1.stdout.strip()[-260:]}  err: {_b1.stderr.strip()[-150:]}")
             failures += 1
-    # Soundness guard 7 (v5.130, audit hole B2) — a String FIELD embedded in a record/ADT/tuple has no
+    # Soundness guard 7 (audit hole B2): a String FIELD embedded in a record/ADT/tuple has no
     # fixed type-determined wire width (it is codepoint-count dependent), so a width-1 twidth slot
     # mis-offset the following fields (or truncated the string): getn(Box{s:"hello", n:inp}) read a
     # codepoint of "hello" instead of inp. twidth now ABSTAINs on a String field. (Standalone String
@@ -1853,10 +1902,10 @@ def main() -> int:
             print(f"        rc={_b2.returncode}  out: {_b2.stdout.strip()[-260:]}  err: {_b2.stderr.strip()[-150:]}")
             failures += 1
 
-    # String --claim (v5.111): assert a SPECIFIC string result. The claimed string's codepoints are
+    # String --claim: assert a SPECIFIC string result. The claimed string's codepoints are
     # bound (not the computed result), so a FALSE claim makes the circuit unsatisfiable and the
-    # independent verify_b3 REJECTs — the soundness property for string results, made testable
-    # end-to-end (v5.110 string results had only the structural REJECT argument). verdict(820)="PASS".
+    # independent verify_b3 REJECTs: the soundness property for string results, made testable
+    # end-to-end (beyond the structural REJECT argument). verdict(820)="PASS".
     _vc = _prove_run([sys.executable, GLASS, "prove", "--claim", "PASS", _vd_path, "score=820"],
                          capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_vc, 'string --claim: a TRUE string claim ("PASS") ACCEPTs'):
@@ -1874,7 +1923,7 @@ def main() -> int:
         if not vcf_ok:
             print(f"        rc={_vcf.returncode}  out: {_vcf.stdout.strip()[-260:]}  err: {_vcf.stderr.strip()[-150:]}")
             failures += 1
-    # A wrong-LENGTH string claim ABSTAINs (build_claim_mw's length guard) — never bound as a matching
+    # A wrong-LENGTH string claim ABSTAINs (build_claim_mw's length guard): never bound as a matching
     # prefix (which would wrongly ACCEPT a too-short claim). "PASSING" (7) vs the 4-char result.
     _vcl = _prove_run([sys.executable, GLASS, "prove", "--claim", "PASSING", _vd_path, "score=820"],
                           capture_output=True, text=True, cwd=ROOT)
@@ -1896,33 +1945,33 @@ def main() -> int:
         print(f"        rc={_scc.returncode}  out: {_scc.stdout.strip()[-260:]}  err: {_scc.stderr.strip()[-150:]}")
         failures += 1
 
-    # Portable STRING-RESULT proof (v5.112): `glass prove --emit` a string-valued proof, then the
-    # INDEPENDENT Pentecost verifier must ACCEPT it. v5.110 string results couldn't --emit (multi-wire
-    # ABSTAIN); now the multi-wire claim (gprove_emit_mw) serializes to the same token stream Pentecost
+    # Portable STRING-RESULT proof: `glass prove --emit` a string-valued proof, then the
+    # INDEPENDENT Lens verifier must ACCEPT it. The multi-wire claim (gprove_emit_mw) serializes to
+    # the same token stream Lens
     # parses, so the second verifier checks the string-VALUED proof shape end-to-end via the CLI. (The
     # committed corpus fixture honest_string_result.b3.txt.gz tamper-checks the same shape statically.)
     with _tf_sr.NamedTemporaryFile("w", suffix=".b3.txt", delete=False) as _ef:
         _emit_proof_path = _ef.name
     _emi = _prove_run([sys.executable, GLASS, "prove", "--emit", _emit_proof_path, _rp_path, "key=sk-live-9f3a2c7e1b"],
                           capture_output=True, text=True, cwd=ROOT)
-    if not _heavy_skipped(_emi, "portable string-result proof: --emit a string-valued proof, Pentecost verifies it"):
+    if not _heavy_skipped(_emi, "portable string-result proof: --emit a string-valued proof, Lens verifies it"):
         _emv = subprocess.run([sys.executable, GLASS, "verify", _emit_proof_path], capture_output=True, text=True, cwd=ROOT)
-        emi_ok = (_emi.returncode == 0) and ("wrote a portable proof" in _emi.stdout) and ("PENTECOST: ACCEPT" in _emv.stdout)
-        print(f"  {'OK ' if emi_ok else 'FAIL'}  portable string-result proof: --emit a string-valued proof, Pentecost verifies it")
+        emi_ok = (_emi.returncode == 0) and ("wrote a portable proof" in _emi.stdout) and ("LENS: ACCEPT" in _emv.stdout)
+        print(f"  {'OK ' if emi_ok else 'FAIL'}  portable string-result proof: --emit a string-valued proof, Lens verifies it")
         if not emi_ok:
             print(f"        emit rc={_emi.returncode} out: {_emi.stdout.strip()[-180:]}  verify out: {_emv.stdout.strip()[-180:]}")
             failures += 1
 
-    # Computed higher-order callee (v5.113): a callee CHOSEN AT RUNTIME — `(if mode >= 1 then double
-    # else increment)(x)` — was the last refused call form (named-fn HOFs already proved, v5.87). The
+    # Computed higher-order callee: a callee CHOSEN AT RUNTIME: `(if mode >= 1 then double
+    # else increment)(x)`: was the last refused call form (named-fn HOFs already proved). The
     # cut: push the application inside the selector (applying a conditionally-chosen function == cond-
-    # itionally applying each candidate), so it lowers as `if c then g(x) else h(x)` — named-fn calls
+    # itionally applying each candidate), so it lowers as `if c then g(x) else h(x)`: named-fn calls
     # muxed by the same gadget an `if` uses; the rewrite is shared by seval (guard) + unroll (circuit).
     _cc_path = os.path.join(EX, "prove", "computed_callee.glass")
     _cc1 = _prove_run([sys.executable, GLASS, "prove", _cc_path, "mode=1", "x=21", "--cross-check"],
                           capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_cc1, "computed callee: (if mode>=1 then double else increment)(21), mode=1 -> 42 ACCEPT"):
-        cc1_ok = (_cc1.returncode == 0) and ("result:  42" in _cc1.stdout) and ("ACCEPT" in _cc1.stdout) and ("THIRD LINEAGE AGREES" in _cc1.stdout)
+        cc1_ok = (_cc1.returncode == 0) and ("result:  42" in _cc1.stdout) and ("ACCEPT" in _cc1.stdout) and ("AGREES" in _cc1.stdout)
         print(f"  {'OK ' if cc1_ok else 'FAIL'}  computed callee: (if mode>=1 then double else increment)(21), mode=1 -> 42 ACCEPT")
         if not cc1_ok:
             print(f"        rc={_cc1.returncode}  out: {_cc1.stdout.strip()[-260:]}  err: {_cc1.stderr.strip()[-150:]}")
@@ -1931,7 +1980,7 @@ def main() -> int:
     _cc0 = _prove_run([sys.executable, GLASS, "prove", _cc_path, "mode=0", "x=21", "--cross-check"],
                           capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_cc0, "computed callee: mode=0 -> increment(21)=22 (the runtime-chosen callee depends on the flag)"):
-        cc0_ok = (_cc0.returncode == 0) and ("result:  22" in _cc0.stdout) and ("THIRD LINEAGE AGREES" in _cc0.stdout)
+        cc0_ok = (_cc0.returncode == 0) and ("result:  22" in _cc0.stdout) and ("AGREES" in _cc0.stdout)
         print(f"  {'OK ' if cc0_ok else 'FAIL'}  computed callee: mode=0 -> increment(21)=22 (the runtime-chosen callee depends on the flag)")
         if not cc0_ok:
             print(f"        rc={_cc0.returncode}  out: {_cc0.stdout.strip()[-260:]}  err: {_cc0.stderr.strip()[-150:]}")
@@ -1946,9 +1995,9 @@ def main() -> int:
             print(f"        rc={_ccf.returncode}  out: {_ccf.stdout.strip()[-260:]}  err: {_ccf.stderr.strip()[-150:]}")
             failures += 1
 
-    # Let-aliased fn callee (v5.114): `let f = g in f(x)` binds a function NAME locally and calls it
-    # — closing the "unresolved call to 'f'" refusal for a let-bound fn name (distinct from the v5.113
-    # runtime-chosen callee; reuses the v5.87 fn-arg fenv mechanism, aliasing f -> g in fenv and
+    # Let-aliased fn callee: `let f = g in f(x)` binds a function NAME locally and calls it:
+    # closing the "unresolved call to 'f'" refusal for a let-bound fn name (distinct from the
+    # runtime-chosen callee; reuses the fn-arg fenv mechanism, aliasing f -> g in fenv and
     # dropping the let). g0 = double, so `let f = g0 in f(6)` = 12.
     with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _laf:
         _laf.write("fn g0(x: Int) : Int = x + x\nfn run(n: Int) : Int = let f = g0 in f(n)\nrun(k)\n")
@@ -1956,7 +2005,7 @@ def main() -> int:
     _la = _prove_run([sys.executable, GLASS, "prove", _la_path, "k=6", "--cross-check"],
                          capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_la, "let-aliased fn callee: let f = g0 in f(6) -> 12 ACCEPT (the 'unresolved f' refusal closed)"):
-        la_ok = (_la.returncode == 0) and ("result:  12" in _la.stdout) and ("ACCEPT" in _la.stdout) and ("THIRD LINEAGE AGREES" in _la.stdout)
+        la_ok = (_la.returncode == 0) and ("result:  12" in _la.stdout) and ("ACCEPT" in _la.stdout) and ("AGREES" in _la.stdout)
         print(f"  {'OK ' if la_ok else 'FAIL'}  let-aliased fn callee: let f = g0 in f(6) -> 12 ACCEPT (the 'unresolved f' refusal closed)")
         if not la_ok:
             print(f"        rc={_la.returncode}  out: {_la.stdout.strip()[-260:]}  err: {_la.stderr.strip()[-150:]}")
@@ -1970,10 +2019,10 @@ def main() -> int:
             print(f"        rc={_laf2.returncode}  out: {_laf2.stdout.strip()[-260:]}  err: {_laf2.stderr.strip()[-150:]}")
             failures += 1
 
-    # Selector-let callee (v5.115): `let f = (if c then g else h) in f(x)` — a let bound to a RUNTIME
+    # Selector-let callee: `let f = (if c then g else h) in f(x)`: a let bound to a RUNTIME
     # SELECTOR over functions, the last residual call form. The cut is the DUAL of push_app: distribute
     # the let over the selector (== if c then (let f=g in body) else (let f=h in body)), each branch
-    # then a v5.114 alias. c>=1 -> dbl(5)=10, c=0 -> inc(5)=6 (the callee depends on the private flag).
+    # then a bare-name alias. c>=1 -> dbl(5)=10, c=0 -> inc(5)=6 (the callee depends on the private flag).
     with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _slf:
         _slf.write("fn dbl(x: Int) : Int = x + x\nfn inc(x: Int) : Int = x + 1\n"
                    "fn run(c: Int, n: Int) : Int = let f = (if c >= 1 then dbl else inc) in f(n)\nrun(c, n)\n")
@@ -1981,7 +2030,7 @@ def main() -> int:
     _sl = _prove_run([sys.executable, GLASS, "prove", _sl_path, "c=1", "n=5", "--cross-check"],
                          capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_sl, "selector-let callee: let f = (if c then dbl else inc) in f(5), c=1 -> 10 ACCEPT"):
-        sl_ok = (_sl.returncode == 0) and ("result:  10" in _sl.stdout) and ("ACCEPT" in _sl.stdout) and ("THIRD LINEAGE AGREES" in _sl.stdout)
+        sl_ok = (_sl.returncode == 0) and ("result:  10" in _sl.stdout) and ("ACCEPT" in _sl.stdout) and ("AGREES" in _sl.stdout)
         print(f"  {'OK ' if sl_ok else 'FAIL'}  selector-let callee: let f = (if c then dbl else inc) in f(5), c=1 -> 10 ACCEPT")
         if not sl_ok:
             print(f"        rc={_sl.returncode}  out: {_sl.stdout.strip()[-260:]}  err: {_sl.stderr.strip()[-150:]}")
@@ -1995,10 +2044,10 @@ def main() -> int:
             print(f"        rc={_slf2.returncode}  out: {_slf2.stdout.strip()[-260:]}  err: {_slf2.stderr.strip()[-150:]}")
             failures += 1
 
-    # Bitwise logic (v5.116): bit_and / bit_or / bit_xor over [0,2^32) — the one integer-operation
+    # Bitwise logic: bit_and / bit_or / bit_xor over [0,2^32): the one integer-operation
     # family the bridge lacked. The gadget decomposes both operands into boolean-pinned bits (reusing
     # the range gadget's machinery), combines per position (AND=a*b, OR=a+b-ab, XOR=(a-b)^2), and
-    # recomposes. Each op is value-checked + Third-Witness-confirmed (so the per-bit formula matches
+    # recomposes. Each op is value-checked + cross-check-confirmed (so the per-bit formula matches
     # the reference int64 builtin); out-of-range ABSTAINs; a false claim REJECTs.
     def _bit_prog(op):
         with _tf_sr.NamedTemporaryFile("w", suffix=".glass", delete=False) as _bf:
@@ -2007,13 +2056,13 @@ def main() -> int:
     for _op, _exp in [("bit_and", 8), ("bit_or", 14), ("bit_xor", 6)]:   # 12 & 10 = 8, | = 14, ^ = 6
         _bp = _prove_run([sys.executable, GLASS, "prove", _bit_prog(_op), "a=12", "b=10", "--cross-check"],
                              capture_output=True, text=True, cwd=ROOT)
-        if not _heavy_skipped(_bp, f"bitwise: {_op}(12,10) -> {_exp} ACCEPT (Third Witness confirms the per-bit formula)"):
-            bp_ok = (_bp.returncode == 0) and (f"result:  {_exp}" in _bp.stdout) and ("ACCEPT" in _bp.stdout) and ("THIRD LINEAGE AGREES" in _bp.stdout)
-            print(f"  {'OK ' if bp_ok else 'FAIL'}  bitwise: {_op}(12,10) -> {_exp} ACCEPT (Third Witness confirms the per-bit formula)")
+        if not _heavy_skipped(_bp, f"bitwise: {_op}(12,10) -> {_exp} ACCEPT (cross-check confirms the per-bit formula)"):
+            bp_ok = (_bp.returncode == 0) and (f"result:  {_exp}" in _bp.stdout) and ("ACCEPT" in _bp.stdout) and ("AGREES" in _bp.stdout)
+            print(f"  {'OK ' if bp_ok else 'FAIL'}  bitwise: {_op}(12,10) -> {_exp} ACCEPT (cross-check confirms the per-bit formula)")
             if not bp_ok:
                 print(f"        rc={_bp.returncode}  out: {_bp.stdout.strip()[-260:]}  err: {_bp.stderr.strip()[-150:]}")
                 failures += 1
-    # Out-of-range operand (>= 2^32) ABSTAINs (the bit-decomposition would be unsatisfiable — refused, not REJECTed).
+    # Out-of-range operand (>= 2^32) ABSTAINs (the bit-decomposition would be unsatisfiable: refused, not REJECTed).
     _boob = _prove_run([sys.executable, GLASS, "prove", _bit_prog("bit_and"), "a=8589934592", "b=5"],
                            capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_boob, "bitwise: out-of-range operand (2^33) ABSTAINs"):
@@ -2031,34 +2080,34 @@ def main() -> int:
         if not bf2_ok:
             print(f"        rc={_bf2.returncode}  out: {_bf2.stdout.strip()[-260:]}  err: {_bf2.stderr.strip()[-150:]}")
             failures += 1
-    # Showcase: a PRIVATE permission bitmask — bit_and(perms, required) == required is a subset check.
+    # Showcase: a PRIVATE permission bitmask: bit_and(perms, required) == required is a subset check.
     _bm_path = os.path.join(EX, "prove", "private_bitmask.glass")
     _bm1 = _prove_run([sys.executable, GLASS, "prove", _bm_path, "perms=29", "required=13", "--cross-check"],
                           capture_output=True, text=True, cwd=ROOT)
-    if not _heavy_skipped(_bm1, "bitwise showcase: private bitmask 13's bits ⊆ 29 -> 1 ACCEPT (perms hidden)"):
-        bm1_ok = (_bm1.returncode == 0) and ("result:  1" in _bm1.stdout) and ("ACCEPT" in _bm1.stdout) and ("THIRD LINEAGE AGREES" in _bm1.stdout)
-        print(f"  {'OK ' if bm1_ok else 'FAIL'}  bitwise showcase: private bitmask 13's bits subset 29 -> 1 ACCEPT (perms hidden)")
+    if not _heavy_skipped(_bm1, "bitwise showcase: private bitmask 13's bits ⊆ 29 -> 1 ACCEPT (perms is a private input)"):
+        bm1_ok = (_bm1.returncode == 0) and ("result:  1" in _bm1.stdout) and ("ACCEPT" in _bm1.stdout) and ("AGREES" in _bm1.stdout)
+        print(f"  {'OK ' if bm1_ok else 'FAIL'}  bitwise showcase: private bitmask 13's bits subset 29 -> 1 ACCEPT (perms is a private input)")
         if not bm1_ok:
             print(f"        rc={_bm1.returncode}  out: {_bm1.stdout.strip()[-260:]}  err: {_bm1.stderr.strip()[-150:]}")
             failures += 1
     _bm0 = _prove_run([sys.executable, GLASS, "prove", _bm_path, "perms=8", "required=13", "--cross-check"],
                           capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_bm0, "bitwise showcase: missing bits (8 lacks 13's) -> 0 (the check discriminates)"):
-        bm0_ok = (_bm0.returncode == 0) and ("result:  0" in _bm0.stdout) and ("THIRD LINEAGE AGREES" in _bm0.stdout)
+        bm0_ok = (_bm0.returncode == 0) and ("result:  0" in _bm0.stdout) and ("AGREES" in _bm0.stdout)
         print(f"  {'OK ' if bm0_ok else 'FAIL'}  bitwise showcase: missing bits (8 lacks 13's) -> 0 (the check discriminates)")
         if not bm0_ok:
             print(f"        rc={_bm0.returncode}  out: {_bm0.stdout.strip()[-260:]}  err: {_bm0.stderr.strip()[-150:]}")
             failures += 1
 
-    # Tuple / record RESULTS (v5.117): a proof can RETURN a multi-component value (scalar components),
+    # Tuple / record RESULTS: a proof can RETURN a multi-component value (scalar components),
     # bound by the same multi-wire binder a string result uses (build_claim_mw) and displayed component
-    # by component. divmod(17,5) -> (3, 2) ACCEPT; the Third Witness confirms BOTH components.
+    # by component. divmod(17,5) -> (3, 2) ACCEPT; the cross-check confirms BOTH components.
     _tr_path = os.path.join(EX, "prove", "private_divmod.glass")
     _tr = _prove_run([sys.executable, GLASS, "prove", _tr_path, "a=17", "b=5", "--cross-check"],
                          capture_output=True, text=True, cwd=ROOT)
-    if not _heavy_skipped(_tr, "tuple result: divmod(17,5) -> (3, 2) ACCEPT (both components bound + Third-Witness-confirmed)"):
-        tr_ok = (_tr.returncode == 0) and ("result:  (3, 2)" in _tr.stdout) and ("ACCEPT" in _tr.stdout) and ("THIRD LINEAGE AGREES" in _tr.stdout)
-        print(f"  {'OK ' if tr_ok else 'FAIL'}  tuple result: divmod(17,5) -> (3, 2) ACCEPT (both components bound + Third-Witness-confirmed)")
+    if not _heavy_skipped(_tr, "tuple result: divmod(17,5) -> (3, 2) ACCEPT (both components bound + cross-check-confirmed)"):
+        tr_ok = (_tr.returncode == 0) and ("result:  (3, 2)" in _tr.stdout) and ("ACCEPT" in _tr.stdout) and ("AGREES" in _tr.stdout)
+        print(f"  {'OK ' if tr_ok else 'FAIL'}  tuple result: divmod(17,5) -> (3, 2) ACCEPT (both components bound + cross-check-confirmed)")
         if not tr_ok:
             print(f"        rc={_tr.returncode}  out: {_tr.stdout.strip()[-260:]}  err: {_tr.stderr.strip()[-150:]}")
             failures += 1
@@ -2071,7 +2120,7 @@ def main() -> int:
     _rr = _prove_run([sys.executable, GLASS, "prove", _rr_path, "x=8", "y=3", "--cross-check"],
                          capture_output=True, text=True, cwd=ROOT)
     if not _heavy_skipped(_rr, "record result: order(8,3) -> Bounds { lo: 3, hi: 8 } ACCEPT (field-named display)"):
-        rr_ok = (_rr.returncode == 0) and ("result:  Bounds { lo: 3, hi: 8 }" in _rr.stdout) and ("THIRD LINEAGE AGREES" in _rr.stdout)
+        rr_ok = (_rr.returncode == 0) and ("result:  Bounds { lo: 3, hi: 8 }" in _rr.stdout) and ("AGREES" in _rr.stdout)
         print(f"  {'OK ' if rr_ok else 'FAIL'}  record result: order(8,3) -> Bounds {{ lo: 3, hi: 8 }} ACCEPT (field-named display)")
         if not rr_ok:
             print(f"        rc={_rr.returncode}  out: {_rr.stdout.strip()[-260:]}  err: {_rr.stderr.strip()[-150:]}")
@@ -2090,7 +2139,7 @@ def main() -> int:
             print(f"        rc={_ns.returncode}  out: {_ns.stdout.strip()[-260:]}  err: {_ns.stderr.strip()[-150:]}")
             failures += 1
 
-    # --zk hiding on a LARGE circuit (v5.118 audit-HIGH fix): a comparison is ~700 gates, so the old
+    # --zk hiding on a LARGE circuit (an audit-HIGH fix): a comparison is ~700 gates, so the old
     # `targetN - glen(gs)` gave ZERO dummy rows yet still labelled the proof "zero-knowledge". zk_pad_k
     # now floors the dummy-row count at 256 (> the ~170 opening surface), so --zk genuinely hides any
     # circuit size. This gate is also the first to exercise the (previously untested) --zk path.
@@ -2107,7 +2156,7 @@ def main() -> int:
             failures += 1
 
     # The unboxed single-Int Goldilocks field (goldw_*) must agree with the trusted
-    # base-2^16 limb field (gold_*) and obey the field laws — the load-bearing
+    # base-2^16 limb field (gold_*) and obey the field laws: the load-bearing
     # correctness of the "unbox the field" speed cut. (Interpreter check; the native
     # half of the difftest + the bootstrap fixpoint are run separately.)
     rc, out, err = run_file(os.path.join(EX, "prove", "goldw_difftest.glass"))
@@ -2118,7 +2167,7 @@ def main() -> int:
         print(f"        out: {out.strip()[-200:]}  err: {err.strip()[-150:]}")
         failures += 1
 
-    # LogUp range argument (v5.105): the cheap-range frontier's foundation — a standalone
+    # LogUp range argument: the cheap-range frontier's foundation: a standalone
     # log-derivative range-lookup over Goldilocks / F_{p^2}, soundness-vetted by an adversarial
     # design panel (the DENSE literal table closes the sparse-support self-cancellation hole that
     # would otherwise ACCEPT an out-of-range value). Interpreter check; the native byte-identical
@@ -2137,7 +2186,7 @@ def main() -> int:
         print(f"        rc={rc}  out: {out.strip()[-300:]}  err: {err.strip()[-150:]}")
         failures += 1
 
-    # LogUp running-sum (AIR) form (v5.106): the integration-shaped step — the lookup as a committed
+    # LogUp running-sum (AIR) form: the integration-shaped step: the lookup as a committed
     # running-sum column S with boundary (S_0=S_N=0) + transition ((S_{k+1}-S_k)(beta-v_k)=num_k)
     # constraints, like the PLONK grand-product Z. Demonstrates THE integration's central soundness
     # obligation: a forged S=0 FOOLS a boundary-only check (would certify an out-of-range lookup) but
@@ -2154,7 +2203,7 @@ def main() -> int:
         print(f"        rc={rc}  out: {out.strip()[-320:]}  err: {err.strip()[-150:]}")
         failures += 1
 
-    # LogUp committed + Fiat-Shamir (v5.107): closes the standalone LogUp arc — beta is derived by
+    # LogUp committed + Fiat-Shamir: closes the standalone LogUp arc: beta is derived by
     # hashing a commitment to the whole trace (MiMC, fresh tags 141/142), so the prover commits BEFORE
     # knowing beta and cannot adapt the trace to a lucky beta (commit-then-challenge soundness, like the
     # Goldilocks STARK's beta_of_root_g). Interpreter check; native byte-identical dogfood separate.
@@ -2168,7 +2217,7 @@ def main() -> int:
         print(f"        rc={rc}  out: {out.strip()[-320:]}  err: {err.strip()[-150:]}")
         failures += 1
 
-    # The native Poseidon-permutation intrinsic (poseidon_perm / q_poseidon_perm — the
+    # The native Poseidon-permutation intrinsic (poseidon_perm / q_poseidon_perm: the
     # "cut the rope" hash speed-up) must hit the Plonky2 known-answer anchor AND match a
     # hand-written Glass goldw_* reference permutation. (Interpreter check; the native half
     # + the bootstrap fixpoint are run separately; full byte-identity is in the difftest doc.)
@@ -2180,7 +2229,7 @@ def main() -> int:
         print(f"        out: {out.strip()[-200:]}  err: {err.strip()[-150:]}")
         failures += 1
 
-    # The native Poseidon2 intrinsic (poseidon2_perm / q_poseidon2_perm — the Plonky3 hash,
+    # The native Poseidon2 intrinsic (poseidon2_perm / q_poseidon2_perm: the Plonky3 hash,
     # staged for the bridge migration) must hit Plonky3's published t=12 permutation vector.
     rc, out, err = run_file(os.path.join(EX, "prove", "poseidon2_difftest.glass"))
     p2_ok = (rc == 0) and ("CHECK plonky3_anchor T" in out) and (" F" not in out)
@@ -2190,7 +2239,7 @@ def main() -> int:
         print(f"        out: {out.strip()[-200:]}  err: {err.strip()[-150:]}")
         failures += 1
 
-    # The native coset-NTT / low-degree-extension intrinsic (ntt_lde / q_ntt_lde — the rope-2
+    # The native coset-NTT / low-degree-extension intrinsic (ntt_lde / q_ntt_lde: the rope-2
     # cut that removes the O(n^2) polynomial LDE) must equal the naive goldw coset evaluation
     # (eval[k] = P(7*omega^k)) AND be byte-identical interp vs native.
     rc, out, err = run_file(os.path.join(EX, "prove", "ntt_difftest.glass"))
@@ -2201,7 +2250,7 @@ def main() -> int:
         print(f"        out: {out.strip()[-200:]}  err: {err.strip()[-150:]}")
         failures += 1
 
-    # The O(1)-indexable vector (to_vec/vget — the rope-3 cut that removes the prover's
+    # The O(1)-indexable vector (to_vec/vget: the rope-3 cut that removes the prover's
     # pervasive O(n^2) wnth indexing) must agree with positional list indexing for every index.
     rc, out, err = run_file(os.path.join(EX, "prove", "vget_difftest.glass"))
     vg_ok = (rc == 0) and ("CHECK vget_all T" in out) and (" F" not in out)
@@ -2211,7 +2260,7 @@ def main() -> int:
         print(f"        out: {out.strip()[-200:]}  err: {err.strip()[-150:]}")
         failures += 1
 
-    # The Measuring Reed: the bit-security re-derivation must be exact integer arithmetic tied to
+    # The security meter: the bit-security re-derivation must be exact integer arithmetic tied to
     # the live params (ilog2(grind_modulus)=12; q=82 -> 80 provable / 135 list-decoding). The
     # end-to-end 'security:' line on a real Goldilocks ACCEPT is validated by the native prove path.
     rc, out, err = run_file(os.path.join(EX, "prove", "measure_difftest.glass"))
@@ -2222,91 +2271,91 @@ def main() -> int:
         print(f"        out: {out.strip()[-200:]}  err: {err.strip()[-150:]}")
         failures += 1
 
-    # The Name — Glass's content-addressed identity must match name/NAME (the committed
+    # The fingerprint: Glass's content-addressed identity must match fingerprint/FINGERPRINT (the committed
     # fingerprint is kept current, lockfile-style: regenerate with `glass name --write`).
     _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    _nm = subprocess.run([sys.executable, os.path.join(_root, "name", "glass_name.py"), "--check"],
+    _nm = subprocess.run([sys.executable, os.path.join(_root, "fingerprint", "fingerprint.py"), "--check"],
                          capture_output=True, text=True)
     nm_ok = (_nm.returncode == 0)
-    print(f"  {'OK ' if nm_ok else 'FAIL'}  the Name: content-addressed identity matches name/NAME")
+    print(f"  {'OK ' if nm_ok else 'FAIL'}  fingerprint: content-addressed identity matches fingerprint/FINGERPRINT")
     if not nm_ok:
         print(f"        {(_nm.stdout + _nm.stderr).strip()[-220:]}")
-        print(f"        (a canonical artifact changed — regenerate with: python3 name/glass_name.py --write)")
+        print(f"        (a canonical artifact changed: regenerate with: python3 fingerprint/fingerprint.py --write)")
         failures += 1
 
-    # The Preserved Tablet — the append-only proof-verdict ledger: determinism, inclusion
+    # The ledger: the append-only proof-verdict ledger: determinism, inclusion
     # proofs verify, a forged entry does not, and tampering a past entry changes the root.
-    _tab = subprocess.run([sys.executable, os.path.join(_root, "ledger", "tablet.py"), "--selftest"],
+    _tab = subprocess.run([sys.executable, os.path.join(_root, "ledger", "ledger.py"), "--selftest"],
                           capture_output=True, text=True)
-    tb_ok = (_tab.returncode == 0) and ("CHECK tablet T" in _tab.stdout)
-    print(f"  {'OK ' if tb_ok else 'FAIL'}  the Preserved Tablet: append-only ledger (inclusion + tamper-evidence)")
+    tb_ok = (_tab.returncode == 0) and ("CHECK ledger T" in _tab.stdout)
+    print(f"  {'OK ' if tb_ok else 'FAIL'}  the ledger: append-only ledger (inclusion + tamper-evidence)")
     if not tb_ok:
         print(f"        {(_tab.stdout + _tab.stderr).strip()[-220:]}")
         failures += 1
 
-    # Opening the Seals — selective disclosure over a blinded Poseidon commitment: a revealed
+    # selective disclosure: selective disclosure over a blinded Poseidon commitment: a revealed
     # field binds to the root, a tampered value/path does not, a hidden change moves the root.
-    _sl = subprocess.run([sys.executable, os.path.join(_root, "seal", "reveal.py"), "--selftest"],
+    _sl = subprocess.run([sys.executable, os.path.join(_root, "disclose", "disclose.py"), "--selftest"],
                          capture_output=True, text=True)
-    sl_ok = (_sl.returncode == 0) and ("CHECK seal T" in _sl.stdout)
-    print(f"  {'OK ' if sl_ok else 'FAIL'}  Opening the Seals: selective disclosure (bind + hide + tamper-evidence)")
+    sl_ok = (_sl.returncode == 0) and ("CHECK disclose T" in _sl.stdout)
+    print(f"  {'OK ' if sl_ok else 'FAIL'}  selective disclosure: selective disclosure (bind + hide + tamper-evidence)")
     if not sl_ok:
         print(f"        {(_sl.stdout + _sl.stderr).strip()[-220:]}")
         failures += 1
 
-    # The second verifier's hash must stay faithful to the third-party vector. Pentecost's
+    # The second verifier's hash must stay faithful to the third-party vector. Lens's
     # keystone (independent Poseidon2 == Plonky3 t=12 out12) was NOT gated by the suite before
-    # (the v5.56.0 gate-coverage lesson) — a Pentecost-side constant/matrix error would be invisible.
-    _pk = subprocess.run([sys.executable, "-m", "pentecost.test_poseidon"],
+    # (a gate-coverage lesson): a Lens-side constant/matrix error would be invisible.
+    _pk = subprocess.run([sys.executable, "-m", "lens.test_poseidon"],
                          capture_output=True, text=True, cwd=_root)
     pk_ok = (_pk.returncode == 0) and ("KEYSTONE OK" in _pk.stdout)
-    print(f"  {'OK ' if pk_ok else 'FAIL'}  Pentecost keystone: independent Poseidon2 == Plonky3 t=12 vector")
+    print(f"  {'OK ' if pk_ok else 'FAIL'}  Lens keystone: independent Poseidon2 == Plonky3 t=12 vector")
     if not pk_ok:
         print(f"        {(_pk.stdout + _pk.stderr).strip()[-220:]}")
         failures += 1
 
-    # The Third Witness: the reference interpreter (glass.py) re-executes f independently and
-    # binds the proof's public result — a lineage separate from the bridge's heval AND cgen.
-    # Gate the evaluator logic directly (fast; the end-to-end --witness3 line is validated natively).
+    # The cross-check: the reference interpreter (glass.py) re-executes f independently and
+    # binds the proof's public result: a lineage separate from the bridge's heval AND cgen.
+    # Gate the evaluator logic directly (fast; the end-to-end --cross-check line is validated natively).
     _w3check = ("import glass; "
-               "assert glass._witness3_eval('a + b', [('a',3),('b',5)]) == 8; "
-               "assert glass._witness3_eval('a < b', [('a',3),('b',5)]) == 1; "
-               "assert glass._witness3_eval('a < b', [('a',5),('b',3)]) == 0; "
-               "assert glass._witness3_eval('a / b', [('a',17),('b',5)]) == 3; "
-               "assert glass._witness3_eval('a % b', [('a',17),('b',5)]) == 2; "
-               "assert glass._witness3_eval('slt(a, b)', [('a',-5),('b',3)]) == 1; "
-               "assert glass._witness3_eval('slt(a, b)', [('a',3),('b',-5)]) == 0; "
-               "assert glass._witness3_eval('sgt(a, b)', [('a',-5),('b',-9)]) == 1; "
-               "assert glass._witness3_eval('sle(a, b)', [('a',-5),('b',-5)]) == 1; "
-               "assert glass._witness3_eval('sge(a, b)', [('a',-9),('b',-5)]) == 0; "
-               "assert glass._witness3_eval('sdiv(a, b)', [('a',-17),('b',5)]) == -3; "
-               "assert glass._witness3_eval('smod(a, b)', [('a',-17),('b',5)]) == -2; "
-               "assert glass._witness3_eval('sdiv(a, b)', [('a',17),('b',-5)]) == -3; "
-               "assert glass._witness3_eval('smod(a, b)', [('a',-17),('b',-5)]) == -2; "
-               "assert glass._witness3_eval('sabs(a)', [('a',-5)]) == 5; "
-               "assert glass._witness3_eval('sabs(a - b)', [('a',3),('b',17)]) == 14; "
-               "assert glass._witness3_eval('smin(a, b)', [('a',-5),('b',3)]) == -5; "
-               "assert glass._witness3_eval('smax(a, b)', [('a',-5),('b',3)]) == 3; "
-               "assert glass._witness3_eval('(h * 31 + c) % 1000003', [('h',12345),('c',67)]) == 382762; "
-               "assert glass._witness3_eval(open('examples/prove/gcd_prove.glass').read(), [('x',48),('y',18)]) == 6; "
-               "assert glass._witness3_eval(open('examples/prove/gcd_prove.glass').read(), [('x',48),('y',36)]) == 12; "
+               "assert glass._cross_check_eval('a + b', [('a',3),('b',5)]) == 8; "
+               "assert glass._cross_check_eval('a < b', [('a',3),('b',5)]) == 1; "
+               "assert glass._cross_check_eval('a < b', [('a',5),('b',3)]) == 0; "
+               "assert glass._cross_check_eval('a / b', [('a',17),('b',5)]) == 3; "
+               "assert glass._cross_check_eval('a % b', [('a',17),('b',5)]) == 2; "
+               "assert glass._cross_check_eval('slt(a, b)', [('a',-5),('b',3)]) == 1; "
+               "assert glass._cross_check_eval('slt(a, b)', [('a',3),('b',-5)]) == 0; "
+               "assert glass._cross_check_eval('sgt(a, b)', [('a',-5),('b',-9)]) == 1; "
+               "assert glass._cross_check_eval('sle(a, b)', [('a',-5),('b',-5)]) == 1; "
+               "assert glass._cross_check_eval('sge(a, b)', [('a',-9),('b',-5)]) == 0; "
+               "assert glass._cross_check_eval('sdiv(a, b)', [('a',-17),('b',5)]) == -3; "
+               "assert glass._cross_check_eval('smod(a, b)', [('a',-17),('b',5)]) == -2; "
+               "assert glass._cross_check_eval('sdiv(a, b)', [('a',17),('b',-5)]) == -3; "
+               "assert glass._cross_check_eval('smod(a, b)', [('a',-17),('b',-5)]) == -2; "
+               "assert glass._cross_check_eval('sabs(a)', [('a',-5)]) == 5; "
+               "assert glass._cross_check_eval('sabs(a - b)', [('a',3),('b',17)]) == 14; "
+               "assert glass._cross_check_eval('smin(a, b)', [('a',-5),('b',3)]) == -5; "
+               "assert glass._cross_check_eval('smax(a, b)', [('a',-5),('b',3)]) == 3; "
+               "assert glass._cross_check_eval('(h * 31 + c) % 1000003', [('h',12345),('c',67)]) == 382762; "
+               "assert glass._cross_check_eval(open('examples/prove/gcd_prove.glass').read(), [('x',48),('y',18)]) == 6; "
+               "assert glass._cross_check_eval(open('examples/prove/gcd_prove.glass').read(), [('x',48),('y',36)]) == 12; "
                "print('W3 OK')")
     _w3p = subprocess.run([sys.executable, "-c", _w3check], capture_output=True, text=True, cwd=_root)
     w3 = (_w3p.returncode == 0) and ("W3 OK" in _w3p.stdout)
     if not w3:
         print(f"        {(_w3p.stdout + _w3p.stderr).strip()[-200:]}")
-    print(f"  {'OK ' if w3 else 'FAIL'}  the Third Witness: reference-interpreter re-execution (a+b=8, 3<5=1, 5<3=0, 17/5=3, 17%5=2, slt(-5,3)=1, sge(-9,-5)=0)")
+    print(f"  {'OK ' if w3 else 'FAIL'}  the cross-check: reference-interpreter re-execution (a+b=8, 3<5=1, 5<3=0, 17/5=3, 17%5=2, slt(-5,3)=1, sge(-9,-5)=0)")
     if not w3:
         failures += 1
 
-    # H3 milestone — in-circuit Merkle membership: the path-hashing program must be deterministic
+    # H3 milestone: in-circuit Merkle membership: the path-hashing program must be deterministic
     # and BINDING (a different leaf or sibling yields a different root). The full in-circuit proof
     # is validated natively (~39s); here the membership LOGIC is gated fast via the interpreter.
     _mmcheck = ("import glass; src=open('examples/prove/merkle_member.glass').read(); "
-                "b=[('leaf',42),('s0',7),('d0',0),('s1',99),('d1',1)]; r=glass._witness3_eval(src,b); "
-                "assert r is not None and r==glass._witness3_eval(src,b); "
-                "assert r!=glass._witness3_eval(src,[('leaf',43)]+b[1:]); "
-                "assert r!=glass._witness3_eval(src,b[:1]+[('s0',8)]+b[2:]); print('MM OK')")
+                "b=[('leaf',42),('s0',7),('d0',0),('s1',99),('d1',1)]; r=glass._cross_check_eval(src,b); "
+                "assert r is not None and r==glass._cross_check_eval(src,b); "
+                "assert r!=glass._cross_check_eval(src,[('leaf',43)]+b[1:]); "
+                "assert r!=glass._cross_check_eval(src,b[:1]+[('s0',8)]+b[2:]); print('MM OK')")
     _mmp = subprocess.run([sys.executable, "-c", _mmcheck], capture_output=True, text=True, cwd=_root)
     mm_ok = (_mmp.returncode == 0) and ("MM OK" in _mmp.stdout)
     print(f"  {'OK ' if mm_ok else 'FAIL'}  H3: in-circuit Merkle membership (deterministic + binding path-hash)")
@@ -2314,11 +2363,11 @@ def main() -> int:
         print(f"        {(_mmp.stdout + _mmp.stderr).strip()[-200:]}")
         failures += 1
 
-    # H3 milestone B1 (v5.126) — AUTHENTICATED FRI FOLD: two openings are each Merkle-authenticated AND
+    # H3 milestone B1: AUTHENTICATED FRI FOLD: two openings are each Merkle-authenticated AND
     # consumed by the exact FRI fold in ONE proven circuit (the structural heart of recursion). The
     # public result is (root_fx, root_fmx, fold); the fold of fx=10,fmx=20,beta=7,x=1 is exactly
     # (10+20)/2 + 7*(10-20)/2 = 15-35 = -20, computed mod p via the supplied field inverses. A native
-    # prove (the int64-overflowing x^7 + huge inverses make this circuit-faithful, NOT witness3-agreeing,
+    # prove (the int64-overflowing x^7 + huge inverses make this circuit-faithful, NOT cross-check-agreeing,
     # like merkle_member). ACCEPT + the exact result pins the composed circuit; a lowering regression
     # would change the fold or the roots.
     _mfp = _prove_run([sys.executable, GLASS, "prove", os.path.join(EX, "prove", "merkle_fold_member.glass"),
@@ -2331,11 +2380,11 @@ def main() -> int:
             print(f"        rc={_mfp.returncode}  out: {_mfp.stdout.strip()[-220:]}  err: {_mfp.stderr.strip()[-120:]}")
             failures += 1
 
-    # H3 milestone B2 (v5.127) — the REAL production Poseidon2 (t=12, 30 rounds, 130 constants, M_E/M_I)
+    # H3 milestone B2: the REAL production Poseidon2 (t=12, 30 rounds, 130 constants, M_E/M_I)
     # as a provable ~1.9k-gate circuit (vs merkle_member's reduced toy hash). poseidon2_node_check.py
     # proves it for input lanes 0..11 and cross-checks all 12 output lanes against the independent
-    # from-scratch Poseidon2 spec (pentecost/poseidon.py) -- the right oracle, since the x^7 chains +
-    # ~2^64 constants make the circuit faithful but NOT witness3-agreeing. The honest per-node cost anchor
+    # from-scratch Poseidon2 spec (lens/poseidon.py) -- the right oracle, since the x^7 chains +
+    # ~2^64 constants make the circuit faithful but NOT cross-check-agreeing. The honest per-node cost anchor
     # for the H3 recursive-verifier estimate. (Native prove ~1-2 min; SKIPs on an env signal-kill.)
     _pn = _prove_run([sys.executable, os.path.join("fuzz", "poseidon2_node_check.py")])
     if not _heavy_skipped(_pn, "H3: real Poseidon2 (t=12, 30 rounds) in-circuit == independent spec on all 12 lanes"):
@@ -2345,12 +2394,12 @@ def main() -> int:
             print(f"        rc={_pn.returncode}  out: {(_pn.stdout + _pn.stderr).strip()[-260:]}")
             failures += 1
 
-    # Adversarial fuzz of the second witness: a TAMPERED proof must never verify. tamper_pentecost.py
-    # perturbs random single tokens of a committed honest proof and asserts the independent Pentecost
-    # verifier REJECTs every one (0 wrong-ACCEPTs). A 1600-tamper/16-seed campaign (workflow whrym5q4r,
-    # v5.78.0) was clean; the suite gates a fast slice so a future verify_b3 regression that makes a
+    # Adversarial fuzz of the second witness: a TAMPERED proof must never verify. tamper_lens.py
+    # perturbs random single tokens of a committed honest proof and asserts the independent Lens
+    # verifier REJECTs every one (0 wrong-ACCEPTs). A 1600-tamper/16-seed campaign
+    # was clean; the suite gates a fast slice so a future verify_b3 regression that makes a
     # forged proof pass cannot land silently. (Asserts the honest baseline ACCEPTs first.)
-    _tp = subprocess.run([sys.executable, os.path.join("fuzz", "tamper_pentecost.py"), "20251", "6"],
+    _tp = subprocess.run([sys.executable, os.path.join("fuzz", "tamper_lens.py"), "20251", "6"],
                          capture_output=True, text=True, cwd=_root)
     tp_ok = (_tp.returncode == 0) and ("0 wrong-ACCEPTs" in _tp.stdout)
     print(f"  {'OK ' if tp_ok else 'FAIL'}  tamper-fuzz: independent verifier REJECTs every tampered proof")
@@ -2358,10 +2407,10 @@ def main() -> int:
         print(f"        {(_tp.stdout + _tp.stderr).strip()[-220:]}")
         failures += 1
 
-    # Statement-binding: tampering the PUBLIC CLAIM (the GATES region — gate list + claimed result)
+    # Statement-binding: tampering the PUBLIC CLAIM (the GATES region: gate list + claimed result)
     # must REJECT. A break here is catastrophic (a true proof passed off as proving a false claim),
-    # so it's fuzzed too. A 640-tamper/8-seed campaign (v5.80.0) was clean; the suite gates a slice.
-    _tc = subprocess.run([sys.executable, os.path.join("fuzz", "tamper_pentecost.py"), "20251", "10", "--claim"],
+    # so it's fuzzed too. A 640-tamper/8-seed campaign was clean; the suite gates a slice.
+    _tc = subprocess.run([sys.executable, os.path.join("fuzz", "tamper_lens.py"), "20251", "10", "--claim"],
                          capture_output=True, text=True, cwd=_root)
     tc_ok = (_tc.returncode == 0) and ("0 wrong-ACCEPTs" in _tc.stdout)
     print(f"  {'OK ' if tc_ok else 'FAIL'}  statement-binding: tampered public claim REJECTs (gates region)")
@@ -2371,10 +2420,10 @@ def main() -> int:
 
     # Multi-shape corpus: the differential + tamper guarantees, broadened beyond the single a+b
     # shape they originally ran on. For every committed proof fixture (a+b, a*b, a*a+b, a<b, a/b,
-    # string-eq, a record destructure, AND a string-VALUED result — a multi-wire public claim) the
-    # independent Pentecost verifier must ACCEPT the honest proof and REJECT a tamper in either the
+    # string-eq, a record destructure, AND a string-VALUED result: a multi-wire public claim) the
+    # independent Lens verifier must ACCEPT the honest proof and REJECT a tamper in either the
     # proof region or the public-claim region. Catches a verify_b3 bug that only manifests on some
-    # circuit shapes (more gates, different gate kinds, multi-wire string/record output bindings) —
+    # circuit shapes (more gates, different gate kinds, multi-wire string/record output bindings):
     # invisible to a single-fixture gate.
     _cc = subprocess.run([sys.executable, os.path.join("fuzz", "corpus_check.py")],
                          capture_output=True, text=True, cwd=_root)
@@ -2384,58 +2433,51 @@ def main() -> int:
         print(f"        {(_cc.stdout + _cc.stderr).strip()[-220:]}")
         failures += 1
 
-    # Native round-trip (v5.123): the strongest proof-FORMAT gate. The NATIVE Glass prover EMITS a real
-    # proof token stream and the INDEPENDENT Pentecost verifier parses + checks it (honest ACCEPT, every
+    # Native round-trip: the strongest proof-FORMAT gate. The NATIVE Glass prover EMITS a real
+    # proof token stream and the INDEPENDENT Lens verifier parses + checks it (honest ACCEPT, every
     # tamper REJECT). It is the only gate that exercises emit <-> parse TOGETHER, so it catches a
-    # serialization drift the parse-only corpus_check cannot — a denser-encoding change that emits AND
+    # serialization drift the parse-only corpus_check cannot: a denser-encoding change that emits AND
     # parses consistently-wrong sails through corpus_check but fails here (the "green-but-broken" hazard
-    # the v5.122 proof-size change had to guard by hand). Does a native compile (~1-2 min); timeout-guarded
+    # a proof-size change once had to guard by hand). Does a native compile (~1-2 min); timeout-guarded
     # so an under-load native stall SKIPs rather than hangs the suite. (Was "run separately"; wired in now
-    # that the v5.122 difftest segfault — a stale input type — is fixed.)
+    # that the difftest segfault, a stale input type, is fixed.)
     try:
-        _dt = subprocess.run(["bash", os.path.join("pentecost", "difftest.sh")],
-                             capture_output=True, text=True, cwd=_root, timeout=PROVE_TIMEOUT)
+        _dt = _prove_run(["bash", os.path.join("lens", "difftest.sh")], cwd=_root)
         if _dt.returncode >= 128:
-            print(f"  OK   native round-trip: difftest emit<->Pentecost  (SKIPPED: native stall rc={_dt.returncode} — env-limited)")
+            print(f"  OK   native round-trip: difftest emit<->Lens  (SKIPPED: native stall rc={_dt.returncode}: env-limited)")
         else:
-            dt_ok = (_dt.returncode == 0) and ("PENTECOST DIFFERENTIAL PASSED" in _dt.stdout)
-            print(f"  {'OK ' if dt_ok else 'FAIL'}  native round-trip: difftest emit<->Pentecost (honest ACCEPT + tampers REJECT)")
+            dt_ok = (_dt.returncode == 0) and ("LENS DIFFERENTIAL PASSED" in _dt.stdout)
+            print(f"  {'OK ' if dt_ok else 'FAIL'}  native round-trip: difftest emit<->Lens (honest ACCEPT + tampers REJECT)")
             if not dt_ok:
                 print(f"        {(_dt.stdout + _dt.stderr).strip()[-260:]}")
                 failures += 1
     except subprocess.TimeoutExpired:
-        print("  OK   native round-trip: difftest emit<->Pentecost  (SKIPPED: timeout — env-limited)")
+        print("  OK   native round-trip: difftest emit<->Lens  (SKIPPED: timeout: env-limited)")
 
-    # Plain-name surface (docs/naming.md): the public CLI exposes neutral names; the thematic
-    # names remain as aliases. `glass help` must list the plain names, and each plain alias must
-    # be identical to its thematic counterpart (so neither audience drifts out of test coverage).
+    # The CLI surface: `glass help` lists every command by its one name.
     def _glass(*a):
         return subprocess.run([sys.executable, "glass.py", *a], capture_output=True, text=True, cwd=_root)
     _help = _glass("help")
-    _fp_plain, _fp_them = _glass("fingerprint"), _glass("name")
-    alias_ok = (
-        _help.returncode == 0
-        and all(w in _help.stdout for w in ("fingerprint", "ledger", "disclose", "verify"))
-        and _fp_plain.stdout == _fp_them.stdout          # `fingerprint` ≡ `name`
-        and _fp_plain.returncode == _fp_them.returncode)
-    print(f"  {'OK ' if alias_ok else 'FAIL'}  plain-name surface: `help` + fingerprint/ledger/disclose aliases")
-    if not alias_ok:
+    help_ok = (_help.returncode == 0
+               and all(w in _help.stdout for w in ("prove", "verify", "fingerprint", "ledger", "disclose")))
+    print(f"  {'OK ' if help_ok else 'FAIL'}  CLI surface: `help` lists prove/verify/fingerprint/ledger/disclose")
+    if not help_ok:
         print(f"        {(_help.stdout + _help.stderr).strip()[-200:]}")
         failures += 1
 
     total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 84)  # +84: ... + v5.126 H3-B1 + v5.127 H3-B2 real-Poseidon2 + v5.128 builtin-list-threading-ABSTAIN + v5.129 substring-OOB-clamp + start>end-ABSTAIN + v5.130 ADT-layout-overflow-ABSTAIN (recursive-ADT non-last + String-field, no silent mis-offset)
+             len(inline_positive) + len(prism_checks) + len(repl_cases) + 84)  # +84: the standalone gates checked one by one in main(), on top of the list-driven cases above
     passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures
-    total += 174  # quartz: + 2 v4.73 (tuple-ctor dispatch + final `let _` discard); + 3 v5.54 glued-minus split; + 1 v5.57 shift-count mask
+    total += 174  # quartz: the native-compile cases checked by run_quartz_tests()
     passed = total - failures
     print(f"\n{passed}/{total} passed")
     return 0 if failures == 0 else 1
 
 
 def run_quartz_tests() -> int:
-    """Quartz v3.0: compile each .glass source to a native binary, run it,
+    """Quartz: compile each .glass source to a native binary, run it,
     check stdout matches expectation. Each case proves codegen handles a
     specific language construct end-to-end."""
     import tempfile
@@ -2459,7 +2501,7 @@ def run_quartz_tests() -> int:
         ("if-then-else as expr",     "if 3 < 5 then 100 else 200\n",           "100\n"),
         ("nested let-in",            "let r = (let x = 7 in x * 3)\nr + 1\n",  "22\n"),
         ("string literal",           '"hello"\n',                              "hello\n"),
-        # v3.1 — functions
+        # Functions
         ("fn add",
          "fn add(x: Int, y: Int) : Int = x + y\nadd(3, 4)\n",
          "7\n"),
@@ -2480,7 +2522,7 @@ def run_quartz_tests() -> int:
         ("C keyword name collision",
          "fn double(x: Int) : Int = x * 2\ndouble(21)\n",
          "42\n"),
-        # v3.2 — ADTs + pattern matching
+        # ADTs + pattern matching
         ("ADT enum-style match",
          "type Color = Red | Green | Blue\n"
          "match (Red) { Red => 1; Green => 2; Blue => 3 }\n",
@@ -2503,7 +2545,7 @@ def run_quartz_tests() -> int:
          'fn safe_div(n: Int, d: Int) : Outcome = if d == 0 then Failed("oops") else Done(n / d)\n'
          "match safe_div(100, 0) { Done(v) => v; Failed(_) => -1 }\n",
          "-1\n"),
-        # v3.3 — records
+        # Records
         ("record construct + field access",
          "type Point = { x: Int, y: Int }\n"
          "let p = Point { x: 3, y: 4 }\n"
@@ -2534,7 +2576,7 @@ def run_quartz_tests() -> int:
          "let r = Rect { tl: Point { x: 0, y: 0 }, br: Point { x: 1920, y: 1080 } }\n"
          "r.br.x - r.tl.x\n",
          "1920\n"),
-        # v3.4 — generics
+        # Generics
         ("generic ADT (user-declared)",
          "type Maybe<T> = Nope | Yep(T)\n"
          "match Yep(42) { Yep(n) => n; Nope => 0 }\n",
@@ -2558,7 +2600,7 @@ def run_quartz_tests() -> int:
          "fn unbox(b: Box<Int>) : Int = b.contents\n"
          "unbox(Box { contents: 99 })\n",
          "99\n"),
-        # v3.4.1 — generic functions
+        # Generic functions
         ("generic fn (Int instantiation)",
          "fn id<T>(x: T) : T = x\n"
          "id(42)\n",
@@ -2581,15 +2623,15 @@ def run_quartz_tests() -> int:
          "  match opt { Some(x) => x; None => default }\n"
          "unwrap_or(Some(42), 0)\n",
          "42\n"),
-        ("generic fn — None instantiation",
+        ("generic fn: None instantiation",
          "fn unwrap_or<T>(opt: Option<T>, default: T) : T =\n"
          "  match opt { Some(x) => x; None => default }\n"
          'unwrap_or(None, "missing")\n',
          "missing\n"),
-        # v4.30 — Quartz gains tuples. Compile a fn that returns a
+        # Quartz gains tuples. Compile a fn that returns a
         # tuple, destructure in match, recombine. Tests TupleLit codegen
         # + TyTuple in fn signatures + tuple pattern destructuring.
-        ("tuple construct + destructure (v4.30)",
+        ("tuple construct + destructure",
          "fn pair(a: Int, b: Int) : (Int, Int) = (a, b)\n"
          "match pair(10, 20) { (x, y) => x + y }\n",
          "30\n"),
@@ -2606,11 +2648,11 @@ def run_quartz_tests() -> int:
          "let p : (Int, Int) = pair(7, 3)\n"
          "match p { (x, y) => x - y }\n",
          "4\n"),
-        # v4.31 — Quartz gains lists. Cons-chain representation in
+        # Quartz gains lists. Cons-chain representation in
         # q_value_t (Nil has num_fields=0; Cons has num_fields=2 with
         # head at fields[0] and tail at fields[1]). Tests recursive
         # walking, empty-list base case, length count, string element.
-        ("list literal + recursive sum (v4.31)",
+        ("list literal + recursive sum",
          "fn sum(xs: List<Int>) : Int =\n"
          "  match xs {\n"
          "    []        => 0;\n"
@@ -2634,7 +2676,7 @@ def run_quartz_tests() -> int:
          "  }\n"
          "length([10, 20, 30, 40, 50, 60, 70])\n",
          "7\n"),
-        ("list of strings — first element",
+        ("list of strings: first element",
          'fn first_or(xs: List<String>, default: String) : String =\n'
          "  match xs {\n"
          "    []        => default;\n"
@@ -2642,11 +2684,11 @@ def run_quartz_tests() -> int:
          "  }\n"
          'first_or(["alpha", "beta", "gamma"], "none")\n',
          "alpha\n"),
-        # v4.32 — Quartz ++ dispatches on operand type. Pre-v4.32 always
-        # called quartz_str_concat, which silently miscompiled list ++
-        # (returned 0 instead of 66). The new path emits quartz_list_concat
+        # Quartz ++ dispatches on operand type. Always calling
+        # quartz_str_concat would silently miscompile list ++
+        # (returning 0 instead of 66). The path emits quartz_list_concat
         # for list operands.
-        ("list ++ via quartz_list_concat (v4.32)",
+        ("list ++ via quartz_list_concat",
          "fn sum(xs: List<Int>) : Int =\n"
          "  match xs { [] => 0; [h, ...t] => h + sum(t) }\n"
          "sum([1, 2, 3] ++ [10, 20, 30])\n",
@@ -2667,10 +2709,10 @@ def run_quartz_tests() -> int:
          'fn greet(name: String) : String = "hello, " ++ name\n'
          'greet("world")\n',
          "hello, world\n"),
-        # v4.33 — Quartz `==` becomes type-aware. String compares now
+        # Quartz `==` becomes type-aware. String compares now
         # use strcmp (content), so concat-then-compare works. The case
-        # that returned 0 pre-v4.33 returns 1.
-        ("Quartz == on concatenated String (v4.33)",
+        # that a pointer compare would get wrong (0) returns 1.
+        ("Quartz == on concatenated String",
          "fn ok(b: Bool) : Int = if b then 1 else 0\n"
          'ok(("hel" ++ "lo") == "hello")\n',
          "1\n"),
@@ -2688,12 +2730,11 @@ def run_quartz_tests() -> int:
          "fn ok(b: Bool) : Int = if b then 1 else 0\n"
          "ok(true == true)\n",
          "1\n"),
-        # v4.34 — Quartz structural == extends to List<P> and
+        # Quartz structural == extends to List<P> and
         # Tuple<P, ...> when every P is primitive (Int/Bool/String).
         # The codegen emits a loop (lists) or per-field compare chain
-        # (tuples) as statements + a fresh result bool. Pre-v4.34 these
-        # all errored loudly via v4.33's TyList/TyTuple arms.
-        ("List<Int> == List<Int> same (v4.34)",
+        # (tuples) as statements + a fresh result bool.
+        ("List<Int> == List<Int> same",
          "fn ok(b: Bool) : Int = if b then 1 else 0\n"
          "ok([1, 2, 3] == [1, 2, 3])\n",
          "1\n"),
@@ -2717,17 +2758,17 @@ def run_quartz_tests() -> int:
          "fn ok(b: Bool) : Int = if b then 1 else 0\n"
          "ok((1, 2) != (1, 3))\n",
          "1\n"),
-        ("Tuple<String, Int> mixed — content compare",
+        ("Tuple<String, Int> mixed: content compare",
          "fn ok(b: Bool) : Int = if b then 1 else 0\n"
          'ok(("a" ++ "b", 42) == ("ab", 42))\n',
          "1\n"),
-        # v4.35 — recursive structural ==. The primitive-only guards
+        # Recursive structural ==. The primitive-only guards
         # on TyList and TyTuple arms of _emit_eq_atom were dropped, so
         # the existing recursive call dispatches through the type
         # structure. The recursive append order already places inner
-        # statements inside the outer loop body — no scope-management
+        # statements inside the outer loop body: no scope-management
         # changes were needed.
-        ("List<List<Int>> == structural (v4.35)",
+        ("List<List<Int>> == structural",
          "fn ok(b: Bool) : Int = if b then 1 else 0\n"
          "ok([[1, 2], [3, 4]] == [[1, 2], [3, 4]])\n",
          "1\n"),
@@ -2743,11 +2784,11 @@ def run_quartz_tests() -> int:
          "fn ok(b: Bool) : Int = if b then 1 else 0\n"
          'ok([(1, "a"), (2, "b")] == [(1, "a"), (2, "b")])\n',
          "1\n"),
-        # v4.36 — structural == for records and concrete sum types.
+        # Structural == for records and concrete sum types.
         # Records: field-by-field compare using record_env field types.
         # Sum types: tag check + per-variant field compare. Generic
         # sum types (Option<T>, etc.) still error loudly.
-        ("Record == Record same content (v4.36)",
+        ("Record == Record same content",
          "type Point = { x: Int, y: Int }\n"
          "fn ok(b: Bool) : Int = if b then 1 else 0\n"
          "ok(Point { x: 1, y: 2 } == Point { x: 1, y: 2 })\n",
@@ -2757,7 +2798,7 @@ def run_quartz_tests() -> int:
          "fn ok(b: Bool) : Int = if b then 1 else 0\n"
          "ok(Point { x: 1, y: 2 } != Point { x: 1, y: 3 })\n",
          "1\n"),
-        ("Record with String field — content compare",
+        ("Record with String field: content compare",
          "type User = { id: Int, name: String }\n"
          "fn ok(b: Bool) : Int = if b then 1 else 0\n"
          'ok(User { id: 1, name: "alice" } == '
@@ -2783,17 +2824,17 @@ def run_quartz_tests() -> int:
          "fn ok(b: Bool) : Int = if b then 1 else 0\n"
          "ok(Holds(42) != Holds(99))\n",
          "1\n"),
-        ("Sum type Empty vs Holds — different tags",
+        ("Sum type Empty vs Holds: different tags",
          "type Box = Empty | Holds(Int)\n"
          "fn ok(b: Bool) : Int = if b then 1 else 0\n"
          "ok(Empty != Holds(0))\n",
          "1\n"),
-        # v4.37 — closes the structural-eq story for generic sum types.
+        # Closes the structural-eq story for generic sum types.
         # Quartz now substitutes the TyADT's type args into variant
         # field types via _substitute_ty + adt_params, and type_of
         # infers ctor calls' type args by unifying arg types against
         # the variant's declared (TyVar-containing) field types.
-        ("Option<Int>: Some(42) == Some(42) (v4.37)",
+        ("Option<Int>: Some(42) == Some(42)",
          "fn ok(b: Bool) : Int = if b then 1 else 0\n"
          "ok(Some(42) == Some(42))\n",
          "1\n"),
@@ -2801,7 +2842,7 @@ def run_quartz_tests() -> int:
          "fn ok(b: Bool) : Int = if b then 1 else 0\n"
          "ok(Some(42) != Some(99))\n",
          "1\n"),
-        ("Option<String> via concat — string content compare in variant",
+        ("Option<String> via concat: string content compare in variant",
          "fn ok(b: Bool) : Int = if b then 1 else 0\n"
          'let a : Option<String> = Some("hello")\n'
          'let b : Option<String> = Some("hel" ++ "lo")\n'
@@ -2813,7 +2854,7 @@ def run_quartz_tests() -> int:
          "let r2 : Result<Int, String> = Ok(42)\n"
          "ok(r1 == r2)\n",
          "1\n"),
-        ("Result<Int, String>: Ok vs Err — different tags",
+        ("Result<Int, String>: Ok vs Err: different tags",
          "fn ok(b: Bool) : Int = if b then 1 else 0\n"
          "let r1 : Result<Int, String> = Ok(42)\n"
          'let r2 : Result<Int, String> = Err("oops")\n'
@@ -2830,24 +2871,24 @@ def run_quartz_tests() -> int:
          "fn ok(b: Bool) : Int = if b then 1 else 0\n"
          "ok(Yep(7) == Yep(7))\n",
          "1\n"),
-        # v4.38 — Quartz gains three host-prelude builtins:
+        # Quartz gains three host-prelude builtins:
         # string_length, substring, int_to_string. Each is recognized
         # by type_of and emit_expr; substring and int_to_string get
         # malloc-based C runtime helpers, string_length inlines as
         # ((int64_t)strlen(s)).
-        ("string_length (v4.38)",
+        ("string_length",
          'string_length("hello, world")\n',
          "12\n"),
         ("string_length empty",
          'string_length("")\n',
          "0\n"),
-        ("substring slice (v4.38)",
+        ("substring slice",
          'substring("hello, world", 7, 12)\n',
          "world\n"),
         ("substring clamps end to length",
          'substring("abc", 1, 100)\n',
          "bc\n"),
-        ("int_to_string (v4.38)",
+        ("int_to_string",
          "int_to_string(42)\n",
          "42\n"),
         ("int_to_string negative",
@@ -2856,16 +2897,16 @@ def run_quartz_tests() -> int:
         ("composed: int_to_string ++ string ++ string_length",
          'string_length(int_to_string(1000) ++ " items")\n',
          "10\n"),
-        # v4.39 — Quartz gains five more host-prelude builtins:
+        # Quartz gains five more host-prelude builtins:
         # len, head, tail, reverse, string_index_of. Builtin dispatch
         # was refactored to pass the Codegen instance to emit_fns so
         # Option-returning builtins can resolve Some/None tags. Args
         # are cast through intptr_t to the formal's C type, mirroring
-        # v4.22's generic-fn-call bridge — this lets pattern-bound
+        # the generic-fn-call bridge: this lets pattern-bound
         # values (erased to int64_t) flow through builtin formals
         # that expect q_value_t* (e.g., `head(rest)` after
         # `Some(rest)` from `tail`).
-        ("len (v4.39)",
+        ("len",
          "len([10, 20, 30, 40, 50])\n",
          "5\n"),
         ("len empty",
@@ -2874,37 +2915,37 @@ def run_quartz_tests() -> int:
         ("reverse + len composition",
          "len(reverse([1, 2, 3, 4]))\n",
          "4\n"),
-        ("head — Some case (v4.39)",
+        ("head: Some case",
          "match head([10, 20, 30]) { Some(x) => x; None => 0 - 1 }\n",
          "10\n"),
-        ("head — None case",
+        ("head: None case",
          "let empty : List<Int> = []\n"
          "match head(empty) { Some(x) => x; None => 0 - 1 }\n",
          "-1\n"),
-        ("tail + head chain — pattern bridge through int64_t",
+        ("tail + head chain: pattern bridge through int64_t",
          "match tail([10, 20, 30]) {\n"
          "  Some(rest) => match head(rest) { Some(x) => x; None => 0 - 1 };\n"
          "  None => 0 - 1\n"
          "}\n",
          "20\n"),
-        ("string_index_of — found (v4.39)",
+        ("string_index_of: found",
          'match string_index_of("hello, world", "world") { '
          'Some(i) => i; None => 0 - 1 }\n',
          "7\n"),
-        ("string_index_of — not found",
+        ("string_index_of, not found",
          'match string_index_of("hello", "xyz") { '
          'Some(i) => i; None => 0 - 1 }\n',
          "-1\n"),
-        ("compose: head(reverse(...)) — last element",
+        ("compose: head(reverse(...)): last element",
          "match head(reverse([1, 2, 3, 4, 5])) { Some(x) => x; None => 0 }\n",
          "5\n"),
-        # v4.40 — string_to_upper / string_to_lower added to BOTH the
+        # string_to_upper / string_to_lower added to BOTH the
         # host and Quartz. ASCII-only semantics: bytes outside A-Z /
         # a-z pass through unchanged. The host uses explicit char
         # arithmetic (not Python's Unicode-aware .upper()) to match
         # Quartz exactly, so programs produce identical output through
         # either interpreter.
-        ("string_to_upper basic (v4.40)",
+        ("string_to_upper basic",
          'string_to_upper("hello, world")\n',
          "HELLO, WORLD\n"),
         ("string_to_lower mixed",
@@ -2922,12 +2963,12 @@ def run_quartz_tests() -> int:
         ("upper then lower round-trip",
          'string_to_lower(string_to_upper("Mixed Case"))\n',
          "mixed case\n"),
-        # v4.41 — char_at added to BOTH host and Quartz with codepoint
+        # char_at added to BOTH host and Quartz with codepoint
         # (Int) semantics, matching what quartz_parser.glass and djb2
         # hash usage expect. Prism's internal `fn char_at` (returning
         # String) still shadows the builtin inside prism's own source,
         # preserving prism's lexer behavior unchanged.
-        ("char_at first byte (v4.41)",
+        ("char_at first byte",
          'char_at("hello", 0)\n',
          "104\n"),
         ("char_at last byte",
@@ -2945,12 +2986,12 @@ def run_quartz_tests() -> int:
          "  else djb2_at(s, i + 1, len, h * 33 + char_at(s, i))\n"
          'djb2_at("abc", 0, string_length("abc"), 5381)\n',
          "193485963\n"),
-        # v4.42 — bitwise ops added to BOTH host and Quartz. The host
+        # Bitwise ops in BOTH host and Quartz. The host
         # masks results through int64 wrap so non-overflowing values
-        # match Quartz exactly. The compiled toolchain had these since
-        # v4.16 (quartz_parser.glass); v4.42 just brings the host and
-        # Quartz-proper to parity with that.
-        ("bit_and (v4.42)",
+        # match Quartz exactly. The compiled toolchain
+        # (quartz_parser.glass) has them too, so the host and
+        # Quartz-proper are at parity with it.
+        ("bit_and",
          "bit_and(12, 10)\n",
          "8\n"),
         ("bit_or",
@@ -2968,8 +3009,8 @@ def run_quartz_tests() -> int:
         ("bit_not all ones",
          "bit_not(0)\n",
          "-1\n"),
-        # The djb2 canary now uses bit_shl AND char_at together — both
-        # added in v4.41/v4.42. Same expected value through host or
+        # The djb2 canary uses bit_shl AND char_at together.
+        # Same expected value through host or
         # Quartz, matching the standard djb2 reference.
         ("djb2 via bit_shl + char_at",
          "fn djb2_from(s: String, i: Int, len: Int, h: Int) : Int =\n"
@@ -2978,7 +3019,7 @@ def run_quartz_tests() -> int:
          "bit_shl(h, 5) + h + char_at(s, i))\n"
          'djb2_from("abc", 0, string_length("abc"), 5381)\n',
          "193485963\n"),
-        # v4.43 — bundle of three small carry-forward items:
+        # Bundle of three small carry-forward items:
         # - range(lo, hi) builtin in Quartz (host already had it)
         # - wrap_int64 in both host and Quartz, lets users opt into
         #   int64 wrap on host so overflow-sensitive algorithms agree
@@ -2986,7 +3027,7 @@ def run_quartz_tests() -> int:
         # - cast-bridge factoring in Quartz codegen (internal; no
         #   user-visible behavior change, but all existing tests must
         #   continue to pass)
-        ("range basic (v4.43)",
+        ("range basic",
          "len(range(0, 5))\n",
          "5\n"),
         ("range sum 1..10",
@@ -2994,7 +3035,7 @@ def run_quartz_tests() -> int:
          "  match xs { [] => 0; [h, ...t] => h + sum(t) }\n"
          "sum(range(1, 11))\n",
          "55\n"),
-        ("range head — first element of range",
+        ("range head: first element of range",
          "match head(range(10, 20)) { Some(x) => x; None => 0 - 1 }\n",
          "10\n"),
         ("range empty when lo == hi",
@@ -3003,15 +3044,15 @@ def run_quartz_tests() -> int:
         ("range empty when lo > hi",
          "len(range(10, 3))\n",
          "0\n"),
-        ("wrap_int64 basic (v4.43)",
+        ("wrap_int64 basic",
          "wrap_int64(42)\n",
          "42\n"),
         # The big payoff: with explicit wrap_int64, the overflowing
-        # djb2 hash matches between host and Quartz. Before v4.43,
-        # host produced 13826554139369386393 and Quartz produced
-        # -4620189934340165223 — same bit pattern, different sign
+        # djb2 hash matches between host and Quartz. Without it,
+        # host would produce 13826554139369386393 and Quartz
+        # -4620189934340165223: same bit pattern, different sign
         # interpretation due to host's unbounded ints.
-        ("djb2 with wrap_int64 — host/Quartz agree on overflow",
+        ("djb2 with wrap_int64: host/Quartz agree on overflow",
          "fn djb2_from(s: String, i: Int, len: Int, h: Int) : Int =\n"
          "  if i == len then h\n"
          "  else djb2_from(s, i + 1, len,\n"
@@ -3019,13 +3060,13 @@ def run_quartz_tests() -> int:
          "bit_shl(h, 5) + h + char_at(s, i)))\n"
          'djb2_from("Glass v4.20", 0, string_length("Glass v4.20"), 5381)\n',
          "-4620189934340165223\n"),
-        # v4.44 — non-capturing lambdas (first cut). Quartz learns
+        # non-capturing lambdas (first cut). Quartz learns
         # TyFn -> q_value_t* (closure values), lambda-lifting (each
         # ELam becomes a generated __lambda_N static C fn), and
-        # indirect-call codegen through fields[0]. v4.44 is unary
+        # indirect-call codegen through fields[0]. This canary is unary
         # and non-capturing; multi-arg lambdas and free-variable
-        # capture land in v4.45.
-        ("lambda canary (v4.44)",
+        # capture are covered below.
+        ("lambda canary",
          "(fn(x: Int) -> x * 2)(5)\n",
          "10\n"),
         ("let-bound lambda, called later",
@@ -3040,12 +3081,12 @@ def run_quartz_tests() -> int:
          "fn apply(f: (Int) -> Int, x: Int) : Int = f(x)\n"
          "apply(fn(n: Int) -> n * n, 9)\n",
          "81\n"),
-        # v4.45 — capturing closures. The lifted lambda now does
+        # Capturing closures. The lifted lambda now does
         # free-variable analysis on its body; outer-scope names
         # referenced inside become captures, packed into
         # __env->fields[1..] at construction and unpacked back into
         # locals at the top of the lifted fn body.
-        ("simple capture from let (v4.45)",
+        ("simple capture from let",
          "let y = 100\n"
          "(fn(x: Int) -> x + y)(7)\n",
          "107\n"),
@@ -3054,7 +3095,7 @@ def run_quartz_tests() -> int:
          "let b = 20\n"
          "(fn(x: Int) -> x + a + b)(5)\n",
          "35\n"),
-        ("fn returns lambda — captures fn's param",
+        ("fn returns lambda: captures fn's param",
          "fn adder(x: Int) : (Int) -> Int = fn(y: Int) -> x + y\n"
          "let add5 = adder(5)\n"
          "add5(7)\n",
@@ -3065,7 +3106,7 @@ def run_quartz_tests() -> int:
          "hi, alice\n"),
         # The canary: nested closures, each capturing from its enclosing
         # scope. Inner lambda captures `a` from outer fn, plus `b` from
-        # outer lambda — both layers flow through correctly.
+        # outer lambda, both layers flow through correctly.
         ("nested closure captures both layers",
          "fn make_double_adder(a: Int) : (Int) -> ((Int) -> Int) =\n"
          "  fn(b: Int) -> fn(c: Int) -> a + b + c\n"
@@ -3073,19 +3114,19 @@ def run_quartz_tests() -> int:
          "let g = f(20)\n"
          "g(3)\n",
          "123\n"),
-        # v4.46 — multi-arg lambdas + map/filter/fold. The v4.44
-        # unary restriction is lifted; lifted fns now take N int64_t
+        # multi-arg lambdas + map/filter/fold. Lambdas are not
+        # limited to one arg; lifted fns take N int64_t
         # args and indirect calls build the fn-pointer cast at the
         # matching arity. fold's binary combine closure exercises
         # this path directly.
-        ("multi-arg lambda (v4.46)",
+        ("multi-arg lambda",
          "(fn(a: Int, b: Int) -> a + b)(3, 4)\n",
          "7\n"),
         ("let-bound multi-arg, called many times",
          "let combine = fn(acc: Int, x: Int) -> acc * 10 + x\n"
          "combine(combine(combine(0, 1), 2), 3)\n",
          "123\n"),
-        ("map doubles a list (v4.46)",
+        ("map doubles a list",
          "fn sum(xs: List<Int>) : Int =\n"
          "  match xs { [] => 0; [h, ...t] => h + sum(t) }\n"
          "sum(map([1, 2, 3, 4, 5], fn(x: Int) -> x * 2))\n",
@@ -3095,10 +3136,10 @@ def run_quartz_tests() -> int:
          "  match xs { [] => 0; [h, ...t] => h + sum(t) }\n"
          "sum(filter([1, 2, 3, 4, 5, 6], fn(x: Int) -> x > 3))\n",
          "15\n"),
-        ("fold sum — canonical accumulator",
+        ("fold sum: canonical accumulator",
          "fold([1, 2, 3, 4, 5], 0, fn(acc: Int, x: Int) -> acc + x)\n",
          "15\n"),
-        # The composition canary — map -> filter -> fold all chained.
+        # The composition canary: map -> filter -> fold all chained.
         # Verifies higher-order builtins compose cleanly through the
         # closure-call protocol.
         ("compose: map then filter then fold",
@@ -3115,25 +3156,25 @@ def run_quartz_tests() -> int:
          "let k = 10\n"
          "fold([1, 2, 3], 1, fn(acc: Int, x: Int) -> acc * x * k)\n",
          "6000\n"),
-        # v4.22 — nested generic ADT round-trip. id<A>(Some(99)) erases
+        # Nested generic ADT round-trip. id<A>(Some(99)) erases
         # through TyVar (int64_t) and the return-cast unboxes it back to
-        # q_value_t*; unwrap_or<T> then takes a q_value_t* via the v4.22
+        # q_value_t*; unwrap_or<T> then takes a q_value_t* via the
         # call-site bridge fix. If the call-site cast is wrong in either
         # direction, this fails to compile.
-        ("nested generic ADT round-trip (v4.22)",
+        ("nested generic ADT round-trip",
          "fn id<A>(x: A) : A = x\n"
          "fn unwrap_or<T>(opt: Option<T>, default: T) : T =\n"
          "  match opt { Some(x) => x; None => default }\n"
          "unwrap_or(id(Some(99)), 0)\n",
          "99\n"),
-        # v4.49: Quartz refinement runtime checks. Pre-v4.49 the C-type
-        # mapping threw `NotImplementedError: Quartz does not yet
-        # support type: TyRefine` the moment ANY refined param hit
-        # codegen, so the entire refinement subset of Glass couldn't
-        # be native-compiled. v4.49 strips TyRefine for the C-type
+        # Quartz refinement runtime checks. Without special handling the C-type
+        # mapping would throw `NotImplementedError: Quartz does not yet
+        # support type: TyRefine` the moment ANY refined param hits
+        # codegen, so the entire refinement subset of Glass could not
+        # be native-compiled. Quartz strips TyRefine for the C-type
         # layer and emits an inline guard at the top of the fn body
         # for each refined param. Good value flows through unchanged.
-        ("refined param compiles + good value (v4.49)",
+        ("refined param compiles + good value",
          "fn positive_double(n: Int where (n > 0)) : Int = n * 2\n"
          "let x : Int = 21\n"
          "positive_double(x)\n",
@@ -3142,7 +3183,7 @@ def run_quartz_tests() -> int:
         # and the codegen materializes the body result into a `result`
         # local, runs the guard, then returns. Mirrors host's
         # apply_fn return-refinement path (line 2368).
-        ("refined return compiles + holds (v4.49)",
+        ("refined return compiles + holds",
          "fn pos_sq_plus_one(n: Int) : Int where (result > 0) = n * n + 1\n"
          "let x : Int = 5\n"
          "pos_sq_plus_one(x)\n",
@@ -3150,133 +3191,133 @@ def run_quartz_tests() -> int:
         # Refined param composed with normal param: only the refined
         # position should grow a guard. Acts as a regression on
         # accidentally inserting guards for every param.
-        ("refined param mixed with normal param (v4.49)",
+        ("refined param mixed with normal param",
          "fn add_pos(a: Int where (a > 0), b: Int) : Int = a + b\n"
          "add_pos(3, 4)\n",
          "7\n"),
-        # v4.50: refined let-binding at top level. The guard runs
+        # Refined let-binding at top level. The guard runs
         # right after the value is computed, in main(), before any
         # subsequent expression uses the let-bound name.
-        ("refined let-binding compiles + holds (v4.50)",
+        ("refined let-binding compiles + holds",
          "let n : Int where (n > 0) = 42\n"
          "n + 1\n",
          "43\n"),
-        # v4.50: refined LetIn nested in a fn body. Distinct codegen
-        # path from the top-level LetDecl loop — exercises the
+        # Refined LetIn nested in a fn body. Distinct codegen
+        # path from the top-level LetDecl loop: exercises the
         # Codegen.emit_expr LetIn branch.
-        ("refined let-in inside fn body (v4.50)",
+        ("refined let-in inside fn body",
          "fn doit(k: Int) : Int =\n"
          "  let n : Int where (n > 0) = k * 2 in\n"
          "  n + 1\n"
          "doit(7)\n",
          "15\n"),
-        # v4.50: refined lambda param. The guard lives inside the
+        # Refined lambda param. The guard lives inside the
         # lifted __lambda_N C function emitted by _lift_lambda, so it
         # fires regardless of whether the lambda is called directly
         # or indirectly through higher-order builtins.
-        ("refined lambda param compiles + holds (v4.50)",
+        ("refined lambda param compiles + holds",
          "let dbl = fn(x: Int where (x > 0)) -> x * 2\n"
          "dbl(5)\n",
          "10\n"),
-        # v4.50: composes with v4.46's higher-order list builtins.
+        # Composes with the higher-order list builtins.
         # The refined lambda's guard fires for every element fold
-        # visits — and each element satisfies the predicate, so the
+        # visits, and each element satisfies the predicate, so the
         # fold runs end to end. (We fold instead of map because
         # Quartz can't print a List directly.)
-        ("refined lambda through fold (v4.50)",
+        ("refined lambda through fold",
          "fold([1, 2, 3], 0, fn(acc: Int, x: Int where (x > 0))"
          " -> acc + x)\n",
          "6\n"),
-        # v4.51: && / || in regular Glass code compile through Quartz's
+        # && / || in regular Glass code compile through Quartz's
         # BIN_OP_C map. C's && and || are short-circuiting so semantics
         # match host eval directly.
-        ("&& and || in normal code (v4.51)",
+        ("&& and || in normal code",
          "let r : Int = if (1 > 0) && (1 < 5) then 42 else 0\n"
          "r\n",
          "42\n"),
-        # v4.51 canonical range refinement: param checked against an
+        # Canonical range refinement: param checked against an
         # interval. The guard becomes `((n > 0LL) && (n < 100LL))`.
-        ("range refinement via && (v4.51)",
+        ("range refinement via &&",
          "fn middling(n: Int where (n > 0 && n < 100)) : Int = n + 1\n"
          "middling(50)\n",
          "51\n"),
-        # v4.51 || refinement: enum-style "this OR that" check.
-        ("|| refinement (v4.51)",
+        # || refinement: enum-style "this OR that" check.
+        ("|| refinement",
          "fn flag(n: Int where (n == 0 || n == 1)) : Int = n + 10\n"
          "flag(1)\n",
          "11\n"),
-        # v4.53: modulo in regular Quartz code via BIN_OP_C entry.
-        ("modulo in normal code (v4.53)",
+        # Modulo in regular Quartz code via BIN_OP_C entry.
+        ("modulo in normal code",
          "let r : Int = 17 % 5\n"
          "r\n",
          "2\n"),
-        # v4.53: parity refinement compiles + the guard fires only
+        # Parity refinement compiles + the guard fires only
         # for an actually-even arg. 10 is even, so even_only returns
         # 11. Pinned by both this and the structural test below.
-        ("parity refinement compiles (v4.53)",
+        ("parity refinement compiles",
          "fn even_only(n: Int where (n % 2 == 0)) : Int = n + 1\n"
          "even_only(10)\n",
          "11\n"),
-        # v4.54: unary NOT in normal code via emit_expr UnaryNot arm.
-        ("unary NOT in normal code (v4.54)",
+        # Unary NOT in normal code via emit_expr UnaryNot arm.
+        ("unary NOT in normal code",
          "let r : Int = if !(3 > 5) then 42 else 0\n"
          "r\n",
          "42\n"),
-        # v4.54: NOT refinement compiles + holds. 5 is nonzero, so
+        # NOT refinement compiles + holds. 5 is nonzero, so
         # 100 / 5 = 20.
-        ("NOT refinement compiles (v4.54)",
+        ("NOT refinement compiles",
          "fn nonzero(n: Int where (!(n == 0))) : Int = 100 / n\n"
          "nonzero(5)\n",
          "20\n"),
-        # v4.55: arithmetic-in-predicate now compiles. `n + 1 > 0`
-        # was rejected pre-v4.55 (only bare `binder OP lit` was
-        # allowed); the recursive compiler handles the offset.
-        ("offset arithmetic in predicate (v4.55)",
+        # arithmetic-in-predicate now compiles. `n + 1 > 0`
+        # needs more than a bare `binder OP lit` shape-matcher
+        # allows; the recursive compiler handles the offset.
+        ("offset arithmetic in predicate",
          "fn f(n: Int where (n + 1 > 0)) : Int = n\n"
          "f(5)\n",
          "5\n"),
-        # v4.55: nonlinear predicate + boolean combinator. `n * n`
+        # Nonlinear predicate + boolean combinator. `n * n`
         # compiles as `(n * n)`; composed with a range bound via &&.
-        ("nonlinear predicate with && (v4.55)",
+        ("nonlinear predicate with &&",
          "fn g(n: Int where (n * n >= 1 && n < 100)) : Int = n\n"
          "g(7)\n",
          "7\n"),
-        # v4.56: cross-parameter refinement. `hi > lo` references the
+        # cross-parameter refinement. `hi > lo` references the
         # earlier param `lo`, which is a C function parameter in scope
         # at the guard site. clamp(3, 10) = 7.
-        ("cross-parameter refinement (v4.56)",
+        ("cross-parameter refinement",
          "fn clamp(lo: Int, hi: Int where (hi > lo)) : Int = hi - lo\n"
          "clamp(3, 10)\n",
          "7\n"),
-        # v4.56: return refinement referencing a param. `result > a`
+        # Return refinement referencing a param. `result > a`
         # sees `a` (all params in scope when the body completes).
-        ("return refinement references param (v4.56)",
+        ("return refinement references param",
          "fn addpos(a: Int, b: Int) : Int where (result > a) = a + b + 1\n"
          "addpos(5, 3)\n",
          "9\n"),
-        # v4.71 (Phase A1/A2 — migration): effectful functions compile.
+        # Effectful functions compile.
         # Effects are erased at codegen; `print` is a C runtime call.
         # The binary prints "hi" (from the IO effect) then the result 5.
-        ("effectful fn compiles, print works (v4.71)",
+        ("effectful fn compiles, print works",
          "fn g(x: Int) : Int !{IO} = let _ = print(\"hi\") in x\n"
          "g(5)\n",
          "hi\n5\n"),
-        # v4.71: a prelude function the program uses (string_contains)
+        # A prelude function the program uses (string_contains)
         # is now emitted, not just type-checked. Usage-based: simple
         # programs don't drag in higher-order prelude fns.
-        ("prelude fn string_contains compiles (v4.71)",
+        ("prelude fn string_contains compiles",
          "if string_contains(\"hello\", \"ell\") then 1 else 0\n",
          "1\n"),
-        # v4.72 (Phase A4): nested patterns — a cons whose head is a
+        # Nested patterns: a cons whose head is a
         # ctor pattern. Recursive pattern binding handles the nesting.
-        ("nested cons-of-ctor pattern (v4.72)",
+        ("nested cons-of-ctor pattern",
          "type P = | P(Int, Int)\n"
          "fn sh(xs: List<P>) : Int =\n"
          "  match xs { [] => 0; [P(a, b), ...rest] => a + b + sh(rest) }\n"
          "sh([P(1, 2), P(3, 4), P(10, 0)])\n",
          "20\n"),
-        # v4.72: literal patterns over scalar scrutinees (Int + String).
-        ("literal int/string patterns (v4.72)",
+        # Literal patterns over scalar scrutinees (Int + String).
+        ("literal int/string patterns",
          "fn classify(n: Int) : String ="
          " match n { 0 => \"z\"; 1 => \"o\"; _ => \"m\" }\n"
          "fn day(c: String) : Int ="
@@ -3284,22 +3325,22 @@ def run_quartz_tests() -> int:
          "let _ = print(classify(0) ++ classify(1) ++ classify(9))\n"
          "day(\"tue\")\n",
          "zom\n2\n"),
-        # v4.73 (Phase A4): a tuple pattern whose first element is a CTOR
+        # A tuple pattern whose first element is a CTOR
         # must DISCRIMINATE on that ctor, not match every tuple. This is
         # exactly prism's tokenizer dispatch shape `(TEnd, _) => …`. The
         # bug: _pattern_test returned "true" for any tuple, so the first
         # arm swallowed every case. Here `(A, k)` must NOT match (B, 9);
         # the `(B, k)` arm must win → 9, not 0.
-        ("tuple pattern discriminates on ctor sub-pattern (v4.73)",
+        ("tuple pattern discriminates on ctor sub-pattern",
          "type Tag = | A | B\n"
          "fn pick(p: (Tag, Int)) : Int ="
          " match p { (A, k) => 0; (B, k) => k }\n"
          "pick((B, 9))\n",
          "9\n"),
-        # v4.73: an explicit `let _ : T = <effectful stmt>` final decl is
-        # a discard run for effects, NOT a REPL result — so `print` fires
+        # An explicit `let _ : T = <effectful stmt>` final decl is
+        # a discard run for effects, NOT a REPL result, so `print` fires
         # once, not twice. (prism's last line is this shape.)
-        ("final `let _ : T` discard prints once (v4.73)",
+        ("final `let _ : T` discard prints once",
          "let _ : String = print(\"once\")\n",
          "once\n"),
     ]
@@ -3335,14 +3376,14 @@ def run_quartz_tests() -> int:
             except OSError:
                 pass
 
-    # v4.49: structural codegen checks. The runtime cases above can't
+    # Structural codegen checks. The runtime cases above can't
     # distinguish "guard emitted but never fired" from "guard silently
-    # dropped" — for both, the program returns the right value. These
+    # dropped": for both, the program returns the right value. These
     # cases run `quartz.py --verbose`, capture the generated C, and
     # grep for the actual `if (!...) { fprintf ... exit(1); }` shape
     # so a future change that quietly stops emitting the guard FAILS
     # this test instead of looking healthy.
-    print("== quartz refinement codegen structure (v4.49) ==")
+    print("== quartz refinement codegen structure ==")
     ref_cases = [
         ("param guard in C source",
          "fn p(n: Int where (n > 0)) : Int = n\np(1)\n",
@@ -3356,54 +3397,54 @@ def run_quartz_tests() -> int:
         ("literal-on-left predicate shape",
          "fn p(n: Int where (0 < n)) : Int = n\np(3)\n",
          "if (!(0LL < n))"),
-        # v4.50: refined let-decl in main()'s C source. Pin down that
+        # Refined let-decl in main()'s C source. Pin down that
         # the guard lives in main(), not duplicated in the surrounding
         # fn machinery.
-        ("refined let-decl guard in main (v4.50)",
+        ("refined let-decl guard in main",
          "let n : Int where (n > 0) = 42\nn\n",
          "if (!(n > 0LL))"),
-        # v4.50: refined LetIn inside fn body — guard must be emitted
+        # Refined LetIn inside fn body: guard must be emitted
         # inside the fn, not the surrounding main().
-        ("refined let-in guard inside fn (v4.50)",
+        ("refined let-in guard inside fn",
          "fn f(k: Int) : Int = let n : Int where (n > 0) = k in n\nf(3)\n",
          "if (!(n > 0LL))"),
-        # v4.50: refined lambda param — guard lives inside the
+        # Refined lambda param: guard lives inside the
         # lifted __lambda_N C fn, not at the call site.
-        ("refined lambda param guard in lifted fn (v4.50)",
+        ("refined lambda param guard in lifted fn",
          "let dbl = fn(x: Int where (x > 0)) -> x * 2\ndbl(5)\n",
          "if (!(x > 0LL))"),
-        # v4.51: && compiled in a refinement predicate. Verifies
+        # && compiled in a refinement predicate. Verifies
         # _compile_refinement_pred recurses correctly: both sides
         # become parenthesized comparisons and combine via C's `&&`.
-        ("&& refinement guard shape (v4.51)",
+        ("&& refinement guard shape",
          "fn p(n: Int where (n > 0 && n < 100)) : Int = n\np(50)\n",
          "((n > 0LL) && (n < 100LL))"),
-        # v4.51 || refinement guard — same shape with `||`.
-        ("|| refinement guard shape (v4.51)",
+        # || refinement guard: same shape with `||`.
+        ("|| refinement guard shape",
          "fn p(n: Int where (n == 0 || n == 1)) : Int = n\np(0)\n",
          "((n == 0LL) || (n == 1LL))"),
-        # v4.53: parity refinement guard. `_compile_refinement_pred`
+        # Parity refinement guard. `_compile_refinement_pred`
         # recognizes the `binder %% int_lit OP int_lit` shape and emits
-        # `((mangled % KLL) OP MLL)` — the natural C transcription.
-        ("parity refinement guard shape (v4.53)",
+        # `((mangled % KLL) OP MLL)`: the natural C transcription.
+        ("parity refinement guard shape",
          "fn p(n: Int where (n % 2 == 0)) : Int = n\np(2)\n",
          "((n % 2LL) == 0LL)"),
-        # v4.54: NOT refinement guard. `_compile_refinement_pred`
-        # recurses through UnaryNot, emitting `(!inner)` — so the full
+        # NOT refinement guard. `_compile_refinement_pred`
+        # recurses through UnaryNot, emitting `(!inner)`, so the full
         # guard double-negates: `if (!(!(n == 0LL)))`.
-        ("NOT refinement guard shape (v4.54)",
+        ("NOT refinement guard shape",
          "fn p(n: Int where (!(n == 0))) : Int = n\np(5)\n",
          "(!(n == 0LL))"),
-        # v4.55: recursive compiler transcribes nested arithmetic. The
+        # Recursive compiler transcribes nested arithmetic. The
         # offset `n + 1` becomes `(n + 1LL)`, then the comparison wraps
         # it: `((n + 1LL) > 0LL)`. Pins down that arithmetic recurses
         # rather than being special-cased.
-        ("offset arithmetic guard shape (v4.55)",
+        ("offset arithmetic guard shape",
          "fn p(n: Int where (n + 1 > 0)) : Int = n\np(5)\n",
          "((n + 1LL) > 0LL)"),
-        # v4.56: cross-param guard references the earlier param by its
-        # mangled name — `(hi > lo)`, not `(hi > <literal>)`.
-        ("cross-parameter guard shape (v4.56)",
+        # cross-param guard references the earlier param by its
+        # mangled name: `(hi > lo)`, not `(hi > <literal>)`.
+        ("cross-parameter guard shape",
          "fn clamp(lo: Int, hi: Int where (hi > lo)) : Int = hi - lo\n"
          "clamp(3, 10)\n",
          "(hi > lo)"),
@@ -3436,18 +3477,18 @@ def run_quartz_tests() -> int:
             except OSError:
                 pass
 
-    # v4.56: cross-parameter refinements now compile — a later param's
-    # predicate may reference an EARLIER param (`b < a`), so the v4.55
+    # cross-parameter refinements now compile: a later param's
+    # predicate may reference an EARLIER param (`b < a`), so a
     # "non-binder identifier" negative was retired (it compiles now).
     # What's STILL refused: a non-arithmetic expression form (function
     # calls, field access). The cross-param boundary itself (forward
     # references, truly-unbound names) is caught by the host's pre-eval
     # during glass-build, so it can't be isolated to Quartz's envelope
-    # via the CLI — the envelope branch stays as defense-in-depth for
+    # via the CLI: the envelope branch stays as defense-in-depth for
     # standalone codegen.
-    print("== quartz refinement: unsupported predicate (v4.56) ==")
+    print("== quartz refinement: unsupported predicate ==")
     bad_cases = [
-        # A function call inside the predicate — not an arithmetic /
+        # A function call inside the predicate, not an arithmetic /
         # comparison / boolean form, so it hits the envelope error.
         ("function call in predicate",
          "fn id(x: Int) : Int = x\n"

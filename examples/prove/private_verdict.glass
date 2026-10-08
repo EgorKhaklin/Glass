@@ -1,4 +1,5 @@
-# Prove a classification of a PRIVATE number, revealing only the verdict WORD — not the number.
+# Prove a classification of a PRIVATE number, revealing only the verdict WORD, not the number.
+# Default proofs are sound but not zero-knowledge: add --zk to hide the private inputs.
 #
 #   glass prove examples/prove/private_verdict.glass score=820   # -> "PASS", ACCEPT
 #   glass prove examples/prove/private_verdict.glass score=640   # -> "WAIT", ACCEPT
@@ -6,10 +7,10 @@
 #
 # The result is a STRING chosen by a private comparison. A function returning a string lowers to a
 # multi-wire value, and an `if`/`else` over strings muxes them wire-by-wire. Here every verdict is a
-# tidy 4 characters; since v5.121 the branches need NOT be equal width — see private_risk.glass for an
+# tidy 4 characters, but the branches need NOT be equal width: see private_risk.glass for an
 # `if` over words of different lengths (the bridge NUL-pads the shorter). The proof reveals the verdict word and binds it
-# as the public result; the score it was computed from stays in the witness. The Third Witness
-# (glass.py) recomputes the same word — proving the circuit selected the verdict the source dictates,
+# as the public result; the score it was computed from stays in the witness. The cross-check
+# (glass.py) recomputes the same word: proving the circuit selected the verdict the source dictates,
 # not some corrupted muxing of the branches.
 fn verdict(s: Int) : String =
   if s >= 750 then "PASS"

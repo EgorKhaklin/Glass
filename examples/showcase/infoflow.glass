@@ -1,14 +1,14 @@
 # =============================================================================
-# Information flow — taint tracking on a security lattice, in Glass.
+# Information flow: taint tracking on a security lattice, in Glass.
 #
 # (The "entropy" half of information lives in showcase/probability.glass
 # as the exact rational Gini uncertainty. This is the FLOW half.)
 #
-# Every value carries a security label from a lattice — here the
+# Every value carries a security label from a lattice: here the
 # two-point lattice Public ⊑ Secret. The rule of non-interference:
 # combining values JOINS their labels (Secret wins), so a computation
 # that touches any secret produces a secret result. A public sink may
-# only emit Public values — so secret data cannot leak, by construction.
+# only emit Public values, so secret data cannot leak, by construction.
 #
 # Labels propagate through the data, exactly the way Glass effect rows
 # propagate `!{UntrustedModel}`: the type/label of an output records
@@ -26,7 +26,7 @@ fn label_of(t: Tagged) : Label = match t { Tagged(_, l) => l }
 fn value_of(t: Tagged) : Int   = match t { Tagged(v, _) => v }
 fn is_public(t: Tagged) : Bool = match label_of(t) { Public => true; Secret => false }
 
-# Operations propagate the join of their inputs' labels — taint spreads.
+# Operations propagate the join of their inputs' labels: taint spreads.
 fn tadd(a: Tagged, b: Tagged) : Tagged =
   Tagged(value_of(a) + value_of(b), join(label_of(a), label_of(b)))
 fn tmul(a: Tagged, b: Tagged) : Tagged =

@@ -1,10 +1,9 @@
 # =============================================================================
-# mod_refine.glass — parity refinement using `%` (v4.53).
+# mod_refine.glass: parity refinement using `%`.
 #
-# Before v4.53 Glass couldn't lex `%`, so divisibility / parity
-# refinements (`n % 2 == 0`) couldn't be expressed. v4.53 adds `%`
-# end-to-end (host + Quartz + prism) and extends Quartz's refinement
-# predicate compiler to recognize the canonical `binder % K OP M`
+# `%` lets divisibility / parity refinements (`n % 2 == 0`) be expressed.
+# It works end-to-end (host + Quartz + prism), and Quartz's refinement
+# predicate compiler handles the canonical `binder % K OP M`
 # shape so parity guards compile to native C.
 #
 # 10 is even, so the predicate holds and the call returns 11.

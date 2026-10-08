@@ -1,5 +1,5 @@
 # =============================================================================
-# frost_goldilocks_poseidon2.glass — POSEIDON2 over Goldilocks, byte-exact to Plonky3.
+# frost_goldilocks_poseidon2.glass: POSEIDON2 over Goldilocks, byte-exact to Plonky3.
 #
 # Poseidon2 (Grassi-Khovratovich-Roy-Schofnegger, eprint 2023/323) is the modern
 # successor to Poseidon used by Plonky3 / the current STARK stacks: cheaper linear
@@ -12,13 +12,13 @@
 # (glass.py == native_glassc); only the linear layers, schedule, and constants differ.
 #
 # Verified the only way that settles correctness: against Plonky3's OWN published
-# permutation test vectors (goldilocks/src/poseidon2.rs), for BOTH t=8 and t=12 — a
+# permutation test vectors (goldilocks/src/poseidon2.rs), for BOTH t=8 and t=12: a
 # full-permutation match proves the round structure, both matrices, AND all
 # constants. Constants pulled programmatically from the Plonky3 source (instance A:
 # small-integer internal diagonal) and emitted as base-2^16 limbs; never hand-typed.
 #
 # SCOPE: matching the vectors proves CORRECTNESS-OF-PORT, not adversarial soundness.
-# Research/educational-grade, UNAUDITED — building a modern primitive from its public
+# Research/educational-grade, UNAUDITED: building a modern primitive from its public
 # spec does NOT confer production safety. Do not protect real value.
 # =============================================================================
 
@@ -84,7 +84,7 @@ fn llen(xs: List<List<Int>>) : Int = match xs { [] => 0; [x, ...r] => 1 + llen(r
 fn inth(xs: List<Int>, i: Int) : Int = match xs { [] => 0; [h, ...t] => if i == 0 then h else inth(t, i - 1) }
 fn pdrop1(st: List<List<Int>>) : List<List<Int>> = match st { [] => []; [h, ...t] => t }
 
-# --- Poseidon over Goldilocks — byte-exact to Plonky2 (t=12, R_F=8, R_P=22) ----
+# --- Poseidon over Goldilocks: byte-exact to Plonky2 (t=12, R_F=8, R_P=22) ----
 # S-box x^7 (gcd(7, p-1)=1 over Goldilocks, so it is a permutation). Computed as
 # Plonky2 does: x2=x^2, x4=x^4, x3=x^3, return x3*x4 = x^7.
 fn sbox(x: List<Int>) : List<Int> = let x2 : List<Int> = fmul(x, x) in let x4 : List<Int> = fmul(x2, x2) in let x3 : List<Int> = fmul(x, x2) in fmul(x3, x4)
@@ -160,4 +160,4 @@ let _ : String = print("  BOTH MATCH (byte-exact to Plonky3): " ++ show_b(v8 && 
 let _ : String = print("")
 let _ : String = print("Frost's from-spec Poseidon2; reuses the int64-safe Goldilocks field, dogfoods byte-identical. Research-grade, UNAUDITED.")
 
-"frost_goldilocks_poseidon2 v0.1 — Poseidon2 over Goldilocks, byte-exact to Plonky3 (verified vs its published permutation vectors)"
+"frost_goldilocks_poseidon2: Poseidon2 over Goldilocks, byte-exact to Plonky3 (verified vs its published permutation vectors)"

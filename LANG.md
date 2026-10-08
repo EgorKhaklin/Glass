@@ -1,4 +1,4 @@
-# Glass — Language Specification
+# Glass: Language Specification
 
 **Version:** 5.100.0
 **Status:** Self-hosting research language (not production-hardened). Installable
@@ -19,7 +19,7 @@ Glass is a pure functional language designed for transparent local reasoning.
 7. **Match is total.** Non-exhaustive matches are a type error. (v0.1.)
 8. **Domain constraints belong in the signature.** Refinement types. (v0.4.)
 9. **Side-effects belong in the signature.** Algebraic effects. (v0.5.)
-   Effects are **polymorphic** — higher-order fns adapt to their callbacks. (v0.7.)
+   Effects are **polymorphic**: higher-order fns adapt to their callbacks. (v0.7.)
 10. **The language must be expressive enough to describe itself.** Self-hosting
     is v1.0. v0.6 made mutual recursion work; v0.7 made effect-polymorphic
     higher-order fns work; v0.8 added records (the natural shape for AST
@@ -31,7 +31,7 @@ Glass is a pure functional language designed for transparent local reasoning.
 Glass takes the Rust experience seriously without adopting Rust's solution.
 Rust's central insight is that safety can come from compiler-enforced
 visibility at every dangerous-operation site (mutation, lifetime, send/sync).
-Glass takes the dual route: safety through type-system-tracked semantics —
+Glass takes the dual route: safety through type-system-tracked semantics:
 no mutation in the pure core, and the operations that DO matter (IO,
 randomness, model inference, eventually quantum measurement, eventually
 private data flow) are visible at every call site through effect labels.
@@ -63,8 +63,8 @@ fn ask_and_show(prompt: String) : String !{IO, Inference} =
   print("answer: " ++ answer)
 ```
 
-The label is the load-bearing part. The runtime detail of `model_call` —
-which model, how it's hosted, whether it's local or remote — is configurable;
+The label is the load-bearing part. The runtime detail of `model_call`,
+which model, how it's hosted, whether it's local or remote: is configurable;
 the type-system fact is permanent. Every function that touches a model
 declares so. Every caller of such a function picks up the effect or
 declares it themselves. The audit question "does this code path call a
@@ -87,7 +87,7 @@ fn ask_nonempty(prompt: String) : String !{Inference} =
 ```
 
 If the model returns a value violating the refinement, the program raises
-at the boundary — not 50 functions later when a downstream parse fails on
+at the boundary, not 50 functions later when a downstream parse fails on
 something unexpected. The refinement is the **contract**; the model is the
 **supplier**; Glass **enforces**. The compiler statically discharges
 refinements that follow by implication from the program's own reasoning,
@@ -95,7 +95,7 @@ leaving only the genuinely external checks (like model output) at runtime.
 
 This is the substantive type-system answer to "untrusted AI output":
 not a parsing schema (which catches shape but not semantics), and not a
-runtime guard (which is just a check buried in code) — but a **type-level
+runtime guard (which is just a check buried in code), but a **type-level
 contract** that travels with the value through every fn that handles it.
 
 ### Effect polymorphism and AI batching
@@ -118,11 +118,11 @@ proliferation; one generic primitive that adapts.
 Effect labels are just identifiers. Different trust levels are different
 labels:
 
-- `!{TrustedModel}` — output of a model the program is willing to take
+- `!{TrustedModel}`: output of a model the program is willing to take
   semantic content from
-- `!{UntrustedModel}` — output that must pass refinements before use
-- `!{HumanReviewed}` — output that has been audited by a person
-- `!{Sandbox}` — execution in a restricted environment
+- `!{UntrustedModel}`: output that must pass refinements before use
+- `!{HumanReviewed}`: output that has been audited by a person
+- `!{Sandbox}`: execution in a restricted environment
 
 The Glass type system doesn't pick which labels matter for a given
 deployment. It provides the machinery; a security team or a deployment
@@ -137,8 +137,8 @@ A pure functional core is naturally differentiable. The subset of Glass
 without effects, without refinements that introduce nondifferentiable
 discontinuities, and over a numeric type (Float, post-v0.8) is a
 differentiable function. The compiler can extract that subset for
-autodiff backends. This isn't unique to Glass — Dex, JAX-like systems,
-and others have explored this — but the combination with effect typing
+autodiff backends. This isn't unique to Glass: Dex, JAX-like systems,
+and others have explored this, but the combination with effect typing
 means the differentiable-vs-effectful boundary is **machine-checkable**,
 not convention.
 
@@ -177,7 +177,7 @@ The direction that seems to be forming:
   network, or from runtime checking.
 - **Hybrid symbolic/neural.** Programs where some functions are neural
   black boxes and others are formal logic. The type system mediates the
-  trust boundary — what the formal side is willing to assume about the
+  trust boundary: what the formal side is willing to assume about the
   neural side's outputs.
 - **Multi-agent systems.** Programs that orchestrate multiple autonomous
   agents. Capability typing describes which agents may be invoked from
@@ -195,8 +195,8 @@ The direction that seems to be forming:
 
 The bet behind Glass: **the formal artifact that all three audiences
 (humans, AI, verification tools) read the same way is what matters.**
-Glass's transparency axiom — readable from local context alone, semantic
-types in signatures, effects in signatures — is precisely the requirement
+Glass's transparency axiom: readable from local context alone, semantic
+types in signatures, effects in signatures: is precisely the requirement
 for that artifact. Not because Glass is special; because the requirement
 is real.
 
@@ -208,15 +208,15 @@ echo existing things make people search for the wrong reference. New
 concepts deserve new names, even when the new names are unfamiliar.
 
 - **Glass.** The language itself. Transparent local reasoning.
-- **Pane.** The query layer — a pane of glass: a typed, declarative,
+- **Pane.** The query layer: a pane of glass: a typed, declarative,
   composable view into data, descended from the Glass primitives
   `filter`/`map`/`fold`. Built in Glass; see [`examples/pane/`](examples/pane/).
 - **Frost.** The zero-knowledge extension of Pane. Frosted glass preserves
-  structure while obscuring contents — the right metaphor for zero-knowledge:
+  structure while obscuring contents: the right metaphor for zero-knowledge:
   the auditor reads the query shape, the verifier checks the constraint, the
   witness stays private. Built from scratch in Glass as a zk-STARK; see
   [`examples/frost/`](examples/frost/).
-- **Quartz.** Glass's native back end (`quartz.py`): Glass → C. Built — a
+- **Quartz.** Glass's native back end (`quartz.py`): Glass → C. Built: a
   Glass-written compiler (`glassc.glass`) runs on top of it, and Glass
   self-hosts as of v4.76.
 
@@ -230,7 +230,7 @@ known concept and Glass uses them the standard way.
 ### Pane: a Glass-native query layer
 
 Glass already expresses much of SQL's declarative spirit using existing
-primitives — `filter` is `WHERE`, `map` is `SELECT`, `fold` is `GROUP BY`
+primitives: `filter` is `WHERE`, `map` is `SELECT`, `fold` is `GROUP BY`
 aggregation. The **Pane** layer makes this first-class: a small, total query
 algebra with a reference interpreter, built in Glass and shaped so the same
 query AST can be lowered into a zero-knowledge circuit (Frost). See
@@ -258,7 +258,7 @@ Frost is Pane with privacy. Some columns are private witnesses; the
 query result is a zero-knowledge proof that the result was correctly
 computed from the private data.
 
-- Columns marked `!{Private}` are witness data — flow into the query but
+- Columns marked `!{Private}` are witness data: flow into the query but
   never out to the result.
 - A query function returning `Result<T, E> !{Private}` describes
   "computes T from private inputs"; the compiler can lower it to a ZK
@@ -289,18 +289,18 @@ it can prove and leaves the rest to runtime.
 
 ## On the host language
 
-Python was the bootstrap. The plan was always to leave it — and Glass has:
+Python was the bootstrap. The plan was always to leave it, and Glass has:
 the route taken was **direct self-hosting via native compilation**, not the
 OCaml-and-SMT detour this section once projected.
 
 - **The Python era.** `glass.py`, a tree-walking interpreter, grew the type
   system (Hindley-Milner, effect rows, refinement types) and remains the reference.
 - **Glass-in-Glass.** `examples/selfhost/prism.glass` reimplements the whole
-  front end — lexer, parser, type inference, evaluator — in Glass.
+  front end (lexer, parser, type inference, evaluator) in Glass.
 - **Quartz.** `quartz.py` compiles Glass to C; a Glass-written compiler
   (`glassc.glass`) runs on top of it. At **v4.76** the bootstrap fixpoint
   closed: `glass.py` is now only a one-time bootstrap and a differential-testing
-  oracle. See [docs/self-hosting.md](docs/self-hosting.md).
+  oracle. See [docs/compiler/self-hosting.md](docs/compiler/self-hosting.md).
 
 ## Lexical structure
 
@@ -317,7 +317,7 @@ literals `[...]`, tuple literals `(a, b, c)`.
 
 ## List literals
 
-`[]`, `[a, b, c]`, and **spread** anywhere — `[...a, x, ...b]` — spliced from
+`[]`, `[a, b, c]`, and **spread** anywhere (`[...a, x, ...b]`) spliced from
 other lists at the head, the middle, or repeatedly. A spread desugars to `++`
 (the general case) or stays a `Cons` chain (the tail-only form `[h, ...t]`),
 so it is exactly list concatenation with prettier syntax. (Spread also binds
@@ -340,9 +340,9 @@ type NAME<T1> = | Variant1 | Variant2(T1)
 - `List<T>`
 - Tuple: `(T1, T2, T3)`
 - Function: `(T1, T2) -> TR` or `(T1, T2) -> TR !{Eff1, Eff2}`
-- User ADT (sum): `Name<T1>` — multiple variants
-- User record: `Name<T1>` — single shape with named fields
-- Refined: `BaseType where (predicate)` — at fn-param and let-binding sites
+- User ADT (sum): `Name<T1>`: multiple variants
+- User record: `Name<T1>`: single shape with named fields
+- Refined: `BaseType where (predicate)`: at fn-param and let-binding sites
 
 ### Records (v0.8)
 
@@ -359,7 +359,7 @@ fn greet(u: User) : String =                    # destructuring in patterns
   match u { User { name, age } => "hi " ++ name }
 ```
 
-Records are nominal — two record types with identical field shapes but
+Records are nominal: two record types with identical field shapes but
 different names are distinct types. The field set in a literal must
 match the declaration exactly: no missing, no extras. Record patterns
 in v0.8 bind all named fields by their declared names; renaming and
@@ -411,7 +411,7 @@ effect-polymorphic. The same primitive composes through pure,
 effectful, and mixed code without proliferation.
 
 Built-in effect labels: `IO` (print), `Random` (random_int),
-`Inference` (model_call). Custom effect labels are just identifiers —
+`Inference` (model_call). Custom effect labels are just identifiers:
 no declaration needed.
 
 ## Refinement types
@@ -419,7 +419,7 @@ no declaration needed.
 `BaseType where (predicate)`. Predicates type-check as Bool with the binder
 in scope, and are runtime-checked at fn entry, let binding, and let-in.
 Obligations the compiler can prove by **implication / subsumption**
-(alpha-equivalence and interval reasoning) are discharged statically — no
+(alpha-equivalence and interval reasoning) are discharged statically: no
 runtime check is emitted. A general SMT backend was sketched in early
 roadmaps but not pursued; this implication-based discharge is what shipped.
 
@@ -442,7 +442,7 @@ type Option<T>    = | None | Some(T)
 type Result<T, E> = | Ok(T) | Err(E)
 type Pair<A, B>   = | Pair(A, B)
 
-# All effect-polymorphic — propagate callback effects through monadic chains.
+# All effect-polymorphic: propagate callback effects through monadic chains.
 fn map_option<A, B, Eff>(o, f)         : Option<B>     !{Eff}
 fn bind_option<A, B, Eff>(o, k)        : Option<B>     !{Eff}
 fn map_result<A, B, Err, Eff>(r, f)    : Result<B,Err> !{Eff}
@@ -459,41 +459,39 @@ fn string_contains(s: String, needle: String) : Bool   # v0.8.1
 - `random_int(lo: Int, hi: Int) -> Int !{Random}`
 - `model_call(prompt: String) -> String !{Inference}`
 - `len`, `head` (Option), `tail` (Option), `reverse`, `range`,
-  `string_length`, `int_to_string` — all pure.
-- **`substring(s: String, start: Int, end: Int) -> String`** — extract
+  `string_length`, `int_to_string`: all pure.
+- **`substring(s: String, start: Int, end: Int) -> String`**: extract
   chars `[start, end)`; clamps at end-of-string; raises on negative
   indices or `start > end`. (v0.8.1)
-- **`string_index_of(s: String, needle: String) -> Option<Int>`** —
+- **`string_index_of(s: String, needle: String) -> Option<Int>`**:
   first occurrence, or `None`. (v0.8.1)
-- **`read_file(path: String) -> Result<String, String> !{File}`** —
+- **`read_file(path: String) -> Result<String, String> !{File}`**:
   read a file's contents; returns `Err` with the OS message on
   failure. The `!{File}` effect makes every file read visible at
   every call site. (v0.8.3)
-- **`write_file(path: String, content: String) -> Result<Int, String> !{File}`** —
+- **`write_file(path: String, content: String) -> Result<Int, String> !{File}`**:
   write `content` to `path`; returns the byte count in `Ok` or the OS
   message in `Err`. Same `!{File}` effect as `read_file`. Pairs with
   `read_file` to enable Glass-side build pipelines. (v3.13)
-- **`run_command(cmd: String, args: List<String>) -> Result<(Int, String, String), String> !{Process}`** —
+- **`run_command(cmd: String, args: List<String>) -> Result<(Int, String, String), String> !{Process}`**:
   invoke an external program with arguments; returns
   `Ok((exit_code, stdout, stderr))` or `Err(message)`. Distinct
-  `!{Process}` effect — process spawning is its own capability,
+  `!{Process}` effect: process spawning is its own capability,
   strictly more powerful than file I/O. 30-second timeout enforced.
   (v3.13)
-- `map`, `filter`, `fold` — all effect-polymorphic.
+- `map`, `filter`, `fold`: all effect-polymorphic.
 
-## Implementation history
+## Changes
 
-The release-by-release design audits — how refinement subsumption, the
-self-hosting stages, the REPL, the regex engine, and the rest were built and
-verified — live in [`docs/design-notes.md`](docs/design-notes.md), kept out of
-this spec. The terse version log is in [`CHANGELOG.md`](CHANGELOG.md).
+The version log is in [`CHANGELOG.md`](CHANGELOG.md); the reasoning behind each
+change is in its commit message.
 
 ## Roadmap
 
 The original roadmap below (records → OCaml+SMT → Glass-in-Glass → Quartz) has
 long been overtaken. Glass self-hosts (v4.76), and the work since has built
 **Pane** (a query language) and **Frost** (a zero-knowledge prover) on top of it.
-The OCaml/SMT step was never taken — self-hosting went straight through native
+The OCaml/SMT step was never taken: self-hosting went straight through native
 compilation via Quartz.
 
 The current, forward-looking roadmap lives in [`docs/roadmap.md`](docs/roadmap.md);

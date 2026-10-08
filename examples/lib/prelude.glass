@@ -1,23 +1,23 @@
 # =============================================================================
-# prelude.glass — Glass standard prelude (N3: developer experience)
+# prelude.glass: Glass standard prelude (N3: developer experience)
 #
-# The generic helpers that the builtins don't cover, in one place — so you stop
+# The generic helpers that the builtins don't cover, in one place, so you stop
 # re-deriving `nth` (and friends) in every file. Import with:
 #
 #     import "prelude.glass"      # (adjust the path to this file)
 #
-# ALREADY BUILTIN (no import, and polymorphic — use these directly):
+# ALREADY BUILTIN (no import, and polymorphic: use these directly):
 #   len, map, filter, fold, reverse, head, tail, cons, range,
 #   print, int_to_string, substring, string_length, string_index_of,
 #   string_to_lower, string_to_upper, char_at, read_file, write_file,
 #   run_command, random_int.
-#   (Tip: `len` works on a list of ANY element type — no need for a typed
+#   (Tip: `len` works on a list of ANY element type: no need for a typed
 #    length per element type. That was a self-inflicted papercut worth retiring.)
 #
 # This file adds the common ones those leave out. Everything is generic.
 # =============================================================================
 
-# indexing — the big missing one. nth with an explicit default, or as Option.
+# indexing: the big missing one. nth with an explicit default, or as Option.
 fn nth<A>(xs: List<A>, i: Int, d: A) : A =
   match xs { [] => d; [h, ...t] => if i == 0 then h else nth(t, i - 1, d) }
 fn nth_opt<A>(xs: List<A>, i: Int) : Option<A> =
@@ -58,4 +58,4 @@ let _ : String = print("  len(take([1,2,3,4,5], 2))       = " ++ int_to_string(l
 let _ : String = print("  unwrap_or(nth_opt([7,8], 5), 99)= " ++ int_to_string(unwrap_or(nth_opt([7, 8], 5), 99)))
 let _ : String = print("  contains_int([1,2,3], 2)        = " ++ (if contains_int([1, 2, 3], 2) then "true" else "false"))
 
-"glass prelude — generic helpers beyond the builtins"
+"glass prelude: generic helpers beyond the builtins"

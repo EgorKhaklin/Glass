@@ -1,13 +1,13 @@
 # =============================================================================
-# v0.8.3 demo: bootstrap.glass — full Glass-mini, source → value, in Glass.
+# bootstrap.glass: full Glass-mini, source → value, in Glass.
 #
-# This file extends the v0.8.2 bootstrap (arithmetic + if) to mini.glass's
+# This file extends an arithmetic + if bootstrap to mini.glass's
 # full grammar: variables, let-in, lambdas, function application,
-# higher-order functions, closures. The same code shape applies — more
+# higher-order functions, closures. The same code shape applies: more
 # token kinds, more parser productions, more eval cases. No new algorithmic
 # ideas, just volume.
 #
-# It also reads source from a file via the v0.8.3 !{File} effect, which
+# It also reads source from a file via the !{File} effect, which
 # means Glass programs can now be run by other Glass programs. The
 # self-hosting workflow is in place: write a .glass-mini source file,
 # call run_file on it, get a value.
@@ -395,7 +395,7 @@ fn eval(e: Expr, env: List<Pair<String, Value>>) : Result<Value, String> =
       bind_result(eval(value, env), fn(v: Value) ->
         eval(body, [Pair(name, v)] ++ env));
 
-    # A function literal captures the current environment — that's the
+    # A function literal captures the current environment: that's the
     # closure. Lexical scope falls out naturally.
     EFn(name, body) =>
       Ok(VClos(name, body, env));
@@ -406,7 +406,7 @@ fn eval(e: Expr, env: List<Pair<String, Value>>) : Result<Value, String> =
           match vf {
             VClos(param, body, clos_env) =>
               eval(body, [Pair(param, varg)] ++ clos_env);
-            _ => Err("not a function — can't apply")
+            _ => Err("not a function: can't apply")
           }))
   }
 
@@ -462,17 +462,17 @@ let _ : String = run("1 + ")
 # --- Glass reads Glass-mini source from disk ----------------------------
 #
 # This is the workflow moment: Glass programs reading other Glass-program
-# sources and executing them. Same machinery the v1.0 self-host uses,
+# sources and executing them. Same machinery the full self-host (prism.glass) uses,
 # just with a smaller language target.
 
 let _ : String = print("--- glass reads sample.glass-mini from disk ---")
-let _ : String = run_file("/home/claude/glass/examples/sample.glass-mini")
-let _ : String = run_file("/home/claude/glass/examples/sample2.glass-mini")
+let _ : String = run_file("examples/selfhost/sample.glass-mini")
+let _ : String = run_file("examples/selfhost/sample2.glass-mini")
 let _ : String = run_file("/tmp/this-file-does-not-exist.glass-mini")
 
 # Trailing reflection: this file is ~430 lines of Glass, handling
 # untyped lambda calculus with arithmetic, booleans, conditionals,
-# let-bindings, lambdas, application, closures, higher-order functions —
+# let-bindings, lambdas, application, closures, higher-order functions:
 # the same grammar that mini.glass implements as a separate Glass
 # program with hand-built ASTs. The new piece is the parser.
 #

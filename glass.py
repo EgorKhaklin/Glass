@@ -1,15 +1,15 @@
 """
-Glass v5.135.0 — reference implementation.
+Glass 1.0.0: the reference implementation.
 
 A pure functional language designed for transparent local reasoning.
 Single-file tree-walking interpreter: lexer → parser → type checker → evaluator.
 
-v0.8 adds records with named fields. Record literals `User { id: 1, name: "x" }`,
+Records have named fields. Record literals `User { id: 1, name: "x" }`,
 field access `user.name`, and record patterns `match u { User { id, name } => ... }`
 in match arms. Polymorphic records (`Container<T>`) work too. Records are
-nominal — two records with identical field shapes but different names are
-distinct types. Combined with v0.7's effect polymorphism and v0.4's
-refinements, a single fn signature now carries the full trust model:
+nominal: two records with identical field shapes but different names are
+distinct types. Combined with effect polymorphism and
+refinements, a single fn signature carries the full trust model:
 data shape, side-effects, and value constraints, all visible at the call
 site without reading the body.
 
@@ -31,8 +31,8 @@ import subprocess
 
 sys.setrecursionlimit(20000)
 
-# Perf: dataclass(slots=True) speeds the hot runtime value classes — attribute
-# reads (tens of millions of `.v`) and allocation (millions of IntV) — on Python
+# Perf: dataclass(slots=True) speeds the hot runtime value classes: attribute
+# reads (tens of millions of `.v`) and allocation (millions of IntV): on Python
 # 3.10+. On 3.9 it degrades to a plain dataclass: still correct, just no slots.
 _SLOTS = {"slots": True} if sys.version_info >= (3, 10) else {}
 
@@ -107,7 +107,7 @@ TOKEN_REGEX = re.compile(
 # lexes a `-` glued to digits as a negative literal, but immediately after a
 # value that `-` is binary subtraction: `10-3` is `10 - 3`, not `10` then `-3`.
 # When a negative INT follows one of these, we split it back into MINUS + INT
-# so it matches the spaced form exactly — no parser change needed. A negative
+# so it matches the spaced form exactly: no parser change needed. A negative
 # literal in any other position (`-5`, `[-1]`, `f(-2)`, `x = -3`) is untouched.
 _VALUE_ENDERS = {"INT", "IDENT", "STRING", "RPAREN", "RBRACK", "RBRACE",
                  "true", "false"}
@@ -182,15 +182,15 @@ class EffectRow:
     """An effect row: a concrete set of effect labels plus a set of row
     variables for polymorphism.
 
-    {IO}        →  EffectRow({IO}, vars={})           — concrete
-    {IO, E}     →  EffectRow({IO}, vars={"E"})        — at least IO, plus E
-    {E}         →  EffectRow(frozenset(), vars={"E"}) — polymorphic
-    {E, F}      →  EffectRow(frozenset(), {"E","F"})  — two abstract rows
-    {}          →  EffectRow(frozenset(), vars={})    — pure
+    {IO}        →  EffectRow({IO}, vars={}): concrete
+    {IO, E}     →  EffectRow({IO}, vars={"E"}): at least IO, plus E
+    {E}         →  EffectRow(frozenset(), vars={"E"}): polymorphic
+    {E, F}      →  EffectRow(frozenset(), {"E","F"}): two abstract rows
+    {}          →  EffectRow(frozenset(), vars={}): pure
 
     A single annotation `!{...}` can name at most one row variable (parser
     restriction), but a row may accumulate several distinct vars when a body
-    propagates effects from two effect-polymorphic callees — keeping the full
+    propagates effects from two effect-polymorphic callees: keeping the full
     set is what lets the body-subset check stay sound (see extend_effects).
 
     Substitution of row variables happens at call sites (effect polymorphism),
@@ -227,7 +227,7 @@ class TyVar(Ty):
     - Non-rigid (default): can be bound by unification at call/let-binding sites.
       Built-ins, constructors, and the *exterior view* of polymorphic fns use these.
     - Rigid: only unifies with itself (same name). Used *inside* the body of a
-      polymorphic fn so that type params behave as opaque types — preventing
+      polymorphic fn so that type params behave as opaque types: preventing
       e.g. `let y : A = 42` from silently treating A as Int."""
     name: str
     rigid: bool = False
@@ -266,9 +266,8 @@ class TyRefine(Ty):
     binder's name (the fn parameter name or the let-bound name). It's
     evaluated against an env where that name maps to the bound value.
 
-    v0.4 supports refinements only at fn-parameter types and let-binding
-    types. Return-type refinements and refinements inside generic args
-    are deferred to later versions."""
+    Refinements attach at fn-parameter, fn-return and let-binding types,
+    and on named constructor fields."""
     base: Ty
     pred: "Node"  # Bool-typed expression
 
@@ -323,7 +322,7 @@ class RecordLit(Node):
 
 @dataclass
 class FieldAccess(Node):
-    """expr.field — projects a single field out of a record value."""
+    """expr.field: projects a single field out of a record value."""
     record: Node
     field: str
 
@@ -342,8 +341,8 @@ class BinOp(Node):
     lhs: Node
     rhs: Node
 
-# v4.54: logical NOT. The third boolean operator after && (v4.51) and
-# || (v4.52). Parses as a unary prefix in expression context; the !{...}
+# Logical NOT. The third boolean operator after && and
+# ||. Parses as a unary prefix in expression context; the !{...}
 # effect-row syntax only occurs in type context, so the BANG token is
 # now overloaded but unambiguous at parse time.
 @dataclass
@@ -362,7 +361,7 @@ class LetIn(Node):
     ann: Ty | None
     value: Node
     body: Node
-    # v4.67: `let lin x = ...` marks x as a LINEAR resource — it must be
+    # `let lin x = ...` marks x as a LINEAR resource: it must be
     # consumed exactly once in the body (no cloning, no dropping). The
     # checker enforces this with a path-aware use count; eval is unchanged.
     linear: bool = False
@@ -407,7 +406,7 @@ class Variant:
     """One variant of a sum type, e.g. `Some(T)` or `None`."""
     name: str
     fields: list[Ty]   # field types, possibly referring to the type's params
-    # v4.69: optional per-field binder names, parallel to `fields`. A
+    # Optional per-field binder names, parallel to `fields`. A
     # named field can carry a refinement (`Pos(n: Int where (n > 0))`)
     # whose binder is that name; the refinement is checked when the
     # constructor is applied. Unnamed fields get None.
@@ -433,19 +432,19 @@ class RecordDecl(Node):
 
 @dataclass
 class Import(Node):
-    """v4.70: `import "path/to/lib.glass"` — pulls in the DEFINITIONS
+    """`import "path/to/lib.glass"`: pulls in the DEFINITIONS
     (type / record / fn decls) of another file, skipping its top-level
     `let`s and final expression (so a file's demos don't run on import).
     Expanded before installation; the host has no module system beyond
-    this flat merge (no namespacing) — enough to share a stdlib core."""
+    this flat merge (no namespacing): enough to share a stdlib core."""
     path: str
 
 
 # =============================================================================
-# Linear / resource typing (v4.67)
+# Linear / resource typing
 # =============================================================================
 # A `let lin x = ...` binding marks x as a linear resource: it must be
-# consumed EXACTLY once in the body — no cloning (used twice), no dropping
+# consumed EXACTLY once in the body: no cloning (used twice), no dropping
 # (never used). Enforcement is a static, path-aware use count below.
 
 def _pattern_binds(pat: "Pattern | None", name: str) -> bool:
@@ -471,7 +470,7 @@ def linear_uses(e: "Node", name: str) -> int:
     Branches must consume it identically: a value used in one `if` branch
     but not the other (or unequally across `match` arms) is a linearity
     violation, because exactly one branch runs. Capturing a linear value
-    in a lambda is refused outright — a closure may be called any number
+    in a lambda is refused outright: a closure may be called any number
     of times, so single use can't be guaranteed statically. Raises
     TypeError_ on either problem."""
     t = type(e)
@@ -489,7 +488,7 @@ def linear_uses(e: "Node", name: str) -> int:
         if tt != ft:
             raise TypeError_(
                 f"linear variable {name!r} used {tt}x in the `then` branch "
-                f"but {ft}x in `else` — a linear resource must be consumed "
+                f"but {ft}x in `else`: a linear resource must be consumed "
                 f"identically on every path")
         return linear_uses(e.cond, name) + tt
     if t is LetIn:
@@ -502,7 +501,7 @@ def linear_uses(e: "Node", name: str) -> int:
             return 0                 # shadowed by a lambda parameter
         if linear_uses(e.body, name) > 0:
             raise TypeError_(
-                f"linear variable {name!r} captured in a lambda — single "
+                f"linear variable {name!r} captured in a lambda: single "
                 f"use cannot be guaranteed (a closure may run any number "
                 f"of times)")
         return 0
@@ -519,7 +518,7 @@ def linear_uses(e: "Node", name: str) -> int:
                 if c != first:
                     raise TypeError_(
                         f"linear variable {name!r} used unequally across "
-                        f"match arms — must be consumed identically on every "
+                        f"match arms: must be consumed identically on every "
                         f"path")
             return linear_uses(e.scrutinee, name) + first
         return linear_uses(e.scrutinee, name)
@@ -534,7 +533,7 @@ def linear_uses(e: "Node", name: str) -> int:
 
 def pp_expr(e: "Node") -> str:
     """Compact pretty-printer for AST expressions. Used by TyRefine.__str__
-    for diagnostics — keep it terse, not round-trippable."""
+    for diagnostics: keep it terse, not round-trippable."""
     if isinstance(e, IntLit):    return str(e.value)
     if isinstance(e, StringLit): return repr(e.value)
     if isinstance(e, BoolLit):   return "true" if e.value else "false"
@@ -543,7 +542,7 @@ def pp_expr(e: "Node") -> str:
     if isinstance(e, UnaryNot):
         # Always parenthesize so the printed shape reads back correctly.
         # Otherwise `!(n == 0)` would print as `!n == 0`, which the
-        # parser would read as `(!n) == 0` — wrong scope.
+        # parser would read as `(!n) == 0`: wrong scope.
         return f"!({pp_expr(e.expr)})"
     if isinstance(e, Call):
         return f"{pp_expr(e.fn)}({', '.join(pp_expr(a) for a in e.args)})"
@@ -559,7 +558,7 @@ def pp_expr(e: "Node") -> str:
 # Binary operator precedence table (higher = binds tighter).
 BIN_PREC = {
     "PIPE":   1,
-    # v4.51: boolean combinators. Standard precedence — `||` binds
+    # Boolean combinators. Standard precedence: `||` binds
     # tightest of the very low operators, `&&` above it, comparisons
     # above that. Matches C / Glass intuition: `a > 0 && b < 100`
     # parses as `(a > 0) && (b < 100)`, not `a > (0 && b) < 100`.
@@ -573,7 +572,7 @@ BIN_PREC = {
 RIGHT_ASSOC = {"CONCAT"}
 # Comparison operators do not associate: `a == b == c` is a parse error (write
 # `(a == b) == c`). glass.py's precedence climber would happily chain them, but
-# prism's front end rejects the chain — so the reference matches the self-hosted
+# prism's front end rejects the chain, so the reference matches the self-hosted
 # compiler, and a program that runs here is one that self-hosts.
 COMPARISON_OPS = {"EQ", "NEQ", "LT", "GT", "LE", "GE"}
 OP_NAME = {
@@ -581,7 +580,7 @@ OP_NAME = {
     "EQ": "==", "NEQ": "!=", "LT": "<", "GT": ">", "LE": "<=", "GE": ">=",
     "CONCAT": "++", "PIPE": "|>",
     "ANDAND": "&&", "OROR": "||",
-    # v4.53: modulo at the same precedence as `*` and `/`.
+    # Modulo at the same precedence as `*` and `/`.
     "PERCENT": "%",
 }
 
@@ -646,11 +645,11 @@ class Parser:
         # identifier as a constructor, and the self-hosted compiler compiles a
         # reference to it as one (so `let C = 5; ... C ...` silently stringifies
         # a constructor, not 5). Reject it here so the reference interpreter and
-        # the compiler agree — the convention, enforced at the binding site.
+        # the compiler agree: the convention, enforced at the binding site.
         if name != "_" and name[:1].isupper():
             raise SyntaxError(
                 f"top-level `let {name} = ...`: a value binding must be "
-                f"lowercase — {name!r} is uppercase, which Glass reads as a "
+                f"lowercase: {name!r} is uppercase, which Glass reads as a "
                 f"constructor. Rename it (e.g. {name.lower()!r})."
             )
         ann: Ty | None = None
@@ -665,7 +664,7 @@ class Parser:
 
         A name that's in `scoped` (the type params in scope for this
         signature) is treated as an effect-row variable rather than a
-        concrete label. v0.7 supports at most one row variable per row."""
+        concrete label. At most one row variable is supported per row."""
         if not self.accept("BANG"):
             return PURE
         self.eat("LBRACE")
@@ -684,7 +683,7 @@ class Parser:
                     if var is not None and var != nxt:
                         raise SyntaxError(
                             f"effect row may have at most one row variable "
-                            f"in v0.7 (saw {var!r} and {nxt!r})"
+                            f"(saw {var!r} and {nxt!r})"
                         )
                     var = nxt
                 else:
@@ -785,9 +784,9 @@ class Parser:
         return Variant(name=vname, fields=fields, field_names=field_names)
 
     def _parse_variant_field(self, type_params, fields, field_names) -> None:
-        # v4.69: a field may be `Type` (unnamed) or `name: Type [where (p)]`
+        # A field may be `Type` (unnamed) or `name: Type [where (p)]`
         # (named, refinement-capable). A named field is detected as an
-        # IDENT followed by COLON — distinct from a bare type name, which
+        # IDENT followed by COLON: distinct from a bare type name, which
         # is an uppercase-leading IDENT NOT followed by colon, or `List<…>`.
         name = None
         if self.peek().kind == "IDENT" and self.peek(1).kind == "COLON":
@@ -850,7 +849,7 @@ class Parser:
                 return params[0]  # parenthesised single type
             if len(params) >= 2:
                 return TyTuple(tuple(params))
-            raise SyntaxError("() is not a valid type in v0.6 (use a 1-tuple work-around)")
+            raise SyntaxError("() is not a valid type (use a 1-tuple work-around)")
         name = self.eat("IDENT").value
         # Primitive types.
         if name == "Int":    return TyInt()
@@ -897,14 +896,14 @@ class Parser:
                 if t.kind in COMPARISON_OPS and nxt.kind in COMPARISON_OPS:
                     raise SyntaxError(
                         f"chained comparison '{OP_NAME[t.kind]} ... {OP_NAME[nxt.kind]}' "
-                        f"at line {nxt.line} needs parentheses — comparison operators "
+                        f"at line {nxt.line} needs parentheses: comparison operators "
                         f"don't associate; write e.g. (a {OP_NAME[t.kind]} b) {OP_NAME[nxt.kind]} c"
                     )
         return left
 
     def parse_unary(self) -> Node:
         # Unary minus is folded into INT literal at the lexer level.
-        # v4.54: BANG (`!`) is unary logical NOT in expression context.
+        # BANG (`!`) is unary logical NOT in expression context.
         # The same token starts effect rows (`!{IO}`) in type context;
         # parse_type handles that path separately, so seeing BANG here
         # is unambiguously the boolean operator.
@@ -1004,7 +1003,7 @@ class Parser:
         if t.kind == "IDENT":
             self.pos += 1
             # An uppercase-start ident followed by `{` is a record literal.
-            # We disambiguate by capital-letter convention — lowercase never
+            # We disambiguate by capital-letter convention: lowercase never
             # starts a record literal, so `x { ... }` is always two tokens.
             if (t.value and t.value[0].isupper()
                 and self.peek().kind == "LBRACE"):
@@ -1045,8 +1044,8 @@ class Parser:
 
     def parse_let_in(self) -> LetIn:
         self.eat("let")
-        # v4.67: `let lin x = EXPR in BODY` marks x linear. `lin` is a
-        # CONTEXTUAL keyword — only special when it's an IDENT "lin"
+        # `let lin x = EXPR in BODY` marks x linear. `lin` is a
+        # CONTEXTUAL keyword: only special when it's an IDENT "lin"
         # immediately followed by another IDENT (the binding name). So
         # `let lin = 5 in lin` (a variable literally named lin) still
         # works: there `lin` is followed by `=`, not an identifier.
@@ -1055,15 +1054,15 @@ class Parser:
                 and self.peek(1).kind == "IDENT"):
             self.pos += 1   # consume `lin`
             linear = True
-        # `let* PAT = EXPR in BODY` — Result-bind sugar (v2.4).
+        # `let* PAT = EXPR in BODY`: Result-bind sugar.
         if self.peek().kind == "STAR":
             self.eat("STAR")
             return self._parse_let_star_in()
-        # `let? PAT = EXPR in BODY` — Option-bind sugar (v2.5).
+        # `let? PAT = EXPR in BODY`: Option-bind sugar.
         if self.peek().kind == "QMARK":
             self.eat("QMARK")
             return self._parse_let_qmark_in()
-        # `let PAT = EXPR in BODY` where PAT is a tuple/list/ctor pattern (v2.7).
+        # `let PAT = EXPR in BODY` where PAT is a tuple/list/ctor pattern.
         # Identifier-only lets keep the traditional LetIn path so let-polymorphism
         # generalization still applies. Other patterns desugar to Match.
         if self.peek().kind in ("LPAREN", "LBRACK"):
@@ -1152,7 +1151,7 @@ class Parser:
     def parse_lambda(self) -> Lambda:
         self.eat("fn")
         self.eat("LPAREN")
-        # v4.47: accept_refinement=True so lambda params can carry
+        # accept_refinement=True so lambda params can carry
         # `where (pred)` clauses (e.g. fn(x: Int where (x > 0)) -> ...).
         # apply_fn already enforces TyRefine on params at call time, so
         # no separate runtime path is needed in the host.
@@ -1160,7 +1159,7 @@ class Parser:
         self.eat("RPAREN")
         self.eat("ARROW")
         body = self.parse_expr()
-        # Lambda return type is inferred in v0.0.1 (annotated lambdas: v0.1)
+        # Lambda return type is always inferred.
         return Lambda(params=params, ret=TyVar("_"), body=body)
 
     def parse_match(self) -> Match:
@@ -1186,9 +1185,9 @@ class Parser:
             # Convention: uppercase-leading identifier = constructor; else binding.
             if t.value[0].isupper():
                 self.pos += 1
-                # Record pattern: Name { field1, field2, ... } — each entry
-                # binds the field of that name. (v0.8: bindings only; no
-                # renaming or `..` rest, both are post-v0.8.)
+                # Record pattern: Name { field1, field2, ... }, each entry
+                # binds the field of that name. (Bindings only: no
+                # renaming or `..` rest.)
                 if self.accept("LBRACE"):
                     rec_fields: list[str] = []
                     if self.peek().kind != "RBRACE":
@@ -1224,7 +1223,7 @@ class Parser:
             heads = [self.parse_pattern()]
             # `[h1, .., hn]` is a fixed-length list (tail = nil); `[h1, .., hn, ...t]`
             # binds the rest to t. Both desugar to right-nested cons. Fixed-length
-            # support matches prism, which accepts `[a, b]` — the reference used to
+            # support matches prism, which accepts `[a, b]`: the reference used to
             # require the `...t` ellipsis and reject `[a, b]`.
             tail: Pattern = Pattern("nil")
             while self.peek().kind == "COMMA":
@@ -1302,10 +1301,10 @@ def builtin_types() -> dict[str, Ty]:
         "poseidon_perm":  TyFn((TyList(TyInt()),), TyList(TyInt())),
         "ntt_lde":        TyFn((TyList(TyInt()), TyInt(), TyInt(), TyInt()), TyList(TyInt())),
         "poseidon2_perm": TyFn((TyList(TyInt()),), TyList(TyInt())),
-        # Tzimtzum (`Concealed<T>`): a value provable-about but never observable. `conceal`
+        # Concealment (`Concealed<T>`): a value provable-about but never observable. `conceal`
         # introduces it; `cmap` computes within concealment; `concealed_in_range` proves a
         # property and returns a PUBLIC Bool. No reveal eliminator and no registered ctor,
-        # so a concealed value can never escape to an observable position — privacy by construction.
+        # so a concealed value can never escape to an observable position: privacy by construction.
         "conceal":        TyFn((T,), TyADT("Concealed", (T,))),
         "cmap":           TyFn((TyADT("Concealed", (T,)), TyFn((T,), U)), TyADT("Concealed", (U,))),
         "concealed_in_range": TyFn((TyADT("Concealed", (TyInt(),)), TyInt(), TyInt()), TyBool()),
@@ -1315,23 +1314,23 @@ def builtin_types() -> dict[str, Ty]:
         "substring":      TyFn((TyString(), TyInt(), TyInt()), TyString()),
         # Loud, both-sides abort: stderr message + nonzero exit (native q_error
         # mirrors this). Pure-divergent (no effect row, polymorphic return like
-        # Haskell's `error :: String -> a`) so it composes anywhere — used by the
+        # Haskell's `error :: String -> a`) so it composes anywhere: used by the
         # prove bridge to REFUSE to certify a circuit it cannot faithfully build,
         # instead of silently lowering to a proven 0.
         "error":          TyFn((TyString(),), A),
-        # v4.40: ASCII case conversion. Strings outside A-Za-z pass
+        # ASCII case conversion. Strings outside A-Za-z pass
         # through unchanged. Non-ASCII bytes are left alone (no
         # Unicode normalisation) so host and Quartz agree.
         "string_to_upper": TyFn((TyString(),), TyString()),
         "string_to_lower": TyFn((TyString(),), TyString()),
-        # v4.41: char_at returns the byte's value as Int (codepoint
+        # char_at returns the byte's value as Int (codepoint
         # for ASCII; raw byte for UTF-8). Matches Quartz semantics and
         # quartz_parser.glass / djb2 hash usage. Prism's user-defined
         # `fn char_at(s, i) : String = substring(s, i, i+1)` still
-        # shadows this builtin inside prism's own source — prism's
+        # shadows this builtin inside prism's own source: prism's
         # internal lexer keeps using its String-returning char_at.
         "char_at": TyFn((TyString(), TyInt()), TyInt()),
-        # v4.42: bitwise ops on Int. Semantics match C's int64_t:
+        # Bitwise ops on Int. Semantics match C's int64_t:
         # results are masked to 64 bits and sign-extended. So
         # bit_shl(1, 63) is -9223372036854775808 (the smallest int64),
         # and djb2 overflow matches the compiled-Glass output. Without
@@ -1356,7 +1355,7 @@ def builtin_types() -> dict[str, Ty]:
         "sle": TyFn((TyInt(), TyInt()), TyBool()),
         "sgt": TyFn((TyInt(), TyInt()), TyBool()),
         "sge": TyFn((TyInt(), TyInt()), TyBool()),
-        # v4.43: explicit int64 wrap. On host this applies the same
+        # Explicit int64 wrap. On host this applies the same
         # _to_int64 mask the bitwise ops use; on Quartz it's a no-op
         # (values are already int64_t natively). Gives users a knob
         # for algorithms that overflow `+`/`-`/`*` and need Quartz-
@@ -1371,7 +1370,7 @@ def builtin_types() -> dict[str, Ty]:
             TyADT("Result", (TyString(), TyString())),
             EffectRow(frozenset({"File"})),
         ),
-        # v3.13 — write a String to disk. Result<Int, String> where Ok wraps
+        # Write a String to disk. Result<Int, String> where Ok wraps
         # the byte count written and Err carries the OS error message.
         # Effect: !{File}, same as read_file.
         "write_file":     TyFn(
@@ -1379,11 +1378,11 @@ def builtin_types() -> dict[str, Ty]:
             TyADT("Result", (TyInt(), TyString())),
             EffectRow(frozenset({"File"})),
         ),
-        # v3.13 — invoke an external command. Takes (cmd, args) where args
+        # Invoke an external command. Takes (cmd, args) where args
         # is a List<String>. On success returns Ok((exit_code, stdout, stderr));
         # on failure (file-not-found, etc.) returns Err(message). The tuple
         # in Ok lets demos inspect all three outputs separately.
-        # Effect: !{Process} — a new, distinct effect from File so the
+        # Effect: !{Process}: a new, distinct effect from File so the
         # type signature makes process-spawning visible at every call site.
         "run_command":    TyFn(
             (TyString(), TyList(TyString())),
@@ -1403,7 +1402,7 @@ def unify_effects(
 ) -> bool:
     """Unify two effect rows. Updates eff_subst in place.
 
-    Simplifying restrictions for v0.7:
+    Simplifying restrictions:
       - A "row var on one side, anything on the other" only binds when the
         var side has empty concrete. Mixed rows (concrete + var) require
         exact equality.
@@ -1472,10 +1471,10 @@ def effect_row_subset(small: EffectRow, big: EffectRow) -> bool:
 
 def extend_effects(acc: EffectRow, more: EffectRow) -> EffectRow:
     """Accumulate `more` into `acc` for effect propagation through calls.
-    Concrete labels AND row variables both union — no row variable is ever
+    Concrete labels AND row variables both union: no row variable is ever
     dropped. If a body propagates two distinct abstract effect rows, both are
-    retained so the body-subset check at fn-body end sees (and, since v0.7
-    allows at most one row var per declared signature, rejects) them. Dropping
+    retained so the body-subset check at fn-body end sees (and, since only
+    one row var is allowed per declared signature, rejects) them. Dropping
     the second var here was a soundness hole: it let a fn that performs a
     second effect be certified without it."""
     return EffectRow(acc.concrete | more.concrete, acc.vars | more.vars)
@@ -1487,7 +1486,7 @@ def unify(
     eff_subst: dict[str, EffectRow] | None = None,
     rigid_eff: set[str] | None = None,
 ) -> bool:
-    """Unification with rigid-var handling. Refinements are transparent —
+    """Unification with rigid-var handling. Refinements are transparent:
     stripped to their base before structural comparison. Static type system
     treats `Int where (x > 0)` and `Int` as equivalent; runtime enforces
     the predicate separately. eff_subst and rigid_eff carry effect-row
@@ -1662,7 +1661,7 @@ def instantiate(
     if isinstance(t, TyTuple):
         return TyTuple(tuple(instantiate(item, mapping, eff_mapping) for item in t.items))
     if isinstance(t, TyRefine):
-        # Predicates reference value-level names, not type vars — leave them.
+        # Predicates reference value-level names, not type vars: leave them.
         return TyRefine(instantiate(t.base, mapping, eff_mapping), t.pred)
     return t
 
@@ -1674,7 +1673,7 @@ substitute = instantiate
 
 def instantiate_fresh(t: Ty, rigid_eff: set[str] | None = None) -> Ty:
     """Replace each non-rigid TyVar and effect-row var in t with a fresh
-    one — used at every Ident lookup so multiple uses of the same polymorphic
+    one: used at every Ident lookup so multiple uses of the same polymorphic
     identifier don't share variables."""
     if rigid_eff is None: rigid_eff = set()
     tvs = collect_tyvars(t)
@@ -1693,8 +1692,8 @@ class TypeChecker:
         self.adt_registry: dict[str, tuple[list[str], list[Variant]]] = {}
         # ctor_name -> (adt_name, field_types, param_names).
         self.ctor_registry: dict[str, tuple[str, list[Ty], list[str]]] = {}
-        # Tzimtzum: `Concealed<a>` is a KNOWN parametric type (so `: Concealed<Int>` annotations
-        # validate) but OPAQUE — it has no registered constructor, so no pattern can ever open it.
+        # Concealment: `Concealed<a>` is a KNOWN parametric type (so `: Concealed<Int>` annotations
+        # validate) but OPAQUE: it has no registered constructor, so no pattern can ever open it.
         # A concealed value is provable-about (concealed_in_range) and computable-within (cmap),
         # but the type system has no eliminator returning the underlying value: privacy by construction.
         self.adt_registry["Concealed"] = (["a"], [])
@@ -1789,7 +1788,7 @@ class TypeChecker:
         signature, with rigid type params and effect tracking.
 
         For effect polymorphism: any type param mentioned in the declared
-        effect row (e.g. `E` in `: T !{E}`) is RIGID inside the body —
+        effect row (e.g. `E` in `: T !{E}`) is RIGID inside the body:
         it can only unify with itself. At each call site OUTSIDE the body,
         E is bound to whatever the actual callback's effects are."""
         declared_effects = d.effects
@@ -1846,7 +1845,7 @@ class TypeChecker:
             )
 
     def check_decl(self, d: Node) -> None:
-        """Single-decl checker — used by install_decl in REPL mode and by
+        """Single-decl checker: used by install_decl in REPL mode and by
         check_program's pass 2 for non-Fn decls. For FnDecl, performs both
         signature registration and body check (so REPL can process one fn
         at a time)."""
@@ -1899,7 +1898,7 @@ class TypeChecker:
         self.record_registry[d.name] = (d.params, d.fields)
         # Validate field types against the type-param scope. Field-type
         # validation deferred until all top-level types are registered
-        # (which is fine — register_record is called in pass 1).
+        # (which is fine: register_record is called in pass 1).
 
     def validate_type(self, t: Ty) -> None:
         """Check that any TyADT references a registered type with matching arity."""
@@ -1960,7 +1959,7 @@ class TypeChecker:
             if e.name not in self.record_registry:
                 if e.name in self.adt_registry:
                     raise TypeError_(
-                        f"{e.name!r} is a sum type — use {e.name}(...) for "
+                        f"{e.name!r} is a sum type: use {e.name}(...) for "
                         f"constructor call, not {{...}} for record literal"
                     )
                 raise TypeError_(f"unknown record type {e.name!r}")
@@ -2018,7 +2017,7 @@ class TypeChecker:
         if isinstance(e, BinOp):
             return self.check_binop(e, env)
         if isinstance(e, UnaryNot):
-            # v4.54: !expr requires Bool, produces Bool.
+            # !expr requires Bool, produces Bool.
             inner_t = self.infer(e.expr, env)
             if not equal_ty(inner_t, TyBool()):
                 raise TypeError_(f"!: expected Bool, got {inner_t}")
@@ -2045,17 +2044,17 @@ class TypeChecker:
             new_env = {**env, e.name: ann or vt}
             if ann is not None:
                 self.check_refinement_pred(e.name, ann, new_env)
-            # v4.67: enforce linearity — a `let lin` binding must be used
+            # Enforce linearity: a `let lin` binding must be used
             # exactly once along every path in the body.
             if getattr(e, "linear", False):
                 n = linear_uses(e.body, e.name)
                 if n == 0:
                     raise TypeError_(
-                        f"linear variable {e.name!r} is never used — a linear "
+                        f"linear variable {e.name!r} is never used: a linear "
                         f"resource must be consumed exactly once (no dropping)")
                 if n > 1:
                     raise TypeError_(
-                        f"linear variable {e.name!r} used {n} times — a linear "
+                        f"linear variable {e.name!r} used {n} times: a linear "
                         f"resource must be consumed exactly once (no cloning)")
             return self.infer(e.body, new_env)
         if isinstance(e, Lambda):
@@ -2088,7 +2087,7 @@ class TypeChecker:
         rt = self.infer(e.rhs, env)
         if e.op in ("+", "-", "*", "/", "%"):
             if not (equal_ty(lt, TyInt()) and equal_ty(rt, TyInt())):
-                raise TypeError_(f"{e.op}: expected Int, Int — got {lt}, {rt}")
+                raise TypeError_(f"{e.op}: expected Int, Int; got {lt}, {rt}")
             return TyInt()
         if e.op == "++":
             if equal_ty(lt, TyString()) and equal_ty(rt, TyString()):
@@ -2098,19 +2097,19 @@ class TypeChecker:
             raise TypeError_(f"++: incompatible operands {lt}, {rt}")
         if e.op in ("<", ">", "<=", ">="):
             if not (equal_ty(lt, TyInt()) and equal_ty(rt, TyInt())):
-                raise TypeError_(f"{e.op}: expected Int, Int — got {lt}, {rt}")
+                raise TypeError_(f"{e.op}: expected Int, Int; got {lt}, {rt}")
             return TyBool()
         if e.op in ("==", "!="):
             if not equal_ty(lt, rt):
                 raise TypeError_(f"{e.op}: operands differ {lt} vs {rt}")
             return TyBool()
         if e.op in ("&&", "||"):
-            # v4.51: both sides must be Bool; result is Bool. The
+            # Both sides must be Bool; result is Bool. The
             # evaluator short-circuits, but the type system doesn't
-            # care about evaluation order — it just enforces shape.
+            # care about evaluation order: it just enforces shape.
             if not (equal_ty(lt, TyBool()) and equal_ty(rt, TyBool())):
                 raise TypeError_(
-                    f"{e.op}: expected Bool, Bool — got {lt}, {rt}"
+                    f"{e.op}: expected Bool, Bool; got {lt}, {rt}"
                 )
             return TyBool()
         raise TypeError_(f"unknown op {e.op}")
@@ -2138,7 +2137,7 @@ class TypeChecker:
             if not unify(formal, actual, subst, self.eff_subst, rigid_eff):
                 expected = resolve(formal, subst, self.eff_subst)
                 raise TypeError_(f"arg type mismatch: expected {expected}, got {actual}")
-            # Static discharge attempt — only if the (resolved) formal has refinements.
+            # Static discharge attempt: only if the (resolved) formal has refinements.
             resolved_formal = resolve(formal, subst, self.eff_subst)
             if isinstance(resolved_formal, TyRefine):
                 pname = param_names[idx] if idx < len(param_names) else f"_arg{idx}"
@@ -2218,7 +2217,7 @@ class TypeChecker:
             scrut_b = base_of(scrut_ty)
             if not isinstance(scrut_b, TyTuple):
                 raise TypeError_(
-                    f"tuple pattern against {scrut_ty} — to destructure an ADT "
+                    f"tuple pattern against {scrut_ty}: to destructure an ADT "
                     f"like Pair, use a constructor pattern, e.g. Pair(a, b), not a "
                     f"tuple pattern (a, b)")
             args = p.args or []
@@ -2317,7 +2316,7 @@ class TypeChecker:
 
     def _default(self, matrix: list[list[Pattern]]) -> list[list[Pattern]]:
         """Rows whose first column is a wildcard/identifier, first column
-        dropped — the rows that still match when the head constructor is one
+        dropped: the rows that still match when the head constructor is one
         not otherwise enumerated."""
         return [row[1:] for row in matrix if row[0].kind in ("wild", "ident")]
 
@@ -2374,7 +2373,7 @@ class TypeChecker:
                             return False
                     return True
                 return self._matrix_exhaustive(self._default(matrix), rest)
-            # Unknown ADT name — only a wildcard can cover it.
+            # Unknown ADT name: only a wildcard can cover it.
             return self._matrix_exhaustive(self._default(matrix), rest)
 
         # TyInt / TyString / TyVar / TyFn: an unbounded or opaque type; only a
@@ -2388,7 +2387,7 @@ class TypeChecker:
         if isinstance(st, TyTuple):
             raise TypeError_(
                 "non-exhaustive match on tuple: a component pattern leaves cases "
-                "uncovered — bind every component (a literal like (1, b) is not "
+                "uncovered: bind every component (a literal like (1, b) is not "
                 "exhaustive) or add a wildcard")
         if isinstance(st, TyList):
             raise TypeError_(
@@ -2406,7 +2405,7 @@ class TypeChecker:
             raise TypeError_(
                 f"non-exhaustive match on {st.name}: a constructor argument leaves "
                 f"cases uncovered (a refutable arg such as C(1) does not fully "
-                f"cover C — use C(x) or add a wildcard)")
+                f"cover C: use C(x) or add a wildcard)")
         if isinstance(st, TyADT) and st.name in self.record_registry:
             raise TypeError_(
                 f"non-exhaustive match on record {st.name}: "
@@ -2465,7 +2464,7 @@ class FnV(Value):
     """A user-defined function value. params carries (name, declared_type)
     so the interpreter can run refinement checks at call boundaries.
     ret is the declared return type, carried so refinements on returns
-    can be checked at every exit point (v1.3)."""
+    can be checked at every exit point."""
     params: list[tuple[str, Ty]]
     body: Node
     env: dict[str, Value]
@@ -2486,7 +2485,7 @@ class ADTValue(Value):
     ctor: str
     args: list[Value]
     def __str__(self):
-        # Tzimtzum: a concealed value never shows its contents, even in debug output.
+        # Concealment: a concealed value never shows its contents, even in debug output.
         if self.ctor == "Conceal":
             return "<concealed>"
         if not self.args:
@@ -2499,7 +2498,7 @@ class CtorV(Value):
     bound directly as ADTValue, not as CtorV."""
     name: str
     arity: int
-    # v4.69: field types + binder names, so a refined field is checked
+    # Field types + binder names, so a refined field is checked
     # when the constructor is applied (see apply_fn's CtorV branch).
     fields: list = field(default_factory=list)
     field_names: list = field(default_factory=list)
@@ -2513,14 +2512,14 @@ def builtin_values() -> dict[str, Value]:
         return s
     def b_error(s):
         # Mirror native q_error: stderr + nonzero exit. A loud refusal, not a
-        # silent proven-0 — the prove bridge calls this when it cannot lower a
+        # silent proven-0: the prove bridge calls this when it cannot lower a
         # construct faithfully (unresolved/over-deep call, parse failure).
         sys.stderr.write("glass error: " + s.v + "\n")
         sys.stderr.flush()
         sys.exit(1)
     def b_random_int(lo, hi):
         # Half-open [lo, hi). Real crypto would use a secure RNG and a
-        # different effect label like CryptoRandom — see LANG.md.
+        # different effect label like CryptoRandom: see LANG.md.
         return IntV(_random_module.randrange(lo.v, hi.v))
     def b_len(xs): return IntV(len(xs.items))
     def b_head(xs):
@@ -2544,7 +2543,7 @@ def builtin_values() -> dict[str, Value]:
         return ListV([IntV(i) for i in range(a.v, b.v)])
     def b_string_length(s): return IntV(len(s.v))
     def b_string_to_upper(s):
-        # v4.40: ASCII-only upper-case; bytes outside A-Za-z pass
+        # ASCII-only upper-case; bytes outside A-Za-z pass
         # through unchanged. Matches Quartz's pure-ASCII helper so
         # host and Quartz produce identical results for any input.
         return StringV("".join(
@@ -2566,7 +2565,7 @@ def builtin_values() -> dict[str, Value]:
                 f"length {n}"
             )
         return IntV(ord(s.v[i.v]))
-    # v4.42: int64 wrap so Python's unbounded ints match C's int64_t.
+    # int64 wrap so Python's unbounded ints match C's int64_t.
     # Mask to 64 bits, then if the high bit is set interpret as
     # negative (two's complement). All bitwise builtins funnel through
     # this so djb2 overflow produces the same value the compiled
@@ -2601,7 +2600,7 @@ def builtin_values() -> dict[str, Value]:
     # Signed division/modulo intrinsics (mirror the prove bridge's sdiv/smod). C99 truncated
     # division: quotient toward zero, remainder with the sign of the dividend (via _c_div/_c_mod).
     # The bridge lowers the SAME call to a circuit (sign-magnitude over the unsigned divmod gadget),
-    # so this reference result matches the proven one; the Third Witness reconciles mod the prime.
+    # so this reference result matches the proven one; the cross-check reconciles mod the prime.
     def b_sdiv(a, b):
         if b.v == 0: raise RuntimeError("signed division by zero")
         return IntV(_c_div(a.v, b.v))
@@ -2615,7 +2614,7 @@ def builtin_values() -> dict[str, Value]:
     def b_smax(a, b): return IntV(max(a.v, b.v))
     def b_substring(s, start, end):
         # Clamp to string bounds; raise on inverted indices to keep semantics
-        # honest. Negative indices are not Python-style — that's a footgun.
+        # honest. Negative indices are not Python-style: that's a footgun.
         a, b = start.v, end.v
         if a < 0 or b < 0:
             raise RuntimeError(f"substring: negative index ({a}, {b})")
@@ -2631,7 +2630,7 @@ def builtin_values() -> dict[str, Value]:
             return ADTValue(ctor="None", args=[])
         return ADTValue(ctor="Some", args=[IntV(i)])
     def b_read_file(path):
-        # !{File} effect. Returns Result<String, String> — Err on any I/O
+        # !{File} effect. Returns Result<String, String>: Err on any I/O
         # failure, with the OS message. The point is the TYPE: every
         # file read is visible at every call site via !{File}.
         try:
@@ -2640,8 +2639,8 @@ def builtin_values() -> dict[str, Value]:
         except (OSError, IOError) as e:
             return ADTValue(ctor="Err", args=[StringV(str(e))])
     def b_write_file(path, content):
-        # !{File} effect. Returns Result<Int, String> — Ok wraps byte count.
-        # v3.13 addition. Pairs with read_file to enable Glass-side build
+        # !{File} effect. Returns Result<Int, String>: Ok wraps byte count.
+        # Pairs with read_file to enable Glass-side build
         # pipelines (write generated C source to disk, then compile it).
         try:
             data = content.v
@@ -2653,7 +2652,7 @@ def builtin_values() -> dict[str, Value]:
     def b_run_command(cmd, args):
         # !{Process} effect. Invokes the external program `cmd` with
         # arguments `args` (a List<String>). Returns Result with a
-        # 3-tuple on success (exit_code, stdout, stderr). v3.13 addition.
+        # 3-tuple on success (exit_code, stdout, stderr).
         # This is what closes the loop on Stage 5: prism interprets
         # quartz_min, which produces C; write_file persists it;
         # run_command invokes cc, then the resulting binary.
@@ -2672,7 +2671,7 @@ def builtin_values() -> dict[str, Value]:
                 capture_output=True,
                 text=True,
                 check=False,
-                # 30s ceiling — long enough for cc on small files,
+                # 30s ceiling: long enough for cc on small files,
                 # short enough to avoid runaway children.
                 timeout=30,
             )
@@ -2712,7 +2711,7 @@ def builtin_values() -> dict[str, Value]:
     def b_gold_sub(a, b): return _gold_to_limbs(_gold_to_int(a) - _gold_to_int(b))
     # --- UNBOXED Goldilocks (goldw_*): a field element is ONE Int holding the u64
     # bit-pattern as signed int64 (Goldilocks p > 2^63, so canonical values >= 2^63
-    # appear "negative" — the bits are the u64). No limb lists => no comb/split tax.
+    # appear "negative": the bits are the u64). No limb lists => no comb/split tax.
     # This is the interpreter ORACLE; the native q_goldw_* C must match it bit-for-bit.
     # Equal field elements have equal bits, so Glass `==` works directly as field eq.
     _U64 = (1 << 64) - 1
@@ -2731,7 +2730,7 @@ def builtin_values() -> dict[str, Value]:
     # --- UNBOXED Poseidon-over-Goldilocks (t=12, R_F=8, R_P=22, x^7), Plonky2-exact. The MDS
     # layer (144 boxed fmul/round) was THE prove bottleneck; poseidon_perm runs the whole
     # permutation on 12 unboxed ints (one Int per lane = u64 bits). ORACLE for native q_poseidon_perm;
-    # ARC/CIRC byte-exact to pentecost (= the bridge's p_arc/p_circ decoded from base-2^16 limbs).
+    # ARC/CIRC byte-exact to lens (= the bridge's p_arc/p_circ decoded from base-2^16 limbs).
     _PARC = [13080132714287612933, 8594738767457295063, 12896916465481390516, 1109962092811921367, 16216730422861946898, 10137062673499593713, 15292064466732465823, 17255573294985989181, 14827154241873003558, 2846171647972703231, 16246264663680317601, 14214208087951879286, 9667108687426275457, 6470857420712283733, 14103331940138337652, 11854816473550292865, 3498097497301325516, 7947235692523864220, 11110078701231901946, 16384314112672821048, 15404405912655775739, 14077880830714445579, 9555554662709218279, 13859595358210603949, 16859897325061800066, 17685474420222222349, 17858764734618734949, 9410011022665866671, 12495243629579414666, 12416945298171515742, 5776666812364270983, 6314421662864060481, 7402742471423223171, 982536713192432718, 17321168865775127905, 2934354895005980211, 10567510598607410195, 8135543733717919110, 116353493081713692, 8029688163494945618, 9003846637224807585, 7052445132467233849, 9645665432288852853, 5446430061030868787, 16770910634346036823, 17708360571433944729, 4661556288322237631, 11977051899316327985, 4378616569090929672, 3334807502817538491, 8019184735943344966, 2395043908812246395, 6558421058331732611, 11735894060727326369, 8143540538889204488, 5991753489563751169, 12235918791502088007, 2880312033702687139, 18224748115308382355, 18070411013125314165, 8156487614120951180, 10615269510047010719, 12489426404754222075, 5055279340069995710, 7231927319780248664, 2602078848106763799, 12445944369334781425, 3978905923892496205, 16711272944329818038, 10439032361227108922, 15110119871725214866, 821141790655890946, 11073536380651186235, 4866839313097607757, 13118391689513956636, 14527674973762312380, 7612751959265567999, 6808090907814178161, 6899703779492644997, 3664666286336986826, 783179505424462608, 8990689241814097697, 9646603555412825679, 7351246026167205041, 16970959813722173256, 15735726858241466429, 10347018221892268419, 12195545878449322889, 7423314197114049891, 14908016116973904153, 5840340122527363265, 17740311462440614128, 815306421953744623, 17456357368219253949, 6982651076559329072, 11970987324614963868, 8167785008538063246, 9483259819397403968, 954550221664291548, 10339565171024313256, 8651171084286500102, 16974445528003515956, 15104530047940621190, 103271880867179718, 14654666245504492663, 12445769555936887967, 11250582358051997490, 6730977207490590241, 15919951556166196935, 4423540216573360915, 16317664700341473511, 4723997214951767765, 10098756619006575500, 3223149401237667964, 6870494874300767682, 2902095711130291898, 7159372652788439733, 11500508372997952671, 13348148181479462670, 12729401155983882093, 15021242795466053388, 3802990509227527157, 4665459515680145682, 13165553315407675603, 6496364397926233172, 12800832566287577810, 9737592377590267426, 8687131091302514939, 1488200421755445892, 11004377668730991641, 13516338734600228410, 2953581820660217936, 3505040783153922951, 3710332827435113697, 15414874040873320221, 8602547649919482301, 13971349938398812007, 187239246702636066, 12886019973971254144, 4512274763990493707, 2986635507805503192, 2315252455709119454, 12537995864054210246, 2039491936479859267, 1558644089185031256, 4074089203264759305, 2522268501749395707, 3414760436185256196, 17420887529146466921, 2817020417938125001, 16538346563888261485, 5592270336833998770, 16876602064684906232, 1793025614521516343, 2178510518148748532, 2726440714374752509, 6502946837278398021, 15816362857667988792, 12997958454165692924, 5314892854495903792, 15533907063555687782, 12312015675698548715, 14140016464013350248, 16325589062962838690, 6796145646370327654, 1168753512742361735, 4100789820704709368, 15947554381540469177, 8597377839806076919, 9704018824195918000, 12763288618765762688, 17249257732622847695, 1998710993415069759, 923759906393011543, 1271051229666811593, 17822362132088738077, 11797234543722669271, 5864538787265942447, 15975583211110506970, 7258516085733671960, 17999926471875633100, 635992114476018166, 17205047318256576347, 17384900867876315312, 16484825562915784226, 16694130609036138894, 10575069350371260875, 8330575162062887277, 6212375704691932880, 15965138197626618226, 14285453069600046939, 10005163510208402517, 885298637936952595, 541790758138118921, 5985203084790372993, 4685030219775483721, 1411106851304815020, 11290732479954096478, 208280581124868513, 10979018648467968495, 8600643745023338215, 3477453626867126061, 6428436309340258604, 5695415667275657934, 15952065508715623490, 15571300830419767248, 17259785660502616862, 4298425495274316083, 9023601070579319352, 7353589709321807492, 2988848909076209475, 10439527789422046135, 6097734044161429459, 1113429873817861476, 1639063372386966591, 7863102812716788759, 216040220732135364, 14252611488623712688, 9543395466794536974, 2714461051639810934, 2588317208781407279, 15458529123534594916, 15748417817551040856, 16414455697114422951, 13378164466674639511, 13894319928411294675, 5032680892090751540, 17201338494743078916, 4397422800601932505, 11285062031581972327, 7309354640676468207, 10457152817239331848, 8855911538863247046, 4301853449821814398, 13001502396339103326, 10218424535115580246, 8628244713920681895, 17410423622514037261, 14080683768439215375, 11453161143447188100, 16761509772042181939, 6688821660695954082, 12083434295263160416, 8540021431714616589, 6891616215679974226, 10229217098454812721, 3292165387203778711, 6090113424998243490, 13431780521962358660, 6061081364215809883, 16792066504222214142, 16134314044798124799, 17070233710126619765, 6915716851370550800, 9505009849073026581, 6422700465081897153, 17977653991560529185, 5800870252836247255, 12096124733159345520, 7679273623392321940, 17835783910585744964, 2478664878205754377, 1720314468413114967, 10376757819003248056, 10376377187857634245, 13344930747504284997, 11579281865160153596, 10300256980048736962, 378765236515040565, 11412420941557253424, 12931662470734252786, 43018908376346374, 3589810689190160071, 4688229274750659741, 13688957436484306091, 11424740943016984272, 16001900718237913960, 5548469743008097574, 14584404916672178680, 3396622135873576824, 7861729246871155992, 16112271126908045545, 16988163966860016012, 273641680619529493, 15222677154027327363, 4070328078309830604, 13520458500363296391, 8235111705801363015, 5575990058472514138, 2751301609188252989, 6478598528223547074, 386565553848556638, 9417729078939938713, 15204315939835727483, 14942015033780606261, 18369423901636582012, 4715338437538604447, 6840590980607806319, 5535471161490539014, 5341328005359029952, 1475161295215894444, 7999197814297036636, 2984233088665867938, 3097746028144832229, 8849530863480031517, 7464920943249009773, 3802996844641460514, 6284458522545927646, 2307388003445002779, 4461479354745457623, 1649739722664588460, 3008391274160432867, 5142217010456550622, 1775580461722730120, 161694268822794344, 1518963253808031703, 16475258091652710137, 119575899007375159, 1275863735937973999, 16539412514520642374, 2303365191438051950, 6435126839960916075, 17794599201026020053, 13847097589277840330, 16645869274577729720, 8039205965509554440, 4788586935019371140, 15129007200040077746, 2055561615223771341, 4149731103701412892, 10268130195734144189, 13406631635880074708, 11429218277824986203, 15773968030812198565, 16050275277550506872, 11858586752031736643, 8927746344866569756, 11802068403177695792, 157833420806751556, 4698875910749767878, 1616722774788291698, 3990951895163748090, 16758609224720795472, 3045571693290741477, 9281634245289836419, 13517688176723875370, 7961395585333219380, 1606574359105691080, 17564372683613562171, 4664015225343144418, 6133721340680280128, 2667022304383014929, 12316557761857340230, 10375614850625292317, 8141542666379135068, 9185476451083834432, 4991072365274649547, 17398204971778820365, 16127888338958422584, 13586792051317758204]
     _PCIRC = [17, 15, 41, 16, 2, 28, 13, 13, 39, 18, 34, 20]
     def _psbox(x):
@@ -2749,7 +2748,7 @@ def builtin_values() -> dict[str, Value]:
         st = [(st[i] + _PARC[12 * rc + i]) % _GOLD_P for i in range(12)]
         st = [_psbox(x) for x in st] if isfull else [_psbox(st[0])] + st[1:]
         return _pmds(st)
-    # Tzimtzum: a concealed value is an ADTValue with the UNREGISTERED ctor "Conceal" — the
+    # Concealment: a concealed value is an ADTValue with the UNREGISTERED ctor "Conceal": the
     # checker has no ctor for Concealed, so no pattern can open it (privacy by construction).
     def b_conceal(x): return ADTValue(ctor="Conceal", args=[x])
     def b_cmap(c, f): return ADTValue(ctor="Conceal", args=[apply_fn(f, [c.args[0]])])
@@ -2896,7 +2895,7 @@ def apply_fn(
     args: list[Value],
     skip_refinement_indices: set[int] | None = None,
 ) -> Value:
-    """v4.28: trampoline-based tail-call elimination.
+    """trampoline-based tail-call elimination.
 
     The OUTER `while True` loop reapplies functions. After setting up the
     env for the current `f`, the INNER loop peels through tail-position
@@ -2909,10 +2908,10 @@ def apply_fn(
 
     Non-tail forms (BinOp, Ident, list, etc.) and Calls under a
     return-type refinement still go through `eval_expr` as before, so the
-    refactor is semantically conservative — every existing test continues
+    refactor is semantically conservative, every existing test continues
     to pass.
     """
-    # v1.7 perf: dispatch by type identity, not isinstance. FnV is by far
+    # Perf: dispatch by type identity, not isinstance. FnV is by far
     # the hottest case so it goes first; BuiltinV and CtorV follow.
     while True:
         t = type(f)
@@ -2923,10 +2922,10 @@ def apply_fn(
                 raise RuntimeError(
                     f"ctor {f.name} expects {f.arity} args, got {len(args)}"
                 )
-            # v4.69: enforce refinements on refined fields at construction.
+            # Enforce refinements on refined fields at construction.
             # Each field is bound by name as we go, so a later field's
             # refinement may reference EARLIER fields (cross-field, like
-            # the cross-parameter refinements of v4.56) — e.g.
+            # the cross-parameter refinements): e.g.
             # `Range(lo: Int, hi: Int where (hi > lo))`.
             field_env: dict = {}
             for i, fld_ty in enumerate(f.fields):
@@ -2943,7 +2942,7 @@ def apply_fn(
         if len(args) != len(f.params):
             raise RuntimeError(f"arity mismatch calling {f}")
         new_env = f.env.copy()
-        # v4.29: inline `type(t_p) is TyRefine` at the call site so we
+        # Inline `type(t_p) is TyRefine` at the call site so we
         # skip the function-call overhead when the param isn't refined.
         # Most params aren't refined; for prism running prism (millions
         # of fn applications), saving one Python call per param is real.
@@ -2975,7 +2974,7 @@ def apply_fn(
             if bt is LetIn:
                 v = eval_expr(body.value, env)
                 env = {**env, body.name: v}
-                # v4.29: inline TyRefine check — skip the call when the
+                # Inline TyRefine check: skip the call when the
                 # annotation has no refinement to enforce.
                 ann = body.ann
                 if ann is not None and type(ann) is TyRefine:
@@ -3013,7 +3012,7 @@ def apply_fn(
                     skip_refinement_indices = skip
                     tail_recursed = True
                     break
-                # Non-FnV (builtin/ctor) tail call — apply directly. No
+                # Non-FnV (builtin/ctor) tail call: apply directly. No
                 # need to re-enter the outer loop because builtins and
                 # ctors don't have a body to peel.
                 return apply_fn(callee, call_args, skip)
@@ -3066,7 +3065,7 @@ def _alpha_rename(e: Node, old: str, new: str) -> Node:
         return If(cond=_alpha_rename(e.cond, old, new),
                   then_b=_alpha_rename(e.then_b, old, new),
                   else_b=_alpha_rename(e.else_b, old, new))
-    return e  # IntLit / BoolLit / StringLit / anything else — no binders inside
+    return e  # IntLit / BoolLit / StringLit / anything else: no binders inside
 
 
 def predicate_alpha_equiv(p1: Node, n1: str, p2: Node, n2: str) -> bool:
@@ -3171,7 +3170,7 @@ def predicate_implies(p1: Node, n1: str, p2: Node, n2: str) -> bool:
     Currently handles the case where both predicates are simple
     comparisons of their binder against an integer constant. Anything
     more complex (compound predicates, non-integer comparisons, calls)
-    falls through to False — the sound conservative default."""
+    falls through to False: the sound conservative default."""
     c1 = _extract_comparison(p1, n1)
     c2 = _extract_comparison(p2, n2)
     if c1 is None or c2 is None:
@@ -3188,7 +3187,7 @@ def try_const_eval(e: Node, env: dict[str, Value] | None = None) -> Value | None
     constant condition. Identifiers resolve only if their binding is in
     env (used for chains like let-in over constants).
 
-    This is intentionally simple — it covers the cases where the user
+    This is intentionally simple: it covers the cases where the user
     writes a literal or a small constant expression at a call site, which
     is the common pattern that motivates static refinement discharge.
     Anything else returns None (fall back to runtime check)."""
@@ -3225,7 +3224,7 @@ def try_const_eval(e: Node, env: dict[str, Value] | None = None) -> Value | None
             if op == "++": return StringV(l.v + r.v)
         return None
     if isinstance(e, UnaryNot):
-        # v4.54: const-fold logical NOT for static discharge.
+        # const-fold logical NOT for static discharge.
         v = try_const_eval(e.expr, env)
         if isinstance(v, BoolV):
             return BoolV(not v.v)
@@ -3238,7 +3237,7 @@ def try_const_eval(e: Node, env: dict[str, Value] | None = None) -> Value | None
     return None
 
 
-# Static discharge tally — populated by try_static_discharge so we can
+# Static discharge tally: populated by try_static_discharge so we can
 # print a summary at the end of a run (or use it for diagnostics).
 _discharge_stats: dict[str, int] = {"ok": 0, "fail": 0, "unknown": 0}
 
@@ -3252,9 +3251,9 @@ def try_static_discharge(
     """Attempt to discharge a refinement at compile time.
 
     Returns one of:
-        ('ok',      detail)  — refinement provably satisfied; skip runtime check.
-        ('fail',    detail)  — refinement provably violated; raise compile error.
-        ('unknown', '')      — can't determine statically; runtime check stays.
+        ('ok',      detail): refinement provably satisfied; skip runtime check.
+        ('fail',    detail): refinement provably violated; raise compile error.
+        ('unknown', ''): can't determine statically; runtime check stays.
 
     Two strategies tried, in order:
 
@@ -3306,7 +3305,7 @@ def try_static_discharge(
             at = at.base
         # For each formal refinement layer, check if any actual predicate
         # subsumes it. Subsumption proven by alpha-equivalence OR by
-        # comparison-implication (v1.4). If every formal layer is matched,
+        # comparison-implication. If every formal layer is matched,
         # discharge.
         all_matched = True
         chain = ty
@@ -3339,7 +3338,7 @@ def check_refinement_runtime(
     """If ty (or its base chain) is a refinement, evaluate the predicate
     with bind_name -> value in env. Raise on violation.
 
-    v1.7 perf: type(ty) is TyRefine bypasses isinstance, and the most
+    Perf: type(ty) is TyRefine bypasses isinstance, and the most
     common case (non-refined type) returns immediately."""
     while type(ty) is TyRefine:
         # bind_name must already be in env (caller's responsibility).
@@ -3353,7 +3352,7 @@ def check_refinement_runtime(
 
 
 def eval_expr(e: Node, env: dict[str, Value]) -> Value:
-    # v1.7 perf: dispatch with `type(e) is X` rather than `isinstance`. AST
+    # Perf: dispatch with `type(e) is X` rather than `isinstance`. AST
     # nodes aren't subclassed, so identity comparison is equivalent and
     # ~3x faster than the isinstance call. Branches are ordered by
     # observed frequency on prism.glass: Ident, Call, BinOp, If are the
@@ -3366,7 +3365,7 @@ def eval_expr(e: Node, env: dict[str, Value]) -> Value:
     if t is Call:
         fn_node = e.fn
         f = env[fn_node.name] if type(fn_node) is Ident else eval_expr(fn_node, env)
-        # Inline the leaf arg cases (Ident / IntLit / BinOp) — same skip-a-call
+        # Inline the leaf arg cases (Ident / IntLit / BinOp): same skip-a-call
         # win as in eval_binop, for the very hot fn-application path.
         args = []
         for a in e.args:
@@ -3382,7 +3381,7 @@ def eval_expr(e: Node, env: dict[str, Value]) -> Value:
     if t is BinOp:
         return eval_binop(e, env)
     if t is UnaryNot:
-        # v4.54: evaluate inner, flip the Bool. Typechecker has
+        # Evaluate inner, flip the Bool. Typechecker has
         # already ensured inner is Bool so we trust it.
         v = eval_expr(e.expr, env)
         return BoolV(not v.v)
@@ -3396,7 +3395,7 @@ def eval_expr(e: Node, env: dict[str, Value]) -> Value:
     if t is LetIn:
         v = eval_expr(e.value, env)
         new_env = {**env, e.name: v}
-        # v4.29: same inline TyRefine guard as in apply_fn's trampoline.
+        # Same inline TyRefine guard as in apply_fn's trampoline.
         ann = e.ann
         if ann is not None and type(ann) is TyRefine:
             check_refinement_runtime(e.name, ann, v, new_env)
@@ -3431,7 +3430,7 @@ def eval_expr(e: Node, env: dict[str, Value]) -> Value:
 
 # Integer arithmetic matches the compiled (int64 / C) backend, so the
 # reference interpreter and the native binary agree. `Int` is int64 (see
-# docs/quartz.md): + - * wrap two's-complement at 64 bits, and / % truncate
+# docs/compiler/quartz.md): + - * wrap two's-complement at 64 bits, and / % truncate
 # toward zero (C99), where Python's // % floor toward negative infinity.
 # Both are the identity on the non-negative / non-overflowing operands that
 # real programs use; they differ only on exactly the inputs where host and
@@ -3455,7 +3454,7 @@ def _c_mod(a: int, b: int) -> int:
 
 def eval_binop(e: BinOp, env: dict[str, Value]) -> Value:
     op = e.op
-    # v4.51: short-circuit boolean combinators. Evaluate lhs first;
+    # short-circuit boolean combinators. Evaluate lhs first;
     # if its value already determines the outcome, skip rhs entirely.
     # Glass is pure, so the OBSERVABLE result is the same either way,
     # but short-circuit is the user-expected semantics and avoids
@@ -3471,7 +3470,7 @@ def eval_binop(e: BinOp, env: dict[str, Value]) -> Value:
             return BoolV(True)
         return eval_expr(e.rhs, env)
     # Inline the leaf operand cases (Ident / IntLit / nested BinOp) to skip an
-    # eval_expr dispatch+call each — binop operands are overwhelmingly these in
+    # eval_expr dispatch+call each: binop operands are overwhelmingly these in
     # arithmetic-heavy code. Other forms fall back to eval_expr. Semantics are
     # identical (a well-typed program never hits an unbound Ident here).
     lhs = e.lhs; tl = type(lhs)
@@ -3485,13 +3484,13 @@ def eval_binop(e: BinOp, env: dict[str, Value]) -> Value:
     elif tr is IntLit: rv = IntV(rhs.value)
     else:              rv = eval_expr(rhs, env)
     # + - * wrap at int64 to match the compiled backend (identity unless the
-    # result overflows 64 bits — exactly the case host/native used to disagree).
+    # result overflows 64 bits: exactly the case host/native used to disagree).
     if op == "+":  return IntV(_wrap64(lv.v + rv.v))
     if op == "-":  return IntV(_wrap64(lv.v - rv.v))
     if op == "*":  return IntV(_wrap64(lv.v * rv.v))
     # / and % truncate toward zero (C99 / the emitted C), not Python's floor.
     # Agree with `//`/`%` for non-negative operands; differ only on a negative
-    # dividend or divisor — where the compiled binary truncates too.
+    # dividend or divisor, where the compiled binary truncates too.
     if op == "/":
         if rv.v == 0:
             raise RuntimeError("division by zero")
@@ -3513,7 +3512,7 @@ def eval_binop(e: BinOp, env: dict[str, Value]) -> Value:
 
 
 def _eq(a: Value, b: Value) -> bool:
-    # v1.7 perf: type identity comparison
+    # Perf: type identity comparison
     ta = type(a)
     tb = type(b)
     if ta is not tb: return False
@@ -3537,7 +3536,7 @@ def _eq(a: Value, b: Value) -> bool:
 
 
 def pat_match(p: Pattern, v: Value) -> tuple[bool, dict[str, Value]]:
-    # v1.7 perf: type(v) is X is ~3x faster than isinstance(v, X) and
+    # Perf: type(v) is X is ~3x faster than isinstance(v, X) and
     # the dispatch fires millions of times during prism.glass execution.
     k = p.kind
     if k == "wild": return True, {}
@@ -3676,7 +3675,7 @@ def install_decl(
                   " | ".join(v.name + (f"({len(v.fields)})" if v.fields else "")
                              for v in d.variants))
     elif isinstance(d, RecordDecl):
-        # Records don't need a runtime constructor — RecordLit builds them
+        # Records don't need a runtime constructor: RecordLit builds them
         # directly. Only the type registry needs the info.
         if verbose:
             fs = ", ".join(f"{n}: {t}" for n, t in d.fields)
@@ -3723,7 +3722,7 @@ def install_program(
                     env[v.name] = CtorV(name=v.name, arity=len(v.fields), fields=v.fields, field_names=v.field_names)
         elif isinstance(d, RecordDecl):
             checker.register_record(d)
-            # No runtime binding — record values are built via RecordLit.
+            # No runtime binding: record values are built via RecordLit.
         elif isinstance(d, FnDecl):
             checker.register_fn_signature(d)
             fv = FnV(params=list(d.params), body=d.body, env=env, ret=d.ret)
@@ -3768,12 +3767,12 @@ def make_runtime() -> tuple[TypeChecker, dict[str, Value]]:
 def expand_imports(
     decls: list[Node], base_dir: str, seen: set[str] | None = None
 ) -> list[Node]:
-    """v4.70: replace each `import "file"` with the imported file's
+    """Replace each `import "file"` with the imported file's
     DEFINITIONS (TypeDecl / RecordDecl / FnDecl), recursively. A file's
     top-level `let`s and final expression are skipped, so importing a
     file never runs its demos. Paths resolve relative to the importing
-    file's directory (then CWD). A `seen` set dedupes and breaks cycles
-    — a diamond import installs each library exactly once."""
+    file's directory (then CWD). A `seen` set dedupes and breaks cycles:
+    a diamond import installs each library exactly once."""
     seen = seen if seen is not None else set()
     out: list[Node] = []
     for d in decls:
@@ -3784,7 +3783,7 @@ def expand_imports(
         path = cand if os.path.exists(cand) else d.path
         real = os.path.realpath(path)
         if real in seen:
-            continue   # already imported (diamond / cycle) — install once
+            continue   # already imported (diamond / cycle): install once
         seen.add(real)
         try:
             src = open(path).read()
@@ -3792,7 +3791,7 @@ def expand_imports(
             raise RuntimeError(f"import: cannot read {d.path!r}: {ex}")
         imported = Parser(tokenize(src)).parse_program()
         # Recurse first (the imported file may import others), then keep
-        # only its definitions — not its `let`s or trailing expression.
+        # only its definitions, not its `let`s or trailing expression.
         expanded = expand_imports(imported, os.path.dirname(real), seen)
         for sub in expanded:
             if isinstance(sub, (TypeDecl, RecordDecl, FnDecl)):
@@ -3840,7 +3839,7 @@ Commands:
   :load PATH         Read a .glass file and install its declarations.
 
 Anything else is parsed as Glass: an expression, a let, a fn, or a type.
-Multi-line input is supported — keep typing while the prompt shows '...'.
+Multi-line input is supported: keep typing while the prompt shows '...'.
 """
 
 
@@ -3866,7 +3865,7 @@ def repl() -> None:
     except ImportError:
         pass
 
-    print("Glass v5.135.0 — interactive REPL")
+    print("Glass 1.0.0 interactive REPL")
     print("Type :help for commands, :quit to exit.")
     print()
 
@@ -3954,7 +3953,7 @@ def repl() -> None:
             buffer.clear()
             continue
 
-        # Parsed cleanly — try to type-check + install each decl.
+        # Parsed cleanly: try to type-check + install each decl.
         buffer.clear()
         try:
             for d in decls:
@@ -3973,10 +3972,10 @@ def _save_history(path: str) -> None:
 
 def _prove_typecheck(usrc, inputs):
     """Typecheck the prove source under glass.py's checker (inputs bound as Int lets). Returns an
-    error string if the program is ILL-TYPED, else None. The native prove bridge does NOT typecheck
-    — it loosely lowers e.g. `!`-on-Int to `1 - x` — so an ill-typed program would "prove" a
+    error string if the program is ILL-TYPED, else None. The native prove bridge does NOT typecheck:
+    it loosely lowers e.g. `!`-on-Int to `1 - x`, so an ill-typed program would "prove" a
     meaningless field result the reference interpreter rejects (a source<->circuit desync that
-    soundness fuzzing surfaced as a witness3-SKIP). Gating here refuses ill-typed programs (ABSTAIN),
+    soundness fuzzing surfaced as a cross-check SKIP). Gating here refuses ill-typed programs (ABSTAIN),
     matching the reference. ONLY type errors gate; parse / other issues fall through to the bridge's
     own loud refusals. Every valid prove program is runnable Glass, so it typechecks and passes."""
     try:
@@ -3994,8 +3993,8 @@ def _prove_typecheck(usrc, inputs):
         return None
 
 
-def _witness3_eval(usrc, inputs):
-    """Third Witness: evaluate the proven source under the reference INTERPRETER (glass.py) —
+def _cross_check_eval(usrc, inputs):
+    """cross-check: evaluate the proven source under the reference INTERPRETER (glass.py):
     a lineage independent of the bridge's Glass-level `heval` AND its `cgen` circuit lowering.
     Binds the inputs as top-level lets so the final bare expression (-> env["_"]) is the result.
     Returns an int (Bool -> 1/0), or None if it can't be evaluated (then the witness abstains)."""
@@ -4019,7 +4018,7 @@ def _witness3_eval(usrc, inputs):
 
 def _prove_result_str(usrc, inputs):
     """Return the reference STRING value of the proven result if it is a String, else None. Runs the
-    program under the glass.py interpreter (the same independent lineage as the Third Witness). A
+    program under the glass.py interpreter (the same independent lineage as the cross-check). A
     String result is MULTI-WIRE (one codepoint wire per char), so it routes the prove driver to the
     decode-and-display + bind-EVERY-output-wire path (`build_claim_mw`) instead of the scalar path,
     which would publish only the first codepoint. None (a scalar / non-evaluable result) keeps the
@@ -4045,7 +4044,7 @@ def _prove_result_struct(usrc, inputs):
     every component wire as the public claim (build_claim_mw, like a string result) and display the
     components. Returns ('tuple', [int vals]) or ('record', typename, [(field, int val), ...]); None
     for a scalar, a string, or a structured result with a non-scalar component (those keep their own
-    path / ABSTAIN). The int values are for the Third-Witness component comparison. Goldilocks-only."""
+    path / ABSTAIN). The int values are for the cross-check's component comparison. Goldilocks-only."""
     try:
         binds = "".join(
             ('let %s : String = "%s"\n' % (k, v.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n"))
@@ -4080,22 +4079,17 @@ def main() -> None:
     """Console entry point. After `pip install glass-lang`, this is what
     the `glass` command invokes. With no args it starts the REPL; with a
     filename it runs that file."""
-    # Plain-name flag aliases. The public CLI uses neutral, professional names;
-    # the branded names remain as aliases so neither audience is forced on the
-    # other. See docs/naming.md. `--cross-check` aliases the Third Witness's `--witness3`.
-    sys.argv = [("--witness3" if a == "--cross-check" else a) for a in sys.argv]
     if len(sys.argv) == 1:
         repl()
     elif sys.argv[1] in ("--version", "-V"):
-        print("Glass 5.135.0")
+        print("Glass 1.0.0")
     elif sys.argv[1] in ("help", "--help", "-h"):
-        # Plain, professional command listing. The thematic names are aliases
-        # (docs/naming.md) — this surface keeps the esoteric layer optional.
         print(
-            "Glass — a verifiable functional language.\n\n"
+            "Glass: a verifiable functional language.\n\n"
             "Usage:\n"
             "  glass <file.glass>            run a program\n"
-            "  glass prove <file> [k=v ...]  generate a zero-knowledge proof of its result\n"
+            "  glass prove <file> [k=v ...]  prove its result; names given as k=v are private inputs\n"
+            "      --zk                      zero-knowledge: the proof also hides the private inputs\n"
             "      --cross-check             also re-execute under the reference interpreter\n"
             "      --emit <path>             write a portable proof instead of self-checking\n"
             "      --claim <R>               prove a SPECIFIC claimed result, an integer or a \"string\" (ACCEPT iff R is the true result; a false claim REJECTs)\n"
@@ -4105,19 +4099,15 @@ def main() -> None:
             "  glass ledger <cmd>            append-only, tamper-evident proof-verdict ledger\n"
             "  glass disclose <cmd>          selective disclosure over a commitment\n"
             "  glass --version               print the version\n\n"
-            "Run a subcommand with no further args for its own usage.\n"
-            "Thematic command aliases (the Name / Tablet / Seals / …) are documented in docs/naming.md.")
+            "Run a subcommand with no further args for its own usage.")
     elif sys.argv[1] == "prove":
-        # `glass prove <file.glass> [name=value ...]` — compile the file's `main`
-        # expression into a circuit and emit a succinct, zero-knowledge proof of
-        # its result. Free variables named on the command line are PRIVATE inputs
-        # (they stay in the witness). The prove pipeline itself is Glass: this
-        # assembles a driver over examples/prove/prove_source_adt_zk.glass.
-        # --goldilocks: prove over the production Goldilocks field (p = 2^64-2^32+1)
-        # instead of toy Baby Bear (2^31). Covers the arithmetic/comparison subset
-        # (+,-,*,let,calls,==,if) with multiple private inputs; the bignum field makes
-        # it heavier on the interpreter. The default keeps Baby Bear for the full ADT
-        # feature set. See docs/soundness.md.
+        # `glass prove <file.glass> [name=value ...]`: compile the file's `main`
+        # expression into a circuit and prove its result. Names given on the command
+        # line are PRIVATE inputs (they stay in the witness). The default proves over
+        # Goldilocks (p = 2^64 - 2^32 + 1) and checks the proof with the independent,
+        # witness-free verify_b3: sound, but not zero-knowledge; --zk adds hiding.
+        # --baby-bear selects the legacy 2^31 prover (prove_source_adt_zk.glass). The
+        # prove pipeline itself is Glass. See docs/security/soundness.md.
         _argv2 = sys.argv[2:]
         emit_path = None
         if "--emit" in _argv2:
@@ -4126,7 +4116,7 @@ def main() -> None:
             _argv2 = _argv2[:_ei] + _argv2[_ei + 2:]   # drop --emit and its path argument
         # --claim <R>: assert a SPECIFIC result instead of proving the computed one. The claimed R is
         # bound into the circuit (build_claim_m asserts output == R); a FALSE claim makes the circuit
-        # unsatisfiable, so the independent verify_b3 REJECTs — the soundness property, made testable.
+        # unsatisfiable, so the independent verify_b3 REJECTs: the soundness property, made testable.
         claim_val = None    # an integer claim (scalar result)
         claim_raw = None    # the raw claim string (a String-result claim binds this; see below)
         if "--claim" in _argv2:
@@ -4141,24 +4131,24 @@ def main() -> None:
                     except ValueError:
                         claim_val = None                   # non-numeric -> a String-result claim (validated once the result type is known)
             _argv2 = _argv2[:_ci] + _argv2[_ci + 2:]   # drop --claim and its value
-        args = [a for a in _argv2 if a not in ("--goldilocks", "--baby-bear", "--zk", "--fast", "--witness3")]
-        # Default is now Goldilocks (2^64, ADTs) — off the toy 2^31 Baby Bear field.
+        args = [a for a in _argv2 if a not in ("--goldilocks", "--baby-bear", "--zk", "--fast", "--cross-check")]
+        # Default is now Goldilocks (2^64, ADTs): off the toy 2^31 Baby Bear field.
         # `--baby-bear` opts back into the educational small-field prover.
         goldilocks = "--baby-bear" not in sys.argv[2:]
         # Goldilocks verifier selection:
-        #   default : SOUND — prove_b3 + the independent witness-free verify_b3.
+        #   default : SOUND: prove_b3 + the independent witness-free verify_b3.
         #   --zk    : SOUND + zero-knowledge (randomized-trace hiding); heavy.
-        #   --fast  : the old self-check (gprove_m/prove_stark) — NOT a soundness proof,
+        #   --fast  : the old self-check (gprove_m/prove_stark), NOT a soundness proof,
         #             kept for quick iteration only.
         zk_mode = "--zk" in sys.argv[2:]
         fast_mode = "--fast" in sys.argv[2:]
         if len(args) < 1:
             print("usage: glass prove [--baby-bear] [--zk | --fast] [--claim R] <file.glass> [name=value ...]")
-            return
+            sys.exit(1)
         upath = args[0]
         # Inputs are PRIVATE (kept in the witness). A value is an Int by default; a quoted value
-        # (key="...") or a non-numeric bareword is a STRING input — its codepoints become private
-        # witness wires (v5.101, Goldilocks only). `inputs` carries (name, int|str).
+        # (key="...") or a non-numeric bareword is a STRING input: its codepoints become private
+        # witness wires (Goldilocks only). `inputs` carries (name, int|str).
         inputs = []
         for arg in args[1:]:
             if "=" in arg:
@@ -4171,23 +4161,26 @@ def main() -> None:
                         inputs.append((k, int(v)))         # integer input
                     except ValueError:
                         inputs.append((k, v))              # bareword string (e.g. email=a@b.com)
+        if zk_mode and not goldilocks:
+            print("glass prove: --zk is a Goldilocks-path feature: drop --baby-bear (the 2^31 path has no hiding)")
+            sys.exit(1)
         _has_str_input = any(isinstance(v, str) for _, v in inputs)
         if _has_str_input and not goldilocks:
-            print("glass prove: string inputs are a Goldilocks-path feature — drop --baby-bear (the 2^31 field is int-only)")
-            return
+            print("glass prove: string inputs are a Goldilocks-path feature: drop --baby-bear (the 2^31 field is int-only)")
+            sys.exit(1)
         with open(upath) as f:
             usrc = f.read()
         # Typecheck gate: refuse ILL-TYPED source (ABSTAIN) before lowering. The native bridge does
         # not typecheck and would loosely lower an ill-typed program (e.g. `!`-on-Int -> 1-x) to a
-        # meaningless field result — a source<->circuit desync (soundness-fuzzed). A statement Glass
+        # meaningless field result: a source<->circuit desync (soundness-fuzzed). A statement Glass
         # cannot even type has no meaning to prove; refuse it loudly, never lower it.
         _tc_err = _prove_typecheck(usrc, inputs)
         if _tc_err is not None:
             field = "Goldilocks (2^64)" if goldilocks else "Baby Bear (2^31)"
-            print("Glass prove — %s  [field: %s]" % (upath, field))
-            print("glass prove: the source is ILL-TYPED (%s) — cannot lower an untypeable program to a sound circuit" % _tc_err)
-            print("verdict: ABSTAIN  (the type checker rejects this program, so it has no well-typed meaning to prove — refused, NOT lowered as a loose field expression and never silently proven)")
-            return
+            print("Glass prove: %s  [field: %s]" % (upath, field))
+            print("glass prove: the source is ILL-TYPED (%s): cannot lower an untypeable program to a sound circuit" % _tc_err)
+            print("verdict: ABSTAIN  (the type checker rejects this program, so it has no well-typed meaning to prove: refused, NOT lowered as a loose field expression and never silently proven)")
+            sys.exit(1)
         # A STRING result is multi-wire (one codepoint wire per char); detect it (via the reference
         # interpreter) so the driver binds + displays the WHOLE string instead of truncating to the
         # first codepoint. None -> scalar (or non-string) result -> the byte-identical scalar path.
@@ -4195,8 +4188,8 @@ def main() -> None:
         # A TUPLE/RECORD result (multi-wire, scalar components) routes to the same multi-wire binder
         # as a string result, displaying the components. None unless it is exactly that shape.
         _res_struct = _prove_result_struct(usrc, inputs) if (goldilocks and _res_str is None) else None
-        # --zk dummy-row randomness: a CSPRNG-fresh seed PER INVOCATION (v5.119), so re-proving a
-        # statement yields a DIFFERENT proof — the re-randomization the hiding argument relies on (the
+        # --zk dummy-row randomness: a CSPRNG-fresh seed PER INVOCATION, so re-proving a
+        # statement yields a DIFFERENT proof: the re-randomization the hiding argument relies on (the
         # old hardcoded 11111 made every --zk proof identical). The mask derivation downstream is still
         # an idealized PRG (a disclosed honest-scope caveat). Used only by the --zk gprove_zk* calls.
         _zk_seed = int.from_bytes(os.urandom(4), "big") % (1 << 31)
@@ -4206,7 +4199,7 @@ def main() -> None:
         # REJECTs a cheating prover's internally-consistent witness. Not a user-facing knob.
         bridge_dir = os.environ.get("GLASS_BRIDGE_DIR") or os.path.join(here, "examples", "prove")
         esc = usrc.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-        # run_native.sh re-bootstraps the native compiler with $PYTHON when glassc.glass changed —
+        # run_native.sh re-bootstraps the native compiler with $PYTHON when glassc.glass changed,
         # and quartz.py needs Python >= 3.10 (`X | None` annotations). macOS /usr/bin/python3 is 3.9,
         # so passing an inadequate sys.executable turned a routine re-bootstrap into a cryptic
         # TypeError mid-prove. Pass ourselves only when adequate; otherwise run_native.sh falls back
@@ -4214,7 +4207,7 @@ def main() -> None:
         _native_env = {**os.environ}
         if sys.version_info >= (3, 10):
             _native_env["PYTHON"] = sys.executable
-        # Goldilocks: each input is a MULTI-WIRE value — an Int -> [v], a string -> its codepoints
+        # Goldilocks: each input is a MULTI-WIRE value: an Int -> [v], a string -> its codepoints
         # [c0, c1, ..] (one private wire per char). Baby Bear stays int-only (no string support there).
         def _mw_vals(v):
             if isinstance(v, str):
@@ -4229,17 +4222,17 @@ def main() -> None:
         machinery = bridge[:cut] if cut > 0 else bridge
         if emit_path is not None:
             # Emit a PORTABLE proof: the bridge serializes a real ProofB3 as the token stream the
-            # independent verifier (pentecost/) consumes — prove once here, `glass verify` it anywhere.
+            # independent verifier (lens/) consumes: prove once here, `glass verify` it anywhere.
             if not goldilocks:
-                print("glass prove --emit: only the Goldilocks path emits a portable proof"); return
+                print("glass prove --emit: only the Goldilocks path emits a portable proof"); sys.exit(1)
             if _res_str is not None:
                 # A STRING result emits via the multi-wire binder (every codepoint wire pinned),
-                # so the second verifier (Pentecost) checks the string-VALUED proof shape too.
+                # so the second verifier (Lens) checks the string-VALUED proof shape too.
                 _emit_body = 'let _ : String = print(gprove_emit_mw(_usrc, _inp, _rv))\n'
             else:
                 # A scalar result serializes its one wire. A multi-wire NON-string result
                 # (tuple / record / ADT) ABSTAINs rather than emit a proof of only its first wire.
-                _emit_body = ('let _r : List<Int> = if len(_rv) > 1 then error("glass prove --emit: a multi-wire NON-string result (tuple / record / ADT) is not serializable to a portable proof — use `glass prove`, or return a scalar or a String") else vh(_rv)\n'
+                _emit_body = ('let _r : List<Int> = if len(_rv) > 1 then error("glass prove --emit: a multi-wire NON-string result (tuple / record / ADT) is not serializable to a portable proof: use `glass prove`, or return a scalar or a String") else vh(_rv)\n'
                               'let _ : String = print(gprove_emit(_usrc, _inp, _r))\n')
             _ed = machinery + (
                 '\nlet _usrc : String = "%s"\n'
@@ -4254,7 +4247,7 @@ def main() -> None:
                                  check=False, capture_output=True, text=True, env=_native_env)
             if _ep.returncode != 0:
                 sys.stderr.write(_ep.stderr or "")
-                print("\nverdict: ABSTAIN  (Glass refused to lower this statement — no proof emitted.)")
+                print("\nverdict: ABSTAIN  (Glass refused to lower this statement: no proof emitted.)")
                 sys.exit(_ep.returncode)
             with open(emit_path, "w") as _f:
                 _f.write(_ep.stdout)
@@ -4265,7 +4258,7 @@ def main() -> None:
         if goldilocks and _res_str is not None:
             # STRING-VALUED result (multi-wire): bind EVERY codepoint wire as the public claim
             # (build_claim_mw / gprove_*_mw) and display the DECODED string. The bound value is either
-            # the circuit's own output `_rv` (no --claim — no drift) or a USER-CLAIMED string `--claim
+            # the circuit's own output `_rv` (no --claim: no drift) or a USER-CLAIMED string `--claim
             # "S"`, whose codepoints are bound so a false claim makes the circuit unsatisfiable and the
             # independent verify_b3 REJECTs (a wrong-LENGTH claim ABSTAINs via build_claim_mw's guard).
             if claim_raw is not None:
@@ -4279,16 +4272,16 @@ def main() -> None:
             else:
                 _claim_arg = "_rv"
                 _claim_let = ""
-                _disp_line = 'let _ : String = print("result:  \\"" ++ decode_str(_rv) ++ "\\"  (a String result — each codepoint bound as a public output wire over Goldilocks)")\n'
+                _disp_line = 'let _ : String = print("result:  \\"" ++ decode_str(_rv) ++ "\\"  (a String result, each codepoint bound as a public output wire over Goldilocks)")\n'
             if fast_mode:
                 _prove_call = "gprove_m_mw(_usrc, _inp, %s, 11111)" % _claim_arg
-                _prove_label = "ACCEPT  (self-check over the witness — NOT a soundness proof; drop --fast for verify_b3)"
+                _prove_label = "ACCEPT  (self-check over the witness, NOT a soundness proof; drop --fast for verify_b3)"
             elif zk_mode:
                 _prove_call = "gprove_zk_mw(_usrc, _inp, %s, %d, 256)" % (_claim_arg, _zk_seed)
-                _prove_label = "ACCEPT  (SOUND + zero-knowledge — independent verify_b3 + randomized-trace hiding)"
+                _prove_label = "ACCEPT  (SOUND + zero-knowledge: independent verify_b3 + randomized-trace hiding)"
             else:
                 _prove_call = "gprove_sound_mw(_usrc, _inp, %s)" % _claim_arg
-                _prove_label = "ACCEPT  (SOUND — independent witness-free verify_b3; not zero-knowledge)"
+                _prove_label = "ACCEPT  (SOUND: independent witness-free verify_b3; not zero-knowledge)"
             _head_lines = ('\nlet _usrc : String = "%s"\n'
                            'let _inp : List<Pair<String, List<Int>>> = %s\n'
                            'let _rv : List<List<Int>> = gref_m_checked(_usrc, _inp)\n') % (esc, inp_glass)
@@ -4301,10 +4294,10 @@ def main() -> None:
             # public claim (the same build_claim_mw / gprove_*_mw a string result uses) and display the
             # components. The bound value is the circuit's own output `_rv`. --claim is scalar/string-only.
             if claim_raw is not None:
-                print("Glass prove — %s  [field: Goldilocks (2^64)]" % upath)
-                print("glass prove: --claim does not express a tuple/record result — drop --claim; a structured result is bound to its computed value")
-                print("verdict: ABSTAIN  (a scalar/string claim cannot express a multi-component result — refused, not silently bound)")
-                return
+                print("Glass prove: %s  [field: Goldilocks (2^64)]" % upath)
+                print("glass prove: --claim does not express a tuple/record result: drop --claim; a structured result is bound to its computed value")
+                print("verdict: ABSTAIN  (a scalar/string claim cannot express a multi-component result: refused, not silently bound)")
+                sys.exit(1)
             if _res_struct[0] == 'tuple':
                 _kindword = "tuple"
                 _disp_expr = '"(" ++ bn_dec_signed(wnth(_rv, 0))'
@@ -4320,17 +4313,17 @@ def main() -> None:
                 _disp_expr += ' ++ " }"'
             if fast_mode:
                 _prove_call = "gprove_m_mw(_usrc, _inp, _rv, 11111)"
-                _prove_label = "ACCEPT  (self-check over the witness — NOT a soundness proof; drop --fast for verify_b3)"
+                _prove_label = "ACCEPT  (self-check over the witness, NOT a soundness proof; drop --fast for verify_b3)"
             elif zk_mode:
                 _prove_call = "gprove_zk_mw(_usrc, _inp, _rv, %d, 256)" % _zk_seed
-                _prove_label = "ACCEPT  (SOUND + zero-knowledge — independent verify_b3 + randomized-trace hiding)"
+                _prove_label = "ACCEPT  (SOUND + zero-knowledge: independent verify_b3 + randomized-trace hiding)"
             else:
                 _prove_call = "gprove_sound_mw(_usrc, _inp, _rv)"
-                _prove_label = "ACCEPT  (SOUND — independent witness-free verify_b3; not zero-knowledge)"
+                _prove_label = "ACCEPT  (SOUND: independent witness-free verify_b3; not zero-knowledge)"
             _head_lines = ('\nlet _usrc : String = "%s"\n'
                            'let _inp : List<Pair<String, List<Int>>> = %s\n'
                            'let _rv : List<List<Int>> = gref_m_checked(_usrc, _inp)\n') % (esc, inp_glass)
-            _disp_line = ('let _ : String = print("result:  " ++ %s ++ "  (a %s result — each component bound as a public output wire over Goldilocks)")\n') % (_disp_expr, _kindword)
+            _disp_line = ('let _ : String = print("result:  " ++ %s ++ "  (a %s result, each component bound as a public output wire over Goldilocks)")\n') % (_disp_expr, _kindword)
             _sec_line = ('let _ : String = print("security: " ++ (match build_claim_mw(_usrc, _inp, _rv) '
                          '{ Build(_n, _gs, _w) => measure_line(_gs) }))\n')
             _proof_line = 'let _ : String = print("proof:   " ++ (if %s then "%s" else "REJECT"))\n' % (_prove_call, _prove_label)
@@ -4338,26 +4331,26 @@ def main() -> None:
         elif goldilocks:
             if fast_mode:
                 _prove_call = "gprove_m(_usrc, _inp, _r, 11111)"
-                _prove_label = "ACCEPT  (self-check over the witness — NOT a soundness proof; drop --fast for verify_b3)"
+                _prove_label = "ACCEPT  (self-check over the witness, NOT a soundness proof; drop --fast for verify_b3)"
             elif zk_mode:
                 _prove_call = "gprove_zk(_usrc, _inp, _r, %d, 256)" % _zk_seed
-                _prove_label = "ACCEPT  (SOUND + zero-knowledge — independent verify_b3 + randomized-trace hiding)"
+                _prove_label = "ACCEPT  (SOUND + zero-knowledge: independent verify_b3 + randomized-trace hiding)"
             else:
                 _prove_call = "gprove_sound(_usrc, _inp, _r)"
-                _prove_label = "ACCEPT  (SOUND — independent witness-free verify_b3; not zero-knowledge)"
+                _prove_label = "ACCEPT  (SOUND: independent witness-free verify_b3; not zero-knowledge)"
             # A non-numeric --claim on a SCALAR (Int/Bool) result is a category error (a string claim
-            # for a number) — refuse loudly rather than ignore the flag.
+            # for a number): refuse loudly rather than ignore the flag.
             if claim_raw is not None and claim_val is None:
-                print("Glass prove — %s  [field: Goldilocks (2^64)]" % upath)
-                print("glass prove: --claim %r is not an integer, but this program's result is a scalar (Int/Bool) — pass an integer claim (a string --claim binds only a String result)" % claim_raw)
-                print("verdict: ABSTAIN  (the claim's type does not match the result's type — refused, never bound)")
-                return
+                print("Glass prove: %s  [field: Goldilocks (2^64)]" % upath)
+                print("glass prove: --claim %r is not an integer, but this program's result is a scalar (Int/Bool): pass an integer claim (a string --claim binds only a String result)" % claim_raw)
+                print("verdict: ABSTAIN  (the claim's type does not match the result's type: refused, never bound)")
+                sys.exit(1)
             # --claim binds a SPECIFIED result (forged or honest) instead of gref_m_checked's; the guard
-            # `_rv` still runs (so out-of-domain ABSTAINs), but the proof is for the claim — a false claim
+            # `_rv` still runs (so out-of-domain ABSTAINs), but the proof is for the claim: a false claim
             # makes the circuit unsatisfiable and verify_b3 REJECTs.
             if claim_val is not None:
                 # A negative claim binds canonically as p-|claim| (fsub from 0), matching how inputs
-                # (gin) and signed results are represented — so `--claim -3` is the true field element.
+                # (gin) and signed results are represented, so `--claim -3` is the true field element.
                 if claim_val < 0:
                     _r_line = 'let _r : List<Int> = fsub(glit4(0), glit4(%d))\n' % (-claim_val)
                 else:
@@ -4366,9 +4359,9 @@ def main() -> None:
             else:
                 # A scalar result is exactly one wire. If the circuit produced a MULTI-WIRE value that
                 # was NOT detected as a string (a tuple / record / ADT result), refuse loudly rather
-                # than silently publish only the first wire (the old `vh` truncation) — sound ABSTAIN.
+                # than silently publish only the first wire (the old `vh` truncation): sound ABSTAIN.
                 _r_line = ('let _r : List<Int> = if len(_rv) > 1 then '
-                           'error("glass prove: this program returns a MULTI-WIRE value not bindable as a public claim — an ADT, or a tuple/record with a non-scalar component. Supported results: a scalar (Int/Bool), a String, or a tuple/record of scalars.") '
+                           'error("glass prove: this program returns a MULTI-WIRE value not bindable as a public claim: an ADT, or a tuple/record with a non-scalar component. Supported results: a scalar (Int/Bool), a String, or a tuple/record of scalars.") '
                            'else vh(_rv)\n')
                 # bn_dec_signed renders an upper-half field element as the negative it represents, so
                 # signed comparison/division/arithmetic results display as -3, not the canonical p-3.
@@ -4379,7 +4372,7 @@ def main() -> None:
                 'let _rv : List<List<Int>> = gref_m_checked(_usrc, _inp)\n'
                 + _r_line
                 + _result_print
-                # The Measuring Reed: every ACCEPT carries its bit-security, RE-DERIVED by the
+                # The security meter: every ACCEPT carries its bit-security, RE-DERIVED by the
                 # verifier from the live proof params (queries/blowup/grind) of the SAME circuit
                 # the verdict is for. Always printed (a property of the construction), after result.
                 + 'let _ : String = print("security: " ++ (match build_claim_m(_usrc, _inp, _r) { Build(_n, _gs, _w) => measure_line(_gs) }))\n'
@@ -4394,22 +4387,27 @@ def main() -> None:
                 'let _inp : List<Pair<String, Int>> = %s\n'
                 'let _r : Int = ref_result(_usrc, _inp)\n'
                 'let _ : String = print("result:  " ++ int_to_string(_r))\n'
-                'let _ : String = print("proof:   " ++ (if prove(_usrc, _inp, _r, 11111, bbv, bbw) then "ACCEPT  (succinct, zero-knowledge)" else "REJECT"))\n'
+                'let _ : String = print("proof:   " ++ (if prove(_usrc, _inp, _r, 11111, bbv, bbw) then "ACCEPT  (educational 2^31 field: not a security claim, and not zero-knowledge)" else "REJECT"))\n'
                 '"glass prove"\n'
             ) % (esc, inp_glass_bb)
         field = "Goldilocks (2^64)" if goldilocks else "Baby Bear (2^31)"
-        print("Glass prove — %s  [field: %s]" % (upath, field))
+        print("Glass prove: %s  [field: %s]" % (upath, field))
         if inputs:
             names = ", ".join(k for k, _ in inputs)
-            print("private inputs: %s  (kept in the witness; the proof reveals only the result)" % names)
+            if not goldilocks:
+                print("private inputs: %s  (kept in the witness, but this educational proof is not zero-knowledge)" % names)
+            elif not zk_mode:
+                print("private inputs: %s  (kept in the witness, but this proof is not zero-knowledge; add --zk to hide them)" % names)
+            else:
+                print("private inputs: %s  (kept in the witness; the proof reveals only the result)" % names)
         print("")
         if goldilocks:
-            # Goldilocks is bignum-heavy — run natively (the interpreter is ~hours).
+            # Goldilocks is bignum-heavy: run natively (the interpreter is ~hours).
             # run_native.sh builds native_glassc once, then compiles + runs the driver.
             _tmp = "/tmp/glass_prove_driver.glass"
             with open(_tmp, "w") as _f:
                 _f.write(driver)
-            _w3 = "--witness3" in sys.argv[2:]
+            _w3 = "--cross-check" in sys.argv[2:]
             # Output is always captured and relayed: the exit-code contract (see below) needs the
             # verdict line, which the GENERATED DRIVER prints (glass.py never computes it itself).
             # The result/proof block prints at the end of the run anyway, so nothing is lost.
@@ -4418,15 +4416,15 @@ def main() -> None:
                            capture_output=True, text=True)
             sys.stdout.write(_proc.stdout or ""); sys.stderr.write(_proc.stderr or "")
             if _proc.returncode != 0:
-                # ABSTAIN — the third verdict. The native prover REFUSED before reaching a
+                # ABSTAIN: the third verdict. The native prover REFUSED before reaching a
                 # verdict (the bridge's loud `error`: an op with no faithful field lowering,
                 # an out-of-range comparison, a parse/unroll failure). This is categorically
                 # NOT a REJECT: a REJECT means `verify_b3` ran and the proof failed (a
                 # disproof of the claim); an ABSTAIN means Glass could not honestly form the
                 # claim at all. Because the refusal aborts *before* `prove_b3`/`verify_b3`,
-                # ABSTAIN can never swallow a real REJECT. (See pentecost/, ledger/.)
+                # ABSTAIN can never swallow a real REJECT. (See lens/, ledger/.)
                 print("")
-                print("verdict: ABSTAIN  (Glass refused to lower this statement to a sound circuit — NOT a disproof; the reason is the 'glass prove:' line above. A statement Glass cannot faithfully lower is abstained, never silently proven.)")
+                print("verdict: ABSTAIN  (Glass refused to lower this statement to a sound circuit, NOT a disproof; the reason is the 'glass prove:' line above. A statement Glass cannot faithfully lower is abstained, never silently proven.)")
                 sys.exit(_proc.returncode)
         else:
             run_source(driver, verbose=False, base_dir=bridge_dir)
@@ -4440,14 +4438,14 @@ def main() -> None:
                 print("(F_{p^2} FRI STARK; SOUND via the independent witness-free verify_b3 (per-row gates + PLONK wiring). Research-grade, UNAUDITED; --zk adds hiding.)")
         else:
             print("(blinded F_{p^4} FRI STARK over the gate circuit; `glass prove` proves AND verifies.)")
-        # The Third Witness (--witness3): re-execute f under the reference INTERPRETER (glass.py —
+        # The cross-check (--cross-check): re-execute f under the reference INTERPRETER (glass.py:
         # a lineage independent of the bridge's Glass-level evaluator AND its circuit lowering) and
         # bind the proof's PUBLIC RESULT to it. This catches the one class the compiler fixpoint
         # (gen1==gen2) and verifier-be-two (two verifiers of the SAME circuit) structurally cannot:
         # a lowering where heval AND cgen share a bug, so the circuit faithfully proves g != f.
-        if goldilocks and "--witness3" in sys.argv[2:] and _res_str is not None:
+        if goldilocks and "--cross-check" in sys.argv[2:] and _res_str is not None:
             # STRING result: the proof's public claim is the decoded string `result: "..."`; the Third
-            # Witness is the reference interpreter's own string (`_res_str`). Compare them directly —
+            # Witness is the reference interpreter's own string (`_res_str`). Compare them directly:
             # an exact match means the bridge's circuit lowered the source to the SAME string the
             # reference computes (the source<->circuit gap, on a multi-wire value).
             import re as _re3s
@@ -4455,13 +4453,13 @@ def main() -> None:
             _ps = _ms.group(1) if _ms else None
             print("")
             if _ps is None:
-                print("witness3: (no proven string result to bind to — third witness skipped)")
+                print("cross-check: (no proven string result to bind to: cross-check skipped)")
             elif _ps == _res_str:
-                print(f'witness3: THIRD LINEAGE AGREES — the reference interpreter (glass.py, independent of the bridge\'s evaluator and its circuit lowering) independently computes f(inputs) = "{_res_str}". Three lineages agree on the SEMANTICS of this string result — closing the source<->circuit gap that verify_b3 and Pentecost, both verifying the circuit, cannot see.')
+                print(f'cross-check: AGREES: the reference interpreter (glass.py, independent of the bridge\'s evaluator and its circuit lowering) independently computes f(inputs) = "{_res_str}". Three lineages agree on the SEMANTICS of this string result: closing the source<->circuit gap that verify_b3 and Lens, both verifying the circuit, cannot see.')
             else:
-                print(f'witness3: DIVERGENCE — the proof attests the string "{_ps}" but the reference interpreter computes f(inputs) = "{_res_str}". The proof is STARK-valid, yet the lowered circuit\'s string result differs from the source — a genuine source<->circuit mismatch. Worth investigating.')
+                print(f'cross-check: DIVERGENCE: the proof attests the string "{_ps}" but the reference interpreter computes f(inputs) = "{_res_str}". The proof is STARK-valid, yet the lowered circuit\'s string result differs from the source: a genuine source<->circuit mismatch. Worth investigating.')
                 sys.exit(3)  # a detected source<->circuit divergence is a hard failure, not a footnote
-        elif goldilocks and "--witness3" in sys.argv[2:] and _res_struct is not None:
+        elif goldilocks and "--cross-check" in sys.argv[2:] and _res_struct is not None:
             # TUPLE/RECORD result: compare each revealed component to the reference's, modulo the prime
             # (the same reconciliation the scalar witness uses). _refvals are the reference components.
             import re as _re3t
@@ -4471,71 +4469,71 @@ def main() -> None:
             _P = (1 << 64) - (1 << 32) + 1
             print("")
             if len(_pcomps) != len(_refvals):
-                print(f"witness3: (could not align {len(_pcomps)} proven components with {len(_refvals)} reference components — third witness skipped)")
+                print(f"cross-check: (could not align {len(_pcomps)} proven components with {len(_refvals)} reference components: cross-check skipped)")
             elif all((_r - _p) % _P == 0 for _r, _p in zip(_refvals, _pcomps)):
-                print(f"witness3: THIRD LINEAGE AGREES — the reference interpreter (glass.py, independent of the bridge's evaluator and its circuit lowering) independently computes the {len(_refvals)} components {_refvals} (mod the Goldilocks prime). Three lineages agree on the SEMANTICS of this {_res_struct[0]} result — closing the source<->circuit gap that verify_b3 and Pentecost, both verifying the circuit, cannot see.")
+                print(f"cross-check: AGREES: the reference interpreter (glass.py, independent of the bridge's evaluator and its circuit lowering) independently computes the {len(_refvals)} components {_refvals} (mod the Goldilocks prime). Three lineages agree on the SEMANTICS of this {_res_struct[0]} result: closing the source<->circuit gap that verify_b3 and Lens, both verifying the circuit, cannot see.")
             else:
-                print(f"witness3: DIVERGENCE — the proof's components {_pcomps} differ from the reference interpreter's {_refvals} (even modulo the prime). A genuine source<->circuit mismatch on a structured result. Worth investigating.")
+                print(f"cross-check: DIVERGENCE: the proof's components {_pcomps} differ from the reference interpreter's {_refvals} (even modulo the prime). A genuine source<->circuit mismatch on a structured result. Worth investigating.")
                 sys.exit(3)  # a detected source<->circuit divergence is a hard failure, not a footnote
-        elif goldilocks and "--witness3" in sys.argv[2:]:
+        elif goldilocks and "--cross-check" in sys.argv[2:]:
             import re as _re3
             _m3 = _re3.search(r"result:\s*(-?[0-9]+)", _proc.stdout or "")
             _rp = int(_m3.group(1)) if _m3 else None
-            _r3 = _witness3_eval(usrc, inputs)
+            _r3 = _cross_check_eval(usrc, inputs)
             print("")
             if _r3 is None:
-                print("witness3: (the reference interpreter could not evaluate this source — third witness skipped)")
+                print("cross-check: (the reference interpreter could not evaluate this source: cross-check skipped)")
             elif _rp is None:
-                print("witness3: (no proven result to bind to — third witness skipped)")
+                print("cross-check: (no proven result to bind to: cross-check skipped)")
             # Reconcile MODULO the Goldilocks prime: the bridge reports a field element (0..p-1),
-            # the interpreter an int64 (possibly negative) — the SAME value has different reps, so a
+            # the interpreter an int64 (possibly negative): the SAME value has different reps, so a
             # negative result like -560 must match its field form p-560. Comparing mod p makes the
             # witness correct for small/negative results and still flags a GENUINE domain divergence
             # (e.g. an int64 multiply that wraps mod 2^64 where the field wraps mod p).
             elif (_r3 - _rp) % ((1 << 64) - (1 << 32) + 1) == 0:
-                print(f"witness3: THIRD LINEAGE AGREES — the reference interpreter (glass.py, independent of the bridge\'s evaluator and its circuit lowering) independently computes f(inputs) = {_r3} (= the proven result mod the Goldilocks prime). Three lineages agree on the SEMANTICS — closing the source<->circuit gap that verify_b3 and Pentecost, both verifying the circuit, cannot see.")
+                print(f"cross-check: AGREES: the reference interpreter (glass.py, independent of the bridge\'s evaluator and its circuit lowering) independently computes f(inputs) = {_r3} (= the proven result mod the Goldilocks prime). Three lineages agree on the SEMANTICS: closing the source<->circuit gap that verify_b3 and Lens, both verifying the circuit, cannot see.")
             else:
-                print(f"witness3: DIVERGENCE — the proof attests {_rp} but the reference interpreter computes f(inputs) = {_r3}, and they differ EVEN MODULO the Goldilocks prime. The proof is STARK-valid, yet the lowered circuit\'s semantics differ from the source — a genuine source<->circuit or domain mismatch (e.g. an int64 wraparound the field does not share). Worth investigating.")
+                print(f"cross-check: DIVERGENCE: the proof attests {_rp} but the reference interpreter computes f(inputs) = {_r3}, and they differ EVEN MODULO the Goldilocks prime. The proof is STARK-valid, yet the lowered circuit\'s semantics differ from the source: a genuine source<->circuit or domain mismatch (e.g. an int64 wraparound the field does not share). Worth investigating.")
                 sys.exit(3)  # a detected source<->circuit divergence is a hard failure, not a footnote
-        # The exit-code CONTRACT (v5.133), so scripts can branch on the verdict without parsing:
+        # The exit-code CONTRACT, so scripts can branch on the verdict without parsing:
         #   0 = ACCEPT   1 = ABSTAIN (refusal; also any infrastructure error)
-        #   2 = REJECT (verify_b3 ran and the proof FAILED — a disproof, e.g. a false --claim)
-        #   3 = Third-Witness DIVERGENCE (--cross-check only; takes precedence above).
-        # `if glass prove ...; then` used to treat a REJECT as success — the dangerous default.
+        #   2 = REJECT (verify_b3 ran and the proof FAILED: a disproof, e.g. a false --claim)
+        #   3 = cross-check DIVERGENCE (--cross-check only; takes precedence above).
+        # `if glass prove ...; then` used to treat a REJECT as success: the dangerous default.
         if goldilocks and "proof:   REJECT" in (_proc.stdout or ""):
             sys.exit(2)
-    elif sys.argv[1] in ("fingerprint", "name"):
-        # Content-addressed canonical identity (thematic name: "the Name"): one Poseidon-Merkle
+    elif sys.argv[1] == "fingerprint":
+        # Content-addressed canonical identity: one Poseidon-Merkle
         # root over the self-hosting core + prover/verifier bridge + the second verifier
-        # + tests + semantics. Prints it; `--check` matches name/NAME.
+        # + tests + semantics. Prints it; `--check` matches fingerprint/FINGERPRINT.
         here = os.path.dirname(os.path.abspath(__file__))
-        sys.exit(subprocess.run([sys.executable, os.path.join(here, "name", "glass_name.py"), *sys.argv[2:]]).returncode)
-    elif sys.argv[1] in ("ledger", "tablet"):
-        # Append-only, tamper-evident Poseidon-Merkle ledger of proof verdicts (thematic name:
-        # "the Preserved Tablet"). append | root | list | prove <i> | verify <i> | --selftest.
+        sys.exit(subprocess.run([sys.executable, os.path.join(here, "fingerprint", "fingerprint.py"), *sys.argv[2:]]).returncode)
+    elif sys.argv[1] == "ledger":
+        # Append-only, tamper-evident Poseidon-Merkle ledger of proof verdicts.
+        # append | root | list | prove <i> | verify <i> | --selftest.
         here = os.path.dirname(os.path.abspath(__file__))
-        sys.exit(subprocess.run([sys.executable, os.path.join(here, "ledger", "tablet.py"), *sys.argv[2:]]).returncode)
-    elif sys.argv[1] in ("disclose", "seal"):
-        # Selective disclosure over a blinded Poseidon commitment (thematic name: "Opening the
-        # Seals"). commit k=v… | reveal <sealed> f… | verify <pres> | --selftest.
+        sys.exit(subprocess.run([sys.executable, os.path.join(here, "ledger", "ledger.py"), *sys.argv[2:]]).returncode)
+    elif sys.argv[1] == "disclose":
+        # Selective disclosure over a blinded Poseidon commitment.
+        # commit k=v… | reveal <committed> f… | verify <pres> | --selftest.
         here = os.path.dirname(os.path.abspath(__file__))
-        sys.exit(subprocess.run([sys.executable, os.path.join(here, "seal", "reveal.py"), *sys.argv[2:]]).returncode)
+        sys.exit(subprocess.run([sys.executable, os.path.join(here, "disclose", "disclose.py"), *sys.argv[2:]]).returncode)
     elif sys.argv[1] == "verify":
         # Verify a PORTABLE proof emitted by `glass prove --emit` using the INDEPENDENT
-        # second verifier (pentecost/, plain int mod p, no Glass code). "Let the verifier be two":
+        # second verifier (lens/, plain int mod p, no Glass code). "Let the verifier be two":
         # prove on one side, check on the other. Exits 0 (ACCEPT) / 1 (REJECT).
         if len(sys.argv) < 3:
             print("usage: glass verify <proof-file>   (a proof from `glass prove --emit`)"); return
         here = os.path.dirname(os.path.abspath(__file__))
-        sys.exit(subprocess.run([sys.executable, "-m", "pentecost.pentecost_verify", sys.argv[2]], cwd=here).returncode)
+        sys.exit(subprocess.run([sys.executable, "-m", "lens.verify", sys.argv[2]], cwd=here).returncode)
     else:
         # -q/--quiet: run a file printing only its output (no type-signature
-        # echoes) — handy for diffing against the self-hosted compiler.
+        # echoes): handy for diffing against the self-hosted compiler.
         quiet = sys.argv[1] in ("-q", "--quiet")
         path = sys.argv[2] if quiet else sys.argv[1]
         with open(path) as f:
             src = f.read()
-        # v4.70: resolve `import` paths relative to the source file's dir.
+        # Resolve `import` paths relative to the source file's dir.
         run_source(src, verbose=not quiet,
                    base_dir=os.path.dirname(os.path.abspath(path)))
 

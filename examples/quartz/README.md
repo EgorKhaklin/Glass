@@ -1,12 +1,11 @@
 # Quartz examples
 
-> These are *early* Quartz programs (the v3.5 subset). Quartz has since grown to compile the whole frontend — Glass self-hosts (see [docs/self-hosting.md](../../docs/self-hosting.md)). Kept as small, readable demos of the back end.
-
-These programs demonstrate the original v3.5 Quartz subset: primitives,
-arithmetic and comparisons, if/else, let bindings, top-level functions,
-string concatenation, ADTs and pattern matching, records and field
-access, generic ADTs and records, **generic functions (v3.5)**.
-Compile each with `glass-build`:
+Small programs compiled by Quartz (`quartz.py`), the Python back end that turns
+Glass into C. They cover primitives, arithmetic and comparisons, `if`, `let`,
+top-level functions, string concatenation, ADTs and pattern matching, records and
+field access, generic ADTs and records, and generic functions. Quartz itself
+compiles much more: its main job is building the self-hosted compiler
+`glassc.glass` once (see [self-hosting](../../docs/compiler/self-hosting.md)).
 
 ```
 $ glass-build examples/quartz/hello.glass     -o hello   && ./hello
@@ -28,29 +27,11 @@ $ glass-build examples/quartz/generic.glass   -o generic && ./generic
 117
 ```
 
-Add `-v` to see the generated C source. Use `--cc gcc` (or `--cc clang`)
-to choose a different C compiler.
+Add `-v` to print the generated C. Use `--cc gcc` (or `--cc clang`) to choose the
+C compiler. The native build needs `libgc` (Boehm GC).
 
-## What's NEW in v3.5
-
-- **Generic functions**: `fn id<T>(x: T) : T = x` — compiles to one C
-  function via type erasure. Each call site computes the substitution
-  and casts args/result around the int64_t boundary.
-- **Same generic fn, multiple instantiations**: `id(42)`, `id("hello")`,
-  `id(Some(7))` all call the same C function with different casts.
-- **Generic-calling-generic**: `fn through<A>(x: A) : A = id(x)` works
-  via the same uniform int64_t representation.
-
-## What's STILL NOT supported
-
-**Closures** (lambdas with captured variables), lists, tuples, record
-update syntax, field renaming in patterns, effects beyond pure,
-explicit print(). The Glass concrete + generic language subset is
-otherwise fully covered. See `docs/quartz.md` for the v3.x roadmap.
-
-## What happened next
-
-Stage 5 was reached: a Glass-written compiler (`glassc.glass`) now compiles
-Glass to native C, and the self-hosting **bootstrap fixpoint closed at v4.76** —
-see [self-hosting](../../docs/self-hosting.md). Quartz (`quartz.py`) is now the
-one-time bootstrap that builds it.
+`generic.glass` shows type erasure: each generic function (`id<T>`,
+`unwrap_or<T>`) compiles to one C function, and each call site casts its
+arguments and result around the `int64_t` boundary. See
+[`docs/compiler/quartz.md`](../../docs/compiler/quartz.md) for the value
+representation and design.

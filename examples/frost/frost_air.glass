@@ -1,5 +1,5 @@
 # =============================================================================
-# frost_air.glass — a complete AIR-STARK: prove a computation, all in Glass (v0.1)
+# frost_air.glass: a complete AIR-STARK: prove a computation, all in Glass
 #
 # THE CAPSTONE. Everything assembles here into a real (toy-field) zk-STARK that
 # proves a COMPUTATION was performed correctly, revealing nothing but the claim.
@@ -16,7 +16,7 @@
 #   3. QUOTIENT              Q(x) = C(x) / Z(x), where Z(x) = (x^n - 1)/(x - g^{n-1})
 #      vanishes exactly on those n-1 points. Q is a POLYNOMIAL  <=>  the
 #      computation is correct. We compute Q POINTWISE on a COSET LDE domain
-#      (shifted off D_n so Z != 0 there — no division by zero, no polynomial
+#      (shifted off D_n so Z != 0 there: no division by zero, no polynomial
 #      long division needed).
 #   4. LOW-DEGREE PROOF      FRI-prove Q's coset codeword is low-degree.   [frost_stark]
 #      Correct trace -> Q low-degree -> ACCEPT.  Any cheat -> C doesn't vanish ->
@@ -170,6 +170,6 @@ let _ : String = print("cheat (a_2=27)  [2,5,27,..]: " ++ show_b(stark_ok(cheat1
 let _ : String = print("cheat (a_1=6)   [2,6,26,..]: " ++ show_b(stark_ok(cheat2, 1)))
 let _ : String = print("")
 let _ : String = print("the quotient C(x)/Z(x) is a low-degree polynomial IFF every transition holds;")
-let _ : String = print("FRI proves that succinctly — the verifier never sees the trace.")
+let _ : String = print("FRI proves that succinctly: the verifier never sees the trace.")
 
-"frost air v0.1 — a complete AIR-STARK: trace -> quotient -> FRI low-degree proof, all in Glass"
+"frost air: a complete AIR-STARK: trace -> quotient -> FRI low-degree proof, all in Glass"

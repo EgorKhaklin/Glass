@@ -1,25 +1,25 @@
 # =============================================================================
-# frost_goldilocks_fri.glass — FRI over the Goldilocks field (H2 integration)
+# frost_goldilocks_fri.glass: FRI over the Goldilocks field (H2 integration)
 #
 # frost_goldilocks.glass built the field p = 2^64 − 2^32 + 1; this runs the
-# STARK's core engine — the FRI low-degree test — OVER it. Two pieces of that
+# STARK's core engine, the FRI low-degree test, OVER it. Two pieces of that
 # field do the work here:
 #
 #   • its 2-adicity: p − 1 = 2^32·(2^32 − 1), so the evaluation domain is a real
 #     2^k-th-root-of-unity subgroup (g^(2^k) = 1, g^(2^(k-1)) = −1), exactly what
 #     FRI's fold(f(x), f(−x)) needs;
-#   • its inverse: the fold divides by 2 and by 2x, and a^(p−2) gives those — the
+#   • its inverse: the fold divides by 2 and by 2x, and a^(p−2) gives those: the
 #     exponent overflows int64, so it's walked in limbs.
 #
-# The test: a low-degree codeword folds — fold(f(x),f(-x)) = (f(x)+f(-x))/2 +
-# β·(f(x)-f(-x))/(2x), domain squared each layer — down to a CONSTANT; a tampered
+# The test: a low-degree codeword folds: fold(f(x),f(-x)) = (f(x)+f(-x))/2 +
+# β·(f(x)-f(-x))/(2x), domain squared each layer: down to a CONSTANT; a tampered
 # codeword (one value corrupted, no longer a low-degree evaluation) does not.
 # That is FRI's soundness in miniature, here over a production-grade field with
-# every step int64-safe — so it DOGFOODS (Python bignum ≡ C int64).
+# every step int64-safe, so it DOGFOODS (Python bignum ≡ C int64).
 #
 # Honest scope: the fold challenge β is in the BASE field for now (this is the
 # mechanism); a degree-2 extension for cryptographic challenge soundness, plus
-# Merkle commitment + Fiat-Shamir sampling, are the layers on top — exactly how
+# Merkle commitment + Fiat-Shamir sampling, are the layers on top: exactly how
 # the Baby Bear path grew (frost_fri → frost_fri_ext → frost_crypto). Heavy
 # interpreted (bignum FRI); run it natively (examples/selfhost/run_native.sh).
 # =============================================================================
@@ -120,7 +120,7 @@ let _ : String = print("")
 let _ : String = print("HONEST  low-degree codeword folds to a constant:  " ++ show_b(is_const_g(fri_to2(cw, dom, beta, finv2))))
 let _ : String = print("TAMPER  one value corrupted -> folds to a constant: " ++ show_b(is_const_g(fri_to2(bad, dom, beta, finv2))) ++ "   (no => the low-degree test catches it)")
 let _ : String = print("")
-let _ : String = print("FRI — fold + low-degree test — now runs over the production STARK field, int64-safe")
+let _ : String = print("FRI, fold + low-degree test, now runs over the production STARK field, int64-safe")
 let _ : String = print("and dogfooded. base-field β here; the degree-2 extension + Merkle/Fiat-Shamir are next.")
 
-"frost goldilocks fri v0.1 (H2) — the FRI low-degree test over Goldilocks (p = 2^64−2^32+1), int64-safe"
+"frost goldilocks fri (H2): the FRI low-degree test over Goldilocks (p = 2^64−2^32+1), int64-safe"

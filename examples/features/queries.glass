@@ -1,9 +1,9 @@
 # =============================================================================
-# v0.8 demo: queries — SQL-in-spirit data manipulation in pure Glass.
+# queries.glass: SQL-in-spirit data manipulation in pure Glass.
 #
-# Records (v0.8) replace the positional tuple representation. Compare:
-#   v0.6/v0.7:  (Int, String, Int, String)  — positional, no field names
-#   v0.8:       User { id, name, age, country }
+# Records replace the positional tuple representation. Compare:
+#   tuple:   (Int, String, Int, String): positional, no field names
+#   record:  User { id, name, age, country }
 #
 # This isn't ergonomics for its own sake. The shift makes the data flow
 # legible: when a fn signature says `: List<User>`, the reader knows what
@@ -85,12 +85,12 @@ fn print_country_counts(rows: List<(String, Int)>) : List<String> !{IO} =
 
 let _ : List<String> = print_country_counts(r3)
 
-# Reflection: compare the v0.7 version of this file. The query lambdas
+# Reflection: compare a tuple-based version of this file. The query lambdas
 # went from
 #   fn(row: (Int, String, Int, String)) ->
 #     match row { (_, _, age, _) => age >= 18 }
 # to
 #   fn(u: User) -> u.age >= 18
-# That's the gap records close. The query READS like a query now —
+# That's the gap records close. The query READS like a query now:
 # project by name, not by position. The data shape and the query shape
 # match.

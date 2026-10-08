@@ -1,4 +1,4 @@
-# Binary tree height — exercises ADTs with multi-field variants and
+# Binary tree height: exercises ADTs with multi-field variants and
 # recursive functions that pattern-match.
 
 type Tree = Leaf | Branch(Int, Tree, Tree)

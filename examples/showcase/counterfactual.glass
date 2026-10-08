@@ -1,8 +1,8 @@
 # =============================================================================
-# Counterfactual types — the do-operator, in Glass.
+# Counterfactual types: the do-operator, in Glass.
 #
 # A counterfactual asks "what WOULD have happened, had things been
-# different?" — distinct from observation. The machinery is Pearl's
+# different?": distinct from observation. The machinery is Pearl's
 # structural causal model: variables defined by equations over their
 # causes, and INTERVENTION (do(X := x)) which overrides a variable and
 # recomputes everything downstream, ignoring what actually set it.
@@ -44,14 +44,14 @@ let _ = print("=== Actual world ===")
 let _ = print("  " ++ describe(actual))
 
 let _ = print("")
-let _ = print("=== Counterfactual: do(rain := false) — had it not rained ===")
+let _ = print("=== Counterfactual: do(rain := false): had it not rained ===")
 let _ = print("  " ++ describe(do_rain(actual, false)))
 let _ = print("  ⇒ the grass would be DRY: the rain was the cause of wetness.")
 
 let _ = print("")
 let _ = print("=== Counterfactual: do(sprinkler := true) with no rain ===")
 let _ = print("  " ++ describe(do_sprinkler(do_rain(actual, false), true)))
-let _ = print("  ⇒ wet again — the sprinkler is a SUFFICIENT alternative cause.")
+let _ = print("  ⇒ wet again: the sprinkler is a SUFFICIENT alternative cause.")
 
 # The point: intervention ≠ observation. do(rain:=false) recomputes wet
 # from the equation; it does not merely "filter to worlds where it

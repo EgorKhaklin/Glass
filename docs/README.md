@@ -1,30 +1,35 @@
 # Documentation
 
-### Start here
-- **[Glass, end to end](the-story.md)** — the whole arc in one read: one principle carried from a type signature to a zero-knowledge proof over private data. Every claim is a command you can run.
+### The language
+- [Getting started](language/getting-started.md): install, first programs, the native toolchain.
+- [A tour](language/tour.md): every feature, one example at a time.
+- [Specification](../LANG.md): the full reference.
+- [Semantics](language/semantics.md): the big-step rules that say what a program means.
+- [The REPL](language/repl.md) and [the browser playground](language/playground.md).
 
-### Learn the language
-- [Getting started](getting-started.md) — install and first programs.
-- [A tour of the language](language-tour.md) — the feature walk-through.
-- [The REPL](repl.md) — interactive sessions.
-- [The browser playground](playground.md) — run Glass with no install.
-- [Language specification](../LANG.md) — the full reference.
-- [Operational semantics](semantics.md) — the explicit big-step rules (what a program *means*).
+### The compiler
+- [Self-hosting](compiler/self-hosting.md): Glass compiling Glass, and the byte-identical fixpoint.
+- [Quartz](compiler/quartz.md): the Glass to C back end.
 
-### How Glass is built
-- [Self-hosting](self-hosting.md) — Glass compiling Glass, and the bootstrap fixpoint.
-- [Quartz](quartz.md) — the Glass → C back end.
-- [Migration](migration.md) — the road from a Python host to self-hosting *(historical record)*.
-- [Design notes](design-notes.md) — release-by-release engineering diary (how features were built and verified).
-
-### Honesty
-- [Soundness](soundness.md) — what Glass's proofs *actually* guarantee: the strong differential-testing guarantee vs. the educational-grade cryptography, per component. Read this before trusting any "zero-knowledge" claim.
+### Security
+- [Soundness](security/soundness.md): what a proof does and does not guarantee, per component. Read this before relying on any proof.
+- [Soundness proof](security/soundness-proof.md): the pen-and-paper reduction for the prover.
+- [Parameters](security/parameters.md): field, hash, FRI parameters and the bit accounting.
+- [Faithful lowering](security/faithful-lowering.md): the compiler-to-circuit layer, the part no soundness proof covers.
+- [Audit readiness](security/audit-readiness.md): threat model, assumptions, and where an auditor should start.
+- [Internal audit, June 2026](security/internal-audit-2026-06.md): findings and their fixes.
 
 ### Direction
-- [Roadmap](roadmap.md) — where Glass is headed.
-- [Effects in the proof story](effects-in-proofs.md) — a design: proving effectful (`IO`/`Random`/`Inference`) computations in zero-knowledge.
+- [Roadmap](roadmap.md): the staged plan for Glass and Tiresias.
 
-### Built in Glass
-- [Frost](../examples/frost/) — a zero-knowledge proof system (zk-STARK) from scratch.
-- [Pane](../examples/pane/) — a query language.
-- [The prove bridge](../examples/prove/) — write Glass, get a zero-knowledge proof.
+### The components
+| Name | What it is | Where |
+|---|---|---|
+| Prism | The self-hosted front end: parser, type checker, evaluator | [`examples/selfhost/prism.glass`](../examples/selfhost/prism.glass) |
+| Quartz | The native back end, Glass to C | [`quartz.py`](../quartz.py), [`examples/selfhost/glassc.glass`](../examples/selfhost/glassc.glass) |
+| Frost | A zk-STARK written from scratch in Glass | [`examples/frost/`](../examples/frost/) |
+| Pane | A query algebra | [`examples/pane/`](../examples/pane/) |
+| Lens | The independent verifier, in Python | [`lens/`](../lens/) |
+| The fingerprint | One Poseidon-Merkle root over the core | [`fingerprint/`](../fingerprint/) |
+| The ledger | An append-only record of proof verdicts | [`ledger/`](../ledger/) |
+| Disclose | Selective disclosure over a commitment | [`disclose/`](../disclose/) |

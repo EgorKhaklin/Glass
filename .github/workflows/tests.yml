@@ -26,11 +26,11 @@ jobs:
       - name: Install clang + libgc and route cc through clang
         # Quartz / glassc try `cc` with -fbracket-depth=100000 (a Clang-only flag
         # that raises the nesting limit for the deeply-nested C they emit) and
-        # FALL BACK without it when cc rejects it — so GCC works too (its default
+        # FALL BACK without it when cc rejects it, so GCC works too (its default
         # nesting limit is higher). Clang is installed here only to also exercise
         # the with-flag path; it is no longer required (GCC is supported).
-        # libgc-dev: since v5.91 BOTH the native compiler (quartz-built native_glassc)
-        # and the programs it emits allocate via the Boehm GC and link -lgc.
+        # libgc-dev: the native compiler and the programs it emits allocate via
+        # the Boehm GC and link -lgc.
         run: |
           sudo apt-get update
           sudo apt-get install -y clang libgc-dev
@@ -41,14 +41,9 @@ jobs:
         run: pip install -e .
 
       - name: Run regression suite
-        # The 3 heavy Goldilocks-prove gates (dead-branch predication, wrong-divmod REJECT,
-        # higher-order map) now RUN to completion on the GitHub runner — confirmed 426/426 with
-        # ACCEPT/REJECT verdicts, no skips. They were unblocked across v5.90-v5.93: quartz GC
-        # compile (no >7.6GB OOM), 512MB run stack (no deep-recursion SIGSEGV), and v5.93's
-        # run_native.sh grep -m1 fix (the `grep|head` broken-pipe abort under SIGPIPE-ignored
-        # runners that left rc=2 / no binary). _heavy_skipped() stays as a fallback: a future
-        # resource-starved env that signal-kills a heavy prove skips that gate (CI green) while a
-        # real logic regression (rc<128) is still evaluated. See reference_build_portability memory.
+        # The heavy native proves run to completion on the runner. _heavy_skipped() is a
+        # fallback: a resource-starved runner that signal-kills a heavy prove skips that
+        # gate, while a real logic regression (rc < 128) still fails.
         run: python tests/test_glass.py
 
       - name: Run the self-host capstone
@@ -61,45 +56,61 @@ jobs:
           glass examples/showcase/nash.glass | grep -E "Nash equilibria" | head
 
 
-  # The project's defining invariant: native_glassc (the Glass-written compiler)
-  # reproduces ITSELF and prism byte-identically, and its output matches the
-  # reference interpreter. Until now this was enforced only by a human remembering
-  # to run the script locally — this job gates it on every push/PR.
+  # The project's defining invariant, on Linux and macOS: native_glassc (the
+  # Glass-written compiler) reproduces itself and prism byte-identically, its
+  # output matches the reference interpreter, and Lens, the independent
+  # verifier, agrees with verify_b3 on an honest proof and rejects tampered ones.
   bootstrap:
-    name: self-hosting fixpoint (byte-identical)
-    runs-on: ubuntu-latest
+    name: fixpoint and Lens (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+      fail-fast: false
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Python 3.12
-        # bootstrap_fixpoint.sh hardcodes python3.12 (bare python3 may be older,
-        # which the toolchain does not support).
+        # bootstrap_fixpoint.sh calls python3.12 by name.
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Install clang + Boehm GC (native compiler prereqs)
-        # The Glass-written compiler emits C that `#include <gc.h>` and links -lgc
-        # (Boehm-Demers-Weiser GC), and uses Clang's -fbracket-depth for its deeply
-        # nested, erasure-heavy output (it falls back without the flag on GCC).
-        # libgc-dev provides /usr/include/gc.h + libgc.so; the macOS /opt/homebrew
-        # -I/-L paths baked into the emit are harmlessly ignored on Linux.
+      - name: Native prerequisites (Linux)
+        # The emitted C includes <gc.h> and links -lgc (the Boehm GC). Clang is
+        # routed through cc to exercise its -fbracket-depth path; GCC also works.
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y clang libgc-dev
           sudo update-alternatives --install /usr/bin/cc cc /usr/bin/clang 100
           cc --version
 
+      - name: Native prerequisites (macOS)
+        # Apple clang is cc; the emitted build passes the Homebrew include and lib paths.
+        if: runner.os == 'macOS'
+        run: |
+          brew install bdw-gc
+          cc --version
+
       - name: Install Glass
         run: pip install -e .
 
-      - name: Bootstrap fixpoint — self-reproduction is byte-identical
-        # 4 steps: quartz builds native_glassc; it self-compiles; it compiles prism
-        # and the output matches glass.py; gen1 and gen2 emit identical C.
+      - name: Bootstrap fixpoint, self-reproduction is byte-identical
+        # quartz builds native_glassc; it compiles itself; the second generation
+        # compiles prism and its output matches glass.py; both generations emit
+        # identical C. The first generation runs with collection off (a known
+        # liveness bug in Quartz-built code; see docs/roadmap.md, Stage II).
         run: bash examples/selfhost/bootstrap_fixpoint.sh
 
-      - name: Dogfood — native_glassc output == glass.py, byte-for-byte
+      - name: Dogfood, native_glassc output == glass.py, byte-for-byte
         env:
           PYTHON: python3.12
         run: bash examples/selfhost/dogfood.sh examples/frost/frost_m31.glass
+
+      - name: Lens agrees with verify_b3 and rejects tampered proofs
+        run: bash lens/difftest.sh
+
+      - name: The proof corpus verifies and every tamper is rejected
+        run: python3.12 fuzz/corpus_check.py

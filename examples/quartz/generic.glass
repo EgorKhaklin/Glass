@@ -1,6 +1,6 @@
 # A small functional pipeline built on generic helpers.
 # Exercises generic fns with concrete-type instantiations, ADTs in
-# return types, polymorphic field access — all compiled to one native
+# return types, polymorphic field access: all compiled to one native
 # binary via type erasure.
 
 # Generic identity: useful as a placeholder in compositions.

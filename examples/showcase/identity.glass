@@ -1,15 +1,15 @@
 # =============================================================================
-# Identity / continuity types — the Ship of Theseus, in Glass.
+# Identity / continuity types: the Ship of Theseus, in Glass.
 #
 # Two notions of "same thing over time" come apart:
 #
-#   • STRICT identity     — same parts.
-#   • CONTINUITY identity — connected by a chain of small changes, each
+#   • STRICT identity: same parts.
+#   • CONTINUITY identity: connected by a chain of small changes, each
 #                           preserving "enough" of the whole.
 #
 # Replace a ship's planks one at a time. Each step keeps the ship the
 # "same" by continuity (only one plank changed). But after every plank
-# is replaced, the final ship shares NO parts with the original — strict
+# is replaced, the final ship shares NO parts with the original: strict
 # identity says it's a different ship. Continuity says it's the same.
 # Both are computable predicates over the replacement history.
 # =============================================================================
@@ -52,7 +52,7 @@ fn last_of(h: List<List<Int>>) : List<Int> =
 
 # ---- The replacement history ------------------------------------------------
 
-# Original planks 1,2,3,4 — replaced one at a time by 5,6,7,8.
+# Original planks 1,2,3,4: replaced one at a time by 5,6,7,8.
 fn history() : List<List<Int>> =
   [[1, 2, 3, 4],
    [5, 2, 3, 4],
@@ -77,7 +77,7 @@ let _ = print("  original and final strictly identical?      " ++
 let _ = print("")
 let _ = print("  ⇒ Continuity says SAME ship (unbroken chain of small changes);")
 let _ = print("    strict identity says DIFFERENT ship (no shared parts).")
-let _ = print("    The paradox is that both verdicts are correct — they")
+let _ = print("    The paradox is that both verdicts are correct: they")
 let _ = print("    measure different things.")
 
 "done"

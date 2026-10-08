@@ -1,9 +1,9 @@
 # =============================================================================
-# prove_pane.glass — H1: Frost as a second backend over the Pane query algebra
+# prove_pane.glass: H1: Frost as a second backend over the Pane query algebra
 #
 # pane.glass says it out loud: *"Frost will be a SECOND backend over the very
 # same Query / PExpr ASTs."* This file is that backend. You take a real Pane
-# `Query` value — `SumQ("salary", Where(EqE(Col("dept"), LitI(0)), From(t)))` —
+# `Query` value (`SumQ("salary", Where(EqE(Col("dept"), LitI(0)), From(t)))`)
 # and instead of interpreting it (`run_query`), you LOWER it into a Frost
 # circuit over a *committed, private* table, and prove its result.
 #
@@ -16,7 +16,7 @@
 # Public: the table commitment, the query, the result. Private: the rows.
 # PExpr lowers gadget-for-gadget: Col -> a witness wire, LitI -> a constant,
 # EqE -> an is-zero selector, And/Or/Not -> boolean arithmetic, Add/Sub/Mul ->
-# field arithmetic. (LtE/GtE need a range/bit-decomposition gadget — lowered to
+# field arithmetic. (LtE/GtE need a range/bit-decomposition gadget: lowered to
 # false here, so an order predicate fails safe rather than proving a wrong
 # answer; equality predicates are the ZK-cheap core.)
 #
@@ -61,7 +61,7 @@ fn rlc(gates: List<Gate>, vs: List<Pair<Int, Int>>, r: Int, rpow: Int) : Int = m
 fn hash_fold(xs: List<Int>, acc: Int) : Int = match xs { [] => acc; [x, ...r] => hash_fold(r, hash2(acc, x)) }
 fn prove_ok(gates: List<Gate>, vs: List<Pair<Int, Int>>, n: Int) : Bool = rlc(gates, vs, hash2(hash_fold(ordered_w(vs, 0, n), 0), 777), 1) == 0
 
-# --- Pane core (inlined from pane.glass — the SAME ASTs Frost is a backend for)
+# --- Pane core (inlined from pane.glass: the SAME ASTs Frost is a backend for)
 type Val   = | VInt(Int) | VStr(String) | VBool(Bool)
 type Row   = | Row(List<Pair<String, Val>>)
 type Table = | Table(List<Row>)
@@ -234,7 +234,7 @@ fn report(label: String, q: Query, gamma: Int) : String !{IO} =
     ++ " | proof(wrong " ++ int_to_string(want + 1) ++ ") " ++ show_a(prove_pane(q, gamma, c, want + 1))
     ++ " | Frost==Pane: " ++ show_b(prove_pane(q, gamma, c, want)))
 
-# GROUP BY: each group is the filtered sum SumQ(sc, Where(key == g, sub)) — proven
+# GROUP BY: each group is the filtered sum SumQ(sc, Where(key == g, sub)): proven
 # by the existing machinery, all over the SAME committed table (identical commitment).
 fn gb_line(kc: String, sc: String, g: Int, sub: Query, gamma: Int) : String =
   let q : Query = SumQ(sc, Where(EqE(Col(kc), LitI(g)), sub)) in
@@ -252,8 +252,8 @@ fn avg_line(label: String, col: String, sub: Query, gamma: Int) : String =
   let comm : Int = commit_of(qs, gamma) in
   label ++ ": sum=" ++ int_to_string(s) ++ " count=" ++ int_to_string(cnt) ++ " (avg = " ++ int_to_string(s / cnt) ++ ")  sum-proof " ++ show_a(prove_pane(qs, gamma, comm, s)) ++ ", count-proof " ++ show_a(prove_pane(qc, gamma, comm, cnt))
 
-# MIN / MAX: claim M, and prove (a) M is a bound — M ≤ sᵢ (min) or sᵢ ≤ M (max)
-# for every row, via the range gadget — and (b) M is *present* — Σ[sᵢ == M] ≠ 0,
+# MIN / MAX: claim M, and prove (a) M is a bound: M ≤ sᵢ (min) or sᵢ ≤ M (max)
+# for every row, via the range gadget, and (b) M is *present*, Σ[sᵢ == M] ≠ 0,
 # proven by an inverse hint (count·count⁻¹ == 1). Both ⟹ M is exactly the min/max.
 fn commit_rows(rows: List<Row>, gamma: Int) : Int = ref_commit(flatten_table(schema_of(rows), rows), gamma, 1)
 # filtered MIN/MAX: per row a selector sel = [predicate]; the bound must hold only
@@ -303,11 +303,11 @@ let _ : String = report("SELECT SUM(salary) WHERE dept=eng AND senior", q3, gamm
 let _ : String = report("SELECT SUM(salary) WHERE salary > 85          ", q4, gamma)
 let _ : String = report("SELECT SUM(salary) WHERE dept=eng AND sal>120 ", q5, gamma)
 let _ : String = print("")
-let _ : String = print("SELECT dept, SUM(salary) GROUP BY dept — each group proven over the SAME committed table:")
+let _ : String = print("SELECT dept, SUM(salary) GROUP BY dept, each group proven over the SAME committed table:")
 let _ : String = print("  " ++ gb_line("dept", "salary", 0, From(tbl), gamma))
 let _ : String = print("  " ++ gb_line("dept", "salary", 1, From(tbl), gamma))
 let _ : String = print("")
-let _ : String = print("AVG via sum + count (a field has no exact division — the verifier divides):")
+let _ : String = print("AVG via sum + count (a field has no exact division: the verifier divides):")
 let _ : String = print("  " ++ avg_line("AVG(salary) WHERE dept=eng", "salary", Where(EqE(Col("dept"), LitI(0)), From(tbl)), gamma))
 let _ : String = print("")
 let _ : String = print("MIN / MAX over the committed table (range gadget proves the bound; an inverse hint proves it's present):")
@@ -319,4 +319,4 @@ let _ : String = print("")
 let _ : String = print("the Frost circuit's answer ACCEPTs exactly when it equals run_query's; any other claim REJECTs.")
 let _ : String = print("revealed: the commitment, the query, the result. hidden: every row.")
 
-"prove_pane v0.1 (H1) — lower a Pane Query (From/Where/SumQ/CountQ, EqE/And/Or/Not gadgets) to a Frost proof"
+"prove_pane (H1): lower a Pane Query (From/Where/SumQ/CountQ, EqE/And/Or/Not gadgets) to a Frost proof"

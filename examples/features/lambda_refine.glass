@@ -1,9 +1,9 @@
 # =============================================================================
-# lambda_refine.glass — refined-param lambda runtime checks (v4.47).
+# lambda_refine.glass: refined-param lambda runtime checks.
 #
-# Until v4.47 only top-level fns and curried inner fns carried refinement
-# annotations; bare lambdas could not declare `where (...)`. v4.47 lifts
-# that restriction: `fn(x: T where (pred)) -> body` now produces an
+# Bare lambdas, like top-level fns and curried inner fns, can declare
+# refinement annotations with `where (...)`:
+# `fn(x: T where (pred)) -> body` produces an
 # ELamR which evaluates to a VRefinedClos. At each application the
 # refinement check fires before the body runs.
 #

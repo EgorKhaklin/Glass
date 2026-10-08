@@ -1,8 +1,8 @@
 # =============================================================================
 # Glass-mini: a small functional language, interpreted by Glass.
 #
-# v0.3: rewritten using the prelude's polymorphic bind_result. What was
-# four-deep nested match in v0.2 is now linear chains of binds.
+# Rewritten using the prelude's polymorphic bind_result. What was
+# four-deep nested match is now linear chains of binds.
 # =============================================================================
 
 # ---- AST -------------------------------------------------------------------
@@ -55,7 +55,7 @@ fn as_bool(v: Value) : Result<Bool, String> =
 #
 # eval_intbin(a, b, env, mk) evaluates a and b, coerces both to Int,
 # then applies mk to the resulting (x, y) -> Value. The four binds replace
-# what was 16 lines of nested match per binop in v0.2.
+# what would be 16 lines of nested match per binop.
 
 fn eval_intbin(
   a: Expr,

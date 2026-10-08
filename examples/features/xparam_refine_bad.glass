@@ -1,9 +1,9 @@
 # =============================================================================
-# xparam_refine_bad.glass — negative demo for v4.56.
+# xparam_refine_bad.glass: negative demo for cross-parameter refinements.
 #
 # Same `hi > lo` cross-parameter refinement, but called with lo=10,
-# hi=3 — so hi > lo is FALSE. The check must fire LOUDLY (not silently
-# pass, which is what the pre-v4.56 unbound-name path did). Surfaces as
+# hi=3, so hi > lo is FALSE. The check must fire LOUDLY (not silently
+# pass, as an unbound-name path would). Surfaces as
 # "refinement violated at runtime: hi = 3 fails predicate".
 # =============================================================================
 

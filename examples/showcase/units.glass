@@ -1,17 +1,17 @@
 # =============================================================================
-# Dimensional / unit types — units of measure, in Glass.
+# Dimensional / unit types: units of measure, in Glass.
 #
 # The most practical idea in the "exotic types" pile: attach physical
 # DIMENSION to a number and let the rules of dimensional analysis reject
-# nonsense. A quantity carries a dimension vector — exponents of
+# nonsense. A quantity carries a dimension vector: exponents of
 # (Length, Time, Mass):
 #
 #       metre = (1,0,0)   second = (0,1,0)   kilogram = (0,0,1)
 #
 # Addition demands EQUAL dimensions (you can't add metres to seconds);
 # multiplication ADDS the exponent vectors, division SUBTRACTS them. So
-# distance / time is automatically a (1,−1,0) — a velocity — and
-# mass × acceleration is a (1,−2,1) — a force (newton). The dimension is
+# distance / time is automatically a (1,−1,0), a velocity, and
+# mass × acceleration is a (1,−2,1): a force (newton). The dimension is
 # computed, not asserted.
 # =============================================================================
 
@@ -30,7 +30,7 @@ fn dim_sub(a: Dim, b: Dim) : Dim =
   match a { Dim(l1, t1, m1) =>
     match b { Dim(l2, t2, m2) => Dim(l1 - l2, t1 - t2, m1 - m2) } }
 
-# Addition is dimensionally checked — a mismatch is a typed error, not a
+# Addition is dimensionally checked: a mismatch is a typed error, not a
 # silent wrong answer.
 fn qadd(a: Qty, b: Qty) : Result<Qty, String> =
   match a { Qty(va, da) =>
@@ -42,7 +42,7 @@ fn qadd(a: Qty, b: Qty) : Result<Qty, String> =
 fn qmul(a: Qty, b: Qty) : Qty =
   match a { Qty(va, da) => match b { Qty(vb, db) =>
     Qty(va * vb, dim_add(da, db)) } }
-# (divisor assumed nonzero — the value lives inside the Qty, so a
+# (divisor assumed nonzero: the value lives inside the Qty, so a
 # refinement on it would need field-level refinement, which Glass
 # doesn't have yet; the demo only divides by nonzero quantities.)
 fn qdiv(a: Qty, b: Qty) : Qty =

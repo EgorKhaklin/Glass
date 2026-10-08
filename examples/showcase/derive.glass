@@ -9,7 +9,7 @@
 # The output reads like a calculus textbook because the code reads like one.
 # =============================================================================
 
-# An algebraic expression — numbers, variables, and the operations that close
+# An algebraic expression: numbers, variables, and the operations that close
 # the polynomial-ring under differentiation.
 type Expr =
   | Num(Int)

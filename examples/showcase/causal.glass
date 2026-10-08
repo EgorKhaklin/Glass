@@ -1,5 +1,5 @@
 # =============================================================================
-# Temporal / causal types — happens-before and Lamport clocks, in Glass.
+# Temporal / causal types: happens-before and Lamport clocks, in Glass.
 #
 # Time in a distributed system is a PARTIAL order, not a line: some
 # events cause others, some are concurrent (neither causes the other).
@@ -8,7 +8,7 @@
 #
 #       a happens-before b   ⟹   clock(a) < clock(b)
 #
-# (the converse need not hold — that's the price of a single integer).
+# (the converse need not hold: that's the price of a single integer).
 # We build the DAG, compute clocks as 1 + the max over causes, verify
 # the Lamport invariant on every edge, and detect concurrency as mutual
 # unreachability.

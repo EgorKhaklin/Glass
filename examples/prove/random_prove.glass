@@ -1,14 +1,16 @@
-# Provably-fair randomness, in FULL zero-knowledge — run:
+# Provably-fair randomness, in FULL zero-knowledge: run:
 #
 #   glass prove examples/prove/random_prove.glass seed=7777
 #
+# Default proofs are sound but not zero-knowledge: add --zk to hide the private inputs.
+#
 # The C2 `Random` effect (a draw bound so it can't be ground) lowered to the
-# *succinct + zero-knowledge* blinded F_{p^4} FRI STARK — the real prover (via the
+# *succinct + zero-knowledge* blinded F_{p^4} FRI STARK: the real prover (via the
 # bridge), not the standalone sound-RLC demo (prove_random_zk). The committer holds
 # a private `seed`; it publishes only the commitment C (baked below). A PUBLIC
-# beacon (also baked — fixed AFTER C) then determines the fair draw D = derive(seed,
+# beacon (also baked: fixed AFTER C) then determines the fair draw D = derive(seed,
 # beacon). The proof attests, in zero knowledge, that the SAME committed seed
-# produced the public draw D — revealing C, the beacon, and D, never the seed.
+# produced the public draw D: revealing C, the beacon, and D, never the seed.
 #
 # Un-grindable: because C is fixed before the beacon, the committer cannot steer D.
 # Binding: a different seed gives a different C *and* a different D, so the prover

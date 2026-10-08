@@ -1,5 +1,5 @@
 # =============================================================================
-# refine.glass — refinement types with const-fold discharge (v2.12).
+# refine.glass: refinement types with const-fold discharge.
 #
 # A refinement type T where (pred) attaches a Bool predicate that must
 # hold of every inhabitant. The predicate is a regular Glass expression
@@ -7,9 +7,10 @@
 # prism checks the refinement statically when the argument is a literal:
 # substitute the literal into the predicate, evaluate, accept or reject.
 #
-# v2.12 ships chunk 1: const-fold discharge only. Non-literal arguments
-# defer (and don't yet generate a runtime check — that's chunk 2 of the
-# refinement port). The static check is sufficient for many useful cases
+# This file exercises const-fold discharge only. Non-literal arguments
+# fall through to the other strategies (alpha_refine.glass,
+# imply_refine.glass) or the runtime check (runtime_refine.glass).
+# The static check is sufficient for many useful cases
 # like "this constant fits in this range" or "this string isn't empty".
 # =============================================================================
 

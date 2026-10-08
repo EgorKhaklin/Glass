@@ -1,6 +1,6 @@
 # Features
 
-One small program per language feature — the corpus the test suite runs
+One small program per language feature: the corpus the test suite runs
 against, so each file is a guaranteed-correct, minimal demonstration of exactly
 one thing (lambdas, currying, modulo, linear types, refinements, effects, …).
 

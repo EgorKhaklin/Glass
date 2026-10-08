@@ -1,7 +1,7 @@
 # =============================================================================
-# letqmark.glass — demonstrating `let?` syntactic sugar for Option threading.
+# letqmark.glass: demonstrating `let?` syntactic sugar for Option threading.
 #
-# Mirror of `let*` (v2.4) for Option<T>. Without sugar, chained Option calls
+# Mirror of `let*` for Option<T>. Without sugar, chained Option calls
 # require explicit match-on-Option:
 #
 #   match lookup_a(k) {
@@ -63,5 +63,5 @@ let r1 = sum_three(table, "port", "workers", "timeout")    # Some(8114)
 let r2 = sum_three(table, "port", "workers", "missing")    # None
 let r3 = first_two_then_third(table, "port", "workers", "timeout")  # Some((8084, 30))
 
-# r1, r3 returned — print the Option<Int> one for the regression check
+# r1, r3 returned: print the Option<Int> one for the regression check
 r1

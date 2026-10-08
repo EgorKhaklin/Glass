@@ -1,19 +1,18 @@
 # =============================================================================
-# generic_fn.glass — generic function declarations in prism (v2.9).
+# generic_fn.glass: generic function declarations in prism.
 #
-# Before v2.9, prism rejected `fn foo<A>(x: A) : A`. Only TYPE declarations
-# could be generic (`type List<A>`). Functions had to use concrete types,
-# even when the host accepted generic fn declarations.
+# prism accepts `fn foo<A>(x: A) : A`, not only generic TYPE declarations
+# (`type List<A>`), matching the host's generic fn declarations.
 #
-# v2.9 closes that gap. parse_fn_decl in prism now accepts optional
+# parse_fn_decl in prism accepts optional
 # `<A, B, ...>` after the function name. build_fn_ty_env and check_fn_decls
 # allocate fresh TyVar IDs for each declared param, resolve TyAdt("A", [])
 # references to TyVars, and quantify the Scheme appropriately.
 #
 # Single-expression usage works in both runtimes. Sequential top-level
-# `let` bindings that re-instantiate the same generic fn are a separate
-# (pre-existing) limitation of the host's let-polymorphism handling —
-# documented in AGENT.md, not addressed in v2.9.
+# `let` bindings that re-instantiate the same generic fn at different
+# types also type-check on the host (pinned by the test suite's
+# "sequential generic-fn instantiation" case).
 # =============================================================================
 
 fn id<A>(x: A) : A = x

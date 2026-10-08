@@ -1,5 +1,5 @@
 # =============================================================================
-# build_pipeline.glass — Glass-driven build pipeline (v3.13 demo)
+# build_pipeline.glass: Glass-driven build pipeline
 #
 # Demonstrates the full self-host loop:
 #   1. Glass hosts a Quartz-in-Glass AST
@@ -9,15 +9,15 @@
 #   5. Glass invokes the resulting binary (run_command again)
 #   6. The captured stdout is the final answer
 #
-# This is the v3.13 milestone: prism interprets Glass; Glass produces C;
+# The loop: prism interprets Glass; Glass produces C;
 # Glass invokes cc; Glass runs the binary; Glass sees the output. The
-# entire build pipeline runs from inside a single Glass file. The only
-# thing not yet in Glass is parsing a .glass source file into a Quartz
-# AST — that's v3.14.
+# entire build pipeline runs from inside a single Glass file. Parsing
+# a .glass source file into a Quartz AST is quartz_parser.glass's job;
+# this file builds the AST by hand.
 # =============================================================================
 
 # A small Quartz-in-Glass AST that we'll compile end-to-end. Mirrors
-# the v3.7 fact(5) demo so we have a known-good answer (120).
+# the classic fact(5) demo so we have a known-good answer (120).
 type Expr =
   | EInt(Int)
   | EAdd(Expr, Expr)
@@ -31,7 +31,7 @@ type Expr =
 type FnDecl = | FnDecl(String, List<String>, Expr)
 type Program = | Program(List<FnDecl>, Expr)
 
-# Minimal codegen — just enough for this demo. Real Quartz-in-Glass
+# Minimal codegen: just enough for this demo. Real Quartz-in-Glass
 # is examples/selfhost/quartz_min.glass; here we inline a tiny version
 # to keep build_pipeline.glass self-contained.
 

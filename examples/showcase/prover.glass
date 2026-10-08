@@ -1,8 +1,8 @@
 # =============================================================================
 # A truth-table-based decision procedure for propositional logic, in Glass.
 #
-# Given a formula in classical propositional logic — built from variables,
-# negation, conjunction, disjunction, and implication — this program decides
+# Given a formula in classical propositional logic: built from variables,
+# negation, conjunction, disjunction, and implication: this program decides
 # whether it's a tautology, a contradiction, or satisfiable-but-contingent.
 #
 # The whole prover is one recursive `eval_formula` plus enumeration over all
@@ -130,37 +130,37 @@ fn report(label: String, f: Formula) : String !{IO} =
 
 # ---- Demonstrations: the classics ------------------------------------------
 
-# Law of excluded middle: P ∨ ¬P   — TAUTOLOGY
+# Law of excluded middle: P ∨ ¬P: TAUTOLOGY
 let lem = Or(Var("P"), Not(Var("P")))
 let _ = report("Excluded middle    ", lem)
 
-# Law of non-contradiction: ¬(P ∧ ¬P)   — TAUTOLOGY
+# Law of non-contradiction: ¬(P ∧ ¬P): TAUTOLOGY
 let lnc = Not(And(Var("P"), Not(Var("P"))))
 let _ = report("Non-contradiction  ", lnc)
 
-# Modus ponens: ((P → Q) ∧ P) → Q   — TAUTOLOGY
+# Modus ponens: ((P → Q) ∧ P) → Q: TAUTOLOGY
 let mp = Implies(And(Implies(Var("P"), Var("Q")), Var("P")), Var("Q"))
 let _ = report("Modus ponens       ", mp)
 
-# Contraposition: (P → Q) ↔ (¬Q → ¬P)   — TAUTOLOGY
+# Contraposition: (P → Q) ↔ (¬Q → ¬P): TAUTOLOGY
 let cp = Iff(Implies(Var("P"), Var("Q")),
              Implies(Not(Var("Q")), Not(Var("P"))))
 let _ = report("Contraposition     ", cp)
 
-# De Morgan: ¬(P ∧ Q) ↔ (¬P ∨ ¬Q)   — TAUTOLOGY
+# De Morgan: ¬(P ∧ Q) ↔ (¬P ∨ ¬Q): TAUTOLOGY
 let dm = Iff(Not(And(Var("P"), Var("Q"))),
              Or(Not(Var("P")), Not(Var("Q"))))
 let _ = report("De Morgan          ", dm)
 
-# A bare contradiction: P ∧ ¬P   — CONTRADICTION
+# A bare contradiction: P ∧ ¬P: CONTRADICTION
 let con = And(Var("P"), Not(Var("P")))
 let _ = report("Bare contradiction ", con)
 
-# Affirming the consequent (an invalid argument): ((P → Q) ∧ Q) → P  — CONTINGENT
+# Affirming the consequent (an invalid argument): ((P → Q) ∧ Q) → P: CONTINGENT
 let atc = Implies(And(Implies(Var("P"), Var("Q")), Var("Q")), Var("P"))
 let _ = report("Affirm consequent  ", atc)
 
-# A trickier tautology: ((P → Q) ∧ (Q → R)) → (P → R)  — hypothetical syllogism
+# A trickier tautology: ((P → Q) ∧ (Q → R)) → (P → R): hypothetical syllogism
 let hs = Implies(And(Implies(Var("P"), Var("Q")), Implies(Var("Q"), Var("R"))),
                  Implies(Var("P"), Var("R")))
 let _ = report("Hypothetical syllog", hs)

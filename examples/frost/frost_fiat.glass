@@ -1,14 +1,14 @@
 # =============================================================================
-# frost_fiat.glass — FRI hardening: Fiat-Shamir query sampling + amplification (P3)
+# frost_fiat.glass: FRI hardening: Fiat-Shamir query sampling + amplification (P3)
 #
 # frost_stark.glass proved a codeword low-degree but used HARDCODED query
 # positions [1,3,6]. That is not sound: a prover who knows the queries in
 # advance can fake exactly those positions. Real soundness needs two things,
-# both built here — and neither needs a bigger field:
+# both built here, and neither needs a bigger field:
 #
 #   1. FIAT-SHAMIR QUERY SAMPLING. Derive the query positions by HASHING the
 #      transcript (the layer commitments). The prover commits first, THEN the
-#      queries fall out of the commitment — so they cannot be predicted or gamed,
+#      queries fall out of the commitment, so they cannot be predicted or gamed,
 #      and there is no interactive verifier.
 #
 #   2. AMPLIFICATION. One query catches a cheating prover (whose word is far
@@ -20,7 +20,7 @@
 #
 # DEMONSTRATED: queries are derived from the commitment (printed); an honest
 # proof passes all of them; a cheating prover (faked final) is caught by a large
-# FRACTION of the sampled queries — the amplification made visible. Baby Bear
+# FRACTION of the sampled queries: the amplification made visible. Baby Bear
 # field; reuses frost_stark's committed FRI. Dogfoods.
 # =============================================================================
 
@@ -148,4 +148,4 @@ let _ : String = print("")
 let _ : String = print("queries are derived from the COMMITMENT (Fiat-Shamir) -> unpredictable.")
 let _ : String = print("K queries => soundness error ~2^-K; ~80 queries give crypto security over a small field.")
 
-"frost fiat v0.1 — Fiat-Shamir query sampling + amplification: cryptographic soundness, small field"
+"frost fiat: Fiat-Shamir query sampling + amplification: cryptographic soundness, small field"

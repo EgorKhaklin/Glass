@@ -1,15 +1,15 @@
 # =============================================================================
-# frost.glass — a Glass-native arithmetization for Pane queries (v0.1)
+# frost.glass: a Glass-native arithmetization for Pane queries
 #
 # Frost is the zero-knowledge extension of Pane (see pane.glass). This file is
-# its foundation: OUR OWN ARITHMETIZATION, written in Glass — the machinery
+# its foundation: OUR OWN ARITHMETIZATION, written in Glass: the machinery
 # that turns a Pane expression into a system of arithmetic constraints over a
 # finite field, the form every ZK proof system proves satisfiability of.
 #
 # THE LAYERS (this file builds the first three; crypto wraps them later)
 # ----------------------------------------------------------------------
 #   1. A finite field F_p (modular arithmetic).
-#   2. A constraint system: an arithmetic circuit of gates over F_p — the
+#   2. A constraint system: an arithmetic circuit of gates over F_p: the
 #      universal set Const/Add/Mul/AssertEq (R1CS-faithful).
 #   3. LOWERING: compile a Pane `PExpr` into gates + a WITNESS (wire values),
 #      and a CHECKER that verifies the witness satisfies every gate. This is
@@ -21,28 +21,28 @@
 # WHY THIS IS THE RIGHT CORE: the arithmetization is the intellectually central
 # and fully testable piece, and it makes Frost "out of Glass." It mirrors the
 # whole project: a REFERENCE (`eval_pexpr`, like prism/glass.py) and a COMPILER
-# (`compile_pexpr` → circuit, like quartz/glassc), differential-tested — the
+# (`compile_pexpr` → circuit, like quartz/glassc), differential-tested: the
 # circuit's output must equal the reference's.
 #
-# FIELD CHOICE: p = 2^31 - 1 (a Mersenne prime). Small on purpose — products
+# FIELD CHOICE: p = 2^31 - 1 (a Mersenne prime). Small on purpose: products
 # stay < 2^62 so the field arithmetic is exact in int64 and compiles via
 # glassc. A cryptographically-secure field (~256-bit) needs bignum but keeps
 # this exact structure; only the field implementation changes.
 #
-# v0.1 gadgets: Col, Int/Bool literals, +,-,*, == (is-zero gadget), &&,||,!.
+# Gadgets: Col, Int/Bool literals, +,-,*, == (is-zero gadget), &&,||,!.
 # NEXT: <,> need a range-check (bit-decomposition) gadget; then whole-query
 # lowering (per-row selectors + accumulation) + table commitments.
 # =============================================================================
 
 # --- finite field F_p, p = 2^31 - 1 ------------------------------------------
-# (prime inlined as a literal so glassc can compile these — no top-level `let`
+# (prime inlined as a literal so glassc can compile these: no top-level `let`
 #  referenced from a function.)
 fn fadd(a: Int, b: Int) : Int = (a + b) % 2147483647
 fn fsub(a: Int, b: Int) : Int = ((a - b) % 2147483647 + 2147483647) % 2147483647
 fn fmul(a: Int, b: Int) : Int = (a * b) % 2147483647
 fn fnorm(a: Int) : Int = (a % 2147483647 + 2147483647) % 2147483647
 
-# modular exponentiation (square-and-multiply) — for the field inverse.
+# modular exponentiation (square-and-multiply): for the field inverse.
 fn fpow(base: Int, exp: Int) : Int =
   if exp == 0 then 1
   else if exp % 2 == 0 then let h : Int = fpow(base, exp / 2) in fmul(h, h)
@@ -253,4 +253,4 @@ let _ : String = print(report("(age==20) && active    ", AndE(EqE(Col("age"), Li
 let _ : String = print(report("(age==21) || active    ", OrE(EqE(Col("age"), LitI(21)), Col("active")), alice))
 let _ : String = print(report("!(age == 21)           ", NotE(EqE(Col("age"), LitI(21))), alice))
 
-"frost v0.1 — finite field + arithmetic circuit + Pane-predicate lowering (differential-tested)"
+"frost: finite field + arithmetic circuit + Pane-predicate lowering (differential-tested)"

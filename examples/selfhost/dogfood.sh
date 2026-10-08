@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# dogfood.sh <file.glass> — the Glass differential-testing discipline, as one
+# dogfood.sh <file.glass>: the Glass differential-testing discipline, as one
 # command. Runs <file> on BOTH the reference host (glass.py) and the
 # self-hosted Glass-written compiler (native_glassc), and confirms they produce
 # identical output. This is what "self-hosting" means in practice: the language
@@ -12,7 +12,7 @@
 #   * files that `import "../selfhost/prism.glass"` are inlined (the native
 #     compiler reads /tmp/in.glass without runtime import expansion);
 #   * glass.py echoes inferred type signatures and the native binary auto-prints
-#     the program's final return value — both are stripped before diffing, so
+#     the program's final return value, both are stripped before diffing, so
 #     only the actual print() output is compared.
 # =============================================================================
 set -euo pipefail
@@ -24,12 +24,18 @@ PY="${PYTHON:-python3}"
 PRISM="$ROOT/examples/selfhost/prism.glass"
 T=/tmp/glass-dogfood; mkdir -p "$T"
 
-# 1. the self-hosted compiler (cached; build once via the one-time quartz bootstrap)
+# The native compiler reads and writes fixed /tmp paths; hold the shared lock so a
+# concurrent build (another prove, a gate, the fixpoint) cannot overwrite them.
+. "$HERE/native_lock.sh"
+native_lock
+
+# 1. the self-hosted compiler (cached; see native_build.sh)
 GLASSC="${GLASSC:-$T/native_glassc}"
-if [ ! -x "$GLASSC" ]; then
-  echo "[build] compiling native_glassc via quartz (one-time)…"
-  printf '0\n' > /tmp/in.glass   # glassc.glass evals /tmp/in.glass at compile time; keep it trivial
-  "$PY" "$ROOT/quartz.py" "$ROOT/examples/selfhost/glassc.glass" -o "$GLASSC" >/dev/null
+. "$HERE/native_build.sh"
+if [ ! -x "$GLASSC" ] || [ "$ROOT/examples/selfhost/glassc.glass" -nt "$GLASSC" ] \
+   || [ "$ROOT/examples/selfhost/prism.glass" -nt "$GLASSC" ]; then
+  echo "[build] building the self-hosted compiler (sources changed or first run)"
+  build_native_glassc "$GLASSC" "$ROOT" "$PY" || { echo "DOGFOOD FAIL: could not build native_glassc"; exit 1; }
 fi
 
 # 2. assemble the program (inline prism if the file imports it)
@@ -55,7 +61,7 @@ rm -f /tmp/glassc_bin
 
 # 5. compare
 if diff -q "$T/native.out" "$T/host.out" >/dev/null; then
-  echo "DOGFOOD PASS: $FILE  —  native_glassc == glass.py (self-hosted, byte-identical)"
+  echo "DOGFOOD PASS: $FILE: native_glassc == glass.py (self-hosted, byte-identical)"
 else
   echo "DOGFOOD DIFF: $FILE"
   diff "$T/native.out" "$T/host.out" | head -20

@@ -1,28 +1,30 @@
-# Full memory consistency — permutation ⊕ read-after-write — in one ZK proof. Run:
+# Full memory consistency, permutation ⊕ read-after-write, in one ZK proof. Run:
 #
 #   glass prove examples/prove/general_state_prove.glass \
 #     v0=42 v1=7 r2=42 r3=7 s0=42 s1=42 s2=7 s3=7
 #
+# Default proofs are sound but not zero-knowledge: add --zk to hide the private inputs.
+#
 # The capstone of the `State` story: a memory trace proven consistent by COMPOSING
-# the permutation argument (v5.32) with read-after-write consistency (v5.30) in a
+# the permutation argument with read-after-write consistency in a
 # single zero-knowledge proof. The values are PRIVATE; the proof reveals only that
 # the trace is consistent.
 #
 # TRACE (program order, addresses public): write m0=v0; write m1=v1; read m0->r2;
-# read m1->r3. The prover supplies the (addr,time)-SORTED values s0..s3 — the same
+# read m1->r3. The prover supplies the (addr,time)-SORTED values s0..s3: the same
 # accesses grouped by address: [m0:write s0, m0:read s1, m1:write s2, m1:read s3].
 #
-#   • PERMUTATION — the sorted (addr,val) pairs are a multiset-permutation of the
+#   • PERMUTATION: the sorted (addr,val) pairs are a multiset-permutation of the
 #     original, so the prover can't swap a value between positions. Grand product
 #     ∏(γ − enc) over both, enc(addr,val) = addr + δ·val, with γ,δ Fiat-Shamir'd
 #     from a hash of all the values.
-#   • CONSISTENCY — in the sorted order each read equals the preceding write to its
+#   • CONSISTENCY: in the sorted order each read equals the preceding write to its
 #     address: s1 == s0 (m0), s3 == s2 (m1).
 # A tampered read is caught either way: keep the sorted values faithful and
 # consistency fails (s1 != s0); fake them to pass consistency and the permutation
 # fails (the multiset no longer matches the original). honest -> R = 1.
 # (Sortedness is public here, fixed structure; the prover-chosen-order case adds the
-# range/bit-decomposition sortedness check of age_prove — same three components.)
+# range/bit-decomposition sortedness check of age_prove: same three components.)
 
 fn mix(a: Int, b: Int) : Int = let s : Int = a + b in s * s * s + a * 7 + b * 13
 fn enc(addr: Int, val: Int, d: Int) : Int = addr + d * val

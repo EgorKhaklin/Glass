@@ -1,10 +1,7 @@
 # =============================================================================
-# and_or.glass — `&&` and `||` end-to-end (v4.52).
+# and_or.glass: `&&` and `||` end-to-end.
 #
-# Before v4.52 prism's lexer didn't recognize `&` or `||`. v4.51
-# landed the operators in host + Quartz but explicitly deferred
-# prism, calling out the parser + Expr + infer + eval cluster as
-# mechanical-large. v4.52 closes that gap: prism's tokenizer adds
+# The host, Quartz and prism all implement `&&` and `||`: prism's tokenizer emits
 # TAndAnd / TOrOr, the parser layers parse_or → parse_and → parse_compare
 # with C-style precedence, and the rest of the pipeline mirrors the
 # host (Bool/Bool → Bool, short-circuit eval).

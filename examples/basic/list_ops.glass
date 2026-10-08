@@ -3,7 +3,7 @@
 # This is what Glass exists to make easy: a chain of pure transformations,
 # read top-to-bottom, with no indices, no mutation, no hidden state.
 #
-# Compare to a Python equivalent — same logic, but with for-loops, indices,
+# Compare to a Python equivalent: same logic, but with for-loops, indices,
 # and accumulator variables to track. Here every line is locally legible.
 
 fn is_even(n: Int) : Bool =

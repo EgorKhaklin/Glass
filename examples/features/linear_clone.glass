@@ -1,4 +1,4 @@
-# v4.68: negative case — a linear resource used TWICE. prism's
+# Negative case: a linear resource used TWICE. prism's
 # parse-time linearity check rejects it: "used 2 times (no cloning)".
 fn bad(seed: Int) : Int =
   let lin token = seed in

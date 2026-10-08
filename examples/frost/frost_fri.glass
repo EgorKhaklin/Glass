@@ -1,16 +1,16 @@
 # =============================================================================
-# frost_fri.glass — the FRI low-degree test, foundations (v0.1)
+# frost_fri.glass: the FRI low-degree test, foundations
 #
 # This is the start of Frost's final layer: FRI (Fast Reed–Solomon IOP of
 # Proximity), the low-degree test that makes a STARK proof SUCCINCT and
-# ZERO-KNOWLEDGE — letting a verifier be convinced a committed function is a
+# ZERO-KNOWLEDGE: letting a verifier be convinced a committed function is a
 # low-degree polynomial (hence the constraint check holds) WITHOUT seeing it.
 #
 # THE IDEA: encode the computation as a polynomial; a valid execution => the
 # polynomial is LOW DEGREE. FRI proves low-degree by repeatedly FOLDING the
 # polynomial in half with random challenges until it collapses to a constant.
 # A genuinely low-degree polynomial folds cleanly to a constant; a function
-# that isn't low-degree does not — that gap is the soundness.
+# that isn't low-degree does not: that gap is the soundness.
 #
 # This file builds the foundations + the folding operation, and demonstrates
 # the core property. FFT needs a SMOOTH field (a 2^k-th root of unity), which
@@ -22,7 +22,7 @@
 #
 # NEXT: Merkle-commit each fold round, derive the fold challenges by
 # Fiat-Shamir (frost_commit/frost_prove), add the query phase (check
-# consistency between rounds at random points) — that completes a STARK.
+# consistency between rounds at random points): that completes a STARK.
 # =============================================================================
 
 # --- Baby Bear field, p = 2013265921 = 15·2^27 + 1 ---------------------------
@@ -81,7 +81,7 @@ fn fri_fold(cw: List<Int>, dom: List<Int>, beta: Int) : (List<Int>, List<Int>) =
   let half : Int = ilen(cw) / 2 in
   (fold_at(cw, dom, beta, 0, half), square_domain(dom, 0, half))
 
-# Fold repeatedly until size 2 (NOT size 1 — a size-1 codeword is trivially
+# Fold repeatedly until size 2 (NOT size 1: a size-1 codeword is trivially
 # "constant"). A genuine low-degree polynomial, folded enough that its degree
 # reaches 0, yields an all-equal (constant) codeword while size > 1; a random
 # codeword does not. (challenge per round stands in for a Fiat-Shamir value.)
@@ -124,11 +124,11 @@ let p5 : List<Int> = [1, 2, 3, 4, 5, 6]              # degree 5 (< 8)
 let _ : String = print("degree-5 poly over domain 16 -> folds to a constant: " ++
                        show_b(low_degree_ok(p5, 16)))
 
-# A RANDOM size-16 codeword is not the evaluation of any low-degree poly —
+# A RANDOM size-16 codeword is not the evaluation of any low-degree poly:
 # folding does NOT collapse it to a constant. The low-degree test rejects it.
 let junk : List<Int> =
   [11, 7, 99, 3, 250, 41, 8, 1000, 17, 53, 2, 488, 91, 6, 314, 159]
 let _ : String = print("random size-16 codeword      -> folds to a constant: " ++
                        show_b(codeword_low_degree(junk, 16)) ++ "  (correctly NOT low-degree)")
 
-"frost fri v0.1 — smooth field + roots of unity + polynomial folding (low-degree test core)"
+"frost fri: smooth field + roots of unity + polynomial folding (low-degree test core)"

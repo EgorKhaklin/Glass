@@ -1,8 +1,8 @@
 # =============================================================================
-# frost_zk_blind.glass — ZK blinding: the actual zero-knowledge property (P3)
+# frost_zk_blind.glass: ZK blinding: the actual zero-knowledge property (P3)
 #
 # Across the stack the proofs have been SOUND and SUCCINCT, and I've called them
-# "ZK" — but the zero-knowledge property itself needs one more thing: BLINDING.
+# "ZK", but the zero-knowledge property itself needs one more thing: BLINDING.
 # Without it, the FRI openings (the evaluations the verifier samples) could leak
 # information about the secret witness. This file adds, and demonstrates, the
 # blinding that makes "zero-knowledge" literally true.
@@ -13,16 +13,16 @@
 #
 #       T'(x) = T(x) + Z(x)·R(x),   R a random low-degree polynomial
 #
-#   * ON the trace domain:  Z = 0,  so T'(d) = T(d) — the witness and ALL the
+#   * ON the trace domain:  Z = 0,  so T'(d) = T(d): the witness and ALL the
 #     constraints are preserved. The proof still proves the same statement.
 #   * OFF the domain (where FRI samples its query points): Z(q) != 0, so
-#     T'(q) = T(q) + Z(q)·R(q) is RANDOMIZED by R — uniform and independent of
+#     T'(q) = T(q) + Z(q)·R(q) is RANDOMIZED by R: uniform and independent of
 #     the witness. The opening reveals nothing.
 #
 # Hence the verifier's view (queried openings) is SIMULATABLE without the
 # witness: a simulator just outputs random field elements, same distribution.
 # That is zero-knowledge. T' is still low-degree, so frost_crypto's FRI commits
-# and proves it unchanged — frost_crypto + this blinding = a full zk-STARK.
+# and proves it unchanged: frost_crypto + this blinding = a full zk-STARK.
 #
 # Baby Bear field; reuses interpolation (frost_pcs). Dogfoods.
 # =============================================================================
@@ -98,4 +98,4 @@ let _ : String = print("=> queried openings are uniform & carry no witness info;
 let _ : String = print("   the witness produces the same distribution. THIS is the zero-knowledge.")
 let _ : String = print("   T' stays low-degree, so frost_crypto's FRI proves it unchanged => full zk-STARK.")
 
-"frost zk_blind v0.1 — trace-polynomial blinding: openings randomized, constraints preserved (the 'Z')"
+"frost zk_blind: trace-polynomial blinding: openings randomized, constraints preserved (the 'Z')"

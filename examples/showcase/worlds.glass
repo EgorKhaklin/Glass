@@ -2,13 +2,13 @@
 # Branching / multi-world computation, in Glass.
 #
 # A `World` holds every value a computation could take across all
-# branches at once — the many-worlds view of nondeterminism. It's the
+# branches at once: the many-worlds view of nondeterminism. It's the
 # list monad wearing a physics hat:
 #
 #   pure(x)        a single deterministic world
 #   branch(xs)     split into one world per element
 #   wbind(w, f)    run f in EVERY world of w, then UNION the results
-#                  (each branch may itself branch — worlds multiply)
+#                  (each branch may itself branch: worlds multiply)
 #
 # This is the computational mirror of superposition: `branch` is putting
 # the system into many states, `wbind` is evolving all of them in
@@ -47,7 +47,7 @@ fn nth(xs: List<Int>, i: Int) : Int =
   }
 
 # Collapse: observe one world. Deterministic in the seed, like the
-# measurement in showcase/quantum.glass — branching is superposition,
+# measurement in showcase/quantum.glass: branching is superposition,
 # this is the wave-function collapse back to a single branch.
 fn observe(w: World, seed: Int where (seed >= 0)) : Int =
   nth(worlds_of(w), seed % count_worlds(w))
@@ -78,11 +78,11 @@ let two_flips =
   wbind(flip(), fn(a: Int) ->
     wbind(flip(), fn(b: Int) -> pure(a + b)))
 
-let _ = print("=== Two coin flips, summed — all branches at once ===")
+let _ = print("=== Two coin flips, summed: all branches at once ===")
 let _ = print("  flip():            " ++ show_world(flip()))
 let _ = print("  sum of two flips:  " ++ show_world(two_flips))
 
-# Three flips, count how many heads (sum) — the branches multiply 2³ = 8.
+# Three flips, count how many heads (sum): the branches multiply 2³ = 8.
 let three_flips =
   wbind(flip(), fn(a: Int) ->
     wbind(flip(), fn(b: Int) ->

@@ -1,7 +1,7 @@
 # =============================================================================
-# midlang.glass — a Glass-in-Glass interpreter for a small expression
+# midlang.glass: a Glass-in-Glass interpreter for a small expression
 # language with FIRST-CLASS FUNCTIONS, closures, let-bindings, and
-# recursion. This is the v1.8 scale-up of v1.5's tinylang.glass.
+# recursion. This is the scale-up of tinylang.glass.
 #
 # tinylang had: Int, Bool, +, *, <, if-then-else.
 # midlang adds: let, lambda, application, recursion via let-rec.

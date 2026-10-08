@@ -1,5 +1,5 @@
 # =============================================================================
-# frost_query.glass — arithmetizing a WHOLE Pane query into a ZK circuit (v0.1)
+# frost_query.glass: arithmetizing a WHOLE Pane query into a ZK circuit
 #
 # frost.glass arithmetized a single predicate; this lifts that to an entire
 # query: FILTER + AGGREGATE over a (bounded) table, compiled into one arithmetic
@@ -18,7 +18,7 @@
 #         COUNT      = Σ s_i
 #         SUM(col)   = Σ s_i · row_i[col]
 #      These accumulations are exactly what a circuit computes over a fixed-size
-#      (padded) table — the shape ZK needs.
+#      (padded) table: the shape ZK needs.
 #
 # Differential-tested against a reference evaluator, like everywhere else.
 # Field p = 2^31-1 (toy, int64-exact, glassc-compilable; real ZK widens it).
@@ -251,4 +251,4 @@ let _ : String =
             "  gates=" ++ int_to_string(gates))
   }
 
-"frost query v0.1 — range gadget + whole-query (filter+aggregate) arithmetization"
+"frost query: range gadget + whole-query (filter+aggregate) arithmetization"

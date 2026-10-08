@@ -1,5 +1,5 @@
 # =============================================================================
-# frost_prove.glass — a non-interactive, sound constraint proof (v0.1)
+# frost_prove.glass: a non-interactive, sound constraint proof
 #
 # The proof layer for Frost: instead of the verifier re-checking every gate
 # (the non-ZK checker in frost.glass), reduce "all N constraints hold" to ONE
@@ -11,13 +11,13 @@
 #      (frost_commit.glass). This binds the witness BEFORE any challenge.
 #   2. FIAT-SHAMIR: derive a random field challenge r = hash(commitment).
 #      Because r comes from the committed witness, the prover cannot choose the
-#      witness to fit r — and there is no interactive verifier.
+#      witness to fit r, and there is no interactive verifier.
 #   3. RANDOM LINEAR COMBINATION: each gate has a RESIDUAL that is 0 iff the
 #      gate holds. The batched value
 #          rlc = Σ_i  r^i · residual_i
 #      is 0 when every gate holds. If ANY gate is violated, rlc is a nonzero
 #      polynomial in r of degree < N, which is 0 for at most N-1 of the p field
-#      elements — so a cheating witness passes with probability ≤ (N-1)/p.
+#      elements, so a cheating witness passes with probability ≤ (N-1)/p.
 #      Here p = 2^31-1, N ~ a handful → soundness error ~1e-9 (and ~1e-77 at a
 #      256-bit field). ONE check replaces N.
 #
@@ -25,9 +25,9 @@
 # with any single wire makes rlc != 0 (reject), with overwhelming probability.
 #
 # THE HONEST BOUNDARY: this is SOUND and NON-INTERACTIVE. It is not yet fully
-# SUCCINCT/ZERO-KNOWLEDGE — the verifier still recomputes rlc over the witness.
+# SUCCINCT/ZERO-KNOWLEDGE: the verifier still recomputes rlc over the witness.
 # Making the verifier check rlc == 0 WITHOUT seeing the witness needs a
-# polynomial commitment + low-degree test (FRI) — the next, hardest layer.
+# polynomial commitment + low-degree test (FRI): the next, hardest layer.
 # (Toy field; widen for real security.)
 # =============================================================================
 
@@ -111,4 +111,4 @@ let _ : String = print("")
 let _ : String = print("one randomized check replaced " ++ int_to_string(2) ++
                        " gate checks; soundness error <= (N-1)/p ~ 1e-9 at this field.")
 
-"frost prove v0.1 — Fiat-Shamir + random-linear-combination: sound, non-interactive constraint proof"
+"frost prove: Fiat-Shamir + random-linear-combination: sound, non-interactive constraint proof"

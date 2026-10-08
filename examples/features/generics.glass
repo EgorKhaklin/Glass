@@ -1,8 +1,8 @@
-# v0.3 demo: user-defined polymorphic functions.
+# generics.glass: user-defined polymorphic functions.
 #
-# Glass now supports generic fn declarations. Type parameters in <angle
-# brackets> become rigid type variables inside the body — you can pass them
-# around, wrap them in containers, return them — but you cannot pretend
+# Glass supports generic fn declarations. Type parameters in <angle
+# brackets> become rigid type variables inside the body: you can pass them
+# around, wrap them in containers, return them, but you cannot pretend
 # they're a specific concrete type. From the outside, each call site
 # specialises them freshly via unification.
 

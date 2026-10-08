@@ -5,15 +5,15 @@
 # The defining law is a SELF-SIMILARITY relation between successive
 # depths: each level has `branch` times as many pieces as the last, each
 # scaled down by `divisor`. That relation is an Int identity, so we can
-# REFINE on it — `next == prev * branch` is the self-similarity gate
-# (cross-parameter, v4.56).
+# REFINE on it: `next == prev * branch` is the self-similarity gate
+# (a cross-parameter refinement).
 #
 #   Sierpinski triangle:  branch 3, scale 1/2  → 3^d triangles
 #   Cantor set:           branch 2, scale 1/3  → 2^d intervals
 #   Koch curve:           branch 4, scale 1/3  → 4^d segments
 #
 # We also track the Sierpinski AREA fraction exactly as the integer
-# ratio 3^d : 4^d (filled : whole) — it shrinks to zero, the hallmark of
+# ratio 3^d : 4^d (filled : whole): it shrinks to zero, the hallmark of
 # a fractal of dimension log3/log2 < 2.
 # =============================================================================
 

@@ -1,5 +1,5 @@
 # =============================================================================
-# rational.glass — a reusable exact-fraction library (v4.70).
+# rational.glass: a reusable exact-fraction library.
 #
 # This file is a LIBRARY: only definitions, no top-level demos. Other
 # programs pull it in with `import "lib/rational.glass"` and get the

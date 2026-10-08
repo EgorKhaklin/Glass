@@ -1,13 +1,13 @@
 # =============================================================================
-# v0.7 demo: ai.glass — effects for AI model calls.
+# ai.glass: effects for AI model calls.
 #
-# Glass treats every call into an external model — LLM, classifier, vision
-# system — as an effect labeled !{Inference}. Same machinery as !{IO} and
+# Glass treats every call into an external model: LLM, classifier, vision
+# system: as an effect labeled !{Inference}. Same machinery as !{IO} and
 # !{Random}: visible at every call site, propagated through call chains,
 # auditable at a glance from the type signature.
 #
 # Why this matters. A post-AI codebase will have model calls scattered
-# throughout. Knowing which functions touch a model — and which don't —
+# throughout. Knowing which functions touch a model, and which don't,
 # is exactly what auditors, debuggers, and tooling need to reason about
 # program behavior. Effect typing makes that question answerable from
 # signatures alone, with no source-grepping or runtime tracing.
@@ -40,7 +40,7 @@ fn ask_and_show(prompt: String) : String !{IO, Inference} =
 
 # Model output is untrusted. Wrap it in a refinement that states the
 # postcondition Glass code expects. If the model returns something that
-# violates the refinement, the program raises at the boundary — not 50
+# violates the refinement, the program raises at the boundary, not 50
 # functions later when an empty string triggers a confusing crash.
 #
 # The refinement is the contract. The model is the supplier. Glass enforces.

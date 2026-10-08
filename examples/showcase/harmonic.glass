@@ -1,12 +1,12 @@
 # =============================================================================
-# Harmonic proportion — musical consonance as integer ratios, in Glass.
+# Harmonic proportion: musical consonance as integer ratios, in Glass.
 #
 # The intervals that sound consonant are exactly those whose frequency
 # ratio reduces to SMALL whole numbers (Pythagoras' discovery):
 #
 #     unison 1:1   octave 2:1   fifth 3:2   fourth 4:3   major third 5:4
 #
-# "Small whole numbers" is an Int property — so consonance is a
+# "Small whole numbers" is an Int property, so consonance is a
 # refinement. We reduce a ratio by its gcd (Euclid) and refine on the
 # reduced denominator being below a consonance bound. No floats: the
 # whole theory of just intonation lives in Int.
@@ -16,12 +16,12 @@
 # ratio and would reject a dissonant one.
 # =============================================================================
 
-# Euclid's gcd — the reducer.
+# Euclid's gcd: the reducer.
 fn gcd(a: Int, b: Int) : Int =
   if b == 0 then a else gcd(b, a % b)
 
 # A ratio is "consonant" when, fully reduced, its denominator is small
-# (<= 4 covers unison/octave/fifth/fourth/major-third/major-sixth — the
+# (<= 4 covers unison/octave/fifth/fourth/major-third/major-sixth: the
 # classical consonances of just intonation).
 fn reduced_den(num: Int, den: Int where (den > 0)) : Int = den / gcd(num, den)
 fn reduced_num(num: Int, den: Int where (den > 0)) : Int = num / gcd(num, den)
@@ -31,10 +31,10 @@ fn is_consonant(num: Int, den: Int where (den > 0)) : Bool =
 
 # A GATE: only accepts a ratio whose reduced denominator is <= 4. The
 # refinement references the OTHER param (den is the binder, num the
-# earlier one — cross-parameter, v4.56), via gcd in the predicate.
+# earlier one: a cross-parameter refinement), via gcd in the predicate.
 # NOTE: this gate runs on the host (predicate uses a function call,
 # which the host evaluates fine; Quartz's predicate envelope would
-# reject the call — host-only, by design, see the comment below).
+# reject the call: host-only, by design, see the comment below).
 fn consonant_ratio(num: Int,
                    den: Int where (den / gcd(num, den) <= 4)) : String =
   int_to_string(reduced_num(num, den)) ++ ":" ++

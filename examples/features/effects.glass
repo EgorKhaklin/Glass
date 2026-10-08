@@ -1,5 +1,5 @@
 # =============================================================================
-# v0.5 demo: algebraic effects.
+# effects.glass: algebraic effects.
 #
 # Functions declare what side-effects they perform via `!{Effect1, Effect2}`
 # after the return type. Callers must declare a superset of what they invoke.
@@ -26,7 +26,7 @@ fn mod_add(
 # ---- IO-effectful wrapper -------------------------------------------------
 #
 # Identical semantics to mod_add, but logs each call. The !{IO} on the
-# signature is mandatory — drop it and the type checker rejects the body
+# signature is mandatory: drop it and the type checker rejects the body
 # because it calls print (which is `(String) -> String !{IO}`).
 
 fn loud_mod_add(
@@ -59,11 +59,11 @@ fn loud_witness(p: Int where (p > 2)) : Int !{IO, Random} =
 
 # ---- Demonstration --------------------------------------------------------
 
-# Pure call — no effects propagate.
+# Pure call: no effects propagate.
 let r1 : Int = mod_add(5, 7, 11)
 let _ : String = print("(5+7) mod 11        = " ++ int_to_string(r1))
 
-# Effectful call — works at top level (top level is the "main" scope and
+# Effectful call: works at top level (top level is the "main" scope and
 # allows any effects).
 let r2 : Int = loud_mod_add(8, 9, 13)
 let _ : String = print("(8+9) mod 13        = " ++ int_to_string(r2))
@@ -72,5 +72,5 @@ let _ : String = print("(8+9) mod 13        = " ++ int_to_string(r2))
 let w : Int = loud_witness(13)
 let _ : String = print("got witness         = " ++ int_to_string(w))
 
-# Notice the inferred signatures shown above the output — every function
+# Notice the inferred signatures shown above the output, every function
 # carries its effect set in its type, visible at every call site.

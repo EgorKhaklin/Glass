@@ -1,10 +1,8 @@
 # =============================================================================
-# lambda_multi.glass — multi-param lambdas in prism (v4.48).
+# lambda_multi.glass: multi-param lambdas in prism.
 #
-# Before v4.48 prism's parse_fn accepted exactly one parameter, so any
-# multi-arg lambda inside a Glass program compiled by prism would
-# parse-error at the first comma. v4.48 generalizes the parser to a
-# comma-separated param list (each optionally typed and refined),
+# prism's parse_fn accepts a comma-separated param list for lambdas
+# (each param optionally typed and refined),
 # desugared right-to-left into a chain of ELam / ELamR. The shape
 # matches the host's curried encoding for top-level fns, so the rest
 # of the pipeline (infer, eval, runtime checks) needs no changes.

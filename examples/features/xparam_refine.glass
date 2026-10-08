@@ -1,16 +1,13 @@
 # =============================================================================
-# xparam_refine.glass — cross-parameter refinement (v4.56).
+# xparam_refine.glass: cross-parameter refinement.
 #
-# Until v4.56 a refinement predicate could only mention its own bound
-# param. The host always supported predicates referencing EARLIER
-# params (apply_fn binds all params before checking), but prism's
-# curried check only saw the single bound value, and Quartz refused
-# non-binder identifiers outright (v4.55).
+# A refinement predicate may mention EARLIER params, not only its own
+# bound param. The host binds all params before checking (apply_fn).
 #
-# v4.56 threads the already-applied args through prism's VRefinedClos
-# chain (carrying real param names from the FnDecl) and lets Quartz
-# reference in-scope params. `hi > lo` now resolves `lo` — the first
-# param — at the point `hi`'s refinement is checked.
+# prism threads the already-applied args through its VRefinedClos
+# chain (carrying real param names from the FnDecl), and Quartz may
+# reference in-scope params. `hi > lo` resolves `lo`: the first
+# param: at the point `hi`'s refinement is checked.
 #
 # clamp(3, 10): 3 < 10 so hi > lo holds; returns 10 - 3 = 7.
 # =============================================================================

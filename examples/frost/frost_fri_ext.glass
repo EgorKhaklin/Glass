@@ -1,5 +1,5 @@
 # =============================================================================
-# frost_fri_ext.glass — FRI folding over the extension field (P3 integration)
+# frost_fri_ext.glass: FRI folding over the extension field (P3 integration)
 #
 # The honest payoff: the FRI low-degree test with CRYPTOGRAPHIC algebraic
 # soundness. frost_fri folded with base-field (~2^31) challenges -> ~2^-31
@@ -11,9 +11,9 @@
 # MECHANISM: the codeword starts as base-field polynomial evaluations, embedded
 # into F_{p^4}. The fold  f'(x^2) = (f(x)+f(-x))/2 + beta·(f(x)-f(-x))/(2x)
 # uses base-field domain points x (so the /2 and /(2x) are base-field scalings)
-# but beta in F_{p^4} — so after the first fold the codeword is F_{p^4}-valued,
+# but beta in F_{p^4}, so after the first fold the codeword is F_{p^4}-valued,
 # and all subsequent arithmetic is in F_{p^4}. A genuine low-degree polynomial
-# still folds to a constant; a random codeword does not — the soundness gap,
+# still folds to a constant; a random codeword does not: the soundness gap,
 # now over a 2^124 challenge space. beta per round is Fiat-Shamir (hashed).
 #
 # Reuses frost_ext (F_{p^2}/F_{p^4}) + frost_fri (folding). Dogfoods.
@@ -122,4 +122,4 @@ let _ : String = print("")
 let _ : String = print("the low-degree test now runs in F_{p^4}: ~2^-124 algebraic soundness PER fold round.")
 let _ : String = print("with Fiat-Shamir query amplification (frost_fiat), this is full STARK soundness in Glass.")
 
-"frost fri_ext v0.1 — FRI folding with F_{p^4} challenges: cryptographic algebraic soundness"
+"frost fri_ext: FRI folding with F_{p^4} challenges: cryptographic algebraic soundness"

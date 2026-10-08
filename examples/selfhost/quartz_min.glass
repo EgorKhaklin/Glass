@@ -1,20 +1,19 @@
 # =============================================================================
-# quartz_min.glass — Quartz, written in Glass (v3.12).
+# quartz_min.glass: Quartz, written in Glass.
 #
-# Sixth iteration of Quartz-in-Glass.
-#   v3.6: arithmetic + comparison + if
-#   v3.7: identifiers, let, fn calls, recursive fns
-#   v3.8: ADTs + pattern matching
-#   v3.9: records + field access
-#   v3.11: strings (EStr, EConcat, String result type)
-#   v3.12: multi-type fields + generics — this release
+# Supported:
+#   Arithmetic + comparison + if
+#   identifiers, let, fn calls, recursive fns
+#   ADTs + pattern matching
+#   Records + field access
+#   Strings (EStr, EConcat, String result type)
+#   multi-type fields + generics
 #
-# v3.12 closes two roadmap items with one small codegen fix. The
-# v3.9/v3.11 design of "uniform long-long storage with cast-at-use-site"
-# already supports BOTH multi-type fields AND generic functions; only
-# the ctor-arg cast was missing the intptr_t bridge. With that fix:
+# The design of "uniform long-long storage with cast-at-use-site"
+# supports BOTH multi-type fields AND generic functions, given the
+# intptr_t bridge on the ctor-arg cast:
 #
-#   - ADT fields can hold any type (Int, String, q_value_t*) — the user
+#   - ADT fields can hold any type (Int, String, q_value_t*): the user
 #     just uses the appropriate Expr variant (EInt, EStr, ECtor) in
 #     the ECtor args, and casts at the consumer (EConcat, EAdd, etc.)
 #
@@ -24,11 +23,10 @@
 #     cast at the result.
 #
 # No new AST variants. No new top-level types. No CType-on-every-field
-# machinery. The boundary discipline that v3.9 introduced for records
-# and v3.11 extended for strings was already enough — v3.12 just
-# completes the pattern at ECtor.
+# machinery. The same boundary discipline used for records and strings
+# is enough, applied at ECtor too.
 #
-# Still deferred to future releases:
+# Not supported:
 #   - String literal escape sequences (EStr emits literal content)
 #   - Bool type as a third CType (would need %d format)
 #   - Nested PCtor patterns (flat patterns still only)
@@ -39,7 +37,7 @@
 
 # Patterns. PWild matches anything (no binding); PVar binds the scrutinee;
 # PCtor matches a specific constructor and binds its fields via nested
-# patterns (which in v3.8 are limited to PWild/PVar — no nested PCtor).
+# patterns (limited to PWild/PVar: no nested PCtor).
 type Pattern =
   | PWild
   | PVar(String)
@@ -48,8 +46,8 @@ type Pattern =
 # A match arm: a pattern + the expression to evaluate if it matches.
 type MatchArm = | MArm(Pattern, Expr)
 
-# Expression AST. v3.11 adds EStr (string literal) and EConcat
-# (string concatenation) to the v3.9 set.
+# Expression AST, including EStr (string literal) and EConcat
+# (string concatenation).
 type Expr =
   | EInt(Int)
   | EStr(String)
@@ -68,34 +66,34 @@ type Expr =
   | EField(Expr, String, String)
   | EConcat(Expr, Expr)
 
-# Result type for a Program — determines how the final value gets
-# printed. v3.10 supports Int (printf %lld) and String (printf %s);
-# future v3.x can extend to Bool and other primitives.
+# Result type for a Program: determines how the final value gets
+# printed. Int (printf %lld) and String (printf %s) are supported;
+# Bool and other primitives could be added.
 type CType =
   | CInt
   | CString
 
-# An ADT variant: constructor name + payload arity. v3.8 represents
-# every payload field as long long; v3.9 will track field types.
+# An ADT variant: constructor name + payload arity. Every payload
+# field is stored as long long (cast at the use site).
 type Variant = | Variant(String, Int)
 
-# An ADT type declaration: name + list of variants. v3.8 ignores the
+# An ADT type declaration: name + list of variants. Codegen ignores the
 # type name in codegen (tags are globally unique); the name is kept
 # for source-level readability and future record support.
 type TypeDecl = | TypeDecl(String, List<Variant>)
 
-# A record type declaration: name + ordered list of field names. v3.9
-# represents records as single-variant ADTs internally — they share the
+# A record type declaration: name + ordered list of field names. Records
+# are single-variant ADTs internally: they share the
 # global tag space with ADT variants (records come AFTER all ADT
 # variants in tag ordering).
 type RecordDecl = | RecordDecl(String, List<String>)
 
 # A top-level function declaration. Body may reference the parameters
-# via EVar. v3.9 still keeps fns Int-only (params and return long long).
+# via EVar. Params and return values are stored as long long.
 type FnDecl = | FnDecl(String, List<String>, Expr)
 
 # A complete program: type decls + record decls + fn decls + final
-# expression + result type. v3.11 adds result_type so compile_program
+# expression + result type. result_type lets compile_program
 # can pick the right printf format (%lld for Int, %s for String).
 type Program = | Program(List<TypeDecl>, List<RecordDecl>, List<FnDecl>, Expr, CType)
 
@@ -103,7 +101,7 @@ type Program = | Program(List<TypeDecl>, List<RecordDecl>, List<FnDecl>, Expr, C
 #
 # Tags are assigned by walking all TypeDecls in source order, giving
 # the i-th constructor across all decls the tag i. No precomputed
-# table — we re-walk on each lookup (compile-time, small programs).
+# table: we re-walk on each lookup (compile-time, small programs).
 
 fn lookup_in_variants(name: String, variants: List<Variant>, next_tag: Int) : Int =
   match variants {
@@ -123,7 +121,7 @@ fn count_variants(variants: List<Variant>) : Int =
   }
 
 # Find the global tag for `name`. Returns -1 if no TypeDecl has that
-# constructor (which means a typo in the AST — should not happen for
+# constructor (which means a typo in the AST: should not happen for
 # programs the host type-checker has accepted).
 fn lookup_tag(name: String, decls: List<TypeDecl>, next_tag: Int) : Int =
   match decls {
@@ -137,13 +135,13 @@ fn lookup_tag(name: String, decls: List<TypeDecl>, next_tag: Int) : Int =
       }
   }
 
-# --- Record tag + field lookup (v3.9) ----------------------------------------
+# --- Record tag + field lookup ----------------------------------------
 #
 # Records share the global tag space with ADT variants. After all
 # TypeDecls are tagged 0..N, RecordDecls get tags N..N+M (one tag per
 # record decl, since records are single-variant ADTs).
 
-# Count total ADT variants across all TypeDecls — used as the starting
+# Count total ADT variants across all TypeDecls: used as the starting
 # tag for record tag allocation.
 fn count_type_variants(decls: List<TypeDecl>) : Int =
   match decls {
@@ -219,8 +217,8 @@ fn count_field_names(fields: List<String>) : Int =
 # arg is wrapped in `(long long)(intptr_t)(...)` so pointer-typed
 # payloads (strings, nested ADTs, records) fit cleanly into the
 # variadic q_ctor_alloc's `long long` slots. For Int payloads the
-# intptr_t cast is a no-op at runtime. v3.12: completes the uniform
-# long-long boundary that v3.9 + v3.11 established for ELet, ECall,
+# intptr_t cast is a no-op at runtime. This completes the uniform
+# long-long boundary used for ELet, ECall,
 # and main()'s _result.
 fn compile_args_for_ctor(args: List<Expr>, decls: List<TypeDecl>, recs: List<RecordDecl>) : String =
   match args {
@@ -230,7 +228,7 @@ fn compile_args_for_ctor(args: List<Expr>, decls: List<TypeDecl>, recs: List<Rec
                     compile_args_for_ctor(rest, decls, recs)
   }
 
-# Recursively compile a List<Expr> and join with ", ". Used for ECall —
+# Recursively compile a List<Expr> and join with ", ". Used for ECall,
 # each arg goes through `(long long)(intptr_t)(...)` so pointer-typed
 # values (records, ADT instances) fit cleanly into long long fn params.
 # For Int values the casts are no-ops at runtime; gcc -O2 optimizes
@@ -266,7 +264,7 @@ fn compile_pattern_test(p: Pattern, decls: List<TypeDecl>) : String =
 
 # Emit C declarations that bind pattern variables from the scrutinee
 # `_scrut`. For PVar at top level, binds to the full scrutinee
-# (cast through intptr_t for q_value_t* — v3.8 has no top-level PVar
+# (cast through intptr_t for q_value_t*: the demos have no top-level PVar
 # binding in the demos, so we keep it simple as "bind to int64 cast of
 # the scrutinee pointer," which is rarely useful but well-defined).
 fn compile_pattern_bindings(p: Pattern, decls: List<TypeDecl>) : String =
@@ -278,11 +276,11 @@ fn compile_pattern_bindings(p: Pattern, decls: List<TypeDecl>) : String =
   }
 
 # Walk a list of sub-patterns inside a PCtor, emitting `long long`
-# bindings indexed into _scrut->fields[i]. v3.8 only handles PWild
-# and PVar at this level (nested PCtor is rejected silently — the
+# bindings indexed into _scrut->fields[i]. Only PWild
+# and PVar are handled at this level (nested PCtor is rejected silently: the
 # C output will be invalid, but the host type-checker would have
 # already validated patterns; nested PCtor is not produced by the
-# v3.8 demos).
+# demos).
 fn compile_field_bindings(pats: List<Pattern>, idx: Int) : String =
   match pats {
     [] => "";
@@ -302,7 +300,7 @@ fn compile_field_binding(p: Pattern, idx: Int) : String =
 # --- Match compilation -------------------------------------------------------
 
 # Emit the if/else chain for a list of match arms. Final fallthrough
-# calls exit(1) — non-exhaustive matches are runtime errors.
+# calls exit(1): non-exhaustive matches are runtime errors.
 fn compile_arms(arms: List<MatchArm>, decls: List<TypeDecl>, recs: List<RecordDecl>) : String =
   match arms {
     [] => "{ fprintf(stderr, \"quartz: non-exhaustive match\"); exit(1); }";
@@ -397,7 +395,7 @@ fn emit_bodies(fns: List<FnDecl>, decls: List<TypeDecl>, recs: List<RecordDecl>,
 # --- Runtime helpers ---------------------------------------------------------
 
 # Emit the q_value_t struct + q_ctor_alloc helper. Only emitted when
-# the program declares at least one TypeDecl — otherwise the helpers
+# the program declares at least one TypeDecl: otherwise the helpers
 # are dead weight (and reference stdarg.h / stdlib.h needlessly).
 fn runtime_helpers(nl: String) : String =
   "typedef struct q_value {" ++ nl ++
@@ -449,7 +447,7 @@ fn string_runtime(nl: String) : String =
   "    return r;" ++ nl ++
   "}" ++ nl
 
-# Render the printf format + cast for a given CType. v3.10 supports
+# Render the printf format + cast for a given CType. Supported:
 # Int (%lld via long long cast) and String (%s via const char* cast).
 fn printf_format_for(t: CType) : String =
   match t {
@@ -472,7 +470,7 @@ fn compile_program(prog: Program, nl: String) : String =
       let needs_ctor_runtime : Bool =
         if has_type_decls(decls) then true else has_record_decls(recs) in
       # stdlib + stdarg needed by q_ctor_alloc; stdlib also needed by
-      # quartz_str_concat (which is always emitted). string.h optional —
+      # quartz_str_concat (which is always emitted). string.h optional:
       # we hand-roll strlen to avoid the dependency.
       let extra_includes : String =
         "#include <stdlib.h>" ++ nl ++
@@ -484,7 +482,7 @@ fn compile_program(prog: Program, nl: String) : String =
       let bodies : String = emit_bodies(fns, decls, recs, nl) in
       let fmt : String = printf_format_for(result_type) in
       let cast : String = printf_arg_cast(result_type) in
-      "/* Generated by quartz_min.glass v3.12 — Quartz, written in Glass */" ++ nl ++
+      "/* Generated by quartz_min.glass v3.12: Quartz, written in Glass */" ++ nl ++
       "#include <stdio.h>" ++ nl ++
       "#include <stdint.h>" ++ nl ++
       "#include <stddef.h>" ++ nl ++
@@ -602,12 +600,12 @@ let prog6 : Program =
     CInt
   )
 
-# Program 7 (NEW in v3.10): string literal.
+# Program 7: string literal.
 #   "hello, world"  →  hello, world
 let prog7 : Program =
   Program([], [], [], EStr("hello, world"), CString)
 
-# Program 8 (NEW in v3.10): string concatenation.
+# Program 8: string concatenation.
 #   "hello, " ++ "world"  →  hello, world
 let prog8 : Program =
   Program(
@@ -618,7 +616,7 @@ let prog8 : Program =
     CString
   )
 
-# Program 9 (carry-over from v3.11): fn that returns a string.
+# Program 9: fn that returns a string.
 #   fn greet(_) = "hello, " ++ "Glass"
 #   greet(0)  →  hello, Glass
 let prog9 : Program =
@@ -634,15 +632,15 @@ let prog9 : Program =
     CString
   )
 
-# Program 10 (NEW in v3.12): String inside an ADT field.
+# Program 10: String inside an ADT field.
 #   type Greet = Hello(String) | Bye(String)
 #   match Hello("Alice") { Hello(name) => "Hi, " ++ name; Bye(name) => "Bye, " ++ name }
 #   →  Hi, Alice
 #
-# Demonstrates that the v3.9 / v3.11 uniform long-long boundary
-# enables multi-type ADT fields with no additional codegen machinery —
-# the v3.12 fix to compile_args_for_ctor (intptr_t bridge) was the
-# only piece missing.
+# Demonstrates that the uniform long-long boundary
+# enables multi-type ADT fields with no additional codegen machinery:
+# the intptr_t bridge in compile_args_for_ctor is the
+# only piece needed.
 let prog10 : Program =
   Program(
     [TypeDecl("Greet", [Variant("Hello", 1), Variant("Bye", 1)])],
@@ -658,7 +656,7 @@ let prog10 : Program =
     CString
   )
 
-# Program 11 (NEW in v3.12): mixed-type record (Int + String).
+# Program 11: mixed-type record (Int + String).
 #   type Person = { name: String, age: Int }
 #   let p = Person { name: "Alice", age: 30 } in p.name
 #   →  Alice
@@ -678,7 +676,7 @@ let prog11 : Program =
     CString
   )
 
-# Program 12 (NEW in v3.12): "generic" identity function used with
+# Program 12: "generic" identity function used with
 # both Int and String at different call sites.
 #   fn id(x) = x
 #   id("typed") ++ "!"  →  typed!
@@ -722,5 +720,5 @@ let _ : String = print(compile_program(prog11, nl_actual))
 let _ : String = print("=== prog12: 'generic' id over String ===")
 let _ : String = print(compile_program(prog12, nl_actual))
 
-# Final value: the C source string for prog10 (the canonical v3.12 demo).
+# Final value: the C source string for prog10 (the canonical demo).
 compile_program(prog10, nl_actual)

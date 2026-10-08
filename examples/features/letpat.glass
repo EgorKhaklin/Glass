@@ -1,15 +1,15 @@
 # =============================================================================
-# letpat.glass — pattern destructuring in plain `let` (v2.7+).
+# letpat.glass: pattern destructuring in plain `let`.
 #
-# Before v2.7, plain `let X = ... in body` required `X` to be a simple
-# identifier. Tuple destructuring only worked in `let*` and `let?`. Every
-# Glass program returning a tuple paid a `match { (a, b) => ... }` tax.
+# Plain `let X = ... in body` accepts a pattern for `X`, not only a simple
+# identifier, so tuple destructuring is not limited to `let*` and `let?`.
+# Without it, every tuple-returning program pays a `match { (a, b) => ... }` tax.
 #
-# v2.7 closes that. The dispatch in parse_let detects LPAREN / LBRACK /
+# The dispatch in parse_let detects LPAREN / LBRACK /
 # uppercase-IDENT and parses the right-hand side as a pattern, desugaring
 # to `match expr { PAT => body }`.
 #
-# Exhaustiveness is enforced by the standard match checker — non-exhaustive
+# Exhaustiveness is enforced by the standard match checker: non-exhaustive
 # patterns (like `let Some(x) = optional in ...`) get a compile-time error
 # from the same machinery that handles `match`.
 # =============================================================================
@@ -24,7 +24,7 @@ fn flatten_triple(p: (Int, (Int, Int))) : Int =
   let (x, (y, z)) = p in
   x + y + z
 
-# Pattern-let chained with another let — destructure first, compute, return.
+# Pattern-let chained with another let: destructure first, compute, return.
 fn rescale_pair(p: (Int, Int), factor: Int) : (Int, Int) =
   let (a, b) = p in
   let new_a = a * factor in
@@ -44,5 +44,5 @@ let r2 = flatten_triple((1, (2, 3)))         # 6
 let r3 = rescale_pair((4, 5), 10)            # (40, 50)
 let r4 = compose_steps(2)                    # 2+4+4+8 = 18
 
-# r1, r2, r4 are Int; r3 is a tuple — print them inline
+# r1, r2, r4 are Int; r3 is a tuple: print them inline
 r4

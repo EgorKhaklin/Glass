@@ -1,9 +1,9 @@
 # =============================================================================
-# prove_query_zk.glass — H1: a query over a committed table, in ZERO-KNOWLEDGE
+# prove_query_zk.glass: H1: a query over a committed table, in ZERO-KNOWLEDGE
 #
 # prove_query.glass proved a query result with a *sound* RLC argument. This file
 # upgrades it to the real thing: a SUCCINCT, ZERO-KNOWLEDGE STARK. The same idea
-# — commit a private table, prove an aggregate over it — but now the proof is
+# (commit a private table, prove an aggregate over it) but now the proof is
 # the blinded F_{p^4} FRI pipeline from prove_zk (gate quotient → blind → FRI),
 # so it is short and leaks nothing about the rows.
 #
@@ -11,7 +11,7 @@
 # C = Σ vᵢ·γⁱ, and the claimed sum R. Private: the values vᵢ. The circuit
 #   (1) recomputes the commitment from the witness and asserts it equals C,
 #   (2) recomputes the sum and asserts it equals R,
-# and the STARK proves every gate — *including the assertions* — holds.
+# and the STARK proves every gate, *including the assertions*, holds.
 #
 # To carry the assertions, the universal PLONK gate identity gains a fifth
 # selector: qassert·(l − r), which vanishes on a row iff the two asserted wires
@@ -203,7 +203,7 @@ fn prove(vals: List<Int>, gamma: Int, claimedC: Int, claimedR: Int, seed: Int, n
 # --- a FILTERED query in ZK: SUM(value) WHERE key == 0 -----------------------
 # The filter is the is-zero gadget out = 1 − key·inv, where inv is a witness
 # HINT (not a gate output). Such hints can't be gate rows, so they ride in the
-# input section of the witness (wires k..k+nrows−1) — referenced by gates, but
+# input section of the witness (wires k..k+nrows−1): referenced by gates, but
 # not themselves trace rows. The assert key·out == 0 (carried by qassert) forces
 # out = [key == 0]: a matching row can't be dropped (out is forced to 1) and a
 # non-matching row can't be smuggled in (it would make key·out ≠ 0). Then the
@@ -263,4 +263,4 @@ let _ : String = print("  lying (R = 999):  " ++ show_a(prove_filter(frows, 999,
 let _ : String = print("")
 let _ : String = print("a query over a committed table -> a succinct (FRI), zero-knowledge (blinded) proof. H1's payoff.")
 
-"prove_query_zk v0.1 (H1) — a committed-table query proven with the blinded F_{p^4} FRI STARK"
+"prove_query_zk (H1): a committed-table query proven with the blinded F_{p^4} FRI STARK"

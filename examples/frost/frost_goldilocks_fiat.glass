@@ -1,10 +1,11 @@
 # =============================================================================
-# frost_goldilocks_fiat.glass — Fiat-Shamir over the verified Goldilocks Poseidon
+# frost_goldilocks_fiat.glass: Fiat-Shamir over the verified Goldilocks Poseidon
 #
-# v5.35 verified the Poseidon primitive (byte-identical to Plonky2); v5.36 made it
-# load-bearing in a Merkle commitment. This rounds out the cryptographic
+# frost_goldilocks_poseidon.glass verifies the Poseidon primitive (byte-identical
+# to Plonky2) and frost_goldilocks_merkle.glass makes it load-bearing in a Merkle
+# commitment. This rounds out the cryptographic
 # foundation: a non-interactive proof's CHALLENGES (Fiat-Shamir) now come from
-# that same vector-verified hash, with DOMAIN SEPARATION — every absorb/squeeze is
+# that same vector-verified hash, with DOMAIN SEPARATION, every absorb/squeeze is
 # tagged by role so a fold challenge can't be reused as a query index, and every
 # challenge binds all prior commitments (commit first, then the challenge falls
 # out). frost_grain.glass demonstrated this construction over Baby Bear MiMC; here
@@ -13,7 +14,7 @@
 # With this, all four structural pieces are real/standard over Goldilocks: the
 # field, the hash (Plonky2-exact), the Merkle commitment, and the transcript.
 # (Still pending: wiring these into the actual proving STARK, and the glass prove
-# field migration off Baby Bear — see docs/soundness.md. A formal FS-separation
+# field migration off Baby Bear: see docs/security/soundness.md. A formal FS-separation
 # argument remains future work.)
 # =============================================================================
 
@@ -79,7 +80,7 @@ fn llen(xs: List<List<Int>>) : Int = match xs { [] => 0; [x, ...r] => 1 + llen(r
 fn inth(xs: List<Int>, i: Int) : Int = match xs { [] => 0; [h, ...t] => if i == 0 then h else inth(t, i - 1) }
 fn pdrop1(st: List<List<Int>>) : List<List<Int>> = match st { [] => []; [h, ...t] => t }
 
-# --- Poseidon over Goldilocks — byte-exact to Plonky2 (t=12, R_F=8, R_P=22) ----
+# --- Poseidon over Goldilocks: byte-exact to Plonky2 (t=12, R_F=8, R_P=22) ----
 # S-box x^7 (gcd(7, p-1)=1 over Goldilocks, so it is a permutation). Computed as
 # Plonky2 does: x2=x^2, x4=x^4, x3=x^3, return x3*x4 = x^7.
 fn sbox(x: List<Int>) : List<Int> = let x2 : List<Int> = fmul(x, x) in let x4 : List<Int> = fmul(x2, x2) in let x3 : List<Int> = fmul(x, x2) in fmul(x3, x4)
@@ -132,7 +133,7 @@ fn bn_mod_small(x: List<Int>, n: Int) : Int = bn_mod_small_go(rev(trim(x)), n, 0
 # Every absorb/squeeze is tagged with an integer ROLE, folded in BEFORE the value,
 # so a challenge for one role (a fold challenge) can't coincide with another (a
 # query index) at the same state. A challenge depends on every prior absorb, so the
-# prover commits first and the challenge falls out — it can't be predicted or gamed.
+# prover commits first and the challenge falls out: it can't be predicted or gamed.
 fn tr_init(arc: List<List<Int>>, circ: List<Int>, domain: List<Int>) : List<Int> = h2(arc, circ, domain, glit(314159))
 fn tr_absorb(arc: List<List<Int>>, circ: List<Int>, t: List<Int>, tag: List<Int>, v: List<Int>) : List<Int> = h2(arc, circ, h2(arc, circ, t, tag), v)
 fn tr_challenge(arc: List<List<Int>>, circ: List<Int>, t: List<Int>, tag: List<Int>) : List<Int> = h2(arc, circ, t, tag)
@@ -172,4 +173,4 @@ let _ : String = print("  binds to history (tamper 1st commitment -> beta moves)
 let _ : String = print("")
 let _ : String = print("the challenges of a Fiat-Shamir proof now come from a vector-verified standard hash.")
 
-"frost_goldilocks_fiat v0.1 — a domain-separated Fiat-Shamir transcript over the Plonky2-exact Goldilocks Poseidon"
+"frost_goldilocks_fiat: a domain-separated Fiat-Shamir transcript over the Plonky2-exact Goldilocks Poseidon"

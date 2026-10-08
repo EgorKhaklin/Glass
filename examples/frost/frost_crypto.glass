@@ -1,5 +1,5 @@
 # =============================================================================
-# frost_crypto.glass — the cryptographically-sound FRI, end to end (P3 capstone)
+# frost_crypto.glass: the cryptographically-sound FRI, end to end (P3 capstone)
 #
 # Assembles every P3 primitive into ONE proof system with BOTH kinds of
 # soundness, all in Glass:
@@ -15,7 +15,7 @@
 # (faked final), caught by a large fraction of the Fiat-Shamir queries. Baby
 # Bear base; self-contained; dogfoods.
 #
-# REMAINING for a deployable system: ZK BLINDING (random trace rows — this is
+# REMAINING for a deployable system: ZK BLINDING (random trace rows: this is
 # sound + succinct but not yet zero-knowledge), and wiring an AIR/witness in.
 # =============================================================================
 
@@ -163,4 +163,4 @@ let _ : String =
 let _ : String = print("")
 let _ : String = print("one FRI: F_{p^4} algebraic soundness + amplified Fiat-Shamir queries + Merkle, all in Glass.")
 
-"frost crypto v0.1 — cryptographically-sound FRI: F_{p^4} fold + Merkle + amplified Fiat-Shamir queries"
+"frost crypto: cryptographically-sound FRI: F_{p^4} fold + Merkle + amplified Fiat-Shamir queries"

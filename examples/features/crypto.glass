@@ -1,27 +1,27 @@
 # =============================================================================
-# v0.4 demo: refinement types in a cryptography-adjacent setting.
+# crypto.glass: refinement types in a cryptography-adjacent setting.
 #
 # Cryptographic primitives live or die by domain constraints: the modulus
 # must be positive, the exponent non-negative, the nonce must not have been
 # used before. Most type systems express these as comments or runtime
 # `assert` calls scattered through the implementation. Glass refinement
-# types put them in the signature where they belong — visible at every
+# types put them in the signature where they belong: visible at every
 # call site, enforced at every entry.
 #
-# In v0.4 the predicates run as runtime checks. In v0.5, when an SMT solver
-# joins the type checker, they'll be statically discharged where possible.
-# The syntax stays the same; only the locus of enforcement shifts.
+# The predicates are discharged statically where a simple rule applies
+# (constant folding, alpha-equivalence, implication) and checked at runtime
+# otherwise. The syntax is the same either way.
 #
 # Future-tech note: this is also the foundation for post-quantum-relevant
 # code. Lattice schemes need bounds on coefficients; signature schemes need
 # non-zero nonces and one-time-use guarantees; isogeny schemes need element
 # membership predicates. Refinement types express all of these directly.
-# Linear types (a later milestone) will handle the one-time-use part.
+# Linear types (`let lin`, showcase/linear.glass) handle the one-time-use part.
 # =============================================================================
 
 # ---- Modular arithmetic primitives ----------------------------------------
 
-# Reduce x mod m without using % (Glass v0.4 has no native mod operator).
+# Reduce x mod m using only division and multiplication (no `%`).
 fn modulo(x: Int where (x >= 0), m: Int where (m > 0)) : Int =
   x - (x / m) * m
 
@@ -43,7 +43,7 @@ fn mod_mul(
 
 # Modular exponentiation by repeated squaring.
 # - base must fit in [0, m)
-# - exp must be non-negative (no "inverse" in this v0.4 demo)
+# - exp must be non-negative (no "inverse" in this demo)
 # - m > 1 because m=1 makes the whole ring trivial
 fn mod_pow(
   base: Int where (base >= 0),
@@ -60,7 +60,7 @@ fn mod_pow(
 
 # ---- A tiny Fermat-style primality probe ----------------------------------
 #
-# Real Miller-Rabin needs random witnesses (effects, v0.5). This is the
+# Real Miller-Rabin needs random witnesses (the !{Random} effect). This is the
 # deterministic single-witness Fermat test: if a^(p-1) mod p != 1 for some
 # 0 < a < p, then p is composite.
 

@@ -1,5 +1,5 @@
 # =============================================================================
-# json.glass — a JSON parser written entirely in pure Glass.
+# json.glass: a JSON parser written entirely in pure Glass.
 #
 # Real recursive-descent parser. Handles:
 #   - null, true, false
@@ -39,7 +39,7 @@ type Json =
 
 # ---- Character predicates ----------------------------------------------
 #
-# Glass doesn't have a Char type — single characters are just length-1
+# Glass doesn't have a Char type: single characters are just length-1
 # strings. char_at returns one of those.
 
 fn char_at_str(s: String, i: Int) : String = substring(s, i, i + 1)
@@ -88,7 +88,7 @@ fn match_literal(src: String, i: Int, lit: String) : Int =
 # ---- Number parsing ----------------------------------------------------
 #
 # Parse a sequence of digits starting at i. Returns (value, new_position).
-# Doesn't consume a sign — that's the caller's job.
+# Doesn't consume a sign: that's the caller's job.
 
 fn read_digits(src: String, i: Int, acc: Int) : (Int, Int) =
   if i >= string_length(src) then (acc, i)
@@ -304,7 +304,7 @@ let _ = print(show_result(parse_json("[[1, 2], [3, 4]]")))
 let _ = print(show_result(parse_json("{\"nested\": {\"deep\": [1, 2, 3]}}")))
 let _ = print(show_result(parse_json("  [  1  ,  2  ,  3  ]  ")))
 
-# Negative cases — these should produce Err
+# Negative cases: these should produce Err
 let _ = print(show_result(parse_json("")))
 let _ = print(show_result(parse_json("[1, 2,")))
 let _ = print(show_result(parse_json("{\"a\":")))

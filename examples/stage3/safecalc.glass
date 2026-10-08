@@ -1,18 +1,18 @@
 # =============================================================================
-# safecalc.glass — a calculator that returns Result<Int, String> for safe
+# safecalc.glass: a calculator that returns Result<Int, String> for safe
 # error handling instead of panicking on bad input. Uses Pair for parser
 # state, Option for digit lookups, Result for the final answer.
 #
-# v1.8 of prism.glass pre-declares Pair and Result alongside Option,
-# so this file runs on both the host and through prism.glass — same
+# prism.glass pre-declares Pair and Result alongside Option,
+# so this file runs on both the host and through prism.glass: same
 # source, same answer, two interpreters.
 #
-# Grammar: expr ::= number (('+' | '*') number)*  — left-associative
+# Grammar: expr ::= number (('+' | '*') number)*: left-associative
 # with no precedence (sequential). Whitespace ignored. Errors yield Err.
 # =============================================================================
 
 # Cross-compatible char-equality (works on host and prism). Returns true
-# if c appears in target — used as `is_char("+", c)` for single-char tests.
+# if c appears in target: used as `is_char("+", c)` for single-char tests.
 fn is_char(target: String, c: String) : Bool =
   match string_index_of(target, c) {
     Some(_) => true;
@@ -73,7 +73,7 @@ fn parse_eval(src: String, i: Int, acc: Int) : Result<Int, String> =
           }
     }
 
-# Test cases — successes and failures.
+# Test cases: successes and failures.
 let t1 = parse_eval("1 + 2 + 3", 0, 0)
 let t2 = parse_eval("10 * 5 + 2", 0, 0)
 let t3 = parse_eval("100 + 23", 0, 0)

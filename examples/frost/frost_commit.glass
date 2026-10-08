@@ -1,10 +1,10 @@
 # =============================================================================
-# frost_commit.glass — a Glass-native cryptographic commitment layer (v0.1)
+# frost_commit.glass: a Glass-native cryptographic commitment layer
 #
 # The cryptographic foundation for Frost (Pane's zero-knowledge extension),
 # built entirely in Glass: our own ZK-friendly HASH, MERKLE trees, and a
 # COMMITMENT scheme. Everything operates over the same finite field as the
-# arithmetization (frost.glass), so the hash IS a circuit — commitment
+# arithmetization (frost.glass), so the hash IS a circuit: commitment
 # verification can be lowered into a Frost proof.
 #
 # WHY a hash, and why an ARITHMETIC one
@@ -13,8 +13,8 @@
 # commitment to the data and (b) a way to verify membership/openings INSIDE a
 # circuit. A hash built from FIELD ARITHMETIC (add/mul) satisfies both: it is a
 # collision-resistant compression AND it arithmetizes into Frost gates (each
-# round is a handful of GMul/GAdd). We use a MiMC-style permutation — a real
-# ZK-friendly design — with our own round constants ("something new").
+# round is a handful of GMul/GAdd). We use a MiMC-style permutation: a real
+# ZK-friendly design, with our own round constants ("something new").
 #
 # THE LAYERS
 #   1. Field F_p (p = 2^31 - 1), shared with frost.glass.
@@ -22,7 +22,7 @@
 #      (Miyaguchi–Preneel) + a sponge over a list.
 #   3. MERKLE tree: commit a list -> root; prove a leaf's membership with a
 #      path of siblings; verify by recomputing the root.
-#   4. COMMITMENT: commit(msg, rand) = compress(msg, rand) — hiding (random
+#   4. COMMITMENT: commit(msg, rand) = compress(msg, rand): hiding (random
 #      blinding) and binding (collision-resistant).
 #
 # THE FROST BRIDGE: hash2 is just fadd/fmul, so a Merkle-path check is a
@@ -30,7 +30,7 @@
 # AND R satisfies predicate P" = (Merkle-verify circuit) ∧ (predicate circuit),
 # both in the same constraint system.
 #
-# SECURITY (honest): the structure is correct, but p = 2^31-1 is a TOY field —
+# SECURITY (honest): the structure is correct, but p = 2^31-1 is a TOY field:
 # this is not collision-resistant in practice. A real deployment swaps in a
 # ~256-bit field (bignum) and vetted MiMC/Poseidon round counts. The Glass code
 # is unchanged in shape; only the field widens.
@@ -48,7 +48,7 @@ fn sbox(x: Int) : Int =
   let x4 : Int = fmul(x2, x2) in
   fmul(x4, x)
 
-# Our own round constants — a simple deterministic schedule (not borrowed).
+# Our own round constants: a simple deterministic schedule (not borrowed).
 fn round_const(i: Int) : Int = fnorm((i + 1) * (i + 1) * (i + 1) + i * 1009 + 1234567)
 
 # MiMC keyed permutation: x_{i+1} = (x_i + k + c_i)^5, output x_R + k.
@@ -167,6 +167,6 @@ let _ : String = print("")
 # The Frost bridge: the hash is field arithmetic, so it is a circuit.
 let _ : String = print("the hash is arithmetic: one MiMC round = 3 muls + 2 adds,")
 let _ : String = print("so a depth-" ++ int_to_string(ilen(path2)) ++ " Merkle check is ~" ++
-                       int_to_string(ilen(path2) * 16 * 5) ++ " Frost gates — membership is provable in-circuit.")
+                       int_to_string(ilen(path2) * 16 * 5) ++ " Frost gates: membership is provable in-circuit.")
 
-"frost commit v0.1 — Glass-native hash + Merkle commitments + commitment scheme"
+"frost commit: Glass-native hash + Merkle commitments + commitment scheme"

@@ -1,16 +1,16 @@
 # =============================================================================
-# frost_field.glass — a production-width field via bignum limbs (N4)
+# frost_field.glass: a production-width field via bignum limbs (N4)
 #
 # Frost's fields packed each element into ONE int64, capping the prime near
-# 2^31. A cryptographic STARK wants a ~128-bit+ prime — but a single multiply of
+# 2^31. A cryptographic STARK wants a ~128-bit+ prime, but a single multiply of
 # two ~2^64 values overflows int64 (the "int64 wall"). The fix is bignum: a field
 # element is a list of base-2^16 LIMBS, so every limb product (2^16 · 2^16 = 2^32)
 # and the carry sums stay well inside int64. This builds that, mod the 128-bit
 # prime  p = 2^128 - 159, with fast pseudo-Mersenne reduction (2^128 ≡ 159).
 #
 # Limbs are little-endian (index 0 = least significant); numbers are canonical
-# (no high zero limbs). All arithmetic uses only int64-safe steps, so it DOGFOODS
-# — native_glassc (int64) and glass.py agree, proving the wall is genuinely
+# (no high zero limbs). All arithmetic uses only int64-safe steps, so it DOGFOODS:
+# native_glassc (int64) and glass.py agree, proving the wall is genuinely
 # lifted, not just hidden by Python's big ints.
 #
 # Verified the checkable way: 2^128 ≡ 159 (mod p), so (2^64)^2 mod p must be 159;
@@ -81,7 +81,7 @@ let b : List<Int> = [111, 222, 333, 444]
 let c : List<Int> = [7, 8, 9]
 
 let _ : String = print("--- frost_field.glass: a 128-bit field via bignum limbs (lifting the int64 wall) ---")
-let _ : String = print("p = 2^128 - 159, base-2^16 limbs.  a 128-bit MULTIPLY would overflow int64 — limbs don't.")
+let _ : String = print("p = 2^128 - 159, base-2^16 limbs.  a 128-bit MULTIPLY would overflow int64: limbs don't.")
 let _ : String = print("")
 let _ : String = print("(2^64)^2 mod p  = " ++ show(fmul(two64, two64)) ++ "   (2^128 ≡ 159, so expect 159): " ++ show_b(bn_eq(fmul(two64, two64), [159])))
 let _ : String = print("a · 1 == a:                         " ++ show_b(bn_eq(fmul(a, [1]), a)))
@@ -91,4 +91,4 @@ let _ : String = print("")
 let _ : String = print("a real 128-bit field, all arithmetic int64-safe (dogfoods). widen the limb count")
 let _ : String = print("for 256-bit; this is the production-field path past the single-int64 cap.")
 
-"frost field v0.1 (N4) — bignum (base-2^16 limb) field mod 2^128-159: a cryptographic-width field in int64"
+"frost field (N4): bignum (base-2^16 limb) field mod 2^128-159: a cryptographic-width field in int64"

@@ -1,5 +1,5 @@
 # =============================================================================
-# markdown.glass — a markdown-to-HTML converter in pure functional Glass.
+# markdown.glass: a markdown-to-HTML converter in pure functional Glass.
 #
 # Supports a useful subset of markdown:
 #
@@ -19,7 +19,7 @@
 # Doesn't support: code blocks (```), lists, blockquotes, images, tables.
 # Adding any of these is ~30-50 lines each.
 #
-# Demonstrates the v2.4-v2.7 ergonomic surface in real library code:
+# Demonstrates the let*/let?/let-pattern ergonomic surface in real library code:
 # - `let* (v, j) = ...` for Result threading (inline parsing)
 # - `let? x = ...` for Option threading (lookups)
 # - `let (a, b) = ...` for tuple destructure (parse step results)
@@ -288,7 +288,7 @@ fn markdown_to_html(src: String) : String =
 # ---- Tests -------------------------------------------------------------
 #
 # Each test prints a label, the input, and the rendered output. Visual
-# regression — easy to spot a mistake by reading the lines side by side.
+# regression: easy to spot a mistake by reading the lines side by side.
 
 fn run_test(label: String, input: String, expected: String) : String =
   let actual = markdown_to_html(input) in

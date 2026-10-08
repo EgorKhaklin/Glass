@@ -1,12 +1,14 @@
-# A range / comparison proof in zero-knowledge — run:
+# A range / comparison proof in zero-knowledge: run:
 #
 #   glass prove examples/prove/age_prove.glass a=25 d0=0 d1=0 d2=1 d3=0 d4=0 d5=0 d6=0 d7=0
+#
+# Default proofs are sound but not zero-knowledge: add --zk to hide the private inputs.
 #
 # The canonical ZK statement: *prove you are at least 21 without revealing your age.*
 # A field has no native `<`, so a comparison is a RANGE proof: `a >= 21` iff
 # `a - 21` is a non-negative number that fits in n bits, i.e. it decomposes into n
 # booleans. Here n = 8, so the proof attests `a - 21 = Σ dᵢ·2ⁱ` with each `dᵢ ∈ {0,1}`
-# (`dᵢ·(dᵢ-1) == 0`) — exactly the bit-decomposition range check every zkVM uses,
+# (`dᵢ·(dᵢ-1) == 0`): exactly the bit-decomposition range check every zkVM uses,
 # expressed in the bridge's arithmetic (`*`, `+`, `==`, `&&`) and proven by the
 # blinded F_{p^4} FRI STARK.
 #

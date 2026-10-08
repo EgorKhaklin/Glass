@@ -1,9 +1,9 @@
 # =============================================================================
-# frost_m31.glass — the Mersenne-31 field, p = 2^31 - 1 = 2147483647.
+# frost_m31.glass: the Mersenne-31 field, p = 2^31 - 1 = 2147483647.
 #
 # M31 is the base field of Circle STARKs (eprint 2024/278, Haböck-Levit-Papini;
 # Plonky3 / Stwo). It is the SIMPLEST field Frost has: an element is a plain Int in
-# [0, p-1] — no base-2^16 bignum limbs at all — because the reduction is just a
+# [0, p-1], no base-2^16 bignum limbs at all, because the reduction is just a
 # fold. Since 2^31 ≡ 1 (mod p), any v < 2^62 reduces by v = hi·2^31 + lo ≡ hi + lo
 # (two folds + one conditional subtract). Products of two field elements are < 2^62
 # < 2^63, so everything fits a single signed i64 and DOGFOODS byte-identical
@@ -11,7 +11,7 @@
 # and `/ 2147483648` for ">> 31" (Glass has %, /, not bit-ops).
 #
 # WHY M31 (vs the multiplicative group): the CIRCLE group over M31 has order
-# p+1 = 2^31 (full 2-adicity 31), which is what makes radix-2 FFT possible —
+# p+1 = 2^31 (full 2-adicity 31), which is what makes radix-2 FFT possible:
 # see frost_m31_circle.glass. The multiplicative group has order p-1 = 2^31-2
 # (2-adicity 1), useless for FFT. This file is just the field; the circle is next.
 #
@@ -77,4 +77,4 @@ let _ : String = print("  ALL FIELD LAWS HOLD        : " ++ yn(allok))
 let _ : String = print("")
 let _ : String = print("Frost's M31 field, dogfood byte-identical. Foundation for the circle group + circle-STARK. Research-grade, UNAUDITED.")
 
-"frost_m31 v0.1 — Mersenne-31 field (p = 2^31-1), single-i64, the Circle-STARK base field"
+"frost_m31: Mersenne-31 field (p = 2^31-1), single-i64, the Circle-STARK base field"

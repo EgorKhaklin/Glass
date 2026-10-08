@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 # =============================================================================
-# fuzz_soundness.py — differential soundness fuzzing of the prove pipeline.
+# fuzz_soundness.py: differential soundness fuzzing of the prove pipeline.
 #
-# Generates random small Glass programs over private inputs — arithmetic, unsigned
+# Generates random small Glass programs over private inputs: arithmetic, unsigned
 # comparison/boolean, signed gadgets (slt/sle/sgt/sge, sdiv/smod), strings
 # (++/substring/string_length/==, the multi-wire codepoint lowering), records
-# (declare/construct/destructure a 2-field record — the multi-wire tuple shape), AND computed
-# callees (a runtime-chosen `(if c then g else h)(x)` or a let-aliased fn name) — proves each
-# with `glass prove --witness3`, and asserts the soundness invariants across the
+# (declare/construct/destructure a 2-field record: the multi-wire tuple shape), AND computed
+# callees (a runtime-chosen `(if c then g else h)(x)` or a let-aliased fn name): proves each
+# with `glass prove --cross-check`, and asserts the soundness invariants across the
 # WHOLE stack at once:
 #   (1) honest proof -> ACCEPT          (verify_b3 accepts a real proof)
-#   (2) THIRD LINEAGE AGREES            (the bridge's circuit semantics == the reference
-#                                        interpreter — catches a lowering gap on THIS program)
+#   (2) AGREES            (the bridge's circuit semantics == the reference
+#                                        interpreter: catches a lowering gap on THIS program)
 # Inputs are kept small (0..20) and expressions shallow (<=3 ops) so results stay well
-# within both the Goldilocks field and int64 — so a witness3 divergence is a real bug, not
+# within both the Goldilocks field and int64, so a cross-check divergence is a real bug, not
 # the documented mod-p-vs-int64 domain difference. Deterministic (fixed seed); reproducible.
 # This is the testing that finds the bugs the hand-picked soundness gate cannot enumerate.
 #
@@ -32,10 +32,10 @@ P31, P32 = 1 << 31, 1 << 32
 BOUNDARY = [0, 1, 5, P31 - 1, P31, P31 + 1, P32 - 1, P32, P32 + 1,
             -1, -5, -P31, -P31 + 1, -P31 - 1]
 
-# STRING family (v5.101): random predicates over string LITERALS — concat, substring, length,
-# equality — exercising the multi-wire string lowering (codepoint wires, the AND-folded is-zero
+# STRING family: random predicates over string LITERALS: concat, substring, length,
+# equality: exercising the multi-wire string lowering (codepoint wires, the AND-folded is-zero
 # `==`, static `substring` slice, `char_code` over a varied alphabet). Predicates are ~half true /
-# ~half false by construction; the witness3 reference (glass.py) decides which and confirms it. Safe
+# ~half false by construction; the cross-check reference (glass.py) decides which and confirms it. Safe
 # alphabet only (no quote/backslash/newline), so the generated literals need no escaping.
 SAFE_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.@"
 def rand_str(rng, lo=1, hi=6):
@@ -53,40 +53,40 @@ def gen_string(rng, depth):
     s = rand_str(rng, 1, 8)
     return 'string_length("%s") == %d' % (s, rng.randint(0, 9))
 
-# RECORD family (v5.109): a self-contained record program — declare a 2-field record, construct it
+# RECORD family: a self-contained record program: declare a 2-field record, construct it
 # from the private inputs, read the fields (randomly via a `match` destructure OR direct `.field`
-# access, fuzzing both the v5.103 pattern path and the v5.104 type-env path), combine arithmetically.
+# access, fuzzing both the record-pattern path and the type-env path), combine arithmetically.
 def gen_record_prog(rng):
     op = rng.choice(["+", "-", "*"])
     e0 = gen_expr(rng, 2); e1 = gen_expr(rng, 2)
     body = ("match r { Rec { f0, f1 } => f0 %s f1 }" % op) if rng.random() < 0.5 else ("r.f0 %s r.f1" % op)
     return "type Rec = { f0: Int, f1: Int }\nfn ruse(r: Rec) : Int = %s\nruse(Rec { f0: %s, f1: %s })" % (body, e0, e1)
 
-# COMPUTED-CALLEE family (v5.114): which function runs is decided WITHOUT a static call name —
-# either a RUNTIME-CHOSEN callee `(if cond then g0 else g1)(arg)` (the v5.113 push-inside desugar)
-# or a let-aliased fn name `let f = g0 in f(arg)` (the v5.114 alias). Two candidate fns (double /
+# COMPUTED-CALLEE family: which function runs is decided WITHOUT a static call name,
+# either a RUNTIME-CHOSEN callee `(if cond then g0 else g1)(arg)` (the push-inside desugar)
+# or a let-aliased fn name `let f = g0 in f(arg)` (the bare-name alias). Two candidate fns (double /
 # increment); a random comparison picks one (runtime form) or a coin picks the alias target. The
-# result is an Int, so the numeric witness3 reconciliation applies — fuzzing both call-form lowerings
+# result is an Int, so the numeric cross-check reconciliation applies: fuzzing both call-form lowerings
 # under random conditions/arguments.
 def gen_computed_callee(rng):
     arg = gen_expr(rng, 2)
     if rng.random() < 0.5:
         cmp = rng.choice(["<", ">", "<=", ">="])
         cond = "(%s %s %s)" % (gen_expr(rng, 1), cmp, gen_expr(rng, 1))
-        body = "(if %s then g0 else g1)(%s)" % (cond, arg)        # runtime-chosen callee (v5.113)
+        body = "(if %s then g0 else g1)(%s)" % (cond, arg)        # runtime-chosen callee
     else:
-        body = "let f = %s in f(%s)" % (rng.choice(["g0", "g1"]), arg)  # let-aliased fn name (v5.114)
+        body = "let f = %s in f(%s)" % (rng.choice(["g0", "g1"]), arg)  # let-aliased fn name
     return ("fn g0(x: Int) : Int = x + x\nfn g1(x: Int) : Int = x + 1\n"
             "fn run(a: Int, b: Int, c: Int) : Int = %s\nrun(a, b, c)" % body)
 
-# CAPTURE-SHAPE family (v5.133): calls whose LATER arguments reference EARLIER parameter NAMES of
-# the same call — the exact shape the v5.132 inlining-capture bug hid in (gcd(b, a % b): sequential
+# CAPTURE-SHAPE family: calls whose LATER arguments reference EARLIER parameter NAMES of
+# the same call: the exact shape an inlining-capture bug once hid in (gcd(b, a % b): sequential
 # let-binding bound the callee's `a` before evaluating `a % b`, so the argument saw the just-bound
 # parameter, not the caller's variable; the circuit attested gcd(48,18)=18). None of the first six
-# families ever generated this shape, which is why the class survived — this family exists so it
+# families ever generated this shape, which is why the class survived: this family exists so it
 # can never come back silently. The wrapper top(a,b,c) gives the caller its OWN a/b/c (the capture
 # needs the caller to bind the same names, as recursion does), and the callee weights its first
-# parameter (*10/*100) so a captured re-binding is value-visible to the witness3 differential.
+# parameter (*10/*100) so a captured re-binding is value-visible to the cross-check differential.
 # Two sub-shapes: the VALUE namespace (g's arg2 has a free `a`) and the FN namespace (ap's later
 # arg calls a top-level fn that ap's first parameter shadows: ap(k, f(..)) must not become k(k(..))).
 def gen_capture_prog(rng):
@@ -110,7 +110,7 @@ def gen_expr(rng, depth):
     return "(%s %s %s)" % (gen_expr(rng, depth - 1), op, gen_expr(rng, depth - 1))
 
 def gen_bool(rng, depth):
-    # comparison + boolean control flow — the gadget-bearing, least-fuzzed lowering.
+    # comparison + boolean control flow: the gadget-bearing, least-fuzzed lowering.
     # operands kept small (the arithmetic generator over inputs in 0..20) so they sit in the
     # gadget's provable range [0, 2^32); a comparison yields a public 0/1.
     if depth <= 0 or rng.random() < 0.45:
@@ -125,10 +125,10 @@ def gen_bool(rng, depth):
 
 def gen_signed(rng, depth):
     # SIGNED gadgets (slt/sle/sgt/sge comparison, sdiv/smod C99 truncated division) over small
-    # signed operands. Inputs may be negative (-20..20), so this fuzzes the v5.94-v5.96 signed
+    # signed operands. Inputs may be negative (-20..20), so this fuzzes the signed
     # lowering: the +2^31 offset binding, canonical negative inputs/literals, and the sign-magnitude
     # divmod. A comparison yields 0/1; sdiv/smod yield a signed quotient/remainder. Operands stay in
-    # [-2^31, 2^31); a 0 divisor or an out-of-range operand ABSTAINs (sound — not a wrong proof).
+    # [-2^31, 2^31); a 0 divisor or an out-of-range operand ABSTAINs (sound, not a wrong proof).
     if rng.random() < 0.55:
         f = rng.choice(["slt", "sle", "sgt", "sge"])
         return "%s(%s, %s)" % (f, gen_expr(rng, depth), gen_expr(rng, depth))
@@ -147,7 +147,7 @@ def run(n, seed, boundary=False):
         # callee lowering (runtime-chosen / let-aliased fns). Signed inputs may be negative (-20..20);
         # the others stay non-negative so the unsigned [0,2^32) gadget doesn't spuriously abstain.
         # In boundary mode only the GADGET-bearing families (comparison + signed), whose operands
-        # are range-guarded — a raw arithmetic product over near-2^32 inputs is a benign int64-vs-
+        # are range-guarded: a raw arithmetic product over near-2^32 inputs is a benign int64-vs-
         # field wrap (documented), not a soundness bug, so the arithmetic family is excluded there.
         fam = (1 + (i % 2)) if boundary else (i % 7)
         if fam == 0:
@@ -174,41 +174,41 @@ def run(n, seed, boundary=False):
         src = expr + "\n"
         path = f"/tmp/fuzz_{i}.glass"
         open(path, "w").write(src)
-        argv = [sys.executable, os.path.join(ROOT, "glass.py"), "prove", "--witness3", path] + \
+        argv = [sys.executable, os.path.join(ROOT, "glass.py"), "prove", "--cross-check", path] + \
                [f"{v}={inputs[v]}" for v in VARS]
         out = subprocess.run(argv, capture_output=True, text=True, cwd=ROOT).stdout
         accept = "proof:   ACCEPT" in out
         reject = "proof:   REJECT" in out
         abstain = "verdict: ABSTAIN" in out
-        agrees = "THIRD LINEAGE AGREES" in out
+        agrees = "AGREES" in out
         diverges = "DIVERGENCE" in out
         verdict = "ACCEPT" if accept else ("REJECT" if reject else ("ABSTAIN" if abstain else "?"))
         # THE soundness invariant: a WRONG proof = ACCEPT whose result the independent reference
-        # interpreter computes DIFFERENTLY (witness3 DIVERGENCE). ABSTAIN (gadget refuses out-of-range
+        # interpreter computes DIFFERENTLY (cross-check DIVERGENCE). ABSTAIN (gadget refuses out-of-range
         # / unlowerable / ill-typed) and REJECT (disproof) are SOUND. ACCEPT + AGREES is sound.
-        # ACCEPT + witness3-SKIPPED (the reference couldn't evaluate — e.g. an ill-typed source the
-        # type-check gate should already ABSTAIN) is UNVERIFIED, NOT a wrong proof — the reference
+        # ACCEPT + cross-check SKIPPED (the reference couldn't evaluate: e.g. an ill-typed source the
+        # type-check gate should already ABSTAIN) is UNVERIFIED, NOT a wrong proof: the reference
         # neither confirms nor denies, so it cannot witness a falsehood. Only a DIVERGENCE fails.
         wrong_accept = accept and diverges
         unverified = accept and not agrees and not diverges
         ok = ok and not wrong_accept
         tag = "BUG!" if wrong_accept else ("????" if unverified else "OK  ")
-        note = "" if not accept else (" witness3=AGREES" if agrees else (" witness3=DISAGREES <-- WRONG PROOF" if diverges else " witness3=SKIPPED (unverified, not a wrong proof)"))
+        note = "" if not accept else (" cross-check=AGREES" if agrees else (" cross-check=DISAGREES <-- WRONG PROOF" if diverges else " cross-check=SKIPPED (unverified, not a wrong proof)"))
         print(f"  {tag}  [{verdict}]{note}  {expr}  with {inputs}")
         if wrong_accept or unverified:
-            print("        " + " | ".join(l for l in out.splitlines() if "result" in l or "witness3" in l))
-    print("FUZZ " + ("PASS — no wrong proofs (every ACCEPT confirmed by the reference; ABSTAIN/REJECT are sound)" if ok else "FAIL — a wrong proof was found"))
+            print("        " + " | ".join(l for l in out.splitlines() if "result" in l or "cross-check" in l))
+    print("FUZZ " + ("PASS (no wrong proofs (every ACCEPT confirmed by the reference; ABSTAIN/REJECT are sound)" if ok else "FAIL) a wrong proof was found"))
     return 0 if ok else 1
 
 def run_differential(n, seed):
     """Fuzz the TWO-VERIFIER differential: for random programs, emit a portable proof and confirm the
-    INDEPENDENT Pentecost verifier ACCEPTs it. A violation = Glass proves it but Pentecost rejects an
-    honest proof (a serializer or second-verifier bug). Cycles three families — arithmetic, unsigned
-    comparison/boolean, and SIGNED (slt/sle/sgt/sge, sdiv/smod over negatives) — so the two-verifier
+    INDEPENDENT Lens verifier ACCEPTs it. A violation = Glass proves it but Lens rejects an
+    honest proof (a serializer or second-verifier bug). Cycles three families: arithmetic, unsigned
+    comparison/boolean, and SIGNED (slt/sle/sgt/sge, sdiv/smod over negatives), so the two-verifier
     guarantee is fuzzed across the gadget-bearing lowerings, not just `a+b`. (A signed proof is large,
     ~550k tokens, so emit is the slow step; keep N modest.)"""
     rng = random.Random(seed)
-    print(f"# differential fuzz: {n} programs (arithmetic + comparison + signed + string + record + computed-callee + capture-shape), Glass-prove vs independent Pentecost (seed {seed})")
+    print(f"# differential fuzz: {n} programs (arithmetic + comparison + signed + string + record + computed-callee + capture-shape), Glass-prove vs independent Lens (seed {seed})")
     ok = True
     for i in range(n):
         fam = i % 7
@@ -235,18 +235,18 @@ def run_differential(n, seed):
                               [f"{v}={inputs[v]}" for v in VARS], capture_output=True, text=True, cwd=ROOT)
         emitted = (emit.returncode == 0) and ("wrote a portable proof" in emit.stdout)
         if not emitted:
-            # ABSTAIN (unlowerable) is sound — skip, not a failure
+            # ABSTAIN (unlowerable) is sound: skip, not a failure
             print(f"  --  [no proof emitted]  {expr}  with {inputs}")
             continue
         ver = subprocess.run([sys.executable, os.path.join(ROOT, "glass.py"), "verify", pf], capture_output=True, text=True, cwd=ROOT)
-        pent = "PENTECOST: ACCEPT" in ver.stdout
-        # both verifiers must AGREE: Glass emitted an honest proof, Pentecost must ACCEPT it
+        pent = "LENS: ACCEPT" in ver.stdout
+        # both verifiers must AGREE: Glass emitted an honest proof, Lens must ACCEPT it
         good = pent
         ok = ok and good
-        print(f"  {'OK  ' if good else 'BUG!'}  Glass=ACCEPT  Pentecost={'ACCEPT' if pent else 'REJECT <-- DISAGREE'}  {expr}  with {inputs}")
+        print(f"  {'OK  ' if good else 'BUG!'}  Glass=ACCEPT  Lens={'ACCEPT' if pent else 'REJECT <-- DISAGREE'}  {expr}  with {inputs}")
         if not good:
             print("        " + ver.stdout.strip())
-    print("DIFFERENTIAL FUZZ " + ("PASS — the two verifiers agree on every honest proof" if ok else "FAIL — the verifiers DISAGREED"))
+    print("DIFFERENTIAL FUZZ " + ("PASS, the two verifiers agree on every honest proof" if ok else "FAIL, the verifiers DISAGREED"))
     return 0 if ok else 1
 
 if __name__ == "__main__":

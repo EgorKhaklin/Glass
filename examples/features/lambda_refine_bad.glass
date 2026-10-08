@@ -1,10 +1,10 @@
 # =============================================================================
-# lambda_refine_bad.glass — negative demo for v4.47.
+# lambda_refine_bad.glass: negative demo for refined lambda params.
 #
 # Same shape as lambda_refine.glass, but the argument -3 fails the
 # predicate (x > 0). The VRefinedClos wrapper produced by ELamR
 # evaluates the predicate against -3 BEFORE entering the body and
-# returns Err with the violation message — surfaced by prism's outer
+# returns Err with the violation message: surfaced by prism's outer
 # loop as "compile error: refinement violated at runtime: ...".
 # =============================================================================
 

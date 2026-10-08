@@ -1,4 +1,5 @@
-# Prove a PRIVATE string is in an allowlist — and which action it maps to — revealing only
+# Prove a PRIVATE string is in an allowlist, and which action it maps to, revealing only
+# Default proofs are sound but not zero-knowledge: add --zk to hide the private inputs.
 # the resulting action code, never the string itself.
 #
 #   glass prove examples/prove/private_allowlist.glass cmd="deploy"    # -> result: 1, ACCEPT
@@ -6,10 +7,10 @@
 #   glass prove examples/prove/private_allowlist.glass cmd="hack"      # -> result: 0, ACCEPT (not allowed)
 #
 # `match` over a string is the natural way to decide membership/dispatch. Each `"literal" =>`
-# arm is a per-codepoint equality gadget (v5.101's multi-wire `==`): the arm fires iff the
+# arm is a per-codepoint equality gadget (the multi-wire `==`): the arm fires iff the
 # scrutinee's codepoint wires equal the literal's, and `cgen_match`'s first-match mux returns
 # the matched body. `cmd` is a PRIVATE string input (its characters are witness wires), so the
-# proof reveals only the action code — prove "my command is an allowed one, mapping to action N"
+# proof reveals only the action code: prove "my command is an allowed one, mapping to action N"
 # without disclosing the command. A non-listed command falls through `_` to 0.
 fn action(cmd: String) : Int =
   match cmd {

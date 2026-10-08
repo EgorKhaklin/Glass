@@ -1,16 +1,16 @@
 # =============================================================================
-# frost_m31_circle.glass — the CIRCLE GROUP over Mersenne-31, the core structure
+# frost_m31_circle.glass: the CIRCLE GROUP over Mersenne-31, the core structure
 # of Circle STARKs (eprint 2024/278; Plonky3 / Stwo).
 #
 # C(F_p) = { (x,y) : x^2 + y^2 = 1 }  is the unit group of the complex extension
-# F_p[i]/(i^2+1) (−1 is a non-residue for M31), so its law is COMPLEX MULTIPLICATION
-# — NOT elliptic-curve addition. Its order is p+1 = 2^31 (full 2-adicity 31), and
+# F_p[i]/(i^2+1) (−1 is a non-residue for M31), so its law is COMPLEX MULTIPLICATION,
+# NOT elliptic-curve addition. Its order is p+1 = 2^31 (full 2-adicity 31), and
 # THAT is what gives radix-2 FFT structure (the multiplicative group F_p* has order
-# p−1 = 2^31−2, 2-adicity 1 — useless for FFT). The doubling map π(x,y)=(2x^2−1, 2xy)
+# p−1 = 2^31−2, 2-adicity 1: useless for FFT). The doubling map π(x,y)=(2x^2−1, 2xy)
 # is the 2-to-1 fold the circle FFT/FRI are built on.
 #
 # Self-contained (the M31 field ops are copied from frost_m31.glass so this DOGFOODS
-# byte-identical, glass.py == native_glassc — no cross-file import). Built from the
+# byte-identical, glass.py == native_glassc: no cross-file import). Built from the
 # public spec under Frost; research/educational-grade, UNAUDITED.
 # =============================================================================
 
@@ -76,4 +76,4 @@ let _ : String = print("  ALL CIRCLE-GROUP LAWS HOLD             : " ++ yn(allok
 let _ : String = print("")
 let _ : String = print("Frost's circle group, dogfood byte-identical. The 2-adic structure circle-FFT/FRI need. Research-grade, UNAUDITED.")
 
-"frost_m31_circle v0.1 — the circle group over Mersenne-31 (order 2^31), the Circle-STARK core"
+"frost_m31_circle: the circle group over Mersenne-31 (order 2^31), the Circle-STARK core"

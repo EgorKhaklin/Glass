@@ -2,7 +2,7 @@
 
 > ## ⛔ Do not protect real value with Glass.
 > Glass is **research / educational-grade** cryptography and is **UNAUDITED**. Its zero-knowledge
-> prover is a from-scratch zk-STARK built to *learn and demonstrate* how these systems work — not to
+> prover is a from-scratch zk-STARK built to *learn and demonstrate* how these systems work, not to
 > secure real assets, secrets, or money. Use it to study, teach, and experiment. **Do not** use it
 > where a soundness or zero-knowledge failure would cause real harm.
 
@@ -11,56 +11,57 @@ something it isn't. It is the honest companion to the marketing in the README.
 
 ## What "UNAUDITED" means here (and what would change it)
 
-The banner above is gated on two things that **cannot be produced inside this repository** — not by
+The banner above is gated on two things that **cannot be produced inside this repository**, not by
 the maintainers, not by any automated review:
 
 1. **An independent, external, professional security audit** of the protocol, the soundness
    reduction, the zero-knowledge argument, the implementation, and the parameter choices. A
-   self-review — however rigorous — is not an audit.
+   self-review, however rigorous, is not an audit.
 2. **Cryptanalysis of Poseidon2** by hash-function specialists. The *entire* soundness *and*
    zero-knowledge guarantee is conditional on Poseidon2 behaving as a random oracle (collision- and
    preimage-resistant). If that assumption fails, the security bound is vacuous.
 
 Until **both** are done by qualified external parties, Glass stays research-grade and the banner
-stays. See [`docs/security-audit-2026-06.md`](docs/security-audit-2026-06.md) §5 for the full list of
+stays. See [`docs/security/internal-audit-2026-06.md`](docs/security/internal-audit-2026-06.md) §5 for the full list of
 steps to production.
 
-## Threat model — verified vs assumed
+## Threat model: verified vs assumed
 
-**Internally verified** (machine-checked or differentially tested, in-repo):
+**Internally verified** (tested or differentially checked in-repo; the soundness reduction itself is
+pen-and-paper, not machine-checked):
 
 - An independent, **witness-free verifier** (`verify_b3`) checks per-row gate soundness, PLONK
-  grand-product wire consistency, public-input/result pinning, and FRI — re-deriving every
+  grand-product wire consistency, public-input/result pinning, and FRI: re-deriving every
   Fiat-Shamir challenge (no prover-supplied challenge is trusted).
-- **A second, independent verifier** (`pentecost/`, plain Python, sharing no Glass code) accepts the
-  same proofs and rejects tampers (`pentecost/difftest.sh`) — catching an *implementation* divergence
+- **A second, independent verifier** (`lens/`, plain Python, sharing no Glass code) accepts the
+  same proofs and rejects tampers (`lens/difftest.sh`): catching an *implementation* divergence
   in `verify_b3`.
-- **The Third Witness** re-runs the source under the reference interpreter (a lineage independent of
+- **The cross-check** re-runs the source under the reference interpreter (a lineage independent of
   the bridge's evaluator *and* its circuit lowering), catching a source↔circuit lowering gap the two
   circuit-verifiers cannot. A detected divergence is a **hard failure** (exit 3); the prove verdict is
-  exposed as exit codes — 0 ACCEPT / 1 ABSTAIN / 2 REJECT / 3 DIVERGENCE (v5.133).
+  exposed as exit codes: 0 ACCEPT / 1 ABSTAIN / 2 REJECT / 3 DIVERGENCE.
 - **Differential fuzzing** across seven program families (arithmetic, comparison, signed, strings,
   records, computed callees, capture shapes) + boundary inputs + 1,600 adversarial tampers,
   with zero wrong-ACCEPTs; a **self-hosting fixpoint** (`native_glassc` reproduces its own source +
-  output byte-identically); a content-addressed **Name** over the whole core; an **adversarial-prover
-  harness** (`GLASS_BRIDGE_DIR`) that gates soundness fixes with real forged witnesses, not just
-  regressions.
+  output byte-identically); a content-addressed **fingerprint** over the core (`glass fingerprint`);
+  an **adversarial-prover harness** (`GLASS_BRIDGE_DIR`) that gates soundness fixes with real forged
+  witnesses, not just regressions.
 - **Internal adversarial audits** (2026-06, ongoing): the initial sweep found 0 critical / 1 high (a
-  ZK mislabelling in `--zk`, fixed v5.118). A follow-up soundness audit found **three silent
-  wrong-ACCEPT lowerings** (substring over-read, layout-slot overflow, vacuous claim bind) — all
-  closed (v5.128–v5.130). A forgery-resistance audit (2026-06-10) found **0 structural gaps**; its one
-  defense-in-depth item (a free divmod quotient in the `b=0` sub-circuit) was closed in v5.131 and is
-  gated by a forged prover that ACCEPTed pre-fix. The Third Witness then caught a **real wrong
-  lowering in the wild** — call-inlining capture (`gcd(48,18)` attested 18, truth 6) — fixed v5.132.
+  ZK mislabelling in `--zk`, fixed). A follow-up soundness audit found **three silent
+  wrong-ACCEPT lowerings** (substring over-read, layout-slot overflow, vacuous claim bind): all
+  closed. A forgery-resistance audit (2026-06-10) found **0 structural gaps**; its one
+  defense-in-depth item (a free divmod quotient in the `b=0` sub-circuit) was closed and is
+  gated by a forged prover that ACCEPTed pre-fix. The cross-check then caught a **real wrong
+  lowering in the wild**: call-inlining capture (`gcd(48,18)` attested 18; the truth is 6), now fixed.
   Every finding so far has been the instruments working: caught in-repo, closed, and pinned by a gate.
 
 **Assumed / not verifiable in-repo** (the hard boundary):
 
 - **Poseidon2 is a secure hash** (random-oracle model). Not cryptanalyzed here. The byte-exactness to
   the published Plonky3 vectors is verified; the *security* of the parameters is assumed.
-- **Fiat-Shamir is sound in the ROM** — a standard heuristic.
+- **Fiat-Shamir is sound in the ROM**: a standard heuristic.
 - The **~135-bit list-decoding** figure rests on a **conjectural** FRI proximity-gap (decoding-to-
-  capacity) bound. The conjecture-free, conservative figure is **~80-bit (unique-decoding)** — treat
+  capacity) bound. The conjecture-free, conservative figure is **~80-bit (unique-decoding)**: treat
   that as the security level. The `glass prove` `security:` line labels the conjectural figure inline.
 - **Both verifiers descend from the same public specs**, so they catch an implementation divergence,
   **not** a shared spec misread. A genuinely independent third oracle remains future work.
@@ -71,14 +72,14 @@ steps to production.
 
 This is a research project; please open a GitHub issue for security-relevant findings (there is no
 production deployment to protect, so coordinated disclosure is not required). Findings that show a
-**wrong-ACCEPT** (a verifier accepting a false statement) or a **ZK leak** are especially valuable —
+**wrong-ACCEPT** (a verifier accepting a false statement) or a **ZK leak** are especially valuable:
 the project's whole discipline is to *abstain loudly* rather than ever prove something false, and a
 counterexample to that is the most useful bug you can file.
 
 ## Further reading
 
-- [`docs/security-audit-2026-06.md`](docs/security-audit-2026-06.md) — the internal audit (findings + readiness + external steps)
-- [`docs/soundness.md`](docs/soundness.md) — the soundness argument and its honest scope
-- [`docs/audit-readiness.md`](docs/audit-readiness.md) — what an external auditor would build on
-- [`docs/parameters.md`](docs/parameters.md) — concrete parameters and bit-security
-- [`pentecost/`](pentecost/) — the second, independent verifier
+- [`docs/security/internal-audit-2026-06.md`](docs/security/internal-audit-2026-06.md): the internal audit (findings + readiness + external steps)
+- [`docs/security/soundness.md`](docs/security/soundness.md): the soundness argument and its honest scope
+- [`docs/security/audit-readiness.md`](docs/security/audit-readiness.md): what an external auditor would build on
+- [`docs/security/parameters.md`](docs/security/parameters.md): concrete parameters and bit-security
+- [`lens/`](lens/): the second, independent verifier

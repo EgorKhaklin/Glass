@@ -1,4 +1,5 @@
-# A capstone: prove a PRIVATE applicant meets an access policy — revealing only allow/deny.
+# A capstone: prove a PRIVATE applicant meets an access policy: revealing only allow/deny.
+# Default proofs are sound but not zero-knowledge: add --zk to hide the private inputs.
 #
 #   glass prove examples/prove/private_eligibility.glass age0=29 region0=3 tier0=gold      # -> 1, ACCEPT (eligible)
 #   glass prove examples/prove/private_eligibility.glass age0=16 region0=3 tier0=gold      # -> 0 (under age)
@@ -11,7 +12,7 @@
 #   • ORDERING COMPARISON checks the thresholds (`a.age >= 18`, `a.region <= 5`)
 #   • a STRING predicate checks the membership tier (`tier == "gold" || tier == "platinum"`)
 # all proven over Goldilocks. age, region, and tier are PRIVATE inputs (kept in the witness); the
-# proof reveals only the 0/1 verdict — prove policy compliance without disclosing any applicant data.
+# proof reveals only the 0/1 verdict: prove policy compliance without disclosing any applicant data.
 type Applicant = { age: Int, region: Int }
 
 fn tier_ok(t: String) : Bool = (t == "gold") || (t == "platinum")

@@ -1,9 +1,9 @@
 # =============================================================================
-# curried_refine_bad.glass — negative demo for v4.24.
+# curried_refine_bad.glass: negative demo for later-parameter refinement checks.
 #
 # Same shape as curried_refine.glass, but the let-bound value violates
-# the second param's refinement. v4.23 silently produced 10 + 0 = 10
-# because the second-param check didn't exist. v4.24's VRefinedClos
+# the second param's refinement. Without a later-parameter check the call
+# would silently produce 10 + 0 = 10. The VRefinedClos
 # wrapper catches it at apply time and the eval returns
 # `Err "refinement violated at runtime: b = 0 fails predicate"`,
 # which the demo loop in prism.glass surfaces.

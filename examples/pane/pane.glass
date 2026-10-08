@@ -1,9 +1,9 @@
 # =============================================================================
-# pane.glass — a query layer for Glass (v0.1)
+# pane.glass: a query layer for Glass
 #
 # Pane is a small, TOTAL, DETERMINISTIC query algebra over typed Glass data,
 # with a reference interpreter (`run_query`). It is designed from day one to
-# connect to FROST — a future zero-knowledge extension that proves facts about
+# connect to FROST: a future zero-knowledge extension that proves facts about
 # query results without revealing the data.
 #
 # THE FROST CONNECTION (why the design is shaped this way)
@@ -11,24 +11,24 @@
 # Frost will be a SECOND backend over the very same `Query` / `PExpr` ASTs:
 # instead of executing a query, it lowers the query into a zero-knowledge
 # circuit, so a prover can demonstrate "the result of query Q over my private
-# table T (committed to as root C) is R" — revealing only Q, C, and R.
+# table T (committed to as root C) is R": revealing only Q, C, and R.
 #
 # That goal forces five properties, all honoured below:
-#   1. Queries and predicates are DATA (ADTs), not opaque Glass closures — a
+#   1. Queries and predicates are DATA (ADTs), not opaque Glass closures: a
 #      circuit compiler can introspect an AST but not a closure.
-#   2. Predicates are a FINITE, non-recursive expression language — each node
+#   2. Predicates are a FINITE, non-recursive expression language, each node
 #      maps to a fixed circuit gadget (eq, range, mul, mux).
-#   3. `run_query` is a fold over rows — mirrors a circuit that processes a
+#   3. `run_query` is a fold over rows: mirrors a circuit that processes a
 #      bounded (padded) table row-by-row.
 #   4. Scalars are field-element-friendly (Int, Bool now; String later as a
 #      hash/commitment).
-#   5. Tables are committable — Frost proves results against a commitment.
+#   5. Tables are committable: Frost proves results against a commitment.
 #
 # This mirrors the rest of Glass: a REFERENCE semantics (this interpreter,
 # like prism/glass.py) plus a COMPILER that must agree with it bit-for-bit
 # (Frost, like quartz/glassc), validated by differential testing.
 #
-# v0.1 scope: in-memory tables of Glass data ("view data in Glass itself").
+# Scope: in-memory tables of Glass data ("view data in Glass itself").
 # External sources (files/SQL/HTTP) come later as effectful loaders that
 # produce a Table; the query algebra over that Table is unchanged.
 # =============================================================================
@@ -66,7 +66,7 @@ type PExpr =
   | MulE(PExpr, PExpr)
 
 # --- Query (relational algebra) ----------------------------------------------
-# Each operator is a per-row transform or a bounded accumulation — the shape a
+# Each operator is a per-row transform or a bounded accumulation: the shape a
 # ZK circuit can process over a fixed-size table.
 type Query =
   | From(Table)                  # base table (the committed data, for Frost)
@@ -296,7 +296,7 @@ let depts : Table =
 let _ : String = print("SUM(salary) GROUP BY dept (0, 1):")
 let _ : String = print(run_show(GroupByQ("dept", "salary", [0, 1], From(depts))))
 
-# AVG(salary) of dept 0 — reported as sum + count (avg = sum/count, no field division)
+# AVG(salary) of dept 0: reported as sum + count (avg = sum/count, no field division)
 let _ : String = print("AVG(salary) WHERE dept=0, as sum + count:")
 let _ : String = print(run_show(AvgQ("salary", Where(EqE(Col("dept"), LitI(0)), From(depts)))))
 
@@ -305,4 +305,4 @@ let _ : String = print("MIN(salary) / MAX(salary):")
 let _ : String = print(run_show(MinQ("salary", From(depts))))
 let _ : String = print(run_show(MaxQ("salary", From(depts))))
 
-"pane v0.1 — query algebra + reference interpreter (Frost-ready)"
+"pane: query algebra + reference interpreter (Frost-ready)"

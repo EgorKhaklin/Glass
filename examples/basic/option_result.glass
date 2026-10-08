@@ -1,9 +1,9 @@
-# v0.1 demo: sum types, Option, Result, exhaustive matching.
+# option_result.glass: sum types, Option, Result, exhaustive matching.
 #
-# This is the Rust influence made concrete. Where v0.0.1 had no way to
-# represent "might fail" except by convention, Glass now has Option<T> and
+# This is the Rust influence made concrete. Instead of representing
+# "might fail" by convention, Glass has Option<T> and
 # Result<T, E> in the prelude. Match expressions must cover every constructor
-# or include a wildcard — non-exhaustive matches are a type error.
+# or include a wildcard: non-exhaustive matches are a type error.
 
 # Safe division: returns Option<Int> so callers must handle the zero case.
 fn safe_div(a: Int, b: Int) : Option<Int> =

@@ -1,9 +1,9 @@
-# Frost — a zero-knowledge proof system, built in Glass
+# Frost: a zero-knowledge proof system, built in Glass
 
 Frost is a zk-STARK written from scratch in Glass: its own finite field, hash,
 Merkle trees, arithmetization, polynomial machinery, low-degree test, and the
-two ingredients of cryptographic security — a real extension field and
-amplified Fiat-Shamir queries — ending in **a proof that a computation ran
+two ingredients of cryptographic security: a real extension field and
+amplified Fiat-Shamir queries: ending in **a proof that a computation ran
 correctly, that is sound, succinct, *and* zero-knowledge.**
 
 No libraries. No elliptic curves. Every file runs on the interpreter and
@@ -11,47 +11,55 @@ compiles identically through the self-hosted toolchain.
 
 ## Read it as a journey
 
-**Arithmetize — turn computation into algebra**
-1. [`frost.glass`](frost.glass) — finite field, arithmetic circuits, lowering predicates to gates.
-2. [`frost_commit.glass`](frost_commit.glass) — a hash (MiMC) and Merkle trees: how to commit to data.
-3. [`frost_query.glass`](frost_query.glass) — a whole query compiled to a circuit (the range/comparison gadget).
-4. [`frost_zk.glass`](frost_zk.glass) — one circuit proving *membership ∧ a query result*.
+**Arithmetize: turn computation into algebra**
+1. [`frost.glass`](frost.glass): finite field, arithmetic circuits, lowering predicates to gates.
+2. [`frost_commit.glass`](frost_commit.glass): a hash (MiMC) and Merkle trees: how to commit to data.
+3. [`frost_query.glass`](frost_query.glass): a whole query compiled to a circuit (the range/comparison gadget).
+4. [`frost_zk.glass`](frost_zk.glass): one circuit proving *membership ∧ a query result*.
 
-**Prove — convince a verifier without re-running everything**
-5. [`frost_prove.glass`](frost_prove.glass) — Fiat-Shamir + random linear combination: a sound, non-interactive proof.
-6. [`frost_pcs.glass`](frost_pcs.glass) — polynomial interpolation: the bridge from data to polynomials.
+**Prove: convince a verifier without re-running everything**
+5. [`frost_prove.glass`](frost_prove.glass): Fiat-Shamir + random linear combination: a sound, non-interactive proof.
+6. [`frost_pcs.glass`](frost_pcs.glass): polynomial interpolation: the bridge from data to polynomials.
 
-**FRI — the low-degree test at the heart of a STARK**
-7. [`frost_fri.glass`](frost_fri.glass) — folding: a low-degree polynomial collapses to a constant.
-8. [`frost_stark.glass`](frost_stark.glass) — commit every round + a query phase that catches a cheating prover.
-9. [`frost_air.glass`](frost_air.glass) — a full AIR: prove a *computation* via a low-degree quotient.
+**FRI: the low-degree test at the heart of a STARK**
+7. [`frost_fri.glass`](frost_fri.glass): folding: a low-degree polynomial collapses to a constant.
+8. [`frost_stark.glass`](frost_stark.glass): commit every round + a query phase that catches a cheating prover.
+9. [`frost_air.glass`](frost_air.glass): a full AIR: prove a *computation* via a low-degree quotient.
 
 **Make it cryptographic**
-10. [`frost_fiat.glass`](frost_fiat.glass) — Fiat-Shamir query sampling + amplification (soundness → 2⁻ᴷ).
-11. [`frost_ext.glass`](frost_ext.glass) — an extension field F_{p⁴} (~2¹²⁴), all in int64.
-12. [`frost_fri_ext.glass`](frost_fri_ext.glass) — folding with extension-field challenges.
-13. [`frost_crypto.glass`](frost_crypto.glass) — the two soundness axes composed into one FRI.
+10. [`frost_fiat.glass`](frost_fiat.glass): Fiat-Shamir query sampling + amplification (soundness → 2⁻ᴷ).
+11. [`frost_ext.glass`](frost_ext.glass): an extension field F_{p⁴} (~2¹²⁴), all in int64.
+12. [`frost_fri_ext.glass`](frost_fri_ext.glass): folding with extension-field challenges.
+13. [`frost_crypto.glass`](frost_crypto.glass): the two soundness axes composed into one FRI.
 
 **Make it zero-knowledge**
-14. [`frost_zk_blind.glass`](frost_zk_blind.glass) — blinding: openings reveal nothing about the witness.
-15. [`frost_perm.glass`](frost_perm.glass) — the permutation argument (copy constraints).
+14. [`frost_zk_blind.glass`](frost_zk_blind.glass): blinding: openings reveal nothing about the witness.
+15. [`frost_perm.glass`](frost_perm.glass): the permutation argument (copy constraints).
 
 **The capstone**
-16. [`frost_starkzk.glass`](frost_starkzk.glass) — one end-to-end zk-STARK: sound, succinct, zero-knowledge.
+16. [`frost_starkzk.glass`](frost_starkzk.glass): one end-to-end zk-STARK: sound, succinct, zero-knowledge.
 
 **Sharper primitives** *(drop-in upgrades that harden the toy parts)*
-- [`frost_poseidon.glass`](frost_poseidon.glass) — **Poseidon**, the standard ZK hash, from scratch: an `x⁷` S-box (a real *permutation* on Baby Bear, unlike MiMC's `x⁵`), full/partial rounds, and an MDS mix — the construction production STARKs actually use.
-- [`frost_ntt.glass`](frost_ntt.glass) — a recursive **O(n log n) NTT** (Cooley–Tukey), replacing the O(n²) transform under interpolation and FRI.
-- [`frost_field.glass`](frost_field.glass) — a **128-bit field** (2¹²⁸ − 159) from base-2¹⁶ bignum limbs: arithmetic past the single-int64 ceiling.
-- [`frost_goldilocks.glass`](frost_goldilocks.glass) — the **Goldilocks field** (2⁶⁴ − 2³² + 1), the one real STARK provers (Plonky2, RISC Zero) run on: its signature division-free fast reduction (2⁶⁴ ≡ 2³² − 1), a real Fermat inverse (the exponent p − 2 overflows int64, so it's walked in limbs too), and the 2³²-th root of unity that gives it 32 NTT layers — all int64-safe, so it dogfoods.
-- [`frost_goldilocks_fri.glass`](frost_goldilocks_fri.glass) — the **FRI low-degree test over Goldilocks**: the STARK's core engine on the real field. A 2ᵏ-root-of-unity domain, the fold `(f(x)+f(−x))/2 + β·(f(x)−f(−x))/(2x)` with the limb-walked inverse — a low-degree codeword folds to a constant, a tampered one doesn't. Int64-safe, dogfooded.
-- [`frost_goldilocks_ext.glass`](frost_goldilocks_ext.glass) — **F_{p²} ≈ 2¹²⁸ over Goldilocks**, the cryptographic challenge space: the degree-2 extension `F_p[X]/(X²−7)` with norm-based (int64-safe) inversion, and FRI folded with β ∈ F_{p²} (~2¹²⁸ per-round soundness, not a guessable 2⁶⁴). Honest folds to a constant, tampered doesn't. Dogfooded.
-- [`frost_goldilocks_stark.glass`](frost_goldilocks_stark.glass) — **a committed, query-verified FRI over Goldilocks**, the cryptographic STARK core complete: Merkle commitment (Goldilocks MiMC, x⁷), Fiat-Shamir β ∈ F_{p²} from each root, and sampled queries that open each `(f(x), f(−x))` pair with a Merkle path, recompute the fold, and check it against the next layer. Honest ACCEPT (0 faults); a faked final layer REJECTs (caught at every query). The Baby Bear `frost_crypto` capstone, now on the production field — int64-safe, dogfooded.
-- [`frost_goldilocks_zk.glass`](frost_goldilocks_zk.glass) — **zero-knowledge over Goldilocks**, the arc's terminal: the codeword is masked with a random low-degree polynomial, so it still folds to a constant (the proof ACCEPTs) but the commitment and every opened value are randomized. Two blinding seeds give two different valid proofs of the same statement — the verifier learns only "low-degree", nothing about the codeword. **Sound + committed + zero-knowledge over Goldilocks** — the full zk-STARK shape on the production field. Dogfooded.
-- [`frost_logup.glass`](frost_logup.glass) — a **LogUp (log-derivative) range-lookup argument** over Goldilocks/F_{p²}: prove values are each in `[0, 2ᵏ)` by a lookup into the **dense** table `{0..2ᵏ−1}`, via `Σ_j 1/(β − aⱼ) == Σ_i mᵢ/(β − Tᵢ)` (sound by Schwartz–Zippel + partial-fraction uniqueness). The cheaper, wider alternative to the bridge's ~32-gate bit-decomposition range gadget. Designed + adversarially red-teamed (the dense table closes the sparse-support cancellation hole that would ACCEPT an out-of-range value); β ∈ F_{p²} for the soundness margin; degenerate β ABSTAINs. Honest in-range ACCEPTs; out-of-range + forged-multiplicity REJECT; dogfooded. The standalone foundation of the cheap-range frontier — wiring it in-circuit (a constrained running-sum column in both verifiers, replacing `range_k`) is the documented multi-session next step.
-- [`frost_logup_air.glass`](frost_logup_air.glass) — the LogUp argument in its **in-circuit running-sum (AIR) form**: a committed column `S` (`S_0=0`, `S_{k+1}=S_k+numₖ/(β−vₖ)`, lookup holds iff `S_N=0`) checked by **boundary** (`S_0=S_N=0`) + **transition** (`(S_{k+1}−Sₖ)(β−vₖ)=numₖ`) constraints — the sibling of the PLONK grand-product `Z`. Demonstrates *why the transition constraint is load-bearing*: a forged `S≡0` **fools a boundary-only check** (would certify an out-of-range lookup) but is **caught by the transition** — so `S` must be a *constrained* committed column, never accepted by a final-value check alone. The integration-shaped step between the LogUp math and the in-circuit wiring. Dogfooded.
-- [`frost_logup_committed.glass`](frost_logup_committed.glass) — the LogUp argument with a **Fiat-Shamir challenge**: β is derived by hashing a **commitment to the whole trace** (MiMC, fresh tags 141/142), so the prover commits *before* knowing β and cannot adapt the values to a lucky β (commit-then-challenge soundness — the property the fixed-β demos deferred). β is bound to the trace (honest β ≠ out-of-range β); honest ACCEPTs at its β, out-of-range REJECTs at *its* β. Completes the standalone LogUp arc (identity → running-sum/AIR → committed+FS, mirroring `frost_goldilocks_fri → …_stark`). Dogfooded.
+- [`frost_poseidon.glass`](frost_poseidon.glass) (**Poseidon**, the standard ZK hash, from scratch: an `x⁷` S-box (a real *permutation* on Baby Bear, unlike MiMC's `x⁵`), full/partial rounds, and an MDS mix) the construction production STARKs actually use.
+- [`frost_ntt.glass`](frost_ntt.glass): a recursive **O(n log n) NTT** (Cooley–Tukey), replacing the O(n²) transform under interpolation and FRI.
+- [`frost_field.glass`](frost_field.glass): a **128-bit field** (2¹²⁸ − 159) from base-2¹⁶ bignum limbs: arithmetic past the single-int64 ceiling.
+- [`frost_goldilocks.glass`](frost_goldilocks.glass): the **Goldilocks field** (2⁶⁴ − 2³² + 1), the one real STARK provers (Plonky2, RISC Zero) run on: its signature division-free fast reduction (2⁶⁴ ≡ 2³² − 1), a real Fermat inverse (the exponent p − 2 overflows int64, so it's walked in limbs too), and the 2³²-th root of unity that gives it 32 NTT layers: all int64-safe, so it dogfoods.
+- [`frost_goldilocks_fri.glass`](frost_goldilocks_fri.glass): the **FRI low-degree test over Goldilocks**: the STARK's core engine on the real field. A 2ᵏ-root-of-unity domain, the fold `(f(x)+f(−x))/2 + β·(f(x)−f(−x))/(2x)` with the limb-walked inverse: a low-degree codeword folds to a constant, a tampered one doesn't. Int64-safe, dogfooded.
+- [`frost_goldilocks_ext.glass`](frost_goldilocks_ext.glass): **F_{p²} ≈ 2¹²⁸ over Goldilocks**, the cryptographic challenge space: the degree-2 extension `F_p[X]/(X²−7)` with norm-based (int64-safe) inversion, and FRI folded with β ∈ F_{p²} (~2¹²⁸ per-round soundness, not a guessable 2⁶⁴). Honest folds to a constant, tampered doesn't. Dogfooded.
+- [`frost_goldilocks_stark.glass`](frost_goldilocks_stark.glass): **a committed, query-verified FRI over Goldilocks**, the cryptographic STARK core complete: Merkle commitment (Goldilocks MiMC, x⁷), Fiat-Shamir β ∈ F_{p²} from each root, and sampled queries that open each `(f(x), f(−x))` pair with a Merkle path, recompute the fold, and check it against the next layer. Honest ACCEPT (0 faults); a faked final layer REJECTs (caught at every query). The Baby Bear `frost_crypto` capstone, now on the production field: int64-safe, dogfooded.
+- [`frost_goldilocks_zk.glass`](frost_goldilocks_zk.glass): **zero-knowledge over Goldilocks**, the arc's terminal: the codeword is masked with a random low-degree polynomial, so it still folds to a constant (the proof ACCEPTs) but the commitment and every opened value are randomized. Two blinding seeds give two different valid proofs of the same statement: the verifier learns only "low-degree", nothing about the codeword. **Sound + committed + zero-knowledge over Goldilocks**: the full zk-STARK shape on the production field. Dogfooded.
+- [`frost_goldilocks_poseidon.glass`](frost_goldilocks_poseidon.glass): **Poseidon over Goldilocks, byte-exact to Plonky2** (t=12, 8 full + 22 partial rounds, x⁷, Plonky2's MDS and all 360 round constants), checked against Plonky2's published test vectors. Kept as a vector-checked reference.
+- [`frost_goldilocks_merkle.glass`](frost_goldilocks_merkle.glass): a **Poseidon Merkle commitment over Goldilocks** (Plonky2's `two_to_one` and `hash_no_pad`), with inclusion proofs; a leaf not in the tree or a tampered root is rejected.
+- [`frost_goldilocks_fiat.glass`](frost_goldilocks_fiat.glass): a **domain-separated Fiat-Shamir transcript** over the Goldilocks Poseidon: every absorb and squeeze is tagged by role, and every challenge binds all prior commitments. A standalone module, not wired into the prover.
+- [`frost_goldilocks_poseidon2.glass`](frost_goldilocks_poseidon2.glass): **Poseidon2 over Goldilocks, byte-exact to Plonky3** (R_F=8, R_P=22, x⁷, external M4-based and internal diagonal linear layers), built from the public spec. This is the hash family the default prover uses.
+- [`frost_grain.glass`](frost_grain.glass): the **Grain-LFSR** generator the Poseidon spec uses to fix its round constants, plus a domain-separated transcript, over Baby Bear.
+- [`frost_m31.glass`](frost_m31.glass): the **Mersenne-31 field** (p = 2³¹ − 1), the base field of Circle STARKs; one `Int` per element, reduced by folding.
+- [`frost_m31_circle.glass`](frost_m31_circle.glass): the **circle group** over M31 (order 2³¹), the structure Circle-STARK FFTs and FRI fold over.
+- [`frost_logup.glass`](frost_logup.glass): a **LogUp (log-derivative) range-lookup argument** over Goldilocks/F_{p²}: prove values are each in `[0, 2ᵏ)` by a lookup into the **dense** table `{0..2ᵏ−1}`, via `Σ_j 1/(β − aⱼ) == Σ_i mᵢ/(β − Tᵢ)` (sound by Schwartz–Zippel + partial-fraction uniqueness). A cheaper, wider alternative to the bridge's bit-decomposition range gadget. The dense table closes the sparse-support cancellation hole that would ACCEPT an out-of-range value; β ∈ F_{p²}; a degenerate β ABSTAINs. Honest in-range ACCEPTs; out-of-range and forged multiplicities REJECT. Standalone: it is not wired into the prover.
+- [`frost_logup_air.glass`](frost_logup_air.glass): the LogUp argument in its **in-circuit running-sum (AIR) form**: a committed column `S` (`S_0=0`, `S_{k+1}=S_k+numₖ/(β−vₖ)`, lookup holds iff `S_N=0`) checked by **boundary** (`S_0=S_N=0`) + **transition** (`(S_{k+1}−Sₖ)(β−vₖ)=numₖ`) constraints: the sibling of the PLONK grand-product `Z`. Demonstrates *why the transition constraint is load-bearing*: a forged `S≡0` **fools a boundary-only check** (would certify an out-of-range lookup) but is **caught by the transition**, so `S` must be a *constrained* committed column. Dogfooded.
+- [`frost_logup_committed.glass`](frost_logup_committed.glass): the LogUp argument with a **Fiat-Shamir challenge**: β is derived by hashing a **commitment to the whole trace** (MiMC, fresh tags 141/142), so the prover commits *before* knowing β and cannot adapt the values to a lucky β (commit-then-challenge soundness: the property the fixed-β demos deferred). β is bound to the trace (honest β ≠ out-of-range β); honest ACCEPTs at its β, out-of-range REJECTs at *its* β. Completes the standalone LogUp arc (identity, running-sum/AIR, committed with Fiat-Shamir). Dogfooded.
 
 > Honest note: the field and parameters are real enough to be *correct* and to
 > demonstrate every property; the sizes are kept small so each file reads in one
-> sitting. It's a working zk-STARK to learn from, not a hardened production prover.
+> sitting. It is a working zk-STARK to learn from, not a hardened production prover.
+> Research/educational-grade, UNAUDITED: do not protect real value.

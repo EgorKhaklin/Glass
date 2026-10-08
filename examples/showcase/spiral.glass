@@ -1,8 +1,8 @@
 # =============================================================================
-# The golden spiral, in Glass — self-similarity made of Fibonacci squares.
+# The golden spiral, in Glass: self-similarity made of Fibonacci squares.
 #
 # A golden rectangle has sides in ratio φ. Lay a square on its short side
-# and what remains is ANOTHER golden rectangle, smaller by φ — repeat
+# and what remains is ANOTHER golden rectangle, smaller by φ: repeat
 # forever, and the nested squares trace the golden (Fibonacci) spiral.
 # That "remove a square, get the same shape back" is self-similarity, and
 # it's exact in Int when the sides are consecutive Fibonacci numbers:
@@ -26,7 +26,7 @@ fn aspect_milli(a: Int, b: Int where (b > 0)) : Int = a * 1000 / b
 
 fn gcd(a: Int, b: Int) : Int = if b == 0 then a else gcd(b, a % b)
 
-# Sum of the first n Fibonacci numbers — closed form F(n+2) − 1.
+# Sum of the first n Fibonacci numbers: closed form F(n+2) − 1.
 fn fib_sum(n: Int) : Int = fib(n + 2) - 1
 
 # ---- Demo -------------------------------------------------------------------

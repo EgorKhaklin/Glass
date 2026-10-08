@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Differential + tamper check across the committed proof corpus. For every honest proof
-# fixture in pentecost/corpus/, the independent Pentecost verifier must:
+# fixture in lens/corpus/, the independent Lens verifier must:
 #   1. ACCEPT the honest proof                       (two verifiers agree, on varied shapes)
 #   2. REJECT a tamper in the PROOF region           (proof-binding)
 #   3. REJECT a tamper in the GATES region           (statement-binding)
@@ -11,7 +11,7 @@ import sys, os, glob, gzip
 sys.setrecursionlimit(100000)
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _root)
-from pentecost.pentecost_verify import parse, verify_b3
+from lens.verify import parse, verify_b3
 
 def load_tokens(path):
     """Fixtures are stored gzipped (token streams compress ~3-5x); read either form."""
@@ -34,8 +34,8 @@ def accepts(toks):
 # honest ACCEPT, and fixtures under the threshold ALSO get proof- and claim-region tamper checks.
 # Which fixtures were tamper-checked vs accept-only is logged (no silent cap).
 TAMPER_MAX_TOKENS = 250000
-corpus = sorted(glob.glob(os.path.join(_root, "pentecost", "corpus", "*.b3.txt*")))
-assert corpus, "no corpus fixtures under pentecost/corpus/"
+corpus = sorted(glob.glob(os.path.join(_root, "lens", "corpus", "*.b3.txt*")))
+assert corpus, "no corpus fixtures under lens/corpus/"
 fails = []; tampered = []; accept_only = []
 for path in corpus:
     name = os.path.basename(path)

@@ -1,10 +1,10 @@
 # =============================================================================
-# runtime_refine_bad.glass — negative demo for v4.23.
+# runtime_refine_bad.glass: negative demo for runtime refinement checks.
 #
 # Like runtime_refine.glass, the argument is a let-bound variable that
 # static discharge can't fold, so the static check defers. At runtime
 # prism evaluates the predicate (n > 0) against the actual value (0),
-# which fails — and prism's eval returns an Err with the violation
+# which fails, and prism's eval returns an Err with the violation
 # message. The outer demo loop in prism.glass surfaces this as
 # "compile error: refinement violated at runtime: n = 0 fails predicate".
 # =============================================================================

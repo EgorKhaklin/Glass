@@ -1,7 +1,7 @@
 # =============================================================================
-# prove_source_goldilocks_bind_test.glass — statement-binding tamper test
+# prove_source_goldilocks_bind_test.glass: statement-binding tamper test
 #
-# Demonstrates (empirically) that the v5.x statement-binding digest distinguishes:
+# Demonstrates (empirically) that the statement-binding digest distinguishes:
 #   (1) two different claimed results R       -> different stmt_seed
 #   (2) a reordered / relabeled gate list     -> different stmt_seed
 #   (3) the honest circuit equals itself      -> identical stmt_seed (sanity)
@@ -9,9 +9,9 @@
 # so it runs in seconds on the interpreter and dogfoods byte-identical. It mirrors
 # the inline demo of frost_grain.glass ("tamper -> beta changes").
 #
-# Self-contained: inlines the field/digest functions + a FROZEN Plonky2-v1 Poseidon. As of
-# v5.70.0 the live bridge hashg uses Poseidon2 (Plonky3); this test is INTENTIONALLY decoupled
-# from the live hash — it is a deterministic check that the gate_dig / stmt_seed binding LOGIC
+# Self-contained: inlines the field/digest functions + a FROZEN Plonky2 Poseidon. The
+# live bridge hashg uses Poseidon2 (Plonky3); this test is INTENTIONALLY decoupled
+# from the live hash: it is a deterministic check that the gate_dig / stmt_seed binding LOGIC
 # (every challenge depends on the statement) holds, which is hash-shape-agnostic. So the inlined
 # perm here is a frozen Plonky2 fixture, NOT a claim of equivalence with the live bridge hash.
 #
@@ -19,7 +19,7 @@
 # (This is a pure-determinism check; its hashg/gate_dig/circuit_digest are byte-identical
 #  to prove_source_goldilocks_zk.glass, which itself dogfoods + runs native. As a tiny
 #  standalone file it triggers the known gold_* native-builtin-lowering quirk, so it is
-#  interpreter-verified only — it does not exercise the STARK, just the digest binding.)
+#  interpreter-verified only: it does not exercise the STARK, just the digest binding.)
 # =============================================================================
 
 fn lmod(x: Int) : Int = x % 65536
@@ -105,4 +105,4 @@ let _ : String = print("different R         -> seed changes  (must be yes): " ++
 let _ : String = print("reordered operands -> seed changes  (must be yes): " ++ show_b(diffG))
 # machine-checkable verdict line the test suite greps for (guards against a no-op regression)
 let _ : String = print("BIND-GUARD " ++ (if ok then "PASS" else "FAIL") ++ " same=" ++ show_b(same) ++ " diffR=" ++ show_b(diffR) ++ " diffG=" ++ show_b(diffG))
-if ok then "bind test PASS — the FS digest binds circuit structure + claimed R" else "bind test FAIL — the statement-binding digest is a NO-OP"
+if ok then "bind test PASS, the FS digest binds circuit structure + claimed R" else "bind test FAIL, the statement-binding digest is a NO-OP"

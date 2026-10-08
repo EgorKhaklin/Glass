@@ -1,5 +1,5 @@
 # =============================================================================
-# frost_goldilocks_zk.glass — a ZERO-KNOWLEDGE FRI over Goldilocks (H2, terminal)
+# frost_goldilocks_zk.glass: a ZERO-KNOWLEDGE FRI over Goldilocks (H2, terminal)
 #
 # The Goldilocks arc's last step. frost_goldilocks_stark made the FRI SOUND and
 # COMMITTED over the production field; this makes it ZERO-KNOWLEDGE, the same way
@@ -7,14 +7,14 @@
 #
 # A low-degree codeword f is masked with a random low-degree polynomial R:
 # f'(x) = f(x) + R(x). Since deg R is below the fold-to-constant bound, f' is
-# still low-degree — it folds to a constant and the proof ACCEPTs — but the
+# still low-degree, it folds to a constant and the proof ACCEPTs, but the
 # committed codeword, its Merkle root, and every opened value are now randomized
 # by R. Two independent blinding seeds therefore produce two *different* valid
 # proofs of the same statement: the verifier learns "this is a low-degree
-# codeword" and nothing about f. That is the zero-knowledge property — the proof
+# codeword" and nothing about f. That is the zero-knowledge property: the proof
 # is simulatable from public data alone.
 #
-# Sound + committed + zero-knowledge, over Goldilocks, int64-safe — the full
+# Sound + committed + zero-knowledge, over Goldilocks, int64-safe: the full
 # zk-STARK shape on the field real provers use. Dogfoods byte-identical. Heavy
 # interpreted; run natively (examples/selfhost/run_native.sh).
 # =============================================================================
@@ -184,4 +184,4 @@ let _ : String = print("")
 let _ : String = print("both proofs accept, yet commitment and openings are randomized -> the verifier learns")
 let _ : String = print("only \"low-degree\", nothing about f. SOUND + COMMITTED + ZERO-KNOWLEDGE, over Goldilocks.")
 
-"frost goldilocks zk v0.1 (H2) — a zero-knowledge FRI over Goldilocks via low-degree blinding"
+"frost goldilocks zk (H2): a zero-knowledge FRI over Goldilocks via low-degree blinding"

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Glass — playground</title>
+<title>Glass: playground</title>
 <link rel="preconnect" href="https://cdn.jsdelivr.net">
 <style>
   :root {
@@ -277,7 +277,7 @@
       <polygon points="4,16 28,16" />
     </svg>
     <div>
-      <h1>Glass<span class="v">v5.100.0</span></h1>
+      <h1>Glass<span class="v">1.0.0</span></h1>
       <div class="tagline">A pure functional, self-hosting language with a from-scratch zero-knowledge prover. This playground runs the interpreter in your browser.</div>
     </div>
   </div>
@@ -310,7 +310,7 @@
 </main>
 
 <footer>
-  <span>Glass v5.100.0 · running in <a href="https://pyodide.org" target="_blank" rel="noopener">Pyodide</a></span>
+  <span>Glass 1.0.0 · running in <a href="https://pyodide.org" target="_blank" rel="noopener">Pyodide</a></span>
   <a href="https://github.com/EgorKhaklin/Glass" target="_blank" rel="noopener">GitHub</a>
   <span>Dual-licensed Apache-2.0 OR MIT</span>
 </footer>
@@ -357,10 +357,10 @@ sum_tree(t)
 </script>
 
 <script id="ex-refinement" type="text/glass">
-# Refinement types — runtime + static discharge.
+# Refinement types: runtime + static discharge.
 fn safe_div(a: Int, b: Int where (b != 0)) : Int = a / b
 
-# These discharge at compile time — no runtime check.
+# These discharge at compile time: no runtime check.
 let r1 = safe_div(100, 5)
 let r2 = safe_div(36, 6)
 
@@ -377,14 +377,14 @@ let r3 = safe_div(60, positive(3))
 </script>
 
 <script id="ex-effects" type="text/glass">
-# Effect rows — each function declares what it can do.
+# Effect rows, each function declares what it can do.
 fn double(n: Int) : Int = n * 2
 
 fn shout(msg: String) : String !{IO} =
   print(msg ++ "!")
 
 # `shout` carries the IO effect on its arrow.
-# `double` is pure — type-system-enforced.
+# `double` is pure: type-system-enforced.
 
 let _ = shout("hello from Glass")
 double(21)
@@ -428,7 +428,7 @@ results
 </script>
 
 <script id="ex-regex" type="text/glass">
-# A tiny regex engine — literal + alternation + Kleene star.
+# A tiny regex engine: literal + alternation + Kleene star.
 type Regex =
   | RChar(String)
   | RAlt(Regex, Regex)

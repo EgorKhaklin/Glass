@@ -1,16 +1,16 @@
 # =============================================================================
 # The golden ratio φ, as an exact integer refinement, in Glass.
 #
-# φ = (1 + √5) / 2 ≈ 1.618 is irrational — Glass has no floats. But φ has a
+# φ = (1 + √5) / 2 ≈ 1.618 is irrational: Glass has no floats. But φ has a
 # beautiful EXACT integer fingerprint: a pair (a, b) of consecutive
 # Fibonacci numbers satisfies
 #
 #       | a² − a·b − b² | = 1
 #
 # and these are precisely the best rational approximations a/b → φ. So we
-# can REFINE a type to "is a golden pair" using only Int arithmetic — no
+# can REFINE a type to "is a golden pair" using only Int arithmetic: no
 # tolerance, no floats. The refinement on `b` references the earlier
-# param `a` (cross-parameter refinement, v4.56).
+# param `a` (a cross-parameter refinement).
 #
 # Demonstrated: the Fibonacci sequence, the golden fingerprint holding
 # (±1) on consecutive pairs, the ratio a·1000/b converging on 1618, and

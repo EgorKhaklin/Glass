@@ -1,5 +1,5 @@
 # =============================================================================
-# regex.glass — a small regex engine written entirely in pure Glass.
+# regex.glass: a small regex engine written entirely in pure Glass.
 #
 # Supports:
 #   literal characters       a
@@ -12,7 +12,7 @@
 #   grouping                 (ab|cd)
 #
 # Doesn't support: character classes [a-z], anchors ^$, backreferences,
-# escape sequences. Just the core algebra — but enough to show off the
+# escape sequences. Just the core algebra, but enough to show off the
 # language's range: ADTs, pattern matching, recursion, closures (via
 # continuations), refinements, polymorphism, all in one file.
 #

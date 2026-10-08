@@ -5,10 +5,10 @@
 # Glass type checker knows every value flowing OUT of that function
 # satisfies the predicate. At the next call site, if the receiving
 # parameter has the same predicate (up to binder name), the precondition
-# is discharged statically — no runtime check fires.
+# is discharged statically: no runtime check fires.
 #
-# This is the v1.3 advance over v1.2. v1.2 discharged refinements when
-# the argument was a CONSTANT. v1.3 also discharges when the argument is
+# Refinements are discharged statically when the argument is a CONSTANT,
+# and also when the argument is
 # a CALL to a function whose return refinement matches.
 # =============================================================================
 
@@ -28,7 +28,7 @@ fn square(n: Int) : Int where (result >= 0) =
 fn add_nn(a: Int where (a >= 0), b: Int where (b >= 0)) : Int where (result >= 0) =
   a + b
 
-# Max of any two ints is at most one of them — and since either could be
+# Max of any two ints is at most one of them, and since either could be
 # negative, we coerce through abs to keep the non-negativity guarantee.
 fn max_nn(a: Int, b: Int) : Int where (result >= 0) =
   if a >= b then abs(a) else abs(b)
@@ -79,7 +79,7 @@ fn show_int_list(xs: List<Int>) : String =
 
 let _ = print("composed refinements: [" ++ show_int_list(summary))
 let _ = print("")
-let _ = print("each call to sqrt_floor was discharged statically —")
+let _ = print("each call to sqrt_floor was discharged statically:")
 let _ = print("the compiler proved each argument was non-negative via")
 let _ = print("the return-type refinements of abs / square / add_nn / max_nn.")
 

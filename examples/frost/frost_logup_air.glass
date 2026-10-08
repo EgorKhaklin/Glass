@@ -1,11 +1,11 @@
 # =============================================================================
-# frost_logup_air.glass — the LogUp range argument in its IN-CIRCUIT RUNNING-SUM
+# frost_logup_air.glass: the LogUp range argument in its IN-CIRCUIT RUNNING-SUM
 #                         form, and WHY the transition constraint is load-bearing
 #
 # frost_logup.glass established the LogUp range-lookup MECHANISM as a direct
 # rational-sum equality  Σ_j 1/(β−a_j) == Σ_i m_i/(β−T_i).  To embed it in a STARK
 # (replacing the bit-decomposition range_k), that equality becomes a committed
-# RUNNING-SUM column S with per-row constraints — the same shape as the PLONK
+# RUNNING-SUM column S with per-row constraints: the same shape as the PLONK
 # grand-product Z. This file builds that form standalone and demonstrates the one
 # thing the eventual in-circuit integration MUST get right.
 #
@@ -18,21 +18,21 @@
 # lookup holds IFF S_N = 0.  In a circuit S is a committed column checked by:
 #   • BOUNDARY:    S_0 = 0  AND  S_N = 0
 #   • TRANSITION:  (S_{k+1} − S_k)·(β − v_k) = num_k   for every row k   (cleared
-#                  denominators — no in-AIR inverse, exactly like the Z recurrence)
+#                  denominators: no in-AIR inverse, exactly like the Z recurrence)
 #
 # THE HAZARD (the adversarial design panel's second finding, demonstrated here).
 # A verifier that checks ONLY the boundary `S_N = 0` is UNSOUND: a malicious prover
 # commits S = all-zeros, which satisfies S_0 = S_N = 0 for FREE, and thereby
-# certifies ANY lookup — including an out-of-range value. The TRANSITION constraint
+# certifies ANY lookup, including an out-of-range value. The TRANSITION constraint
 # is what closes it: with S ≡ 0, row 0 gives (0−0)·(β−v_0) = 0 ≠ num_0 = +1, so the
 # transition fails. Below: a forged S=0 over an out-of-range claim is ACCEPTED by a
 # boundary-only check (the hole) and REJECTED once the transition is added (closed).
 #
-# This is standalone (no committed codeword / FRI / prover-verifier split — a Glass
+# This is standalone (no committed codeword / FRI / prover-verifier split: a Glass
 # function computing S and checking the two constraint families directly), int64-safe,
 # dogfooded interp==native. It is the AIR-shaped step between frost_logup.glass (the
 # math) and the in-circuit integration into range_k/lt_build inside verify_b3 AND the
-# Pentecost verifier (the multi-session, soundness-critical step). Research, UNAUDITED.
+# Lens verifier (the large, soundness-critical step). Research, UNAUDITED.
 # =============================================================================
 
 # --- Goldilocks base field via base-2^16 limbs (from frost_goldilocks.glass) -
@@ -117,7 +117,7 @@ fn last_g(ss: List<G2>) : G2 = match ss { [] => g2zero(0); [x] => x; [x, ...r] =
 fn head_g(ss: List<G2>) : G2 = match ss { [] => g2zero(0); [x, ...r] => x }
 # BOUNDARY: S_0 = 0 and S_N = 0.   (alone, this is FOOLED by a forged S ≡ 0.)
 fn boundary_ok(ss: List<G2>) : Bool = geq2(head_g(ss), g2zero(0)) && geq2(last_g(ss), g2zero(0))
-# TRANSITION: (S_{k+1} − S_k)·(β − v_k) == num_k for every row — binds S to the wires.
+# TRANSITION: (S_{k+1} − S_k)·(β − v_k) == num_k for every row: binds S to the wires.
 fn trans_ok(rows: List<Pair<List<Int>, List<Int>>>, ss: List<G2>, beta: G2) : Bool =
   match rows { [] => true; [Pair(v, num), ...r] => match ss {
     [sk, sk1, ...rest] => geq2(gmul2(gsub2(sk1, sk), gsub2(beta, emb(v))), emb(num)) && trans_ok(r, [sk1] ++ rest, beta);
@@ -148,12 +148,12 @@ let _ : String = print("")
 let _ : String = print("HONEST in-range [3,7,7,0,15]:  boundary " ++ show_b(boundary_ok(ss_ok)) ++ ", transition " ++ show_b(trans_ok(rows_ok, ss_ok, beta)) ++ "  -> SOUND verdict: " ++ show_b(logup_air_ok(rows_ok, ss_ok, beta)) ++ "   (ACCEPT)")
 let _ : String = print("OUT-OF-RANGE [3,7,16], honest S:  boundary " ++ show_b(boundary_ok(ss_oob)) ++ " (S_N != 0)  -> SOUND verdict: " ++ show_b(logup_air_ok(rows_oob, ss_oob, beta)) ++ "   (REJECT, caught at the boundary)")
 let _ : String = print("")
-let _ : String = print("THE HAZARD — a malicious prover forges S ≡ 0 to certify the OUT-OF-RANGE [3,7,16]:")
-let _ : String = print("  boundary-ONLY check (the unsound shortcut): " ++ show_b(boundary_ok(ss_forged)) ++ "   (FOOLED — S=0 gives S_0=S_N=0 for free, so it would ACCEPT an out-of-range lookup)")
-let _ : String = print("  + TRANSITION constraint (the fix):         " ++ show_b(trans_ok(rows_oob, ss_forged, beta)) ++ "   (caught — (0−0)(β−v_0) = 0 != num_0 = +1)")
+let _ : String = print("THE HAZARD: a malicious prover forges S ≡ 0 to certify the OUT-OF-RANGE [3,7,16]:")
+let _ : String = print("  boundary-ONLY check (the unsound shortcut): " ++ show_b(boundary_ok(ss_forged)) ++ "   (FOOLED: S=0 gives S_0=S_N=0 for free, so it would ACCEPT an out-of-range lookup)")
+let _ : String = print("  + TRANSITION constraint (the fix):         " ++ show_b(trans_ok(rows_oob, ss_forged, beta)) ++ "   (caught: (0−0)(β−v_0) = 0 != num_0 = +1)")
 let _ : String = print("  SOUND verdict (boundary AND transition):   " ++ show_b(logup_air_ok(rows_oob, ss_forged, beta)) ++ "   (REJECT)")
 let _ : String = print("")
 let _ : String = print("=> the running-sum S MUST be a CONSTRAINED committed column (transition binds it to the")
 let _ : String = print("wires), never accepted by a final-value check alone. That is the in-circuit integration's")
-let _ : String = print("central obligation, in verify_b3 AND Pentecost in lockstep. int64-safe, dogfooded. UNAUDITED.")
+let _ : String = print("central obligation, in verify_b3 AND Lens in lockstep. int64-safe, dogfooded. UNAUDITED.")
 "frost_logup_air.glass"

@@ -1,8 +1,8 @@
 # =============================================================================
-# Epistemic logic as a reasoning game — the Muddy Children, in Glass.
+# Epistemic logic as a reasoning game: the Muddy Children, in Glass.
 #
 # Knowledge is modelled the standard (Kripke) way: a set of possible
-# WORLDS, and for each agent an indistinguishability relation — the
+# WORLDS, and for each agent an indistinguishability relation: the
 # worlds they can't tell apart. An agent KNOWS a fact at world w iff the
 # fact holds in every world they can't distinguish from w.
 #
@@ -13,7 +13,7 @@
 #
 #   worlds:           (c,c) (c,M) (M,c) (M,M)
 #   father:           "at least one of you is muddy"   ⇒ removes (c,c)
-#   round 1:          "does anyone know?"  — nobody does (when both muddy)
+#   round 1:          "does anyone know?": nobody does (when both muddy)
 #   that announcement removes the worlds where someone WOULD know,
 #   round 2:          now both children know they are muddy.
 #
@@ -46,7 +46,7 @@ fn knows_own(c: Int, w: World, live: List<World>) : Bool =
 fn at_least_one_muddy(live: List<World>) : List<World> =
   filter(live, fn(w: World) -> mud(1, w) + mud(2, w) >= 1)
 
-# "Nobody knows their own state" — keep only worlds where that is true.
+# "Nobody knows their own state": keep only worlds where that is true.
 fn announce_nobody_knows(live: List<World>) : List<World> =
   filter(live, fn(w: World) ->
     !(knows_own(1, w, live) || knows_own(2, w, live)))
@@ -70,15 +70,15 @@ fn show_worlds(ws: List<World>) : String =
 
 fn yn(b: Bool) : String = if b then "knows" else "doesn't know"
 
-# ---- The puzzle: actual world is (M, M) — both muddy ------------------------
+# ---- The puzzle: actual world is (M, M), both muddy ------------------------
 
 let actual = W(1, 1)
 let all4   = [W(0, 0), W(0, 1), W(1, 0), W(1, 1)]
 
 let live1 = at_least_one_muddy(all4)
 let live2 = announce_nobody_knows(live1)
-# A third "nobody knows" announcement is now FALSE — both children
-# already know in the sole remaining world — so it prunes everything,
+# A third "nobody knows" announcement is now FALSE, both children
+# already know in the sole remaining world, so it prunes everything,
 # the logical signal that the announcement has run out of content.
 let live3 = announce_nobody_knows(live2)
 
@@ -97,6 +97,6 @@ let _ = print("  child 1 " ++ yn(knows_own(1, actual, live2)) ++
 let _ = print("")
 let _ = print("a third 'nobody knows' is now a FALSE announcement (both know):")
 let _ = print("  live worlds:         " ++ show_worlds(live3) ++
-              "   (empty — knowledge has settled)")
+              "   (empty: knowledge has settled)")
 
 "done"

@@ -1,18 +1,18 @@
 # =============================================================================
-# Game-theoretic types II — dominance and Pareto, in Glass.
+# Game-theoretic types II: dominance and Pareto, in Glass.
 #
 # showcase/nash.glass enumerates equilibria. This one looks at the two
 # other load-bearing solution concepts and the famous tension between
 # them, on the Prisoner's Dilemma:
 #
-#   • STRICT DOMINANCE — a move that beats another no matter what the
+#   • STRICT DOMINANCE: a move that beats another no matter what the
 #     opponent does. If it exists, rational play is forced.
-#   • PARETO DOMINANCE — an outcome where everyone is at least as well
+#   • PARETO DOMINANCE: an outcome where everyone is at least as well
 #     off and someone strictly better.
 #
 # The tragedy of the commons in one table: Defect strictly dominates
 # Cooperate for BOTH players, so (Defect, Defect) is the forced
-# equilibrium — yet (Cooperate, Cooperate) Pareto-dominates it. The
+# equilibrium, yet (Cooperate, Cooperate) Pareto-dominates it. The
 # rational outcome is collectively worse. Both relations are integer
 # comparisons over payoffs, so they're checkable predicates.
 # =============================================================================
@@ -66,7 +66,7 @@ let _ = print("  (Cooperate, Cooperate) = " ++ show_payoff(pd(Coop, Coop)))
 let _ = print("  (Defect, Defect)       = " ++ show_payoff(pd(Defect, Defect)))
 let _ = print("  (C,C) Pareto-dominates (D,D)? " ++
               (if pareto_dominates(pd(Coop, Coop), pd(Defect, Defect))
-               then "YES — everyone does better, yet nobody will choose it"
+               then "YES: everyone does better, yet nobody will choose it"
                else "no"))
 
 "done"

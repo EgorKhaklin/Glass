@@ -1,11 +1,11 @@
 # =============================================================================
-# frost_goldilocks_ext.glass — F_{p^2} over Goldilocks: the cryptographic
+# frost_goldilocks_ext.glass: F_{p^2} over Goldilocks: the cryptographic
 #                              challenge space, and FRI folded with it (H2)
 #
 # frost_goldilocks_fri.glass ran FRI over Goldilocks with a BASE-field fold
 # challenge β. That makes the *mechanism* real but not yet *sound*: a base-field
 # β lives in ~2^64, so a cheating prover guesses it with probability ~2^-64. FRI
-# soundness wants β drawn from a space too big to guess — the standard fix is a
+# soundness wants β drawn from a space too big to guess: the standard fix is a
 # field EXTENSION. Goldilocks p ≈ 2^64, so the degree-2 extension F_{p^2} ≈ 2^128
 # is already a cryptographic challenge space.
 #
@@ -13,11 +13,11 @@
 # of Goldilocks, so 7^((p−1)/2) = −1). Inversion stays int64-safe via the NORM:
 # a^{-1} = conj(a)·N(a)^{-1}, N(a) = a0^2 − W·a1^2 ∈ F_p, inverted with the
 # base Fermat inverse (limb-walked exponent). Then FRI folds a codeword with
-# β ∈ F_{p^2}: a low-degree codeword folds to a constant, a tampered one doesn't —
+# β ∈ F_{p^2}: a low-degree codeword folds to a constant, a tampered one doesn't:
 # now with ~2^128 per-round soundness. All int64-safe, so it DOGFOODS.
 #
 # (Pattern mirrors the Baby Bear path frost_fri → frost_fri_ext. Heavy
-# interpreted — bignum F_{p^2} FRI; run natively for scale.)
+# interpreted: bignum F_{p^2} FRI; run natively for scale.)
 # =============================================================================
 
 # --- Goldilocks base field via base-2^16 limbs (from frost_goldilocks.glass) -
@@ -122,7 +122,7 @@ let finv2 : List<Int> = finv([2])
 let bad : List<G2> = set_nth2(cw, 2, gadd2(nth2(cw, 2), emb([1])))    # corrupt one evaluation
 
 let _ : String = print("--- frost_goldilocks_ext.glass: F_{p^2} over Goldilocks + FRI folded with it (H2) ---")
-let _ : String = print("Goldilocks p ≈ 2^64, so the degree-2 extension F_{p^2} ≈ 2^128 — a cryptographic")
+let _ : String = print("Goldilocks p ≈ 2^64, so the degree-2 extension F_{p^2} ≈ 2^128: a cryptographic")
 let _ : String = print("challenge space for FRI's fold, all int64-safe.")
 let _ : String = print("")
 let _ : String = print("W = 7 is a non-residue (7^((p−1)/2) == −1):  " ++ show_b(nonres))
@@ -135,4 +135,4 @@ let _ : String = print("")
 let _ : String = print("FRI over Goldilocks now has a cryptographic challenge space (F_{p^2} ≈ 2^128), int64-safe")
 let _ : String = print("and dogfooded. remaining for a full STARK: Merkle commitment + Fiat-Shamir sampling.")
 
-"frost goldilocks ext v0.1 (H2) — F_{p^2} over Goldilocks (~2^128) + FRI folded with an extension challenge"
+"frost goldilocks ext (H2): F_{p^2} over Goldilocks (~2^128) + FRI folded with an extension challenge"

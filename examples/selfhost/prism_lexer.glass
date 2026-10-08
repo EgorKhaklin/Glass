@@ -1,10 +1,9 @@
 # =============================================================================
-# v0.8.5 demo: prism.glass — source → type + value, the v1.0 shape, in Glass.
+# prism_lexer.glass: the lexer stage of prism.glass (source → tokens), in Glass.
 #
-# Each component has been proven independently in earlier releases:
-#   v0.8.2  bootstrap.glass : tokens → AST → value
-#   v0.8.3  bootstrap.glass extended; !{File} integration
-#   v0.8.4  infer.glass     : Hindley-Milner inference
+# Each component is proven independently elsewhere:
+#   bootstrap.glass : tokens → AST → value; !{File} integration
+#   infer.glass     : Hindley-Milner inference
 #
 # This file is the assembly. One Glass program. Source goes in, a typed
 # value comes out:
@@ -17,11 +16,11 @@
 #
 # Pure Glass. glass.py runs this file but the SEMANTICS of every stage
 # are Glass-defined here. The grammar is small (typed λ-calc, the same
-# scope as infer.glass) — what matters is that the components compose.
+# scope as infer.glass): what matters is that the components compose.
 #
-# v1.0 is scaling this to Glass's full grammar plus carrying refinements
-# and effects through every stage. The remaining work is volume, not
-# new algorithmic depth.
+# From that core the same stages extend to Glass's fuller grammar,
+# carrying refinements and effects through every stage (see the demo
+# chain at the end of this file).
 # =============================================================================
 
 # --- Data ---------------------------------------------------------------
@@ -219,7 +218,7 @@ fn read_ident(s: String, i: Int, acc: String) : (String, Int) =
 
 # Read a string literal starting after the opening quote. Returns the
 # string content and the index past the closing quote. Does NOT support
-# escapes; that's a v1.0+ polish item.
+# escapes; that's a later polish item.
 fn read_string(s: String, i: Int, acc: String) : (Token, Int) =
   if i >= string_length(s) then (TStr(acc), i)
   else

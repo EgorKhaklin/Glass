@@ -1,10 +1,10 @@
 # =============================================================================
-# prove_source_goldilocks_zk.glass — real Glass SOURCE -> a ZK proof over Goldilocks
+# prove_source_goldilocks_zk.glass: real Glass SOURCE -> a ZK proof over Goldilocks
 #
 # R1b proved a HAND-BUILT circuit over the production field. This drives the same
 # cryptographic Goldilocks STARK from REAL GLASS SOURCE: prism parses the source,
 # a `cgen` lowers it to Goldilocks gates, and the committed, F_{p^2}-challenged,
-# query-verified, blinded STARK proves the result — the source front-end wired
+# query-verified, blinded STARK proves the result: the source front-end wired
 # into the production-field backend.
 #
 # THE PATH.  source text --prism--> Expr AST --unroll--> a call-free term (calls and
@@ -15,7 +15,7 @@
 #
 # SCOPE: `+`, `-`, `*`, `let`, function calls (inlined), and now `==` / `if`. The
 # comparison lowers to a real circuit gadget over the production field: a free
-# inverse-hint wire (GHint) plus an assert (GEqZero) realise is-zero — d = a - b,
+# inverse-hint wire (GHint) plus an assert (GEqZero) realise is-zero: d = a - b,
 # inv = d^-1 (or 0), di = d*inv, z = 1 - di, assert z*d == 0, so z = (a==b), a 0/1
 # wire; `if` is the mux f + c*(t - f). The trace domain is N=16 (the gadget pushes
 # the gate count past 8). `match` / ADTs over bignum remain the next step.
@@ -73,7 +73,7 @@ fn fpow_bn(base: List<Int>, e: List<Int>) : List<Int> =
   if bn_is_zero(e) then [1]
   else let h : List<Int> = fpow_bn(fmul(base, base), bn_half(e)) in
        if bn_is_odd(e) then fmul(base, h) else h
-# CUT THE ROPE (v5.60.0): the field inverse was fpow_bn — ~64 list-rebuilding fmul/bn_half per
+# CUT THE ROPE: the field inverse was fpow_bn: ~64 list-rebuilding fmul/bn_half per
 # call, and finv runs once PER quotient-codeword element / grand-product row (tens of thousands
 # of times per proof). It was 100% of the >11-min proof. The inverse is now one unboxed Fermat
 # inverse in C (`goldw_inv` = 64 __int128 squarings in registers, zero allocation); we round-trip
@@ -95,8 +95,8 @@ fn bn_dec(x: List<Int>) : String = match trim(x) { [] => "0"; _ => bn_dec_go(x, 
 # canonical form of a NEGATIVE signed integer (a signed -k in [-2^31,2^31) is bound as p-k, far
 # above p/2), so render it as "-(p-x)" = the negative it represents. Values <= p/2 print as-is.
 # Used for the result/claim display so signed comparison/division/arithmetic show -3, not p-3.
-# (A genuine large unsigned value in (p/2, p) would also show negative — rare; the field is the
-# same element either way, and the Third Witness reports the reconciled value.)
+# (A genuine large unsigned value in (p/2, p) would also show negative: rare; the field is the
+# same element either way, and the cross-check reports the reconciled value.)
 fn bn_dec_signed(x: List<Int>) : String =
   if bn_cmp(trim(x), glit4(9223372034707292160)) > 0 then "-" ++ bn_dec(fsub(glit4(0), x)) else bn_dec(x)
 
@@ -107,9 +107,9 @@ fn llen(xs: List<List<Int>>) : Int = match xs { [] => 0; [x, ...r] => 1 + llen(r
 fn lpad(xs: List<List<Int>>, n: Int) : List<List<Int>> = if llen(xs) >= n then xs else lpad(xs ++ [glit(0)], n)
 
 # --- circuit: gates over Goldilocks (witness = list of field elements) --------
-# GHint(o)   — a FREE witness wire (no gate constrains it); the prover supplies its
+# GHint(o): a FREE witness wire (no gate constrains it); the prover supplies its
 #              value. Soundness comes from the gates that CONSUME it.
-# GEqZero(a) — assert w[a] == 0 (the `qe · l` constraint term). The is-zero gadget
+# GEqZero(a): assert w[a] == 0 (the `qe · l` constraint term). The is-zero gadget
 #              (for `==`) and the `if` mux are built from these two.
 type Gate = | GConst(Int, List<Int>) | GAdd(Int, Int, Int) | GSub(Int, Int, Int) | GMul(Int, Int, Int) | GHint(Int) | GEqZero(Int)
 type Build = | Build(Int, List<Gate>, List<List<Int>>)
@@ -149,7 +149,7 @@ fn intt_sum(ev: List<List<Int>>, k: Int, j: Int, n: Int, wi: List<Int>) : List<I
 fn interp_go(ev: List<List<Int>>, k: Int, n: Int, wi: List<Int>, ni: List<Int>) : List<List<Int>> =
   if k >= n then [] else [fmul(ni, intt_sum(ev, k, 0, n, wi))] ++ interp_go(ev, k + 1, n, wi, ni)
 fn interp16(ev: List<List<Int>>) : List<List<Int>> = interp_go(ev, 0, 16, finv(root_pow2(4)), finv(glit(16)))
-# R1b: generic size-n inverse NTT (n a power of two) — the variable trace domain
+# R1b: generic size-n inverse NTT (n a power of two): the variable trace domain
 fn ilog2(n: Int) : Int = if n <= 1 then 0 else 1 + ilog2(n / 2)
 fn scale_cols(sc: List<Int>, xs: List<List<Int>>) : List<List<Int>> = match xs { [] => []; [h, ...t] => [fmul(sc, h)] ++ scale_cols(sc, t) }
 # CUT THE ROPE 2: interpolation (inverse NTT) was O(n^2)+ (interp_go/intt_sum, fpow_bn per term).
@@ -177,8 +177,8 @@ fn gate_G_pt(va: List<Int>, vm: List<Int>, vs: List<Int>, vc: List<Int>, vq: Lis
   fadd(fmul(vs, fsub(vo, fsub(vl, vr))),
   fadd(fmul(vc, fsub(vo, vk)),
        fmul(vq, vl)))))
-# CUT THE ROPE 2 (v5.61.0): the OLD quotient_cw evaluated 9 coefficient-polynomials at EVERY one of
-# m=32n coset points via O(n) Horner (gate_G_at -> poly_eval_b) — O(9·n·m) = O(n²), the bottleneck the
+# CUT THE ROPE 2: the OLD quotient_cw evaluated 9 coefficient-polynomials at EVERY one of
+# m=32n coset points via O(n) Horner (gate_G_at -> poly_eval_b): O(9·n·m) = O(n²), the bottleneck the
 # moment circuits grow (the comparison gadget, n≈1024, ran >18 min, ~all here). Now each column is
 # low-degree-extended to the coset ONCE by the native NTT (`lde`, O(m log m)), and the quotient is a
 # single pointwise lock-step walk. BYTE-IDENTICAL to the old quotient (lde == eval_on_dom, difftested
@@ -224,30 +224,30 @@ fn is_constb(cw: List<List<Int>>) : Bool = match cw { [] => true; [x, ...r] => a
 # (deg Q = deg G - deg Z_H = 45 - 16 = 29 < 32), so the FRI fold runs a FIXED 5
 # rounds and stops at length FRI_DSIZE/32 (a degree-<32 codeword has folded to a
 # constant by then). The rate is therefore ρ = 32 / FRI_DSIZE, and GROWING the
-# coset (the single source of truth below) lowers ρ toward a cryptographic target —
-# 64 -> ρ=1/2, 128 -> 1/4, 256 -> 1/8, 512 -> 1/16 — WITHOUT changing what degree
+# coset (the single source of truth below) lowers ρ toward a cryptographic target:
+# 64 -> ρ=1/2, 128 -> 1/4, 256 -> 1/8, 512 -> 1/16, WITHOUT changing what degree
 # is tested. (Folding all the way to length 2 instead would test the useless bound
-# DSIZE/2 and leave ρ pinned at 1/2 — no soundness gain. The stop-at-DSIZE/32 is
+# DSIZE/2 and leave ρ pinned at 1/2: no soundness gain. The stop-at-DSIZE/32 is
 # the whole point.) Each halving of ρ halves the per-query survival probability, at
 # the cost of ~linearly more quotient evaluations + bigger Merkle trees (the
-# interpreter-dogfood gate). See docs/parameters.md §4.
+# interpreter-dogfood gate). See docs/security/parameters.md §4.
 # R1b: VARIABLE trace domain. d = N = ng(gates) = next pow2 of the gate count.
 # deg Q = 3(N-1) - N = 2N-3 < 2N (the tested bound); coset = 16N gives ρ = 2N/16N
-# = 1/8, and the fold stops at 16N/2N = 8 (constant) — the SAME validated relation
+# = 1/8, and the fold stops at 16N/2N = 8 (constant): the SAME validated relation
 # the Baby Bear prover uses, now N-parametric so ADT circuits (N up to hundreds) prove.
 fn glen(gs: List<Gate>) : Int = match gs { [] => 0; [g, ...r] => 1 + glen(r) }
 fn ng(gates: List<Gate>) : Int = next_pow2(glen(gates), 1)
-fn fri_log(d: Int) : Int = let r : Int = ilog2(d) + 5 in if r > 32 then error("glass prove: trace/coset size exceeds Goldilocks 2-adicity (2^32) — no primitive 2^k-th root of unity exists for k>32, so the NTT/LDE would silently compute on a wrong domain; ABSTAIN (defense-in-depth: unreachable for any constructible proof, which would need ~2^27 gates)") else r   # coset = 32N (B3: log2(32N)); ρ=1/8 still (tested deg<4N / 32N)
+fn fri_log(d: Int) : Int = let r : Int = ilog2(d) + 5 in if r > 32 then error("glass prove: trace/coset size exceeds Goldilocks 2-adicity (2^32): no primitive 2^k-th root of unity exists for k>32, so the NTT/LDE would silently compute on a wrong domain; ABSTAIN (defense-in-depth: unreachable for any constructible proof, which would need ~2^27 gates)") else r   # coset = 32N (B3: log2(32N)); ρ=1/8 still (tested deg<4N / 32N)
 fn fri_dsize(d: Int) : Int = 32 * d             # coset = 32N -> ρ = 4N/32N = 1/8 (B3 perm-quotient is deg ~3N < 4N; was 16N/2N pre-B3)
 fn fri_final(d: Int) : Int = 8                  # fold to 8 over 32N (= 32N/4N): degree-<4N folded to a constant
-fn fri_queries(d: Int) : Int = 82               # 82q -> ~80-bit provable FRI-query term (68 + 12 grind) / ~135 list-decode. The hash is now 4-lane (~128-bit binding) so this is no longer ~32-bit-capped. Queries are sampled WITHOUT replacement (sample_distinct dedups), so the 82 draws are negatively correlated => effective distinct queries >= the iid-82 model; the 0.83-bit/query closed-form is therefore conservative, not eroded (corrected v5.120; the old "with replacement / erosion" note was backward).
+fn fri_queries(d: Int) : Int = 82               # 82q -> ~80-bit provable FRI-query term (68 + 12 grind) / ~135 list-decode. The hash is now 4-lane (~128-bit binding) so this is no longer ~32-bit-capped. Queries are sampled WITHOUT replacement (sample_distinct dedups), so the 82 draws are negatively correlated => effective distinct queries >= the iid-82 model; the 0.83-bit/query closed-form is therefore conservative, not eroded.
 fn fri_coset(d: Int) : List<List<Int>> = dom_powers([7], root_pow2(fri_log(d)), fri_dsize(d))
 # Column polynomials, factored so the (future) verifier recomputes the PUBLIC
 # selectors/const by the EXACT same construction the prover uses (no drift).
 fn icol(col: List<List<Int>>, n: Int) : List<List<Int>> = interp_n(lpad(col, n), n)
-fn public_cols(gates: List<Gate>, n: Int) : List<List<List<Int>>> =     # [qa, qm, qs, qc, qe, c] — derived from gates alone (public)
+fn public_cols(gates: List<Gate>, n: Int) : List<List<List<Int>>> =     # [qa, qm, qs, qc, qe, c]: derived from gates alone (public)
   [icol(c_qa(gates), n), icol(c_qm(gates), n), icol(c_qs(gates), n), icol(c_qc(gates), n), icol(c_qe(gates), n), icol(c_c(gates), n)]
-fn trace_cols(gates: List<Gate>, w: List<List<Int>>, n: Int) : List<List<List<Int>>> =   # [l, r, o] — the witness columns (private)
+fn trace_cols(gates: List<Gate>, w: List<List<Int>>, n: Int) : List<List<List<Int>>> =   # [l, r, o]: the witness columns (private)
   [icol(c_l(gates, w), n), icol(c_r(gates, w), n), icol(c_o(gates, w), n)]
 # --- B3: public copy-constraint (PLONK sigma) columns over the wire indices ----
 # Cell ids: l-cell of row i = i, r-cell = n+i, o-cell = 2n+i. Active cells match
@@ -287,13 +287,13 @@ fn low_degree_quotient(gates: List<Gate>, w: List<List<Int>>) : Bool =
 # --- ZERO-KNOWLEDGE: blind Q with a random low-degree mask (Stage B) ----------
 # A degree-<8 polynomial R, evaluated on the coset, is added to Q. Since deg R is
 # below the fold-to-constant bound, Q+R stays low-degree (FRI fold is linear, so it
-# still folds to the same kind of constant and ACCEPTs) — but every opened value is
+# still folds to the same kind of constant and ACCEPTs), but every opened value is
 # randomized by R. Two seeds give two different valid proofs of the same statement:
 # the verifier learns "Q is low-degree", nothing about the witness. (the Poseidon hash over
 # Goldilocks supplies the mask coefficients.)
-# --- the in-STARK hash: the vetted Poseidon over Goldilocks (v5.44) ------------
+# --- the in-STARK hash: the vetted Poseidon over Goldilocks ------------
 # Replaces the educational MiMC. The Plonky2-exact Poseidon (t=12, R_F=8, R_P=22,
-# x^7 S-box, 360 hadeshash constants) — byte-identical to Plonky2's published test
+# x^7 S-box, 360 hadeshash constants): byte-identical to Plonky2's published test
 # vectors (frost_goldilocks_poseidon.glass). hashg(a,b) is a 2-to-1 sponge: absorb
 # [a,b] into the rate, permute, squeeze lane 0. ~300x heavier than MiMC, so the demo
 # runs reduced params (small coset / few queries / grind off) to dogfood; full
@@ -301,7 +301,7 @@ fn low_degree_quotient(gates: List<Gate>, w: List<List<Int>>) : Bool =
 fn inth(xs: List<Int>, i: Int) : Int = match xs { [] => 0; [h, ...t] => if i == 0 then h else inth(t, i - 1) }
 fn pdrop1(st: List<List<Int>>) : List<List<Int>> = match st { [] => []; [h, ...t] => t }
 
-# --- Poseidon over Goldilocks — byte-exact to Plonky2 (t=12, R_F=8, R_P=22) ----
+# --- Poseidon over Goldilocks: byte-exact to Plonky2 (t=12, R_F=8, R_P=22) ----
 # S-box x^7 (gcd(7, p-1)=1 over Goldilocks, so it is a permutation). Computed as
 # Plonky2 does: x2=x^2, x4=x^4, x3=x^3, return x3*x4 = x^7.
 fn sbox(x: List<Int>) : List<Int> = let x2 : List<Int> = fmul(x, x) in let x4 : List<Int> = fmul(x2, x2) in let x3 : List<Int> = fmul(x, x2) in fmul(x3, x4)
@@ -348,22 +348,22 @@ fn to_lanes(x: List<Int>) : List<List<Int>> = if lcnt(x) <= 4 then [pad4l(x)] el
 fn lanepad12(ls: List<List<Int>>) : List<List<Int>> = if llen(ls) >= 12 then ls else lanepad12(ls ++ [[0, 0, 0, 0]])
 fn from4(st: List<List<Int>>) : List<Int> = pad4l(wnth(st, 0)) ++ pad4l(wnth(st, 1)) ++ pad4l(wnth(st, 2)) ++ pad4l(wnth(st, 3))
 fn lane0(h: List<Int>) : List<Int> = first4(h)
-# CUT THE ROPE (v5.60.0): the Poseidon MDS layer was THE proof bottleneck — 144 boxed fmul per
+# CUT THE ROPE: the Poseidon MDS layer was THE proof bottleneck: 144 boxed fmul per
 # round (each a wnth cons-walk + glit alloc + comb/split), x 30 rounds, x every Merkle/transcript
 # hash. `poseidon_perm` is a single native intrinsic (q_poseidon_perm) running the whole
-# permutation in registers over a u64[12] — zero alloc, O(1) indexing. We convert the 12 lane
+# permutation in registers over a u64[12]: zero alloc, O(1) indexing. We convert the 12 lane
 # field-elements to unboxed words (limbs_to_goldw) at the boundary, permute, and expand the first
-# 4 output lanes back to the SAME 16-limb digest (goldw_to_limbs + pad4l) — so hashg is BYTE-FOR-BYTE
+# 4 output lanes back to the SAME 16-limb digest (goldw_to_limbs + pad4l), so hashg is BYTE-FOR-BYTE
 # what `from4(perm(...))` produced, just ~100x faster. Validated: examples/prove/poseidon_difftest.glass
 # (Plonky2 anchor + Glass goldw reference perm + interp==native byte-identical). The pure-Glass
 # perm/full_round/mds_* below stay as the readable reference (and the difftest's spec).
 fn lanes_to_w(ls: List<List<Int>>) : List<Int> = match ls { [] => []; [h, ...t] => [limbs_to_goldw(h)] ++ lanes_to_w(t) }
 fn wnthw(xs: List<Int>, i: Int) : Int = match xs { [] => 0; [h, ...t] => if i == 0 then h else wnthw(t, i - 1) }
 fn from4w(w: List<Int>) : List<Int> = pad4l(goldw_to_limbs(wnthw(w, 0))) ++ pad4l(goldw_to_limbs(wnthw(w, 1))) ++ pad4l(goldw_to_limbs(wnthw(w, 2))) ++ pad4l(goldw_to_limbs(wnthw(w, 3)))
-# v5.70.0: the live hash is now Poseidon2 (Plonky3) — cheaper linear layers, the modern hash.
+# The live hash is now Poseidon2 (Plonky3): cheaper linear layers, the modern hash.
 # The sponge wrappers (to_lanes/lanepad12/lanes_to_w 12->12 words/from4w 4-lane squeeze, rate 8 /
 # cap 4) are permutation-agnostic and UNCHANGED; only the inner permutation changed (poseidon_perm
-# -> poseidon2_perm, both byte-exact to their respective published vectors). pentecost/poseidon.py
+# -> poseidon2_perm, both byte-exact to their respective published vectors). lens/poseidon.py
 # migrated to Poseidon2 in lock-step (the second verifier still checks the same hash). The pure-Glass
 # Plonky2 perm/mds_* below remain ONLY as the readable Plonky2 reference + poseidon_difftest spec.
 fn hashg(a: List<Int>, b: List<Int>) : List<Int> = from4w(poseidon2_perm(lanes_to_w(lanepad12(to_lanes(a) ++ to_lanes(b)))))
@@ -371,14 +371,14 @@ fn rand_coeffs(seed: Int, i: Int, k: Int) : List<List<Int>> = if i >= k then [] 
 # --- ZK BLINDING (mechanism). T'(x) = T(x) + Z_H(x)*R(x): on H, Z_H=0 so T'=T (every gate
 # constraint preserved); off H (the coset, where queries open) the Z_H*R mask randomizes the
 # value, HIDING the witness. Full ZK = blind l,r,o,Z with deg(R) >= the ~166-eval leak surface,
-# integrated into the staged FRI (the heavy part — design in docs/tier1-zk-design.md). Here we
+# integrated into the staged FRI (`glass prove --zk`, via build_claim_zk). Here we
 # implement the blinding and demonstrate the HIDING property fast (no FRI).
 fn zh_at(x: List<Int>, n: Int) : List<Int> = fsub(fpow_bn(x, glit(n)), [1])
 fn blind_col(cw: List<List<Int>>, coset: List<List<Int>>, rco: List<List<Int>>, n: Int, i: Int, m: Int) : List<List<Int>> =
   if i >= m then [] else [fadd(wnth(cw, i), fmul(zh_at(wnth(coset, i), n), poly_eval_b(rco, wnth(coset, i))))] ++ blind_col(cw, coset, rco, n, i + 1, m)
 # Hiding smoke test: blind the SAME witness column with two mask seeds; the opened value at a
 # coset point must (a) differ from the raw witness value (masked) and (b) differ between the two
-# masks (randomized) — so the opening reveals the mask, not the witness.
+# masks (randomized), so the opening reveals the mask, not the witness.
 fn zk_hiding(seed1: Int, seed2: Int) : Bool =
   let n : Int = 8 in let coset : List<List<Int>> = fri_coset(n) in let m : Int = fri_dsize(n) in
   let lvals : List<List<Int>> = [glit(2), glit(3), glit(5), glit(7), glit(11), glit(13), glit(17), glit(19)] in
@@ -416,7 +416,7 @@ fn ginv2(a: G2) : G2 = gscale2(gconj(a), finv(gnorm(a)))                        
 fn gpow2(a: G2, e: Int) : G2 = if e <= 0 then G2([1], []) else (if e % 2 == 0 then let h : G2 = gpow2(a, e / 2) in gmul2(h, h) else gmul2(a, gpow2(a, e - 1)))
 fn poly_eval_g(coeffs: List<List<Int>>, z: G2) : G2 = match coeffs { [] => G2([], []); [c, ...r] => gadd2(emb(c), gmul2(z, poly_eval_g(r, z))) }   # eval a base-field poly at z in F_{p^2}
 # (an imaginary-part-zero "anti-smuggling" guard was removed here: it was never wired into
-# verify, and it is unnecessary — the trace openings are base-field BY TYPE (List<Int>) and
+# verify, and it is unnecessary: the trace openings are base-field BY TYPE (List<Int>) and
 # the OOD evals are DEEP-bound to the committed base-field columns, so nothing can be smuggled
 # in an imaginary part. An auditor should still confirm this. (Was dead code; removed for honesty.))
 # --- B3: the grand-product Z column (F_{p^2}; interpolation splits real/imag since it
@@ -427,7 +427,7 @@ fn reals(zs: List<G2>) : List<List<Int>> = match zs { [] => []; [G2(a0, a1), ...
 fn imags(zs: List<G2>) : List<List<Int>> = match zs { [] => []; [G2(a0, a1), ...r] => [a1] ++ imags(r) }
 fn poly_eval_g2(zr: List<List<Int>>, zi: List<List<Int>>, z: G2) : G2 =
   match zr { [] => G2([], []); [cr, ...rr] => match zi { [] => G2([], []); [ci, ...ri] => gadd2(G2(cr, ci), gmul2(z, poly_eval_g2(rr, ri, z))) } }
-# CUT THE ROPE 3: was O(n*m) — poly_eval_b (Horner) per coset point for both real and imag parts
+# CUT THE ROPE 3: was O(n*m): poly_eval_b (Horner) per coset point for both real and imag parts
 # of the grand-product z-poly. Now two native NTT low-degree extensions, zipped into G2. (dom is
 # always the size-32n coset, so n = |dom|/32.)
 fn zip_g2(rs: List<List<Int>>, iss: List<List<Int>>) : List<G2> =
@@ -470,7 +470,7 @@ fn fold_path_g(h: List<Int>, index: Int, path: List<List<Int>>) : List<Int> = ma
 fn merkle_verify_g(leaf: G2, index: Int, path: List<List<Int>>, root: List<Int>) : Bool = bn_eq(fold_path_g(lhash(leaf), index, path), root)
 fn fold_pair2(fx: G2, fmx: G2, x: List<Int>, beta: G2, finv2: List<Int>) : G2 =
   let even : G2 = gscale2(gadd2(fx, fmx), finv2) in let odd : G2 = gscale2(gsub2(fx, fmx), finv(fmul([2], x))) in gadd2(even, gmul2(beta, odd))
-# CUT THE ROPE 3: was O(m^2) — nth2(cw,i)/nth2(cw,i+half)/wnth(dom,i) per pair. to_vec once (O(m)), vget O(1).
+# CUT THE ROPE 3: was O(m^2): nth2(cw,i)/nth2(cw,i+half)/wnth(dom,i) per pair. to_vec once (O(m)), vget O(1).
 fn fold_at2_go(cwv: List<G2>, domv: List<List<Int>>, beta: G2, finv2: List<Int>, i: Int, half: Int) : List<G2> =
   if i >= half then [] else [fold_pair2(vget(cwv, i), vget(cwv, i + half), vget(domv, i), beta, finv2)] ++ fold_at2_go(cwv, domv, beta, finv2, i + 1, half)
 fn fold_at2(cw: List<G2>, dom: List<List<Int>>, beta: G2, finv2: List<Int>, i: Int, half: Int) : List<G2> =
@@ -479,8 +479,8 @@ fn fold_at2(cw: List<G2>, dom: List<List<Int>>, beta: G2, finv2: List<Int>, i: I
 # The FS transcript is SEEDED by this digest, so every FS challenge (the FRI fold
 # betas and the query positions) is a deterministic function of the statement.
 # gate_dig absorbs each gate's variant TAG (1..6, leading, for domain separation),
-# its wire indices via glit (injective for indices < ~2^48 — true for every gate
-# count), and — for GConst — the constant VALUE raw (full-width List<Int> field
+# its wire indices via glit (injective for indices < ~2^48: true for every gate
+# count), and, for GConst, the constant VALUE raw (full-width List<Int> field
 # element, NOT routed through glit, so the claimed result R is captured at the full
 # 2^64 width). The digest is WITNESS-INDEPENDENT: only public opcodes, wire indices,
 # and constants are absorbed; GHint carries only its wire index (never the hint
@@ -488,7 +488,7 @@ fn fold_at2(cw: List<G2>, dom: List<List<Int>>, beta: G2, finv2: List<Int>, i: I
 # builders (build_claim / build_claim_m) the only constant in the gate list is the
 # claimed result R (the last GConst), so the digest binds circuit structure + R
 # without absorbing private CLI inputs (those stay in the witness, never as gates).
-# glit(0) trims to [] (the field-zero element) — a valid hashg lane; the leading
+# glit(0) trims to [] (the field-zero element): a valid hashg lane; the leading
 # per-gate tag still separates distinct gate lists (Poseidon collision-resistance).
 fn gate_dig(g: Gate, acc: List<Int>) : List<Int> = match g {
   GConst(o, c)  => hashg(hashg(hashg(acc, glit(1)), glit(o)), c);
@@ -500,20 +500,20 @@ fn gate_dig(g: Gate, acc: List<Int>) : List<Int> = match g {
 fn circuit_digest(gates: List<Gate>, acc: List<Int>) : List<Int> = match gates { [] => acc; [g, ...rest] => circuit_digest(rest, gate_dig(g, acc)) }
 # 2718281 = a fixed domain-separation tag (distinct from the [] seed the FRI-root
 # chain would otherwise start from). NOTE: protocol params (field, coset generator
-# 7, blowup 16, fold-stop 8, query count 64, 12-bit grind) are NOT in the digest —
+# 7, blowup 16, fold-stop 8, query count 64, 12-bit grind) are NOT in the digest:
 # they are compile-time, version-pinned constants the future TIER-1 independent
 # verifier must agree on out of band; they are not transcript-bound.
 # The digest seed now also binds the PROTOCOL PARAMETERS (coset generator 7, blowup
 # fri_dsize(1)=32, fold-stop fri_final(0)=8, query count fri_queries(0)=82, grind bits
-# 12) — so a verifier instantiated with mismatched params derives different challenges
+# 12), so a verifier instantiated with mismatched params derives different challenges
 # (parameter-substitution is transcript-enforced, closing one of the two FS-PARTIAL gaps).
 fn stmt_seed_of(gates: List<Gate>) : List<Int> = circuit_digest(gates, hashg(hashg(hashg(hashg(hashg(glit(2718281), glit(7)), glit(fri_dsize(1))), glit(fri_final(0))), glit(fri_queries(0))), glit(12)))
 # the FRI fold challenge beta, derived from the running transcript seed (statement +
-# all preceding layer roots) — NOT from the bare layer root as before.
+# all preceding layer roots), NOT from the bare layer root as before.
 fn beta_of_seed_g(tseed: List<Int>) : G2 = G2(lane0(hashg(tseed, glit(101))), lane0(hashg(tseed, glit(102))))
 # --- memoized Merkle tree: build every level ONCE, read roots/paths from it ----
 # Query verification used to recompute pad_pow2_g(leaf_hashes_g(cw)) and rebuild
-# every level per query (merkle_path_g) — O(queries · tree). Instead build the full
+# every level per query (merkle_path_g): O(queries · tree). Instead build the full
 # tree (list of levels, level 0 = padded leaf hashes, last = [root]) once per FRI
 # layer, store it in the Layer, and pull sibling paths straight out. Byte-identical
 # (same hashes), just not recomputed. This unblocks raising the FRI query count.
@@ -529,9 +529,8 @@ fn path_of_levels(levels: List<List<List<Int>>>, li: Int, index: Int) : List<Lis
        let sib : List<Int> = if index % 2 == 0 then wnth(level, index + 1) else wnth(level, index - 1) in
        [sib] ++ path_of_levels(levels, li + 1, index / 2)
 fn merkle_path_levels(levels: List<List<List<Int>>>, index: Int) : List<List<Int>> = path_of_levels(levels, 0, index)
-# --- Merkle batch-opening (v5.124, proof-size Stage 1): reconstruct a tree root from the opened leaves
+# --- Merkle batch-opening (proof-size Stage 1): reconstruct a tree root from the opened leaves
 # (at their indices) + a MINIMAL co-path node set, replacing the per-query independent sibling paths.
-# Validated standalone in examples/prove/merkle_batch_difftest.glass + fuzz/merkle_batch_proto.py.
 # Canonical bottom-up sweep over the memoized levels; even position = LEFT input to hashg (matching
 # fold_path_g / level_up_g). The opened-index set is Fiat-Shamir-derived and recomputed by the verifier,
 # so NO index tokens are transmitted (the co-path is consumed in the same canonical order both sides).
@@ -589,7 +588,7 @@ fn commit_g(cw: List<G2>, dom: List<List<Int>>, acc: List<Layer>, tseed: List<In
     let beta : G2 = beta_of_seed_g(tseed2) in let half : Int = len(cw) / 2 in
     commit_g(fold_at2(cw, dom, beta, finv2, 0, half), sqd(dom, 0, half), acc ++ [Layer(cw, dom, root, beta, levels)], tseed2, finv2)
 # LOAD-BEARING INVARIANT: transcript_seed_g(layers, stmt_seed) MUST equal the final
-# tseed threaded through commit_g — identical hashg(.,root) chaining seeded by
+# tseed threaded through commit_g: identical hashg(.,root) chaining seeded by
 # stmt_seed, in layer (= commit) order. This is the exact derivation the future
 # TIER-1 independent verifier will re-derive the betas and query positions from; if
 # these two ever diverge, the prover would sample queries from a different seed than
@@ -611,18 +610,18 @@ fn sample_queries_g(seed: List<Int>, count: Int, dsize: Int) : List<Int> = sampl
 # --- grinding (proof-of-work on the Fiat-Shamir query seed) -------------------
 # The prover must find a nonce whose hash with the transcript seed clears the low
 # G_BITS bits (here 12). An adversary trying to grind a favorable set of query
-# positions must therefore redo 2^12 hashing per attempt — adding 12 bits to the
+# positions must therefore redo 2^12 hashing per attempt: adding 12 bits to the
 # query-phase soundness (the standard STARK trick; production uses 20-30 bits).
 # Two-level search keeps recursion depth bounded (~chunk + #chunks), so neither the
 # interpreter's limit nor the native C stack is at risk.
-# THE MEASURING REED (v5.63.0): the achieved bit-security is RE-DERIVED from the live proof
-# parameters here — never asserted in prose. grind_modulus is the SINGLE source for the PoW
+# THE MEASURING REED: the achieved bit-security is RE-DERIVED from the live proof
+# parameters here: never asserted in prose. grind_modulus is the SINGLE source for the PoW
 # target (pow_ok and grind_bits both read it, so the printed grind term can never drift from
 # the grinding the prover actually does). provable_bits/listdecode_bits are pinned integer
 # closed-forms at the construction's fixed rate ρ=4N/32N=1/8 (blowup = fri_dsize(1) = 32):
 # ~0.83 bit/query unique-decoding, 1.5 bit/query list-decoding, + the grind bits.
 fn grind_modulus(d: Int) : Int = 4096                       # 2^12 proof-of-work target
-fn grind_bits(d: Int) : Int = let g : Int = ilog2(grind_modulus(0)) in if g > 16 then 16 else g   # = 12 today; CAPPED at 16: pow_ok only tests the first 16-bit limb (x in [0,2^16)), so grind_modulus > 2^16 would NOT raise the actual proof-of-work above 2^-16 — the cap keeps the PRINTED bit-security from overstating the grinding the prover does (v5.120 audit fix). Widening pow_ok to consume more limbs is the prerequisite for a genuinely higher grind.
+fn grind_bits(d: Int) : Int = let g : Int = ilog2(grind_modulus(0)) in if g > 16 then 16 else g   # = 12 today; CAPPED at 16: pow_ok only tests the first 16-bit limb (x in [0,2^16)), so grind_modulus > 2^16 would NOT raise the actual proof-of-work above 2^-16: the cap keeps the PRINTED bit-security from overstating the grinding the prover does. Widening pow_ok to consume more limbs is the prerequisite for a genuinely higher grind.
 fn blowup(d: Int) : Int = fri_dsize(1)                      # coset = 32N -> blowup 32 -> ρ = 1/8
 fn provable_bits(gates: List<Gate>) : Int = (fri_queries(ng(gates)) * 83) / 100 + grind_bits(0)
 fn listdecode_bits(gates: List<Gate>) : Int = (fri_queries(ng(gates)) * 3) / 2 + grind_bits(0)
@@ -665,19 +664,19 @@ fn stark_root(gates: List<Gate>, w: List<List<Int>>, seed: Int) : List<Int> =
 
 # === TIER-1 (WIP, NOT YET SHIPPED): an INDEPENDENT verify(statement, proof) ====
 # Splits the prover from the verifier. verify RE-DERIVES every Fiat-Shamir
-# challenge — stmt_seed, the fold betas, the grind, the query positions — from the
+# challenge (stmt_seed, the fold betas, the grind, the query positions) from the
 # PUBLIC gates + the proof's Merkle roots; it never reads a stored beta and never
 # sees the witness. This is the SCAFFOLDING (challenge re-derivation + opening
 # checks). *** IT IS NOT YET SOUNDNESS ***: verify checks only that a low-degree
-# codeword was committed and that the openings are Merkle/fold-consistent — it does
+# codeword was committed and that the openings are Merkle/fold-consistent: it does
 # NOT recompute G/Z_H from the gates, so a malicious prover can commit ANY low-degree
 # codeword (e.g. P=0) and be ACCEPTed regardless of the statement (see prove_evil
-# below — an executable demonstration of the gap). Closing it needs TIER-1 part 2:
+# below: an executable demonstration of the gap). Closing it needs TIER-1 part 2:
 # a trace commitment + the OOD/DEEP quotient identity + a copy/permutation argument.
 type QOpen = | QOpen(G2, G2, List<List<Int>>, List<List<Int>>)            # one query, one layer: lx, lmx, path_lx, path_lmx
 type Proof = | Proof(List<List<Int>>, List<G2>, Int, List<List<QOpen>>)   # roots, final, nonce, openings[query][layer]
-# v5.125 Stage 2: the FRI openings (ProofB3 only) are BATCHED per LAYER. Per (query,layer) we keep only
-# the opened VALUES (QVal: lx, lmx) — the fold-chain inputs — and each FRI layer's tree is opened ONCE as
+# Proof-size Stage 2: the FRI openings (ProofB3 only) are BATCHED per LAYER. Per (query,layer) we keep only
+# the opened VALUES (QVal: lx, lmx), the fold-chain inputs, and each FRI layer's tree is opened ONCE as
 # a multiproof: BFri carries qvals[query][layer] + one shared co-path per layer. The verifier reconstructs
 # each layer root (vfri_recon, reusing recon_root) and runs the per-query fold chain (vq_b3) with NO
 # per-query Merkle path. The FRI domains nest as powers of two, so a query's layer-L index is p % half_L.
@@ -709,7 +708,7 @@ fn vfri_recon(qvals: List<List<QVal>>, queries: List<Int>, lcopaths: List<List<L
   else let domL : List<List<Int>> = wnth3(doms, lyr) in let half : Int = llen(domL) / 2 in let height : Int = ilog2(llen(domL)) in
     if recon_ok(frimap(qvals, queries, lyr, half, []), wnth3(lcopaths, lyr), height, wnth(broots, lyr))
     then vfri_recon(qvals, queries, lcopaths, broots, doms, lyr + 1, lyrs) else false
-# per-query FRI fold chain (no Merkle — that is now done in bulk by vfri_recon); ties each layer's fold
+# per-query FRI fold chain (no Merkle: that is now done in bulk by vfri_recon); ties each layer's fold
 # to the next layer's opened value, exactly as vq did, but reading QVal and skipping merkle_verify.
 fn vq_b3(qv: List<QVal>, betas: List<G2>, doms: List<List<List<Int>>>, final: List<G2>, p: Int, finv2: List<Int>) : Bool =
   match qv { [] => true;
@@ -754,7 +753,7 @@ fn seed_from_roots(roots: List<List<Int>>, tseed: List<Int>) : List<Int> =
 fn build_doms(dom: List<List<Int>>, count: Int) : List<List<List<Int>>> =
   if count <= 0 then [] else [dom] ++ build_doms(sqd(dom, 0, llen(dom) / 2), count - 1)
 # The fold target of layer i lands at index j_i in layer i+1's codeword, which is
-# EITHER that layer's opened lx (if j_i < half_{i+1}) OR its lmx — and the SAME
+# EITHER that layer's opened lx (if j_i < half_{i+1}) OR its lmx, and the SAME
 # object is Merkle-verified at layer i+1, so the chain is airtight across the split.
 fn vq(oq: List<QOpen>, roots: List<List<Int>>, betas: List<G2>, doms: List<List<List<Int>>>, final: List<G2>, p: Int, finv2: List<Int>) : Bool =
   match oq { [] => true;
@@ -786,7 +785,7 @@ fn verify(gates: List<Gate>, proof: Proof) : Bool =
       && pow_ok(ground) && is_const2(final) && verify_queries(openings, roots, betas, doms, final, queries, lyrs, finv([2])) }
 # --- the HONEST GAP, made executable: a malicious prover commits P=0 (low-degree,
 # unrelated to the gates or to ANY witness); verify ACCEPTs it for any statement.
-# THIS is why the scaffolding above is not yet soundness — TIER-1 part 2 closes it.
+# THIS is why the scaffolding above is not yet soundness: TIER-1 part 2 closes it.
 fn zeros_cw(k: Int) : List<G2> = if k <= 0 then [] else [emb(glit(0))] ++ zeros_cw(k - 1)
 fn prove_evil(gates: List<Gate>) : Proof =
   let stmt_seed : List<Int> = stmt_seed_of(gates) in
@@ -798,8 +797,8 @@ fn prove_evil(gates: List<Gate>) : Proof =
     Proof(roots_of(layers), final, nz, extract_all(layers, queries)) }
 fn tamper_nonce(proof: Proof) : Proof = match proof { Proof(roots, final, nonce, openings) => Proof(roots, final, nonce + 1, openings) }
 
-# === TIER-1 PART 2 (WIP): SOUND prover/verifier — ties Q to the gate constraints
-# Closes the P=0 gap. Commit the trace (l,r,o) AND the quotient Q (UNBLINDED — ZK is
+# === TIER-1 PART 2 (WIP): SOUND prover/verifier: ties Q to the gate constraints
+# Closes the P=0 gap. Commit the trace (l,r,o) AND the quotient Q (UNBLINDED: ZK is
 # SUSPENDED on this path: witness opened in clear). Draw an out-of-domain z in F_{p^2}
 # AFTER the trace commitment; prover sends l(z),r(z),o(z),Q(z); verifier checks the
 # constraint identity Q(z)*Z_H(z) == G(z) in F_{p^2}; the DEEP quotients (T(x)-T(z))/(x-z)
@@ -807,7 +806,7 @@ fn tamper_nonce(proof: Proof) : Proof = match proof { Proof(roots, final, nonce,
 # degree-bounds all four columns AND binds the sent z-evals to the committed trees.
 # WHAT THIS PROVES: every row of the committed trace satisfies its per-row gate, and R =
 # the asserted output row. WHAT IT DOES NOT: inter-row WIRE consistency (B3, copy/perm,
-# not built) — a prover can still thread inconsistent values across rows. NOT out of
+# not built): a prover can still thread inconsistent values across rows. NOT out of
 # research grade (B3 + external audit remain); NOT zero-knowledge on this path.
 type TOpen = | TOpen(List<Int>, List<Int>, List<Int>, List<Int>, List<List<Int>>, List<Int>, List<Int>, List<Int>, List<Int>, List<List<Int>>)
 type ProofS = | ProofS(List<Int>, G2, G2, G2, G2, List<List<Int>>, List<G2>, Int, List<List<QOpen>>, List<TOpen>)
@@ -919,8 +918,8 @@ fn tamper_strace(proof: ProofS) : ProofS = match proof { ProofS(tr, lz, rz, oz, 
 # challenge): T1{l,r,o} -> beta,gamma_p -> T2{Z} -> alpha -> T3{Q} -> z(OOD). Q combines
 # the gate, recurrence, and boundary constraints with powers of alpha. DEEP-FRI batches
 # {l,r,o,Q,Z} (Z bound at z AND omega*z). Verifier checks qz == combined-quotient(z).
-# v5.124 Stage 1: the trace opening is BATCHED. Per query we keep only the LEAF VALUES (TLeaf: lro+q+z
-# at j and j+half) — the deep-check inputs, unchanged — and the 3 trace Merkle trees (root1-LRO,
+# Proof-size Stage 1: the trace opening is BATCHED. Per query we keep only the LEAF VALUES (TLeaf: lro+q+z
+# at j and j+half) (the deep-check inputs, unchanged) and the 3 trace Merkle trees (root1-LRO,
 # root3-quotient, root2-Z) are opened ONCE each as a batch multiproof: TBatch carries the per-query
 # leaves + one shared co-path per tree (replacing the former 6 independent per-query paths). The verifier
 # rebuilds each trace root from the opened leaves + its co-path (recon_ok); FRI `bopen` stays per-query.
@@ -928,14 +927,14 @@ type TLeaf = | TLeaf(List<Int>, List<Int>, List<Int>, G2, G2, List<Int>, List<In
 type TBatch = | TBatch(List<TLeaf>, List<List<Int>>, List<List<Int>>, List<List<Int>>)
 type ProofB3 = | ProofB3(List<Int>, List<Int>, List<Int>, G2, G2, G2, G2, G2, G2, List<List<Int>>, List<G2>, Int, BFri, TBatch)
 fn comb_lro(l: List<Int>, r: List<Int>, o: List<Int>) : List<Int> = hashg(hashg(l, r), o)
-# CUT THE ROPE 3: was O(m²) — wnth(lcw,i)/wnth(rcw,i)/wnth(ocw,i) each an O(i) cons-walk per leaf,
+# CUT THE ROPE 3: was O(m²): wnth(lcw,i)/wnth(rcw,i)/wnth(ocw,i) each an O(i) cons-walk per leaf,
 # x m=32n leaves. Now a single lock-step walk of the three codewords (O(m), no indexing).
 fn trace_leaf_lro(lcw: List<List<Int>>, rcw: List<List<Int>>, ocw: List<List<Int>>, i: Int, m: Int) : List<List<Int>> =
   match lcw { [] => []; [lh, ...lt] => match rcw { [] => []; [rh, ...rt] => match ocw { [] => []; [oh, ...ot] =>
     [comb_lro(lh, rh, oh)] ++ trace_leaf_lro(lt, rt, ot, i + 1, m) } } }
 fn absorb6(ts: List<Int>, a: G2, b: G2, c: G2, d: G2, e: G2, f: G2) : List<Int> = absorb_g2(absorb_g2(absorb_g2(absorb_g2(absorb_g2(absorb_g2(ts, a), b), c), d), e), f)
 # absorb the final folded codeword into the transcript BEFORE sampling queries
-# (standard BCS/ethSTARK; closes the second FS-PARTIAL gap — the query positions now
+# (standard BCS/ethSTARK; closes the second FS-PARTIAL gap: the query positions now
 # depend on bfinal, so a prover cannot adapt the final codeword after seeing the queries).
 fn absorb_final(acc: List<Int>, fin: List<G2>) : List<Int> = match fin { [] => acc; [G2(a0, a1), ...r] => absorb_final(hashg(hashg(acc, a0), a1), r) }
 fn recur_at_z(pm: List<List<List<Int>>>, lz: G2, rz: G2, oz: G2, zz: G2, zwz: G2, beta: G2, gamp: G2, z: G2) : G2 =
@@ -950,7 +949,7 @@ fn qcombined_z(pc: List<List<List<Int>>>, pm: List<List<List<Int>>>, lz: G2, rz:
   let qrec : G2 = gmul2(recur_at_z(pm, lz, rz, oz, zz, zwz, beta, gamp, z), izh) in
   let qbnd : G2 = gmul2(gsub2(zz, G2([1], [])), ginv2(gsub2(z, G2([1], [])))) in
   gadd2(qgate, gadd2(gmul2(alpha, qrec), gmul2(gmul2(alpha, alpha), qbnd)))
-# CUT THE ROPE 3: was O(m^2) (wnth/nth2 per row, incl. zcw at (i+rot)%m) PLUS O(n*m) — six
+# CUT THE ROPE 3: was O(m^2) (wnth/nth2 per row, incl. zcw at (i+rot)%m) PLUS O(n*m): six
 # poly_eval_b of the perm columns per coset point. Now: LDE the 6 perm cols ONCE (native NTT),
 # to_vec every codeword (incl. zcw for both i and (i+rot)%m), and vget O(1) in the row walk.
 fn build_q_b3_go(qgv: List<List<Int>>, lv: List<List<Int>>, rv: List<List<Int>>, ov: List<List<Int>>, zv: List<G2>, cv: List<List<Int>>, s0: List<List<Int>>, s1: List<List<Int>>, s2: List<List<Int>>, s3: List<List<Int>>, s4: List<List<Int>>, s5: List<List<Int>>, alpha: G2, beta: G2, gamp: G2, n: Int, rot: Int, m: Int, i: Int) : List<G2> =
@@ -1066,7 +1065,7 @@ fn verify_b3(gates: List<Gate>, proof: ProofB3) : Bool =
     id_ok && struct_ok && vb3_trace(tleaves, queries, cp1, cp3, cp2, m, root1, root2, root3)
       && vfri_recon(qvals, queries, lcopaths, broots, doms, 0, lyrs)
       && vb3_qs(qvals, tleaves, betas, doms, bfinal, coset, lz, rz, oz, qz, zz, zwz, z, wz, gamd, m, queries, lyrs, finv([2])) } } }
-# prove_b3 from RAW column values (not a single witness w) — lets us build a
+# prove_b3 from RAW column values (not a single witness w): lets us build a
 # wiring-INCONSISTENT-but-per-row-valid trace to demonstrate the B3 gap is closed.
 fn q_cw_cols(pc: List<List<List<Int>>>, ll: List<List<Int>>, rr: List<List<Int>>, oo: List<List<Int>>, coset: List<List<Int>>, n: Int) : List<List<Int>> =
   quotient_cw(wnth3(pc, 0), wnth3(pc, 1), wnth3(pc, 2), wnth3(pc, 3), wnth3(pc, 4), ll, rr, oo, wnth3(pc, 5), coset, n)
@@ -1101,11 +1100,11 @@ fn prove_b3_cols(gates: List<Gate>, lvals: List<List<Int>>, rvals: List<List<Int
     ProofB3(root1, root2, root3, lz, rz, oz, qz, zz, zwz, roots_of(blayers), bfinal, nz, extract_bfri(blayers, queries), extract_tbatch(lcw, rcw, ocw, qcw, zcw, lev1, lev2, lev3, queries, m)) }
 
 # --- bridge: parse, inline calls, lower the arithmetic subset to gates -------
-fn fn_body_of(fns: List<FnDecl>, name: String) : Expr = match fns { [] => error("glass prove: internal — body of resolved function '" ++ name ++ "' not found"); [FnDecl(fnm, tps, ty, body), ...rest] => if fnm == name then body else fn_body_of(rest, name) }
+fn fn_body_of(fns: List<FnDecl>, name: String) : Expr = match fns { [] => error("glass prove: internal: body of resolved function '" ++ name ++ "' not found"); [FnDecl(fnm, tps, ty, body), ...rest] => if fnm == name then body else fn_body_of(rest, name) }
 fn unwind_app(e: Expr, acc: List<Expr>) : (Expr, List<Expr>) = match e { EApp(f, a) => unwind_app(f, [a] ++ acc); _ => (e, acc) }
-# A COMPUTED higher-order callee — the head of an application is not a bare function name but an
+# A COMPUTED higher-order callee: the head of an application is not a bare function name but an
 # expression that SELECTS a function at runtime: (if c then g else h)(x), (let f = g in f)(x), or a
-# match choosing a function. The cut: PUSH THE APPLICATION INSIDE the selector — applying a
+# match choosing a function. The cut: PUSH THE APPLICATION INSIDE the selector: applying a
 # conditionally-chosen function equals conditionally applying each candidate. (if c then g else h)(x)
 # becomes if c then g(x) else h(x); each leaf is then a NAMED-fn call the bridge already lowers, and
 # the branch results mux through the same `muxw` an ordinary `if` uses (so equal-width results only;
@@ -1118,18 +1117,18 @@ fn push_app(hd: Expr, args: List<Expr>) : Expr = match hd {
   EIf(c, t, f) => EIf(c, app_of(t, args), app_of(f, args));
   ELet(nm, v, body) => ELet(nm, v, app_of(body, args));
   EMatch(scrut, arms) => EMatch(scrut, push_app_arms(arms, args));
-  _ => error("glass prove: a computed callee must be an `if`/`let`/`match` selecting among functions — this application form cannot be lowered to a gate circuit (refused, never a silent proven-0)") }
+  _ => error("glass prove: a computed callee must be an `if`/`let`/`match` selecting among functions: this application form cannot be lowered to a gate circuit (refused, never a silent proven-0)") }
 fn fn_exists(fns: List<FnDecl>, name: String) : Bool = match fns { [] => false; [FnDecl(fnm, tps, ty, body), ...rest] => if fnm == name then true else fn_exists(rest, name) }
 fn fenv_get(fenv: List<Pair<String, String>>, name: String) : String = match fenv { [] => ""; [Pair(k, v), ...r] => if k == name then v else fenv_get(r, name) }
-# --- record field access `r.field` (EField), v5.104 -------------------------------------------
+# --- record field access `r.field` (EField) -------------------------------------------
 # A record value is a positional multi-wire value (no field names at runtime), so `r.field` needs
 # a *type-env* (var -> record-type-name) to find the field's offset at LOWERING time. Rather than
 # thread a new param everywhere, we REUSE the already-threaded `fenv` (param -> fn-name): a record
 # var binds as `name -> "@rec:Type"`. resolve_fn IGNORES "@rec:" entries (a record var is never a
 # call callee), so the two namespaces coexist. `unroll` then desugars `e.f` -> `match e { T { f }
-# => f }` (reusing the v5.103 PRecord machinery) when e's record type T is known; if unknown it
+# => f }` (reusing the PRecord machinery) when e's record type T is known; if unknown it
 # leaves EField, which heval/cgen ABSTAIN on. `seval` (the guard) treats EField permissively (its
-# value is discarded) — it just guards the sub-expression. So the desugar is the SINGLE lowering.
+# value is discarded): it just guards the sub-expression. So the desugar is the SINGLE lowering.
 fn is_rec_tag(s: String) : Bool = if string_length(s) >= 5 then substring(s, 0, 5) == "@rec:" else false
 fn rec_tag_type(s: String) : String = substring(s, 5, string_length(s))
 fn addrec(nm: String, rt: String, fenv: List<Pair<String, String>>) : List<Pair<String, String>> = if rt == "" then fenv else [Pair(nm, "@rec:" ++ rt)] ++ fenv
@@ -1145,10 +1144,10 @@ fn resolve_fn(name: String, fns: List<FnDecl>, fenv: List<Pair<String, String>>)
 fn is_fn_arg(a: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>) : Bool = match a { EVar(n) => resolve_fn(n, fns, fenv) != ""; _ => false }
 fn arg_fn_name(a: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>) : String = match a { EVar(n) => resolve_fn(n, fns, fenv); _ => "" }
 # A computed callee bound by a LET to a RUNTIME SELECTOR over functions: `let f = (if c then g else
-# h) in body`, f then called in body. The v5.114 alias handles `let f = g` (a bare fn name); this
-# handles the SELECTOR case — the DUAL of push_app (v5.113): DISTRIBUTE THE LET OVER THE SELECTOR.
+# h) in body`, f then called in body. The bare-name alias handles `let f = g` (a bare fn name); this
+# handles the SELECTOR case: the DUAL of push_app: DISTRIBUTE THE LET OVER THE SELECTOR.
 # `let f = (if c then g else h) in body` == `if c then (let f=g in body) else (let f=h in body)`;
-# each branch is then a bare-name alias the v5.114 path resolves. Sound because Glass is pure (body
+# each branch is then a bare-name alias that path resolves. Sound because Glass is pure (body
 # is evaluated once, in the taken branch). is_fn_sel recognises a selector whose leaves are ALL fn
 # names (so an Int-valued `if` is NOT distributed); shared by unroll + seval, so guard and circuit agree.
 fn arms_fn_sel(arms: List<Pair<Pattern, Expr>>, fns: List<FnDecl>, fenv: List<Pair<String, String>>) : Bool =
@@ -1170,12 +1169,12 @@ fn unroll_recfields(lit: List<Pair<String, Expr>>, fns: List<FnDecl>, fenv: List
   match lit { [] => []; [Pair(k, v), ...r] => [Pair(k, unroll(v, fns, fenv, fuel))] ++ unroll_recfields(r, fns, fenv, fuel) }
 fn unroll_arms(arms: List<Pair<Pattern, Expr>>, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: Int) : List<Pair<Pattern, Expr>> =
   match arms { [] => []; [Pair(p, b), ...r] => [Pair(p, unroll(b, fns, fenv, fuel))] ++ unroll_arms(r, fns, fenv, fuel) }
-# Capture-avoiding call inlining (v5.132). The old shape bound each argument DIRECTLY to its
-# parameter as a sequential ELet nest — ELet(p1, arg1, ELet(p2, arg2, body)) — so an argument
+# Capture-avoiding call inlining. The old shape bound each argument DIRECTLY to its
+# parameter as a sequential ELet nest (ELet(p1, arg1, ELet(p2, arg2, body))) so an argument
 # expression referencing an EARLIER parameter's NAME was captured by the just-bound parameter
 # instead of the caller's variable: in gcd's `gcd(b, a % b)` the `a` inside `a % b` resolved to
-# the new a (= caller's b), computing b % b = 0 — the circuit attested gcd(48,18) = 18 while the
-# source computes 6 (STARK-valid wrong lowering, flagged by the Third Witness as DIVERGENCE; the
+# the new a (= caller's b), computing b % b = 0: the circuit attested gcd(48,18) = 18 while the
+# source computes 6 (STARK-valid wrong lowering, flagged by the cross-check as DIVERGENCE; the
 # same capture existed in the fn-NAMESPACE: a later arg calling a name an earlier fn-param shadows
 # resolved through the extended fenv). The fix is two-phase: (1) every value argument is unrolled
 # against the CALLER's fenv and bound to a reserved temp `q9p_<param>` (user code never binds q9p_*;
@@ -1183,7 +1182,7 @@ fn unroll_arms(arms: List<Pair<Pattern, Expr>>, fns: List<FnDecl>, fenv: List<Pa
 # temps: ELet(q9p_p1, arg1, ELet(q9p_p2, arg2, ELet(p1, q9p_p1, ELet(p2, q9p_p2, body)))). fn-args
 # and record types (addrec) also resolve against the caller fenv (cfenv) while the BODY fenv (bfenv)
 # accumulates the param bindings. An ELet binds wires, not gates, so capture-free programs lower to
-# the IDENTICAL gate stream — proofs are byte-identical (checked against the committed corpus).
+# the IDENTICAL gate stream: proofs are byte-identical (checked against the committed corpus).
 fn tmpn(p: String) : String = "q9p_" ++ p
 fn inline_params(ps: List<String>, e: Expr) : Expr =
   match ps { [] => e; [p, ...r] => ELet(p, EVar(tmpn(p)), inline_params(r, e)) }
@@ -1203,7 +1202,7 @@ fn inline_go(body: Expr, args: List<Expr>, fns: List<FnDecl>, cfenv: List<Pair<S
 # p-|a|+2^31 = 2^31-|a| in-field), where the existing lt_build range-proof BOTH gives the
 # correct signed order AND enforces signedness (an out-of-signed-range operand lands >= 2^32
 # and range_k fails -> ABSTAIN). One SHARED desugar, called from unroll (feeds heval+cgen) AND
-# seval — so the guard and the circuit can never disagree on the lowering. No gate/verifier
+# seval, so the guard and the circuit can never disagree on the lowering. No gate/verifier
 # change: pure reuse of ELt/ELe/EGt/EGe (slt/sle/sgt/sge are reserved intrinsic names).
 fn is_scmp(fname: String) : Bool =
   if fname == "slt" then true else if fname == "sle" then true else if fname == "sgt" then true else if fname == "sge" then true else false
@@ -1217,17 +1216,17 @@ fn scmp_desugar(fname: String, a: Expr, b: Expr) : Expr =
 # Signed division/modulo intrinsics. sdiv/smod(a,b) are C99 truncated division over SIGNED
 # integers in [-2^31, 2^31): q rounds toward zero, r has the sign of the dividend, a = b*q + r,
 # |r| < |b|. The +2^31 offset trick that makes signed COMPARISON free does NOT compose for
-# division ((a+K)/(b+K) != a/b), so signed divmod is built by SIGN-MAGNITUDE — but NOT via a
+# division ((a+K)/(b+K) != a/b), so signed divmod is built by SIGN-MAGNITUDE, but NOT via a
 # bespoke sign-bit gadget (extracting a sign bit from a field-canonical negative is unsound: an
 # adversarial design failed exactly there). The sound cut: express sdiv/smod's BODY in terms of
 # already-lowered, already-sound primitives and let the bridge lower it. The sign is the PROVEN
-# canonical sign `slt(x, 0)` (reuses the v5.94 offset-binding, which range-pins x into
+# canonical sign `slt(x, 0)` (reuses the signed-comparison offset-binding, which range-pins x into
 # [-2^31,2^31) and is uncheatable); magnitude and post-negation are `if`/`then`/`else` (the EIf
 # mux); the core is the shipped UNSIGNED divmod_build on magnitudes (both proven in [0,2^31], so
-# products stay < p). No sign-bit extraction, no new gate, no verify_b3/Pentecost change. A
-# negative result is the canonical field element p-|r| (the Third Witness reports the signed value
+# products stay < p). No sign-bit extraction, no new gate, no verify_b3/Lens change. A
+# negative result is the canonical field element p-|r| (the cross-check reports the signed value
 # via --cross-check). Out-of-range operands ABSTAIN (the slt range-pin refuses them, loud); b==0
-# ABSTAINs (div_ok_g). ONE shared desugar in unroll (feeds heval+cgen) AND seval — no guard/circuit
+# ABSTAINs (div_ok_g). ONE shared desugar in unroll (feeds heval+cgen) AND seval: no guard/circuit
 # drift. sdiv/smod are reserved intrinsic names.
 fn sgn_e(e: Expr) : Expr = ELt(EAdd(e, EInt(2147483648)), EInt(2147483648))
 fn neg_e(e: Expr) : Expr = ESub(EInt(0), e)
@@ -1243,10 +1242,10 @@ fn sdiv_desugar(fname: String, a: Expr, b: Expr) : Expr =
     then EIf(ENeq(EVar("q9sa"), EVar("q9sb")), neg_e(EVar("q9qm")), EVar("q9qm"))
     else EIf(EVar("q9sa"), neg_e(EVar("q9rm")), EVar("q9rm"))))))))))
 # Signed utility intrinsics over [-2^31, 2^31): sabs(x)=|x| (1 arg), smin(a,b)/smax(a,b) (2 args).
-# Same compositional cut as sdiv — express the body with the already-lowered signed comparison
+# Same compositional cut as sdiv: express the body with the already-lowered signed comparison
 # (`slt` via scmp_desugar) + `if`/`then`/`else`, and let the bridge lower it. No new gadget, no
 # verifier change. sabs/smin/smax are reserved names. (sabs(-2^31)=2^31 is the mathematically
-# correct magnitude — a positive value just outside the symmetric range, fine as a field result.)
+# correct magnitude: a positive value just outside the symmetric range, fine as a field result.)
 fn is_sabs(fname: String) : Bool = if fname == "sabs" then true else false
 fn is_sutil2(fname: String) : Bool = if fname == "smin" then true else if fname == "smax" then true else false
 fn sabs_desugar(x: Expr) : Expr =
@@ -1262,11 +1261,11 @@ fn unroll(e: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: In
     # the unroller can't stop a recursion at its (runtime) base case, so it unrolls to the
     # fuel bound and caps with 0. For runtime depth <= fuel the cap is never selected (the
     # `if`s short-circuit on the witness first) and the result is exact; deeper recursion is
-    # silently truncated — a known circuit-model limitation (see soundness.md), not fixable
+    # silently truncated: a known circuit-model limitation (see soundness.md), not fixable
     # here without breaking every recursive program. The genuine-error fallbacks below DO
-    # refuse loudly (unresolved / higher-order callee — programs the bridge cannot lower).
+    # refuse loudly (unresolved / higher-order callee: programs the bridge cannot lower).
     EApp(f, a) => if fuel <= 0 then EInt(0) else match unwind_app(EApp(f, a), []) { (hd, args) => match hd {
-      EVar(fname) => if is_scmp(fname) then (match args { [sa, sb] => unroll(scmp_desugar(fname, sa, sb), fns, fenv, fuel); _ => error("glass prove: signed comparison '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sdiv(fname) then (match args { [da, db] => unroll(sdiv_desugar(fname, da, db), fns, fenv, fuel); _ => error("glass prove: signed division '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sabs(fname) then (match args { [za] => unroll(sabs_desugar(za), fns, fenv, fuel); _ => error("glass prove: 'sabs' expects exactly 1 argument") }) else if is_sutil2(fname) then (match args { [ua, ub] => unroll(sutil2_desugar(fname, ua, ub), fns, fenv, fuel); _ => error("glass prove: signed '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_strfn(fname) then app_of(EVar(fname), unroll_args(args, fns, fenv, fuel)) else if is_bitop(fname) then app_of(EVar(fname), unroll_args(args, fns, fenv, fuel)) else (let tgt : String = resolve_fn(fname, fns, fenv) in if tgt == "" then error("glass prove: unresolved call to '" ++ fname ++ "' — the prove bridge cannot lower this construct to a gate circuit (a silent proven-0 is refused)") else inline_fn(fn_body_of(fns, tgt), args, fns, fenv, fuel));
+      EVar(fname) => if is_scmp(fname) then (match args { [sa, sb] => unroll(scmp_desugar(fname, sa, sb), fns, fenv, fuel); _ => error("glass prove: signed comparison '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sdiv(fname) then (match args { [da, db] => unroll(sdiv_desugar(fname, da, db), fns, fenv, fuel); _ => error("glass prove: signed division '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sabs(fname) then (match args { [za] => unroll(sabs_desugar(za), fns, fenv, fuel); _ => error("glass prove: 'sabs' expects exactly 1 argument") }) else if is_sutil2(fname) then (match args { [ua, ub] => unroll(sutil2_desugar(fname, ua, ub), fns, fenv, fuel); _ => error("glass prove: signed '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_strfn(fname) then app_of(EVar(fname), unroll_args(args, fns, fenv, fuel)) else if is_bitop(fname) then app_of(EVar(fname), unroll_args(args, fns, fenv, fuel)) else (let tgt : String = resolve_fn(fname, fns, fenv) in if tgt == "" then error("glass prove: unresolved call to '" ++ fname ++ "': the prove bridge cannot lower this construct to a gate circuit (a silent proven-0 is refused)") else inline_fn(fn_body_of(fns, tgt), args, fns, fenv, fuel));
       _ => unroll(push_app(hd, args), fns, fenv, fuel) } };
     EAdd(x, y) => EAdd(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
     ESub(x, y) => ESub(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
@@ -1281,7 +1280,7 @@ fn unroll(e: Expr, fns: List<FnDecl>, fenv: List<Pair<String, String>>, fuel: In
     EMatch(scrut, arms) => EMatch(unroll(scrut, fns, fenv, fuel), unroll_arms(arms, fns, fenv, fuel));
     ECtor(name, args) => ECtor(name, unroll_args(args, fns, fenv, fuel));
     ETuple(elems) => ETuple(unroll_args(elems, fns, fenv, fuel));
-    ENamedRec(name, lit) => ENamedRec(name, unroll_recfields(lit, fns, fenv, fuel));   # v5.103: records
+    ENamedRec(name, lit) => ENamedRec(name, unroll_recfields(lit, fns, fenv, fuel));   # Records
     ERec(lit) => ERec(unroll_recfields(lit, fns, fenv, fuel));
     EField(e, f) => let rt : String = rtype_of(e, fenv) in (if rt == "" then EField(unroll(e, fns, fenv, fuel), f) else EMatch(unroll(e, fns, fenv, fuel), [Pair(PRecord(rt, [f]), EVar(f))]));
     ELt(x, y) => ELt(unroll(x, fns, fenv, fuel), unroll(y, fns, fenv, fuel));
@@ -1306,12 +1305,12 @@ fn vh(v: List<List<Int>>) : List<Int> = wnth(v, 0)
 fn slw(sv: List<List<Int>>, off: Int, w: Int) : List<List<Int>> = if w <= 0 then [] else [wnth(sv, off)] ++ slw(sv, off + 1, w - 1)
 fn padw(v: List<List<Int>>, t: Int) : List<List<Int>> = if llen(v) >= t then v else padw(v ++ [glit(0)], t)
 fn ctix(ctors: List<CtorDecl>, name: String, i: Int) : Int = match ctors { [] => 0 - 1; [CtorDecl(cn, ats), ...r] => if cn == name then i else ctix(r, name, i + 1) }
-fn ctag(types: List<TypeDecl>, name: String) : Int = match types { [] => error("glass prove: undeclared constructor '" ++ name ++ "' reached the prove bridge — it is in no TypeDecl of the proven source, so the bridge cannot resolve its tag and would otherwise lower it to a tag-0 cell with dropped fields (a silent WRONG circuit, e.g. built-in list patterns all collapsing to the [] arm and a proof of 0). ABSTAIN. Built-in List literals ([a, b, c], [h, ...t]) and other built-in constructors are not yet faithfully lowerable; use a declared ADT, e.g. `type IntList = | Nil | Cons(Int, IntList)` (see examples/prove/map_prove.glass)."); [TypeDecl(tn, tps, ctors), ...r] => let idx : Int = ctix(ctors, name, 0) in if idx >= 0 then idx else ctag(r, name); [RecordDecl(rn, rps, rfs), ...r] => ctag(r, name) }
+fn ctag(types: List<TypeDecl>, name: String) : Int = match types { [] => error("glass prove: undeclared constructor '" ++ name ++ "' reached the prove bridge: it is in no TypeDecl of the proven source, so the bridge cannot resolve its tag and would otherwise lower it to a tag-0 cell with dropped fields (a silent WRONG circuit, e.g. built-in list patterns all collapsing to the [] arm and a proof of 0). ABSTAIN. Built-in List literals ([a, b, c], [h, ...t]) and other built-in constructors are not yet faithfully lowerable; use a declared ADT, e.g. `type IntList = | Nil | Cons(Int, IntList)` (see examples/prove/map_prove.glass)."); [TypeDecl(tn, tps, ctors), ...r] => let idx : Int = ctix(ctors, name, 0) in if idx >= 0 then idx else ctag(r, name); [RecordDecl(rn, rps, rfs), ...r] => ctag(r, name) }
 fn find_type(types: List<TypeDecl>, name: String) : List<CtorDecl> = match types { [] => []; [TypeDecl(tn, tps, ctors), ...r] => if tn == name then ctors else find_type(r, name); [RecordDecl(rn, rps, rfs), ...r] => find_type(r, name) }
 fn has_ctor(ctors: List<CtorDecl>, name: String) : Bool = match ctors { [] => false; [CtorDecl(cn, ats), ...r] => if cn == name then true else has_ctor(r, name) }
 fn get_args(ctors: List<CtorDecl>, name: String) : List<Type> = match ctors { [] => []; [CtorDecl(cn, ats), ...r] => if cn == name then ats else get_args(r, name) }
-fn ctor_argtypes(types: List<TypeDecl>, name: String) : List<Type> = match types { [] => error("glass prove: undeclared constructor '" ++ name ++ "' reached the prove bridge — it is in no TypeDecl of the proven source, so the bridge cannot resolve its field types and would otherwise drop them (a silent WRONG circuit, e.g. built-in list patterns all collapsing to the [] arm and a proof of 0). ABSTAIN. Built-in List literals ([a, b, c], [h, ...t]) and other built-in constructors are not yet faithfully lowerable; use a declared ADT, e.g. `type IntList = | Nil | Cons(Int, IntList)` (see examples/prove/map_prove.glass)."); [TypeDecl(tn, tps, ctors), ...r] => if has_ctor(ctors, name) then get_args(ctors, name) else ctor_argtypes(r, name); [RecordDecl(rn, rps, rfs), ...r] => ctor_argtypes(r, name) }
-# --- records (v5.103): a single-variant product, NO tag — fields in DECL order, twidth-padded,
+fn ctor_argtypes(types: List<TypeDecl>, name: String) : List<Type> = match types { [] => error("glass prove: undeclared constructor '" ++ name ++ "' reached the prove bridge: it is in no TypeDecl of the proven source, so the bridge cannot resolve its field types and would otherwise drop them (a silent WRONG circuit, e.g. built-in list patterns all collapsing to the [] arm and a proof of 0). ABSTAIN. Built-in List literals ([a, b, c], [h, ...t]) and other built-in constructors are not yet faithfully lowerable; use a declared ADT, e.g. `type IntList = | Nil | Cons(Int, IntList)` (see examples/prove/map_prove.glass)."); [TypeDecl(tn, tps, ctors), ...r] => if has_ctor(ctors, name) then get_args(ctors, name) else ctor_argtypes(r, name); [RecordDecl(rn, rps, rfs), ...r] => ctor_argtypes(r, name) }
+# --- records: a single-variant product, NO tag: fields in DECL order, twidth-padded,
 # laid out exactly like a tuple but with declared field types (so any field width works). The
 # type-helpers above skip RecordDecl (a RecordDecl head used to crash find_type/ctag/ctor_argtypes
 # with a non-exhaustive match). find_record returns a record's declared fields by name.
@@ -1334,21 +1333,21 @@ fn cbind_rec(declfs: List<Pair<String, Type>>, listed: List<String>, sv: List<In
     let cenv2 : List<Pair<String, List<Int>>> = if smem(listed, nm) then [Pair(nm, slwi(sv, off, w))] ++ cenv else cenv in
     cbind_rec(r, listed, sv, off + w, types, cenv2) }
 fn scalar_types_e(xs: List<Expr>) : List<Type> = match xs { [] => []; [x, ...r] => [TyInt] ++ scalar_types_e(r) }
-fn twidth(ty: Type, types: List<TypeDecl>, fuel: Int) : Int = if fuel <= 0 then 1 else match ty { TyAdt(name, args) => match find_record(types, name) { [] => (match find_type(types, name) { [] => 1; cs => 1 + max_ctor_width(cs, types, fuel - 1) }); rfs => ctor_wsum(rec_ftypes(rfs), types, fuel - 1) }; TyRec(fs) => ctor_wsum(rec_ftypes(fs), types, fuel - 1); TyTuple(tys) => ctor_wsum(tys, types, fuel - 1); TyStr => error("glass prove: a String has no fixed type-determined wire width (it is codepoint-count dependent), so it cannot be laid out at a fixed offset as a FIELD of an ADT/record/tuple — a width-1 slot would mis-offset the following fields (or truncate the string to one codepoint) and silently attest a WRONG value. ABSTAIN. A String is provable as a standalone result/input, not embedded in an aggregate."); _ => 1 }
+fn twidth(ty: Type, types: List<TypeDecl>, fuel: Int) : Int = if fuel <= 0 then 1 else match ty { TyAdt(name, args) => match find_record(types, name) { [] => (match find_type(types, name) { [] => 1; cs => 1 + max_ctor_width(cs, types, fuel - 1) }); rfs => ctor_wsum(rec_ftypes(rfs), types, fuel - 1) }; TyRec(fs) => ctor_wsum(rec_ftypes(fs), types, fuel - 1); TyTuple(tys) => ctor_wsum(tys, types, fuel - 1); TyStr => error("glass prove: a String has no fixed type-determined wire width (it is codepoint-count dependent), so it cannot be laid out at a fixed offset as a FIELD of an ADT/record/tuple: a width-1 slot would mis-offset the following fields (or truncate the string to one codepoint) and silently attest a WRONG value. ABSTAIN. A String is provable as a standalone result/input, not embedded in an aggregate."); _ => 1 }
 fn ctor_wsum(args: List<Type>, types: List<TypeDecl>, fuel: Int) : Int = match args { [] => 0; [a, ...r] => twidth(a, types, fuel) + ctor_wsum(r, types, fuel) }
 fn max_ctor_width(ctors: List<CtorDecl>, types: List<TypeDecl>, fuel: Int) : Int = match ctors { [] => 0; [CtorDecl(cn, ats), ...r] => let w : Int = ctor_wsum(ats, types, fuel) in let rw : Int = max_ctor_width(r, types, fuel) in if w >= rw then w else rw }
-# HOLE B (v5.130) — fixed-width layout overflow guard. A constructor/record/tuple lays each field at a
+# HOLE B: fixed-width layout overflow guard. A constructor/record/tuple lays each field at a
 # FIXED slot width `twidth(t, 12)` and reads the NEXT field at `off + that width`. But a value can be
 # WIDER than its slot: `twidth` decrements fuel per recursive level while construction pads at a flat
 # fuel 12, so a recursive-ADT value (e.g. Cons(7,Nil) = 27 wires vs twidth(IntList)=25) over-runs its
-# slot. If such an over-wide value is FOLLOWED by another field, that field is read at a shifted offset
-# — onto the overflow wires — and the circuit silently attests a WRONG value (caught only by --witness3).
+# slot. If such an over-wide value is FOLLOWED by another field, that field is read at a shifted offset,
+# onto the overflow wires, and the circuit silently attests a WRONG value (caught only by --cross-check).
 # It is BENIGN when the over-wide field is LAST (nothing follows; a head-reading fold like map_prove still
 # works, the consumer just truncates trailing pad). So: ABSTAIN iff an over-wide field is NON-LAST.
 fn has_more_e(xs: List<Expr>) : Bool = match xs { [] => false; [x, ...r] => true }
 fn assert_field_fits(actual: Int, slot: Int, more: Bool) : Bool =
   if more && (actual > slot)
-  then error("glass prove: a constructed field value is WIDER than its declared type's fixed wire width AND is FOLLOWED by another field — the fixed-width layout would read the following field at a shifted offset, onto this value's overflow wires, and silently attest a WRONG value (a recursive ADT or variable-width field exceeding its twidth slot). ABSTAIN. Put the variable-width/recursive field LAST in the constructor/record/tuple, or refactor the type.")
+  then error("glass prove: a constructed field value is WIDER than its declared type's fixed wire width AND is FOLLOWED by another field: the fixed-width layout would read the following field at a shifted offset, onto this value's overflow wires, and silently attest a WRONG value (a recursive ADT or variable-width field exceeding its twidth slot). ABSTAIN. Put the variable-width/recursive field LAST in the constructor/record/tuple, or refactor the type.")
   else true
 
 # --- R1b stage 1: heval, the reference evaluator (SPEC) for ADTs over Goldilocks --
@@ -1379,46 +1378,46 @@ fn heval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, t
     ECtor(name, args) => match heval_fields(args, ctor_argtypes(types, name), env, fns, types) { (vals, hs) => ([glit(ctag(types, name))] ++ vals, hs) };
     ETuple(elems) => heval_fields(elems, scalar_types_e(elems), env, fns, types);
     ENamedRec(nm, lit) => heval_fields(reorder_rec(rec_fnames(find_record(types, nm)), lit), rec_ftypes(find_record(types, nm)), env, fns, types);
-    EField(recd, f) => error("glass prove: could not resolve the record TYPE for field access (." ++ f ++ ") — direct `r.field` lowers when the record's type is inferable (a record variable or literal, or an if over records); otherwise destructure with a pattern: match r { T { " ++ f ++ " } => " ++ f ++ " }. ABSTAIN.");
+    EField(recd, f) => error("glass prove: could not resolve the record TYPE for field access (." ++ f ++ "): direct `r.field` lowers when the record's type is inferable (a record variable or literal, or an if over records); otherwise destructure with a pattern: match r { T { " ++ f ++ " } => " ++ f ++ " }. ABSTAIN.");
     EStr(s) => (estr_v(s), []);
     EConcat(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) => (va ++ vb, ha ++ hb) } };
-    EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => if is_strfn(fname) then heval_strfn(fname, args, env, fns, types) else if is_bitop(fname) then heval_bitop(fname, args, env, fns, types) else heval_call(fn_body_of(fns, fname), args, [], env, fns, types); _ => error("glass prove: unsupported call form (computed or higher-order callee) in the reference evaluator — refusing rather than silently proving 0") } };
+    EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => if is_strfn(fname) then heval_strfn(fname, args, env, fns, types) else if is_bitop(fname) then heval_bitop(fname, args, env, fns, types) else heval_call(fn_body_of(fns, fname), args, [], env, fns, types); _ => error("glass prove: unsupported call form (computed or higher-order callee) in the reference evaluator: refusing rather than silently proving 0") } };
     EMatch(scrut, arms) => match heval(scrut, env, fns, types) { (sv, hs) => match heval_match(sv, arms, env, fns, types) { (rv, ha) => (rv, hs ++ ha) } };
     ELt(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) =>
       let xa : List<Int> = vh(va) in let xb : List<Int> = vh(vb) in
       if cmp_ok_g(xa, xb) then let d : List<Int> = fadd(fsub(xa, xb), pow2_lit(32)) in
         ([if bn_cmp(trim(xa), trim(xb)) < 0 then glit(1) else glit(0)], ha ++ hb ++ cmp_bits_w(xa, 32) ++ cmp_bits_w(xb, 32) ++ cmp_bits_w(d, 33))
-      else error("glass prove: ordering comparison operand out of provable range [0,2^32) — ABSTAIN (Glass cannot faithfully lower this comparison; abstaining, not disproving — and never a wrong ACCEPT)") } };
+      else error("glass prove: ordering comparison operand out of provable range [0,2^32) (ABSTAIN (Glass cannot faithfully lower this comparison; abstaining, not disproving) and never a wrong ACCEPT)") } };
     EGt(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) =>
       let xa : List<Int> = vh(va) in let xb : List<Int> = vh(vb) in
       if cmp_ok_g(xa, xb) then let d : List<Int> = fadd(fsub(xb, xa), pow2_lit(32)) in
         ([if bn_cmp(trim(xb), trim(xa)) < 0 then glit(1) else glit(0)], ha ++ hb ++ cmp_bits_w(xb, 32) ++ cmp_bits_w(xa, 32) ++ cmp_bits_w(d, 33))
-      else error("glass prove: ordering comparison operand out of provable range [0,2^32) — ABSTAIN (cannot lower; abstaining, not disproving)") } };
+      else error("glass prove: ordering comparison operand out of provable range [0,2^32): ABSTAIN (cannot lower; abstaining, not disproving)") } };
     ELe(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) =>
       let xa : List<Int> = vh(va) in let xb : List<Int> = vh(vb) in
       if cmp_ok_g(xa, xb) then let d : List<Int> = fadd(fsub(xb, xa), pow2_lit(32)) in
         ([if bn_cmp(trim(xb), trim(xa)) < 0 then glit(0) else glit(1)], ha ++ hb ++ cmp_bits_w(xb, 32) ++ cmp_bits_w(xa, 32) ++ cmp_bits_w(d, 33))
-      else error("glass prove: ordering comparison operand out of provable range [0,2^32) — ABSTAIN (cannot lower; abstaining, not disproving)") } };
+      else error("glass prove: ordering comparison operand out of provable range [0,2^32): ABSTAIN (cannot lower; abstaining, not disproving)") } };
     EGe(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) =>
       let xa : List<Int> = vh(va) in let xb : List<Int> = vh(vb) in
       if cmp_ok_g(xa, xb) then let d : List<Int> = fadd(fsub(xa, xb), pow2_lit(32)) in
         ([if bn_cmp(trim(xa), trim(xb)) < 0 then glit(0) else glit(1)], ha ++ hb ++ cmp_bits_w(xa, 32) ++ cmp_bits_w(xb, 32) ++ cmp_bits_w(d, 33))
-      else error("glass prove: ordering comparison operand out of provable range [0,2^32) — ABSTAIN (cannot lower; abstaining, not disproving)") } };
+      else error("glass prove: ordering comparison operand out of provable range [0,2^32): ABSTAIN (cannot lower; abstaining, not disproving)") } };
     EDiv(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) =>
       let xa : List<Int> = vh(va) in let xb : List<Int> = vh(vb) in
       if cmp_ok_g(xa, xb) then ([if bn_is_zero(xb) then glit(0) else gdiv_lit(xa, xb)], ha ++ hb)
-      else error("glass prove: integer division operand out of provable range [0,2^32) — ABSTAIN (Glass cannot faithfully lower this division; abstaining, not disproving — and never a wrong ACCEPT)") } };
+      else error("glass prove: integer division operand out of provable range [0,2^32) (ABSTAIN (Glass cannot faithfully lower this division; abstaining, not disproving) and never a wrong ACCEPT)") } };
     EMod(a, b) => match heval(a, env, fns, types) { (va, ha) => match heval(b, env, fns, types) { (vb, hb) =>
       let xa : List<Int> = vh(va) in let xb : List<Int> = vh(vb) in
       if cmp_ok_g(xa, xb) then ([if bn_is_zero(xb) then glit(bn_small_to_int(xa)) else gmod_lit(xa, xb)], ha ++ hb)
-      else error("glass prove: integer modulo operand out of provable range [0,2^32) — ABSTAIN (cannot lower; abstaining, not disproving)") } };
-    _ => error("glass prove: unsupported expression in the prove bridge (heval) — only + - * == != && || ! < > <= >= / % (range-bounded) and if/let/match/ADT/calls lower to the field circuit; strings and records have no faithful field lowering and are refused, not silently proven as 0") }
+      else error("glass prove: integer modulo operand out of provable range [0,2^32): ABSTAIN (cannot lower; abstaining, not disproving)") } };
+    _ => error("glass prove: unsupported expression in the prove bridge (heval): only + - * == != && || ! < > <= >= / % (range-bounded) and if/let/match/ADT/calls lower to the field circuit; strings and records have no faithful field lowering and are refused, not silently proven as 0") }
 fn heval_fields(args: List<Expr>, tys: List<Type>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>) : (List<List<Int>>, List<List<Int>>) =
   match args { [] => ([], []); [a, ...arest] => match tys { [] => ([], []); [t, ...trest] =>
     match heval(a, env, fns, types) { (va, ha) => let _ : Bool = assert_field_fits(llen(va), twidth(t, types, 12), has_more_e(arest)) in match heval_fields(arest, trest, env, fns, types) { (vr, hr) =>
       (padw(va, twidth(t, types, 12)) ++ vr, ha ++ hr) } } } }
 # string intrinsics in the reference evaluator: string_length -> the (static) wire count; substring
-# -> a static wire slice (bounds via cval_h). Both structural — they read the multi-wire value.
+# -> a static wire slice (bounds via cval_h). Both structural: they read the multi-wire value.
 fn heval_strfn(fname: String, args: List<Expr>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>) : (List<List<Int>>, List<List<Int>>) =
   if fname == "string_length"
   then (match args { [s] => match heval(s, env, fns, types) { (sv, hs) => ([glit(llen(sv))], hs) }; _ => error("glass prove: string_length expects exactly 1 argument") })
@@ -1466,10 +1465,10 @@ fn unroll_fuel(d: Int) : Int = 8
 # value. Within fuel it returns the same value the circuit proves (accept-set is a SUBSET of the
 # circuit-faithful set). HONEST SCOPE: this guards the CLI's honest R-computation path; a
 # malicious prover building a truncated circuit directly (or calling gprove_sound with a forged
-# R) is OUT of the soundness threat model (faithful-lowering, audit-readiness.md) — the
+# R) is OUT of the soundness threat model (faithful-lowering, audit-readiness.md): the
 # do-not-protect-real-value banner stays.
 # seval carries `fenv` (param -> fn-name) exactly like unroll's inline_fn, so the guard resolves
-# FUNCTION-VALUED parameters the same way the prover (unroll+cgen) does — higher-order programs like
+# FUNCTION-VALUED parameters the same way the prover (unroll+cgen) does: higher-order programs like
 # `map(inc, xs)` are guarded (and provable) instead of spuriously refused. fn-args bind into fenv (no
 # fuel decrement, matching inline_fn); value-args bind into env. seval's accept-set stays a subset of
 # the circuit-faithful set because the resolution now MATCHES unroll's.
@@ -1493,29 +1492,29 @@ fn seval(e: Expr, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, t
     ECtor(name, args) => [glit(ctag(types, name))] ++ seval_fields(args, ctor_argtypes(types, name), env, fns, types, fenv, fuel);
     ETuple(elems) => seval_fields(elems, scalar_types_e(elems), env, fns, types, fenv, fuel);
     ENamedRec(nm, lit) => seval_fields(reorder_rec(rec_fnames(find_record(types, nm)), lit), rec_ftypes(find_record(types, nm)), env, fns, types, fenv, fuel);
-    # v5.104: EField is permissive in the guard (its value is discarded) — just guard the subexpr's
+    # EField is permissive in the guard (its value is discarded): just guard the subexpr's
     # recursion/callees. The real lowering is unroll's `e.f -> match e { T { f } => f }` desugar
     # (heval/cgen on the unrolled term); an UNRESOLVABLE e.f stays EField -> heval/cgen ABSTAIN.
     EField(recd, f) => let _g : List<List<Int>> = seval(recd, env, fns, types, fenv, fuel) in [glit(0)];
     EStr(s) => estr_v(s);
     EConcat(a, b) => seval(a, env, fns, types, fenv, fuel) ++ seval(b, env, fns, types, fenv, fuel);
     EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd {
-      EVar(fname) => if is_scmp(fname) then (match args { [sa, sb] => seval(scmp_desugar(fname, sa, sb), env, fns, types, fenv, fuel); _ => error("glass prove: signed comparison '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sdiv(fname) then (match args { [da, db] => seval(sdiv_desugar(fname, da, db), env, fns, types, fenv, fuel); _ => error("glass prove: signed division '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sabs(fname) then (match args { [za] => seval(sabs_desugar(za), env, fns, types, fenv, fuel); _ => error("glass prove: 'sabs' expects exactly 1 argument") }) else if is_sutil2(fname) then (match args { [ua, ub] => seval(sutil2_desugar(fname, ua, ub), env, fns, types, fenv, fuel); _ => error("glass prove: signed '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_strfn(fname) then seval_strfn(fname, args, env, fns, types, fenv, fuel) else if is_bitop(fname) then seval_bitop(fname, args, env, fns, types, fenv, fuel) else if fuel <= 0 then error("glass prove: recursion depth exceeds the unroll bound (" ++ int_to_string(unroll_fuel(0)) ++ "); refusing to prove a depth-truncated result — it would otherwise be a silently wrong value with a valid-looking proof (the program needs statically-bounded, shallower recursion)") else (let tgt : String = resolve_fn(fname, fns, fenv) in if tgt == "" then error("glass prove: unresolved call to '" ++ fname ++ "' in the reference evaluator") else seval_call(fn_body_of(fns, tgt), args, [], env, [], fenv, fns, types, fuel));
+      EVar(fname) => if is_scmp(fname) then (match args { [sa, sb] => seval(scmp_desugar(fname, sa, sb), env, fns, types, fenv, fuel); _ => error("glass prove: signed comparison '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sdiv(fname) then (match args { [da, db] => seval(sdiv_desugar(fname, da, db), env, fns, types, fenv, fuel); _ => error("glass prove: signed division '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_sabs(fname) then (match args { [za] => seval(sabs_desugar(za), env, fns, types, fenv, fuel); _ => error("glass prove: 'sabs' expects exactly 1 argument") }) else if is_sutil2(fname) then (match args { [ua, ub] => seval(sutil2_desugar(fname, ua, ub), env, fns, types, fenv, fuel); _ => error("glass prove: signed '" ++ fname ++ "' expects exactly 2 arguments") }) else if is_strfn(fname) then seval_strfn(fname, args, env, fns, types, fenv, fuel) else if is_bitop(fname) then seval_bitop(fname, args, env, fns, types, fenv, fuel) else if fuel <= 0 then error("glass prove: recursion depth exceeds the unroll bound (" ++ int_to_string(unroll_fuel(0)) ++ "); refusing to prove a depth-truncated result: it would otherwise be a silently wrong value with a valid-looking proof (the program needs statically-bounded, shallower recursion)") else (let tgt : String = resolve_fn(fname, fns, fenv) in if tgt == "" then error("glass prove: unresolved call to '" ++ fname ++ "' in the reference evaluator") else seval_call(fn_body_of(fns, tgt), args, [], env, [], fenv, fns, types, fuel));
       _ => seval(push_app(hd, args), env, fns, types, fenv, fuel) } };
     EMatch(scrut, arms) => seval_match(seval(scrut, env, fns, types, fenv, fuel), arms, env, fns, types, fenv, fuel);
     ELt(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fenv, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fenv, fuel)) in
-      if cmp_ok_g(xa, xb) then (if bn_cmp(trim(xa), trim(xb)) < 0 then [glit(1)] else [glit(0)]) else error("glass prove: ordering comparison operand out of provable range [0,2^32) — ABSTAIN (cannot lower; abstaining, not disproving)");
+      if cmp_ok_g(xa, xb) then (if bn_cmp(trim(xa), trim(xb)) < 0 then [glit(1)] else [glit(0)]) else error("glass prove: ordering comparison operand out of provable range [0,2^32): ABSTAIN (cannot lower; abstaining, not disproving)");
     EGt(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fenv, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fenv, fuel)) in
-      if cmp_ok_g(xa, xb) then (if bn_cmp(trim(xb), trim(xa)) < 0 then [glit(1)] else [glit(0)]) else error("glass prove: ordering comparison operand out of provable range [0,2^32) — ABSTAIN (cannot lower; abstaining, not disproving)");
+      if cmp_ok_g(xa, xb) then (if bn_cmp(trim(xb), trim(xa)) < 0 then [glit(1)] else [glit(0)]) else error("glass prove: ordering comparison operand out of provable range [0,2^32): ABSTAIN (cannot lower; abstaining, not disproving)");
     ELe(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fenv, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fenv, fuel)) in
-      if cmp_ok_g(xa, xb) then (if bn_cmp(trim(xb), trim(xa)) < 0 then [glit(0)] else [glit(1)]) else error("glass prove: ordering comparison operand out of provable range [0,2^32) — ABSTAIN (cannot lower; abstaining, not disproving)");
+      if cmp_ok_g(xa, xb) then (if bn_cmp(trim(xb), trim(xa)) < 0 then [glit(0)] else [glit(1)]) else error("glass prove: ordering comparison operand out of provable range [0,2^32): ABSTAIN (cannot lower; abstaining, not disproving)");
     EGe(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fenv, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fenv, fuel)) in
-      if cmp_ok_g(xa, xb) then (if bn_cmp(trim(xa), trim(xb)) < 0 then [glit(0)] else [glit(1)]) else error("glass prove: ordering comparison operand out of provable range [0,2^32) — ABSTAIN (cannot lower; abstaining, not disproving)");
+      if cmp_ok_g(xa, xb) then (if bn_cmp(trim(xa), trim(xb)) < 0 then [glit(0)] else [glit(1)]) else error("glass prove: ordering comparison operand out of provable range [0,2^32): ABSTAIN (cannot lower; abstaining, not disproving)");
     EDiv(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fenv, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fenv, fuel)) in
-      if div_ok_g(xa, xb) then [gdiv_lit(xa, xb)] else error("glass prove: integer division operand out of provable range [0,2^32) or divisor zero — ABSTAIN (cannot lower; abstaining, not disproving)");
+      if div_ok_g(xa, xb) then [gdiv_lit(xa, xb)] else error("glass prove: integer division operand out of provable range [0,2^32) or divisor zero: ABSTAIN (cannot lower; abstaining, not disproving)");
     EMod(a, b) => let xa : List<Int> = vh(seval(a, env, fns, types, fenv, fuel)) in let xb : List<Int> = vh(seval(b, env, fns, types, fenv, fuel)) in
-      if div_ok_g(xa, xb) then [gmod_lit(xa, xb)] else error("glass prove: integer modulo operand out of provable range [0,2^32) or divisor zero — ABSTAIN (cannot lower; abstaining, not disproving)");
-    _ => error("glass prove: unsupported expression in the prove bridge (seval guard) — only + - * == != && || ! < > <= >= / % (range-bounded) and if/let/match/ADT/calls lower to the field circuit; strings and records are refused, not silently proven as 0") }
+      if div_ok_g(xa, xb) then [gmod_lit(xa, xb)] else error("glass prove: integer modulo operand out of provable range [0,2^32) or divisor zero: ABSTAIN (cannot lower; abstaining, not disproving)");
+    _ => error("glass prove: unsupported expression in the prove bridge (seval guard): only + - * == != && || ! < > <= >= / % (range-bounded) and if/let/match/ADT/calls lower to the field circuit; strings and records are refused, not silently proven as 0") }
 fn seval_fields(args: List<Expr>, tys: List<Type>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>, fenv: List<Pair<String, String>>, fuel: Int) : List<List<Int>> =
   match args { [] => []; [a, ...arest] => match tys { [] => []; [t, ...trest] =>
     let sva : List<List<Int>> = seval(a, env, fns, types, fenv, fuel) in let _ : Bool = assert_field_fits(llen(sva), twidth(t, types, 12), has_more_e(arest)) in padw(sva, twidth(t, types, 12)) ++ seval_fields(arest, trest, env, fns, types, fenv, fuel) } }
@@ -1550,12 +1549,12 @@ fn vhi(v: List<Int>) : Int = nthI(v, 0)
 # reproduce): a negative OR inverted (start > end) index is an error (the reference raises); otherwise
 # both bounds CLAMP to the value's width n and the slice is [a, b). WITHOUT this the slice over-reads
 # and OOB cells take nthI/wnth's default = wire 0 = the FIRST input codepoint, so `substring("ab",0,5)`
-# attests "abaaa" while the source computes "ab" — a SILENT wrong string the SOUND verify_b3 ACCEPTs
-# (caught only by --witness3). The clamp makes the circuit value EQUAL the reference for EVERY input
+# attests "abaaa" while the source computes "ab": a SILENT wrong string the SOUND verify_b3 ACCEPTs
+# (caught only by --cross-check). The clamp makes the circuit value EQUAL the reference for EVERY input
 # (in-bounds slices are byte-identical; OOB clamps identically; negative/inverted ABSTAINs).
 fn substr_bounds(l: Int, h: Int, n: Int) : (Int, Int) =
-  if (l < 0) || (h < 0) then error("glass prove: substring negative index — ABSTAIN (the reference interpreter raises here; never reads past the string into wire 0)")
-  else if l > h then error("glass prove: substring start > end — ABSTAIN (the reference interpreter raises here)")
+  if (l < 0) || (h < 0) then error("glass prove: substring negative index: ABSTAIN (the reference interpreter raises here; never reads past the string into wire 0)")
+  else if l > h then error("glass prove: substring start > end: ABSTAIN (the reference interpreter raises here)")
   else (if l > n then n else l, if h > n then n else h)
 fn cenv_get(cenv: List<Pair<String, List<Int>>>, name: String) : List<Int> = match cenv { [] => [0 - 1]; [Pair(k, v), ...r] => if k == name then v else cenv_get(r, name) }
 fn padv_g(v: List<Int>, target: Int, b: Build) : (List<Int>, Build) = if ilenI(v) >= target then (v, b) else match mkc(glit(0), b) { (z, b1) => padv_g(v ++ [z], target, b1) }
@@ -1572,35 +1571,35 @@ fn muxw_go(wc: Int, vt: List<Int>, vf: List<Int>, b: Build) : (List<Int>, Build)
 # value. `mux_if` handles that by branch TYPE. By well-typedness both arms share a type, so the ONLY
 # way widths differ is STRINGS (width = codepoint count, not type-fixed; ADTs are twidth-padded, tuples
 # fixed-arity). When both branches are flat STRING expressions (is_str_expr) we NUL-pad the shorter to
-# the longer with codepoint-0 wires (a value real codepoints — 32..126 — never take) and mux at equal
-# width; decode_str (v5.121) stops at the first NUL, so the shorter branch decodes back to its true
+# the longer with codepoint-0 wires (a value real codepoints, 32..126, never take) and mux at equal
+# width; decode_str stops at the first NUL, so the shorter branch decodes back to its true
 # text. `if c then "APPROVED" else "DENIED"` now lowers soundly. An unequal-width mux that is NOT both
-# flat strings (e.g. a record/ADT carrying a variable-length string field — a deep corner) still
+# flat strings (e.g. a record/ADT carrying a variable-length string field: a deep corner) still
 # ABSTAINs loudly rather than corrupt. Scalar ifs and equal-width string/ADT/tuple ifs are byte-identical.
 fn mux_if(wc: Int, t: Expr, f: Expr, vt: List<Int>, vf: List<Int>, b: Build) : (List<Int>, Build) =
   if ilenI(vt) == ilenI(vf) then muxw_go(wc, vt, vf, b)
   else if is_str_expr(t) && is_str_expr(f)
     then (let mx : Int = if ilenI(vt) >= ilenI(vf) then ilenI(vt) else ilenI(vf) in
           match padv_g(vt, mx, b) { (pvt, b1) => match padv_g(vf, mx, b1) { (pvf, b2) => muxw_go(wc, pvt, pvf, b2) } })
-    else error("glass prove: an `if` returns multi-wire values of DIFFERENT widths that are not both flat strings (e.g. ADT/record variants with different shapes, or a structure carrying a variable-length string field) — muxing them would corrupt the value, so this ABSTAINs.")
+    else error("glass prove: an `if` returns multi-wire values of DIFFERENT widths that are not both flat strings (e.g. ADT/record variants with different shapes, or a structure carrying a variable-length string field): muxing them would corrupt the value, so this ABSTAINs.")
 
-# --- strings as multi-wire codepoint values (v5.101) -------------------------
+# --- strings as multi-wire codepoint values -------------------------
 # "strings can't be field-proven" was the long-standing refusal. The cut: a string IS a value,
 # and the value model is ALREADY multi-wire (scalar [v]; ADT [tag,..]; tuple [a,b]). So a string
-# is just a tuple of codepoints — one wire per character. "ab" -> [glit(97), glit(98)]. `++`
+# is just a tuple of codepoints: one wire per character. "ab" -> [glit(97), glit(98)]. `++`
 # concatenates wire lists (structural, NO gate); `==` is the per-codepoint is-zero gadget
 # AND-folded to one 0/1 wire (unequal lengths -> a constant 0, decided at build time);
 # `string_length` is the (static) wire count; `substring` a static wire slice. No new gate type,
-# no verify_b3 / Pentecost change — the SAME Goldilocks gate model proves it. Bridge-only (not
+# no verify_b3 / Lens change: the SAME Goldilocks gate model proves it. Bridge-only (not
 # bootstrap-critical). The native dialect has no `ord`, so a literal's codepoints come from
 # string_index_of into the printable-ASCII table (a char outside 32..126 ABSTAINs, never a wrong
 # proof). The scalar (width-1) `==` path is preserved byte-for-byte, so every prior arithmetic /
-# comparison proof, the corpus fixtures, and the Name are unchanged.
+# comparison proof, the corpus fixtures, and the fingerprint are unchanged.
 fn is_strfn(n: String) : Bool = (n == "string_length") || (n == "substring")
 # is_str_expr: a CONSERVATIVE, syntactic "is this expression a FLAT string value?" used to gate the
-# unequal-width NUL-padding mux (v5.121). True only for forms whose result is certainly a flat list of
-# codepoint wires — a literal, a `++` of strings, a `substring(..)` slice, or an if/match/let whose
-# leaves are all strings. NOT true for a bare variable or a call (type unknown without an env) — those
+# unequal-width NUL-padding mux. True only for forms whose result is certainly a flat list of
+# codepoint wires: a literal, a `++` of strings, a `substring(..)` slice, or an if/match/let whose
+# leaves are all strings. NOT true for a bare variable or a call (type unknown without an env): those
 # stay equal-width-or-ABSTAIN (sound: a false negative only forgoes the pad, never corrupts). NOT true
 # for ADT/tuple/record constructors, so a structure carrying a string field is never NUL-padded.
 fn is_str_expr(e: Expr) : Bool =
@@ -1615,7 +1614,7 @@ fn is_str_expr(e: Expr) : Bool =
 fn all_arms_str(arms: List<Pair<Pattern, Expr>>) : Bool =
   match arms { [] => true; [Pair(p, body), ...r] => is_str_expr(body) && all_arms_str(r) }
 fn ascii_tbl(u: Int) : String = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
-fn char_code(c: String) : Int = match string_index_of(ascii_tbl(0), c) { Some(idx) => 32 + idx; None => error("glass prove: a proven string has a non-printable / non-ASCII character (only codepoints 32..126 lower to the field) — ABSTAIN, not a wrong proof") }
+fn char_code(c: String) : Int = match string_index_of(ascii_tbl(0), c) { Some(idx) => 32 + idx; None => error("glass prove: a proven string has a non-printable / non-ASCII character (only codepoints 32..126 lower to the field): ABSTAIN, not a wrong proof") }
 fn str_cps(s: String, i: Int, n: Int) : List<Int> = if i >= n then [] else [char_code(substring(s, i, i + 1))] ++ str_cps(s, i + 1, n)
 fn str_codes(s: String) : List<Int> = str_cps(s, 0, string_length(s))
 fn app_of(hd: Expr, args: List<Expr>) : Expr = match args { [] => hd; [a, ...r] => app_of(EApp(hd, a), r) }
@@ -1637,22 +1636,22 @@ fn mk_eq_wide(vx: List<Int>, vy: List<Int>, b: Build) : (Int, Build) =
 fn alleq_v(vx: List<List<Int>>, vy: List<List<Int>>) : Bool =
   match vx { [] => true; [x, ...xr] => match vy { [] => true; [y, ...yr] => if bn_is_zero(fsub(x, y)) then alleq_v(xr, yr) else false } }
 fn vals_eq(vx: List<List<Int>>, vy: List<List<Int>>) : Bool = if llen(vx) == llen(vy) then alleq_v(vx, vy) else false
-# substring bounds must be STATIC (literals, +,-,*, string_length of a var/literal) — the circuit
+# substring bounds must be STATIC (literals, +,-,*, string_length of a var/literal): the circuit
 # slice offset is build-time. cval_h evaluates a bound from heval/seval values; cval_c from cgen wires.
 fn cg_width_c(s: Expr, cenv: List<Pair<String, List<Int>>>) : Int = match s { EVar(x) => ilenI(cenv_get(cenv, x)); EStr(t) => string_length(t); _ => error("glass prove: string_length expects a string variable or literal in a substring bound") }
 fn cval_c(e: Expr, cenv: List<Pair<String, List<Int>>>) : Int =
   match e { EInt(n) => n;
     EAdd(a, b) => cval_c(a, cenv) + cval_c(b, cenv); ESub(a, b) => cval_c(a, cenv) - cval_c(b, cenv); EMul(a, b) => cval_c(a, cenv) * cval_c(b, cenv);
     EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(nm) => if nm == "string_length" then (match args { [s] => cg_width_c(s, cenv); _ => error("glass prove: string_length expects 1 argument") }) else error("glass prove: a substring bound may only use literals, + - *, and string_length"); _ => error("glass prove: a substring bound may only use literals, + - *, and string_length") } };
-    _ => error("glass prove: a substring bound must be a STATIC expression (literals, + - *, string_length) — a witness-dependent slice cannot lower to a fixed circuit") }
+    _ => error("glass prove: a substring bound must be a STATIC expression (literals, + - *, string_length): a witness-dependent slice cannot lower to a fixed circuit") }
 fn cg_width_h(s: Expr, env: List<Pair<String, List<List<Int>>>>) : Int = match s { EVar(x) => llen(heg(env, x)); EStr(t) => string_length(t); _ => error("glass prove: string_length expects a string variable or literal in a substring bound") }
 fn cval_h(e: Expr, env: List<Pair<String, List<List<Int>>>>) : Int =
   match e { EInt(n) => n;
     EAdd(a, b) => cval_h(a, env) + cval_h(b, env); ESub(a, b) => cval_h(a, env) - cval_h(b, env); EMul(a, b) => cval_h(a, env) * cval_h(b, env);
     EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(nm) => if nm == "string_length" then (match args { [s] => cg_width_h(s, env); _ => error("glass prove: string_length expects 1 argument") }) else error("glass prove: a substring bound may only use literals, + - *, and string_length"); _ => error("glass prove: a substring bound may only use literals, + - *, and string_length") } };
-    _ => error("glass prove: a substring bound must be a STATIC expression (literals, + - *, string_length) — a witness-dependent slice cannot lower to a fixed circuit") }
+    _ => error("glass prove: a substring bound must be a STATIC expression (literals, + - *, string_length): a witness-dependent slice cannot lower to a fixed circuit") }
 
-# --- ordering comparisons (< > <= >=) — sound, range-bounded gadget --------
+# --- ordering comparisons (< > <= >=): sound, range-bounded gadget --------
 # A field comparison a<b is meaningful only if BOTH operands are PROVABLY in
 # [0, 2^k) with 2^(k+1) < p, so d = a - b + 2^k never wraps mod p (Goldilocks
 # p = 2^64-2^32+1; k=32 => 2^33 << p). cmp_bits_loop allocates k INLINE hint
@@ -1660,7 +1659,7 @@ fn cval_h(e: Expr, env: List<Pair<String, List<List<Int>>>>) : Int =
 # boolean (wb*wb - wb == 0 via mke), and binds Σ bitᵢ·2ⁱ to the operand (range_k)
 # or returns the captured sign bit (decompose_capture). An operand outside
 # [0,2^k) makes the weighted-sum binding UNSATISFIABLE => honest REJECT, never a
-# wrong ACCEPT. This NARROWS the v5.52 loud refusal, never replaces it with a
+# wrong ACCEPT. This NARROWS the loud refusal of out-of-range comparisons, never replaces it with a
 # silent wrong proof. (verify_b3 enforces every gate, so the bound is real.)
 fn ipow2(i: Int) : Int = if i <= 0 then 1 else 2 * ipow2(i - 1)
 fn pow2_lit(i: Int) : List<Int> = glit(ipow2(i))
@@ -1701,12 +1700,12 @@ fn decompose_capture(w: Int, kk: Int, capIdx: Int, b: Build) : (Int, Build) =
 # language already exposes bit_and/bit_or/bit_xor as builtins; here they lower to a circuit that
 # reuses the SAME bit-decomposition the range gadget uses (each bit pinned boolean wb^2-wb==0 and the
 # weighted sum bound to the operand), combines the two operands' bits per position, and recomposes.
-# Sound: the bits are the operand's TRUE bits (an out-of-range operand makes the bind unsatisfiable —
+# Sound: the bits are the operand's TRUE bits (an out-of-range operand makes the bind unsatisfiable:
 # guarded to ABSTAIN at heval/seval, never a wrong proof). Per bit (over 0/1 values): AND = a*b,
 # OR = a+b-a*b, XOR = (a-b)^2 (= a+b-2ab). Result is a fresh wire = Σ 2^i (a_i op b_i), in [0,2^32),
-# matching the int64 builtin for non-negative operands (so the Third Witness agrees).
+# matching the int64 builtin for non-negative operands (so the cross-check agrees).
 fn is_bitop(n: String) : Bool = (n == "bit_and") || (n == "bit_or") || (n == "bit_xor")
-# value side (shared by heval/seval, pure bit arithmetic — no native bitwise builtin needed, and it
+# value side (shared by heval/seval, pure bit arithmetic: no native bitwise builtin needed, and it
 # computes EXACTLY what the circuit computes, so the witness matches).
 fn bv_bit(op: String, ai: Int, bi: Int) : Int =
   if op == "bit_and" then ai * bi else if op == "bit_or" then ai + bi - ai * bi else ai + bi - 2 * ai * bi
@@ -1745,14 +1744,14 @@ fn heval_bitop(op: String, args: List<Expr>, env: List<Pair<String, List<List<In
     match heval(ea, env, fns, types) { (va, ha) => match heval(eb, env, fns, types) { (vb, hb) =>
     let xa : List<Int> = vh(va) in let xb : List<Int> = vh(vb) in
     if cmp_ok_g(xa, xb) then ([bitop_val(op, xa, xb)], ha ++ hb)
-    else error("glass prove: bitwise '" ++ op ++ "' operands must be in [0,2^32) — out of range, ABSTAIN (never a wrong proof)") } };
+    else error("glass prove: bitwise '" ++ op ++ "' operands must be in [0,2^32): out of range, ABSTAIN (never a wrong proof)") } };
     _ => error("glass prove: bitwise '" ++ op ++ "' expects exactly 2 arguments") }
 fn seval_bitop(op: String, args: List<Expr>, env: List<Pair<String, List<List<Int>>>>, fns: List<FnDecl>, types: List<TypeDecl>, fenv: List<Pair<String, String>>, fuel: Int) : List<List<Int>> =
   match args { [ea, eb] =>
     let xa : List<Int> = vh(seval(ea, env, fns, types, fenv, fuel)) in
     let xb : List<Int> = vh(seval(eb, env, fns, types, fenv, fuel)) in
     if cmp_ok_g(xa, xb) then [bitop_val(op, xa, xb)]
-    else error("glass prove: bitwise '" ++ op ++ "' operands must be in [0,2^32) — out of range, ABSTAIN (never a wrong proof)");
+    else error("glass prove: bitwise '" ++ op ++ "' operands must be in [0,2^32): out of range, ABSTAIN (never a wrong proof)");
     _ => error("glass prove: bitwise '" ++ op ++ "' expects exactly 2 arguments") }
 # lt_build: a 0/1 wire = (value(wx) < value(wy)), after PROVING both ∈ [0,2^k).
 fn lt_build(wx: Int, wy: Int, b: Build) : (Int, Build) =
@@ -1766,21 +1765,21 @@ fn lt_build(wx: Int, wy: Int, b: Build) : (Int, Build) =
   match mks(wone, wbitk, b7) { (wlt, b8) => (wlt, b8) } } } } } }
 # divmod_build: integer division/modulo as a circuit via the defining identity a = b*q + r, 0 <= r < b.
 # q,r are advice (mkh), pinned by: range_k(q), range_k(r) (both in [0,2^32)); the multiply-add identity
-# a == b*q + r; and r < b — but the r < b assert is PREDICATED on an in-circuit `b != 0` bit (nz). When
+# a == b*q + r; and r < b, but the r < b assert is PREDICATED on an in-circuit `b != 0` bit (nz). When
 # b != 0 (nz=1) r < b is enforced, so the divisor is forced >= 1 and (q,r) is the unique integer
 # division (products stay < the Goldilocks prime since q,b,r < 2^32, so field == integer identity).
 # When b == 0 (nz=0) the r < b assert goes VACUOUS (nz*(1-(r<b)) == 0 holds for nz=0) and the identity
-# reduces to a == r — a SATISFIABLE sub-circuit. This is the predication paradigm shift: a divide-by-
-# zero in a DEAD branch (cgen builds both `if` arms) no longer poisons the circuit — the mux discards
+# reduces to a == r: a SATISFIABLE sub-circuit. This is the predication paradigm shift: a divide-by-
+# zero in a DEAD branch (cgen builds both `if` arms) no longer poisons the circuit: the mux discards
 # its garbage q, and the live result proves. A LIVE divide-by-zero is still refused by the seval guard
 # (it short-circuits to the taken path and abstains on b==0). nz is computed from b in-circuit (mk_eq_g
 # is-zero, sound BOTH directions: wz*wd==0 forces wz=0 when b!=0, and wz is a computed wire forced to 1
-# when b==0), so it cannot be faked in either direction. The b==0 witness is UNIQUE (v5.131 defense-in-
+# when b==0), so it cannot be faked in either direction. The b==0 witness is UNIQUE (defense-in-
 # depth, the forgery-resistance audit's one finding): isz*q == 0 pins q=0 when b==0, so the identity
-# then forces r=a — without this pin q was a free [0,2^32) advice in the b==0 sub-circuit, and any
+# then forces r=a, without this pin q was a free [0,2^32) advice in the b==0 sub-circuit, and any
 # future call path reaching verify_b3 with a LIVE b==0 could have claimed an arbitrary quotient for
 # a/0. In-circuit semantics is now total and deterministic: a/0 = 0, a%0 = a (matching the honest hint
-# below, so every existing witness still satisfies it). No verify_b3/Pentecost change — pure
+# below, so every existing witness still satisfies it). No verify_b3/Lens change: pure
 # GMul+GEqZero predication in the existing gate model.
 fn divmod_build(wa: Int, wb: Int, b: Build) : (Int, Int, Build) =
   let ai : Int = bn_small_to_int(bwire(b, wa)) in
@@ -1825,10 +1824,10 @@ fn cgen(e: Expr, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: 
     ECtor(name, args) => match mkc(glit(ctag(types, name)), b) { (wtag, b1) => match cgen_fields(args, ctor_argtypes(types, name), cenv, fns, types, b1) { (fws, b2) => ([wtag] ++ fws, b2) } };
     ETuple(elems) => cgen_fields(elems, scalar_types_e(elems), cenv, fns, types, b);
     ENamedRec(nm, lit) => cgen_fields(reorder_rec(rec_fnames(find_record(types, nm)), lit), rec_ftypes(find_record(types, nm)), cenv, fns, types, b);
-    EField(recd, f) => error("glass prove: could not resolve the record TYPE for field access (." ++ f ++ ") — direct `r.field` lowers when the record's type is inferable; otherwise destructure with a pattern: match r { T { " ++ f ++ " } => " ++ f ++ " }. ABSTAIN.");
+    EField(recd, f) => error("glass prove: could not resolve the record TYPE for field access (." ++ f ++ "): direct `r.field` lowers when the record's type is inferable; otherwise destructure with a pattern: match r { T { " ++ f ++ " } => " ++ f ++ " }. ABSTAIN.");
     EStr(s) => estr_c(str_codes(s), b);
     EConcat(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => (vx ++ vy, b2) } };
-    EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => if is_strfn(fname) then cgen_strfn(fname, args, cenv, fns, types, b) else if is_bitop(fname) then cgen_bitop(fname, args, cenv, fns, types, b) else cgen_call(fn_body_of(fns, fname), args, [], cenv, fns, types, b); _ => error("glass prove: unsupported call form (computed or higher-order callee) in cgen — refusing rather than silently building a 0 circuit") } };
+    EApp(f, a) => match unwind_app(EApp(f, a), []) { (hd, args) => match hd { EVar(fname) => if is_strfn(fname) then cgen_strfn(fname, args, cenv, fns, types, b) else if is_bitop(fname) then cgen_bitop(fname, args, cenv, fns, types, b) else cgen_call(fn_body_of(fns, fname), args, [], cenv, fns, types, b); _ => error("glass prove: unsupported call form (computed or higher-order callee) in cgen: refusing rather than silently building a 0 circuit") } };
     EMatch(scrut, arms) => match cgen(scrut, cenv, fns, types, b) { (sv, b1) => match mkc(glit(0), b1) { (zm, b2) => cgen_match(arms, sv, cenv, fns, types, zm, [], b2) } };
     ELt(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match lt_build(vhi(vx), vhi(vy), b2) { (wlt, b3) => ([wlt], b3) } } };
     EGt(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match lt_build(vhi(vy), vhi(vx), b2) { (wlt, b3) => ([wlt], b3) } } };
@@ -1836,7 +1835,7 @@ fn cgen(e: Expr, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: 
     EGe(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match lt_build(vhi(vx), vhi(vy), b2) { (wlt, b3) => match mkc(glit(1), b3) { (wone, b4) => match mks(wone, wlt, b4) { (wo, b5) => ([wo], b5) } } } } };
     EDiv(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match divmod_build(vhi(vx), vhi(vy), b2) { (wq, wr, b3) => ([wq], b3) } } };
     EMod(x, y) => match cgen(x, cenv, fns, types, b) { (vx, b1) => match cgen(y, cenv, fns, types, b1) { (vy, b2) => match divmod_build(vhi(vx), vhi(vy), b2) { (wq, wr, b3) => ([wr], b3) } } };
-    _ => error("glass prove: unsupported expression in the prove bridge (cgen) — only + - * == != && || ! < > <= >= / % (range-bounded) and if/let/match/ADT/calls lower to the field circuit; strings and records are refused, not silently built as a 0 circuit") }
+    _ => error("glass prove: unsupported expression in the prove bridge (cgen): only + - * == != && || ! < > <= >= / % (range-bounded) and if/let/match/ADT/calls lower to the field circuit; strings and records are refused, not silently built as a 0 circuit") }
 fn cgen_fields(args: List<Expr>, tys: List<Type>, cenv: List<Pair<String, List<Int>>>, fns: List<FnDecl>, types: List<TypeDecl>, b: Build) : (List<Int>, Build) =
   match args { [] => ([], b); [a, ...arest] => match tys { [] => ([], b); [t, ...trest] =>
     match cgen(a, cenv, fns, types, b) { (va, b1) => let _ : Bool = assert_field_fits(ilenI(va), twidth(t, types, 12), has_more_e(arest)) in match padv_g(va, twidth(t, types, 12), b1) { (pva, b2) =>
@@ -1855,7 +1854,7 @@ fn psel(p: Pattern, sv: List<Int>, types: List<TypeDecl>, b: Build) : (Int, Buil
     PBool(bb) => match mkc(if bb then glit(1) else glit(0), b) { (wn, b1) => mk_eq_g(vhi(sv), wn, b1) };
     PCtor(nm, ps) => match mkc(glit(ctag(types, nm)), b) { (wn, b1) => match mk_eq_g(vhi(sv), wn, b1) { (s0, b2) => psel_fields(ps, ctor_argtypes(types, nm), sv, 1, types, s0, b2) } };
     PTuple(ps) => match mkc(glit(1), b) { (one, b1) => psel_fields(ps, scalar_types_p(ps), sv, 0, types, one, b1) };
-    PStr(s) => match estr_c(str_codes(s), b) { (litws, b1) => mk_eq_wide(sv, litws, b1) };   # v5.102: string-literal arm selects by multi-wire codepoint equality
+    PStr(s) => match estr_c(str_codes(s), b) { (litws, b1) => mk_eq_wide(sv, litws, b1) };   # string-literal arm selects by multi-wire codepoint equality
     PRecord(nm, fs) => mkc(glit(1), b) }
 fn psel_fields(ps: List<Pattern>, tys: List<Type>, sv: List<Int>, off: Int, types: List<TypeDecl>, acc: Int, b: Build) : (Int, Build) =
   match ps { [] => (acc, b); [p, ...prest] => match tys { [] => (acc, b); [t, ...trest] =>
@@ -1866,10 +1865,10 @@ fn cbind_fields(ps: List<Pattern>, tys: List<Type>, sv: List<Int>, off: Int, typ
   match ps { [] => cenv; [p, ...prest] => match tys { [] => cenv; [t, ...trest] =>
     let wt : Int = twidth(t, types, 12) in cbind_fields(prest, trest, sv, off + wt, types, cbind(p, slwi(sv, off, wt), types, cenv)) } }
 # accw accumulates each match arm's body wires, weighted by its 0/1 effective selector `eff`, into the
-# running `result` (the muxed value). v5.121: when an arm body is SHORTER than the accumulated result
-# (unequal-width string arms), KEEP the result tail — `[] => (result, b)` — instead of the old
-# `([], b)` that TRUNCATED it to the shorter arm and silently proved a CORRUPTED string (e.g.
-# `match s { 0 => "approved"; _ => "no" }` at s=0 attested "ap"). With the tail kept, an unmatched
+# running `result` (the muxed value). When an arm body is SHORTER than the accumulated result
+# (unequal-width string arms), KEEP the result tail (`[] => (result, b)`) instead of
+# `([], b)`, which would TRUNCATE it to the shorter arm and silently prove a CORRUPTED string (e.g.
+# `match s { 0 => "approved"; _ => "no" }` at s=0 would attest "ap"). With the tail kept, an unmatched
 # arm's positions stay 0 (NUL) and decode_str stops there, so the matched arm decodes to its true text.
 # Equal-width arms (every ADT/tuple/scalar match, and equal-length string arms) are byte-identical: the
 # longer/shorter cases never trigger, so this is a pure fix to the unequal-width path.
@@ -1927,9 +1926,9 @@ fn cg(e: Expr, env: List<Pair<String, Int>>, b: Build) : (Int, Build) =
     EIf(c, t, f) => match cg(c, env, b) { (wc, b1) => match cg(t, env, b1) { (wt, b2) => match cg(f, env, b2) { (wf, b3) =>
       match mks(wt, wf, b3) { (wtf, b4) => match mkm(wc, wtf, b4) { (wctf, b5) => mka(wf, wctf, b5) } } } } };
     ELet(nm, v, body) => match cg(v, env, b) { (wv, b1) => cg(body, [Pair(nm, wv)] ++ env, b1) };
-    _ => error("glass prove: unsupported expression in the prove bridge (cg) — only + - * == != && || ! and if/let lower to the scalar field circuit; comparisons (< > <= >=), / %, strings and records are refused, not silently built as a 0 circuit") }
+    _ => error("glass prove: unsupported expression in the prove bridge (cg): only + - * == != && || ! and if/let lower to the scalar field circuit; comparisons (< > <= >=), / %, strings and records are refused, not silently built as a 0 circuit") }
 # parse, inline calls, lower; wire 0 = the private input `inp`
-fn parse_prog(src: String) : Program = match parse_program(src) { Ok(p) => p; Err(m) => error("glass prove: parse error — " ++ m ++ " (refusing to prove the empty/0 program)") }
+fn parse_prog(src: String) : Program = match parse_program(src) { Ok(p) => p; Err(m) => error("glass prove: parse error: " ++ m ++ " (refusing to prove the empty/0 program)") }
 fn build_src(src: String, inpv: List<Int>) : (Int, Build) =
   match parse_prog(src) { Program(types, fns, main) =>
     cg(unroll(main, fns, [], unroll_fuel(0)), [Pair("inp", 0)], Build(1, [], [inpv])) }
@@ -1944,9 +1943,9 @@ fn in_cenv_g(inputs: List<Pair<String, Int>>, i: Int) : List<Pair<String, Int>> 
   match inputs { [] => []; [Pair(nm, v), ...r] => [Pair(nm, i)] ++ in_cenv_g(r, i + 1) }
 # gin: bind a machine Int (a CLI input OR an in-program literal) as a CANONICAL Goldilocks field
 # element. A negative v is the field element p + v (= p - |v|), built in-field as 0 - |v|
-# (gold_sub from zero), NOT the raw two's-complement limbs glit4(-5)=[-5] would give — those are
+# (gold_sub from zero), NOT the raw two's-complement limbs glit4(-5)=[-5] would give: those are
 # non-canonical and break field arithmetic (a=-5; a+1000 used to REJECT instead of proving 995;
-# a negative LITERAL like `-40` used to lower to a WRONG comparison — caught by the Third Witness
+# a negative LITERAL like `-40` used to lower to a WRONG comparison: caught by the cross-check
 # as a source<->circuit DIVERGENCE). Non-negative v is unchanged (glit4 == glit on the small
 # literals in use), so every existing non-negative prove is byte-identical. This is what lets the
 # signed comparison gadget (slt/sle/sgt/sge) take a negative operand: p-|v| + 2^31 lands back in
@@ -1967,10 +1966,10 @@ fn build_claim(src: String, inputs: List<Pair<String, Int>>, claimedR: List<Int>
     match mkc(claimedR, b) { (wR, b1) => match mks(out, wR, b1) { (wd, b2) => mke(wd, b2) } } }
 fn gprove(src: String, inputs: List<Pair<String, Int>>, claimedR: List<Int>, seed: Int) : Bool =
   match build_claim(src, inputs, claimedR) { Build(n, gs, w) => prove_stark(gs, w, seed) }
-# --- R1b stage 3: multi-wire prove path (cgen) — proves programs that USE ADTs / STRINGS ---
-# v5.101: an input is a MULTI-WIRE value. An Int is the 1-wire case [v]; a STRING is its codepoints
+# --- R1b stage 3: multi-wire prove path (cgen): proves programs that USE ADTs / STRINGS ---
+# An input is a MULTI-WIRE value. An Int is the 1-wire case [v]; a STRING is its codepoints
 # [c0, c1, ..] (one private wire per character). Each input occupies CONSECUTIVE low wires; ints stay
-# 1 wire each, so the wire layout for any all-int program is IDENTICAL to pre-v5.101 (every prior proof
+# 1 wire each, so the wire layout for any all-int program is IDENTICAL to the int-only layout (every int-only proof
 # byte-identical). Codepoints (>= 0) lower via the SAME gin as ints (gin(c) == glit(c)), so one rule
 # binds both. ints_to_minput lifts a legacy int-input list into this representation (for the demo).
 fn span_w(base: Int, k: Int) : List<Int> = if k <= 0 then [] else [base] ++ span_w(base + 1, k - 1)
@@ -1994,23 +1993,23 @@ fn gref_m(src: String, inputs: List<Pair<String, List<Int>>>) : List<List<Int>> 
 fn in_cenv_seval(inputs: List<Pair<String, List<Int>>>) : List<Pair<String, List<List<Int>>>> =
   match inputs { [] => []; [Pair(nm, vs), ...r] => [Pair(nm, map_gin(vs))] ++ in_cenv_seval(r) }
 # gref_m_checked: the GUARDED result-computation for the CLI prove path. It forces `seval` as a
-# fail-closed guard (seval `error`s + exits on over-deep recursion BEFORE any proof is built —
+# fail-closed guard (seval `error`s + exits on over-deep recursion BEFORE any proof is built:
 # the let is forced in both interp and native), then returns gref_m's OWN R (the circuit's
 # value), so the PROVEN R is byte-identical to the circuit (zero guard/circuit value drift).
 # seval's accept-set is a SUBSET of the circuit-faithful set (fuel lockstep + short-circuit), so
 # whenever seval does not error, gref_m's R is the exact result. (Bypassing this guard by calling
-# gprove_sound directly still proves a truncated circuit — out of the soundness threat model.)
-# It then forces a SECOND guard — `heval` on the UNROLLED program — the ALL-BRANCHES domain guard,
+# gprove_sound directly still proves a truncated circuit: out of the soundness threat model.)
+# It then forces a SECOND guard, `heval` on the UNROLLED program, the ALL-BRANCHES domain guard,
 # closing the dead-branch case. cgen builds BOTH if-arms / all match-arms into one muxed circuit, so a
-# program is faithfully lowerable only if EVERY branch's `/ % < > <= >=` operands are in-domain — not
+# program is faithfully lowerable only if EVERY branch's `/ % < > <= >=` operands are in-domain, not
 # just the taken one. heval evaluates all arms and `error`s (ABSTAIN) on any out-of-domain op, so an
 # out-of-domain op in a DEAD branch (e.g. `if cond then a else a%0`, cond true) ABSTAINs honestly
 # instead of making cgen's circuit UNSATISFIABLE and REJECTing a TRUE statement.
 # Why this is safe (no ACCEPTing program regresses): seval runs FIRST and already refuses higher-order
 # callees and over-deep recursion, so only first-order, depth-ok programs reach heval; on those, heval
-# `error`s EXACTLY when an operand is out-of-range / a divisor is zero — EXACTLY when cgen's gadget is
+# `error`s EXACTLY when an operand is out-of-range / a divisor is zero: EXACTLY when cgen's gadget is
 # unsatisfiable. heval is O(unrolled-AST-size), the same order as cgen, so it adds no complexity class.
-# (It does NOT rescue gcd-class programs — a compound recursive arg makes the UNROLL itself exponential,
+# (It does NOT rescue gcd-class programs: a compound recursive arg makes the UNROLL itself exponential,
 # so both cgen and heval are slow there regardless; that is a separate frontier, see the roadmap.)
 fn gref_m_checked(src: String, inputs: List<Pair<String, List<Int>>>) : List<List<Int>> =
   match parse_prog(src) { Program(types, fns, main) =>
@@ -2022,14 +2021,14 @@ fn build_claim_m(src: String, inputs: List<Pair<String, List<Int>>>, claimedR: L
   match build_multi_m(src, inputs) { (outws, b) =>
     if ilenI(outws) == 1
     then match mkc(claimedR, b) { (wR, b1) => match mks(vhi(outws), wR, b1) { (wd, b2) => mke(wd, b2) } }
-    else error("glass prove: a SCALAR claim reached the binder but the result lowered to a non-scalar wire layout (empty or multi-wire) — ABSTAIN rather than vacuously bind wire 0 (an EMPTY layout makes mks(vhi([])=0, 0)=0, which would ACCEPT an ARBITRARY claim)") }
-# --- MULTI-WIRE result claim (v5.110): bind EVERY output wire, not just the first ----------------
+    else error("glass prove: a SCALAR claim reached the binder but the result lowered to a non-scalar wire layout (empty or multi-wire): ABSTAIN rather than vacuously bind wire 0 (an EMPTY layout makes mks(vhi([])=0, 0)=0, which would ACCEPT an ARBITRARY claim)") }
+# --- MULTI-WIRE result claim: bind EVERY output wire, not just the first ----------------
 # A scalar (Int/Bool) result is one wire; a STRING result is several (one codepoint wire per char).
-# build_claim_m above pins only outws[0] — fine for a scalar, but for a string it would publish just
+# build_claim_m above pins only outws[0]: fine for a scalar, but for a string it would publish just
 # the first codepoint and SILENTLY DROP the rest (a misleading public claim). bind_outs pins EACH
 # output wire to its claimed codepoint with the SAME is-zero gadget (mkc const + mks + mke) the scalar
-# path and bind_input use — so the whole string lands in GConst gates as the public statement and
-# verify_b3 checks it. No new gate, no verify_b3 / Pentecost change: a multi-wire claim is just more
+# path and bind_input use, so the whole string lands in GConst gates as the public statement and
+# verify_b3 checks it. No new gate, no verify_b3 / Lens change: a multi-wire claim is just more
 # is-zero asserts. (Lengths match by construction: claimedRs is the circuit's own output `_rv`.)
 fn bind_outs(outws: List<Int>, claimedRs: List<List<Int>>, b: Build) : Build =
   match outws { [] => b; [ow, ...owr] => match claimedRs { [] => b; [cr, ...crr] =>
@@ -2037,17 +2036,17 @@ fn bind_outs(outws: List<Int>, claimedRs: List<List<Int>>, b: Build) : Build =
 fn build_claim_mw(src: String, inputs: List<Pair<String, List<Int>>>, claimedRs: List<List<Int>>) : Build =
   match build_multi_m(src, inputs) { (outws, b) =>
     if ilenI(outws) == len(claimedRs) then bind_outs(outws, claimedRs, b)
-    else error("glass prove --claim: the claimed string is a different length than the result — cannot bind it; ABSTAIN (a wrong-LENGTH claim is refused, never bound as a matching prefix)") }
+    else error("glass prove --claim: the claimed string is a different length than the result: cannot bind it; ABSTAIN (a wrong-LENGTH claim is refused, never bound as a matching prefix)") }
 # decode a multi-wire string RESULT (codepoint wires) back to text for display. Each wire's small
 # field value is its codepoint; the printable-ASCII char is table[code-32] (the inverse of char_code,
-# which is 32 + index-into-ascii_tbl). A codepoint outside 32..126 ABSTAINs (never a wrong proof) —
+# which is 32 + index-into-ascii_tbl). A codepoint outside 32..126 ABSTAINs (never a wrong proof):
 # the same printable bound the lowering enforces, applied on the way out.
 fn decode_char(code: Int) : String =
-  if code < 32 then error("glass prove: a string result has a non-printable codepoint (< 32) — only 32..126 lower to the field; ABSTAIN")
-  else if code > 126 then error("glass prove: a string result has a non-printable codepoint (> 126) — only 32..126 lower to the field; ABSTAIN")
+  if code < 32 then error("glass prove: a string result has a non-printable codepoint (< 32): only 32..126 lower to the field; ABSTAIN")
+  else if code > 126 then error("glass prove: a string result has a non-printable codepoint (> 126): only 32..126 lower to the field; ABSTAIN")
   else substring(ascii_tbl(0), code - 32, code - 31)
-# decode_str: render a string result's codepoint wires to text. v5.121: STOP at the first NUL
-# (codepoint 0) — the sentinel the unequal-width string mux (mux_if / accw) pads the shorter branch
+# decode_str: render a string result's codepoint wires to text. STOP at the first NUL
+# (codepoint 0): the sentinel the unequal-width string mux (mux_if / accw) pads the shorter branch
 # with. Real codepoints are 32..126, so 0 is unambiguous and a normal (un-padded) string decodes
 # byte-identically (it contains no 0, so the stop never triggers). This is what lets an unequal-width
 # `if`/`match` over strings reveal the SELECTED branch's true text rather than its NUL-padded form.
@@ -2061,7 +2060,7 @@ fn gprove_m_mw(src: String, inputs: List<Pair<String, List<Int>>>, claimedRs: Li
 # --- SOUND path: prove via prove_b3, then verify with the INDEPENDENT witness-free
 # verify_b3 (per-row gate soundness + PLONK grand-product wire consistency). Unlike
 # gprove_m/prove_stark (a self-check over the witness, no malicious-prover bound), this
-# round-trips through the real verifier — accept ==> the committed trace is a consistent
+# round-trips through the real verifier: accept ==> the committed trace is a consistent
 # satisfying assignment with output == claimedR. NOT zero-knowledge here (the witness is
 # opened in the clear); use gprove_zk for hiding. Research-grade + UNAUDITED (see soundness.md).
 fn gprove_sound(src: String, inputs: List<Pair<String, List<Int>>>, claimedR: List<Int>) : Bool =
@@ -2071,7 +2070,7 @@ fn gprove_sound_mw(src: String, inputs: List<Pair<String, List<Int>>>, claimedRs
   match build_claim_mw(src, inputs, claimedRs) { Build(n, gs, w) => verify_b3(gs, prove_b3(gs, w)) }
 # --- SOUND + ZERO-KNOWLEDGE: randomized-trace ZK (build_claim_zk pads to targetN with
 # random dummy rows that hide the openings) then the same sound verify_b3. Heavy (targetN
-# is large so the random rows exceed the ~170 query openings) — opt-in via `--zk`.
+# is large so the random rows exceed the ~170 query openings): opt-in via `--zk`.
 fn gprove_zk(src: String, inputs: List<Pair<String, List<Int>>>, claimedR: List<Int>, seed: Int, targetN: Int) : Bool =
   match build_claim_zk(src, inputs, claimedR, seed, targetN) { Build(n, gs, w) => verify_b3(gs, prove_b3(gs, w)) }
 # the multi-wire (string result) ZK path: pad the multi-wire claim with random dummy rows, same verify_b3.
@@ -2094,7 +2093,7 @@ fn build_claim_pub(src: String, inputs: List<Pair<String, List<Int>>>, pubs: Lis
   match build_multi_m(src, inputs) { (outws, b) =>
     if ilenI(outws) == 1
     then match mkc(claimedR, b) { (wR, b1) => match mks(vhi(outws), wR, b1) { (wd, b2) => bind_inputs(pubs, mke(wd, b2)) } }
-    else error("glass prove: a SCALAR claim reached the public binder but the result lowered to a non-scalar wire layout (empty or multi-wire) — ABSTAIN rather than vacuously bind wire 0") }
+    else error("glass prove: a SCALAR claim reached the public binder but the result lowered to a non-scalar wire layout (empty or multi-wire): ABSTAIN rather than vacuously bind wire 0") }
 # --- ZK via RANDOMIZED TRACE (full integration, the cleaner route): append k dummy
 # GAdd(o,a,b) gates on FRESH wires with random satisfying witness (o = a + b). Each is
 # sound-NEUTRAL (the gate holds, so the quotient is unaffected; a,b,o are fresh -> sigma
@@ -2108,8 +2107,8 @@ fn zk_dummy_wit(seed: Int, k: Int, i: Int) : List<List<Int>> =
 # zk_pad_k: how many random dummy rows the ZK trace gets. The hiding argument needs the dummy-row
 # count to EXCEED the ~170-value opening surface (2*fri_queries + the OOD/trace openings), so the
 # query/OOD openings reveal only random rows, not the witness. The old `targetN - glen(gs)` went
-# <= 0 (ZERO hiding) for any circuit with >= targetN gates — silently producing a NON-hiding proof
-# still labelled "zero-knowledge" (the v5.118 audit's HIGH finding). Floor it at 256 (> the opening
+# <= 0 (ZERO hiding) for any circuit with >= targetN gates: silently producing a NON-hiding proof
+# still labelled "zero-knowledge" (an internal audit's HIGH finding). Floor it at 256 (> the opening
 # surface, with margin) so hiding holds for ANY circuit size; bigger circuits get a bigger (but
 # genuinely hiding) ZK proof. The randomness is still an idealized PRG (mask-RNG), an honest-scope
 # caveat that stands until retired.
@@ -2119,26 +2118,26 @@ fn build_claim_zk(src: String, inputs: List<Pair<String, List<Int>>>, claimedR: 
     let k : Int = zk_pad_k(targetN, glen(gs)) in
     Build(n + 3 * k, gs ++ zk_dummy_gates(n, k), w ++ zk_dummy_wit(seed, k, 1)) }
 
-# --- PENTECOST SERIALIZER (north-star "let the verifier be two", v5.64.0) --------
+# --- LENS SERIALIZER (north-star "let the verifier be two") --------
 # Emit a ProofB3 (+ its gates) as the exact whitespace-separated token stream the INDEPENDENT
-# Python re-verifier pentecost/pentecost_verify.py parse() consumes — so a second, non-Glass
+# Python re-verifier lens/verify.py parse() consumes, so a second, non-Glass
 # tongue can check the same proof. Grammar (byte-for-byte with parse()): a field element fe =
 # `count limb0 limb1 ..` (base-2^16, trimmed); a hash digest = EXACTLY 4 fe (the 4 Poseidon
-# lanes via to_lanes — NOT one 16-limb fe); g2 = 2 fe; path = `count` then count hashes; etc.
-# NOTE: naive ++ string-building is O(N^2) in token count — fine for the round-trip alignment
+# lanes via to_lanes, NOT one 16-limb fe); g2 = 2 fe; path = `count` then count hashes; etc.
+# NOTE: naive ++ string-building is O(N^2) in token count: fine for the round-trip alignment
 # gate on a small circuit; a string-builder / incremental emit is the follow-up for big proofs.
 fn emit_int(x: Int) : String = int_to_string(x) ++ " "
 fn emit_limbs(xs: List<Int>) : String = match xs { [] => ""; [h, ...t] => emit_int(h) ++ emit_limbs(t) }
 fn emit_fe(x: List<Int>) : String = let t : List<Int> = trim(x) in emit_int(len(t)) ++ emit_limbs(t)
 fn emit_lanes(ls: List<List<Int>>) : String = match ls { [] => ""; [h, ...t] => emit_fe(h) ++ emit_lanes(t) }
-# v5.122.0 proof-size cut (denser hash encoding): a digest = 4 lanes, and a Goldilocks lane is
+# Proof-size cut (denser hash encoding): a digest = 4 lanes, and a Goldilocks lane is
 # ALWAYS < p < 2^64 = at most 4 base-2^16 limbs. So emit a FIXED 16 limbs (4 lanes x pad4l-to-4) and
-# DROP the per-lane `count` prefix — the count was a pure length-prefix (emit_fe trims trailing-zero
+# DROP the per-lane `count` prefix: the count was a pure length-prefix (emit_fe trims trailing-zero
 # high limbs); a zero-padded fixed-16 layout is lossless (rd_hash reconstructs each lane via
 # sum(limb_i << 16i) mod p). Measured: hash material is ~94% of a proof and every hash-lane is 4 limbs,
 # so the count tokens are pure overhead (always "4") => ~19% fewer tokens on the comparison proof.
 # DIGEST-LOCAL: emit_fe / emit_lanes stay count-bearing and BYTE-IDENTICAL for non-hash field elements
-# (g2 coords, TLeaf scalar openings, gate constants). Mirrored EXACTLY by rd_hash in pentecost_verify.py.
+# (g2 coords, TLeaf scalar openings, gate constants). Mirrored EXACTLY by rd_hash in lens/verify.py.
 fn emit_lanes16(ls: List<List<Int>>) : String = match ls { [] => ""; [h, ...t] => emit_limbs(pad4l(first4(h))) ++ emit_lanes16(t) }
 fn emit_hash(h: List<Int>) : String = emit_lanes16(to_lanes(h))               # 16-limb hash -> 16 raw base-2^16 limbs (no per-lane count)
 fn emit_g2(g: G2) : String = match g { G2(a0, a1) => emit_fe(a0) ++ emit_fe(a1) }
@@ -2149,7 +2148,7 @@ fn emit_qlist_go(qs: List<QOpen>) : String = match qs { [] => ""; [q, ...t] => e
 fn emit_qlist(qs: List<QOpen>) : String = emit_int(len(qs)) ++ emit_qlist_go(qs)
 fn emit_bopen_go(b: List<List<QOpen>>) : String = match b { [] => ""; [ql, ...t] => emit_qlist(ql) ++ emit_bopen_go(t) }
 fn emit_bopen(b: List<List<QOpen>>) : String = emit_int(len(b)) ++ emit_bopen_go(b)
-# v5.125: batched FRI opening — per-query opened values (no paths) + one co-path per layer
+# Batched FRI opening: per-query opened values (no paths) + one co-path per layer
 fn emit_qval(q: QVal) : String = match q { QVal(lx, lmx) => emit_g2(lx) ++ emit_g2(lmx) }
 fn emit_qvrow_go(qs: List<QVal>) : String = match qs { [] => ""; [q, ...t] => emit_qval(q) ++ emit_qvrow_go(t) }
 fn emit_qvrow(qs: List<QVal>) : String = emit_int(len(qs)) ++ emit_qvrow_go(qs)
@@ -2188,7 +2187,7 @@ fn gprove_emit(src: String, inputs: List<Pair<String, List<Int>>>, claimedR: Lis
   match build_claim_m(src, inputs, claimedR) { Build(n, gs, w) => emit_proofb3(gs, prove_b3(gs, w)) }
 # the multi-wire (string result) emit: bind every output wire, serialize the SAME ProofB3. The extra
 # is-zero asserts are ordinary GConst/GSub/GEqZero gates emit_gate already serializes, so a string-
-# VALUED proof rides the same byte-for-byte token stream Pentecost parses — extending the second
+# VALUED proof rides the same byte-for-byte token stream Lens parses: extending the second
 # verifier to the multi-wire output shape, no serializer change.
 fn gprove_emit_mw(src: String, inputs: List<Pair<String, List<Int>>>, claimedRs: List<List<Int>>) : String =
   match build_claim_mw(src, inputs, claimedRs) { Build(n, gs, w) => emit_proofb3(gs, prove_b3(gs, w)) }
@@ -2207,16 +2206,16 @@ fn expect_reject(label: String, got: Bool) : String = if got then error("SOUNDNE
 fn show(xs: List<Int>) : String = match trim(xs) { [] => "0"; [h, ...t] => match t { [] => int_to_string(h); _ => int_to_string(h) ++ " (low limb of " ++ int_to_string(len(trim(xs))) ++ ")" } }
 let msrc : String = "fn f(a: Int, b: Int, c: Int) : Int = a * b + c\nf(a, b, c)"
 let mins : List<Pair<String, Int>> = [Pair("a", 100000), Pair("b", 100000), Pair("c", 99)]
-let mins_m : List<Pair<String, List<Int>>> = ints_to_minput(mins)   # v5.101: lift to the multi-wire input model
+let mins_m : List<Pair<String, List<Int>>> = ints_to_minput(mins)   # Lift to the multi-wire input model
 let mres : List<Int> = gref(msrc, mins)                       # the true result, over Goldilocks
 let zk_hide : Bool = zk_hiding(777, 888)                       # ZK blinding hides the witness at openings (fast, no FRI)
 let _ : String = print("ZK BLINDING (mechanism): a blinded opening differs from the raw witness AND between masks (hiding): " ++ show_b(zk_hide))
-let _ : String = print("  (the full ZK proof — blinded l,r,o,Z through the staged FRI — is the heavy remaining piece; design in docs/tier1-zk-design.md)")
+let _ : String = print("  (the full zero-knowledge proof runs through the staged FRI: glass prove --zk)")
 let okm : Bool = gprove(msrc, mins, mres, 11111)              # honest claim -> ACCEPT
 let badm : Bool = gprove(msrc, mins, glit(12345), 11111)     # wrong claim -> REJECT
 let _ : String = print("--- prove_source_goldilocks_zk.glass: real Glass SOURCE -> a ZK proof over Goldilocks, POSEIDON-hashed ---")
 let _ : String = print("source (prism-parsed) -> cgen (multi-input, ==, if) -> committed, F_{p^2}-challenged, query-verified, blinded STARK,")
-let _ : String = print("now hashed with the VETTED POSEIDON over Goldilocks (Plonky2-exact, vector-verified) — the educational MiMC is retired.")
+let _ : String = print("now hashed with the VETTED POSEIDON over Goldilocks (Plonky2-exact, vector-verified): the educational MiMC is retired.")
 let _ : String = print("")
 let _ : String = print("  fn f(a, b, c) = a * b + c;  f(a, b, c)   -- a, b, c PRIVATE, over Goldilocks (p = 2^64-2^32+1)")
 let _ : String = print("  a=100000, b=100000, c=99  ->  result = " ++ bn_dec(mres) ++ "  (= 10^10 + 99; Baby Bear's 2^31 can't hold this)")
@@ -2224,9 +2223,9 @@ let _ : String = print("  honest claim         -> Poseidon-Merkle-committed, Fia
 let _ : String = print("  wrong claim (R=12345) -> rejected (the output==claim assert breaks): " ++ show_a(badm))
 let _ : String = print("")
 let _ : String = print("This demo runs the FULL-STRENGTH proof (rho=1/8, coset 16N, 64 queries, real 12-bit grind, ~65-bit provable) + ZK (two seeds),")
-let _ : String = print("Poseidon-hashed (~300x MiMC) under the v5.44 GC runtime (~10 MB, no OOM). Run it NATIVELY (run_native.sh / `glass prove`), ~2-3 min;")
+let _ : String = print("Poseidon-hashed (~300x MiMC) under the GC runtime (~10 MB, no OOM). Run it NATIVELY (run_native.sh / `glass prove`), ~2-3 min;")
 let _ : String = print("the reference interpreter is multi-hour for a Poseidon STARK, so the native path is canonical (dogfoods byte-identical there).")
-let _ : String = print("Fiat-Shamir now SEEDS the transcript with a digest of the statement (circuit + claimed R), so every challenge depends on it — prover-side")
+let _ : String = print("Fiat-Shamir now SEEDS the transcript with a digest of the statement (circuit + claimed R), so every challenge depends on it: prover-side")
 let _ : String = print("only for now; an independent verifier that re-derives the challenges is the next step. (digest-sensitivity: prove_source_goldilocks_bind_test.glass)")
 
 # --- TIER-1 (WIP) independent-verify scaffolding: round-trip + tamper + the gap ---
@@ -2240,7 +2239,7 @@ let t1cross : Bool = verify(t1bgs, t1pp)                                      # 
 let t1nonce : Bool = verify(t1gs, tamper_nonce(t1pp))                         # tampered nonce: expect REJECT
 let t1evil : Bool = verify(t1gs, prove_evil(t1gs))                            # P=0, no witness: ACCEPT = the known gap
 let _ : String = print("")
-let _ : String = print("TIER-1 (WIP) independent verify() — re-derives all challenges from public gates + proof roots:")
+let _ : String = print("TIER-1 (WIP) independent verify(): re-derives all challenges from public gates + proof roots:")
 let _ : String = print("  honest round-trip          -> " ++ show_a(t1honest) ++ "   (expect ACCEPT)")
 let _ : String = print("  cross-statement (wrong R)  -> " ++ show_a(t1cross) ++ "   (expect REJECT)")
 let _ : String = print("  tampered nonce             -> " ++ show_a(t1nonce) ++ "   (expect REJECT)")
@@ -2251,7 +2250,7 @@ let s_honest : Bool = verify_sound(t1gs, prove_sound(t1gs, t1w))             # e
 let s_cross : Bool = verify_sound(t1bgs, prove_sound(t1gs, t1w))             # proof for t1gs vs t1bgs: expect REJECT
 let s_evil : Bool = verify_sound(t1gs, prove_sound_evil(t1gs))              # P=0 attack on the SOUND path: expect REJECT (the headline)
 let s_tamper : Bool = verify_sound(t1gs, tamper_strace(prove_sound(t1gs, t1w)))   # tampered trace opening: expect REJECT
-let _ : String = print("TIER-1 PART 2 (WIP) SOUND verify() — ties the committed quotient to the gate constraints (per-row):")
+let _ : String = print("TIER-1 PART 2 (WIP) SOUND verify(): ties the committed quotient to the gate constraints (per-row):")
 let _ : String = print("  honest proof               -> " ++ show_a(s_honest) ++ "   (expect ACCEPT)")
 let _ : String = print("  cross-statement (wrong R)  -> " ++ show_a(s_cross) ++ "   (expect REJECT)")
 let _ : String = print("  P=0 attack                 -> " ++ show_a(s_evil) ++ "   (expect REJECT <- the OOD identity now CATCHES it; per-row gate-binding)")
@@ -2263,7 +2262,7 @@ let _ : String = print("")
 # --- TIER-1 PART 3 (WIP) B3: copy/permutation argument (the wiring gap) ---
 let b3_honest : Bool = verify_b3(t1gs, prove_b3(t1gs, t1w))                  # expect ACCEPT
 let b3_cross : Bool = verify_b3(t1bgs, prove_b3(t1gs, t1w))                  # proof for t1gs vs t1bgs: expect REJECT
-let _ : String = print("TIER-1 PART 3 (WIP) B3 verify() — adds the grand-product wire-consistency (copy) constraint:")
+let _ : String = print("TIER-1 PART 3 (WIP) B3 verify(): adds the grand-product wire-consistency (copy) constraint:")
 let _ : String = print("  honest proof               -> " ++ show_a(b3_honest) ++ "   (expect ACCEPT)")
 let _ : String = print("  cross-statement (wrong R)  -> " ++ show_a(b3_cross) ++ "   (expect REJECT)")
 # THE HEADLINE: a wiring-inconsistent trace. circuit wire2 = w0*w1, then wire3 = wire2*wire2.
@@ -2282,7 +2281,7 @@ let _ : String = print("  => A+B1+B2+B3: the last NAMED structural soundness hol
 let _ : String = print("     CONCRETE SOUNDNESS: ~80-bit PROVABLE (FRI-query term, 82q x log2(16/9)=68 + 12 grind; conjecture-free unique-decoding) /")
 let _ : String = print("     ~135 list-decode (CONJECTURAL). The prior ~32-bit hash-width CAP IS FIXED: hashg now outputs 4 Poseidon lanes (~256-bit ->")
 let _ : String = print("     ~128-bit collision binding), so the Merkle + FS commitment binding (~128-bit) no longer gates the ~80-bit FRI term. (The")
-let _ : String = print("     32-bit cap was caught by the audit-readiness adversarial pass and fixed here — the integrity discipline working end to end.)")
+let _ : String = print("     32-bit cap was caught by the audit-readiness adversarial pass and fixed here: the integrity discipline working end to end.)")
 let _ : String = print("     Queries are now sampled WITHOUT replacement (82 DISTINCT positions), so the full 82-query margin holds (no duplicate erosion).")
 let _ : String = print("     All bounds REASONED pen-and-paper, NOT")
 let _ : String = print("     machine-verified or audited. ZK SUSPENDED (witness in clear). NOT out of research grade; the EXTERNAL AUDIT is the hard")
@@ -2327,4 +2326,4 @@ let _ : String = print("  [OK] " ++ expect_accept("ZK full integration (n=256)",
 let _ : String = print("=== SOUNDNESS GATE PASSED: all 13 cases as expected ===")
 let _ : String = print("")
 
-"prove_source_goldilocks_zk v1.0 (Glass 5.48.0) — A+B1+B2+B3 sound + public-input pinning + ZK via randomized trace (n=256 ACCEPTs, sound+hiding); 4-lane hash + 82 distinct queries => tight ~80-bit; reasoned-not-machine-checked, UNAUDITED — research-grade, do NOT protect real value"
+"prove_source_goldilocks_zk (A+B1+B2+B3 sound + public-input pinning + ZK via randomized trace (n=256 ACCEPTs, sound+hiding); 4-lane hash + 82 distinct queries => tight ~80-bit; reasoned-not-machine-checked, UNAUDITED) research-grade, do NOT protect real value"

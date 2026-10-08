@@ -1,8 +1,8 @@
 # =============================================================================
-# frost_starkzk.glass — a complete zk-STARK proving a computation (the capstone)
+# frost_starkzk.glass: a complete zk-STARK proving a computation (the capstone)
 #
 # Composes every piece into one proof that a COMPUTATION ran correctly, that is
-# SOUND, SUCCINCT, and ZERO-KNOWLEDGE — all in Glass:
+# SOUND, SUCCINCT, and ZERO-KNOWLEDGE: all in Glass:
 #   * AIR (frost_air): transition a_{i+1} = a_i^2 + k; trace -> T(x); constraint
 #     C(x)=T(gx)-(T(x)^2+k) vanishes on the trace domain; quotient Q=C/Z.
 #   * ZK BLINDING (frost_zk_blind): use T'(x)=T(x)+(x^n-1)·R(x). On the trace
@@ -170,6 +170,6 @@ let qa : List<F4> = quotient_cw(interpolate(honest), ra, coset, g, fpow(g, 3), 1
 let qb : List<F4> = quotient_cw(interpolate(honest), rb, coset, g, fpow(g, 3), 1)
 let _ : String = print("  quotient opening at query point #5 differs across seeds: " ++ show_b(eq4(nth4(qa, 5), nth4(qb, 5)) == false) ++ "  (randomized -> ZK)")
 let _ : String = print("")
-let _ : String = print("one proof: a computation, proven correct, succinctly, in zero knowledge — all in Glass.")
+let _ : String = print("one proof: a computation, proven correct, succinctly, in zero knowledge: all in Glass.")
 
-"frost starkzk v0.1 — end-to-end zk-STARK: AIR + blinding + F_{p^4} FRI, sound/succinct/zero-knowledge"
+"frost starkzk: end-to-end zk-STARK: AIR + blinding + F_{p^4} FRI, sound/succinct/zero-knowledge"

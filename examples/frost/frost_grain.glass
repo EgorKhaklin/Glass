@@ -1,9 +1,9 @@
 # =============================================================================
-# frost_grain.glass — Grain-LFSR Poseidon constants + a domain-separated transcript
+# frost_grain.glass: Grain-LFSR Poseidon constants + a domain-separated transcript
 #
 # frost_poseidon.glass built a real Poseidon permutation (x^7 S-box, full/partial
-# rounds, MDS) but drew its round constants from an ad-hoc polynomial schedule —
-# the one honest caveat flagged in docs/soundness.md. The Poseidon specification
+# rounds, MDS) but drew its round constants from an ad-hoc polynomial schedule:
+# the one honest caveat flagged in docs/security/soundness.md. The Poseidon specification
 # does NOT allow arbitrary constants: it fixes them with a Grain LFSR, seeded from
 # the concrete parameters, so the constants are reproducible and nothing-up-my-
 # sleeve. This file implements that generator and feeds Poseidon from it.
@@ -17,7 +17,7 @@
 # uniform residue mod p. Glass has no bitwise ops, so a bit is an Int in {0,1},
 # XOR is (a+b)%2, and the state is a List<Int> of length 80.
 #
-# HONESTY (read docs/soundness.md): this follows the spec's *structure* — the init
+# HONESTY (read docs/security/soundness.md): this follows the spec's *structure*: the init
 # layout, the exact feedback taps, the 160-round warm-up, and rejection sampling.
 # It has NOT been cross-checked against Poseidon's official reference test vectors,
 # so treat it as "Grain-LFSR-structured" not "certified spec-identical" until that
@@ -27,7 +27,7 @@
 # FIAT-SHAMIR (R2). On top of this Poseidon, a transcript with DOMAIN SEPARATION:
 # tr_init / tr_absorb / tr_challenge tag every message and squeeze by an integer
 # role, folded in before the value, so a challenge meant for one role (a fold
-# challenge) can never coincide with another (a query index) — and every challenge
+# challenge) can never coincide with another (a query index), and every challenge
 # depends on all prior absorbs (commit first, then the challenge falls out). The
 # demo shows determinism, domain separation, no (tag,value) collision, and binding
 # to history. (A formal FS-separation argument is still future work.)
@@ -98,7 +98,7 @@ fn poseidon2(rcs: List<Int>, a: Int, b: Int) : Int = match perm(rcs, a, b, 0) { 
 # A non-interactive proof derives its challenges by hashing the transcript of
 # prover messages (Fiat-Shamir). Soundness needs DOMAIN SEPARATION: a challenge
 # meant for "fold round 2" must never coincide with one meant for "query index",
-# even at the same transcript state — otherwise a prover could reuse one role's
+# even at the same transcript state: otherwise a prover could reuse one role's
 # value in another. Here every absorb and squeeze is tagged with an integer role,
 # folded in BEFORE the value, so (tag, v) for different tags can't collide.
 #   tr_init      seed from a protocol/domain label
@@ -163,7 +163,7 @@ let _ : String = print("  no (tag,v) collision (absorb tag1 v2 != absorb tag2 v1
 let _ : String = print("  binds to history (tamper 1st commitment -> beta changes): " ++ show_b(beta != beta_b))
 let _ : String = print("")
 let _ : String = print("the constants now come from the spec's Grain LFSR, not a hand-picked schedule, and")
-let _ : String = print("the transcript is domain-separated — reproducible, nothing-up-my-sleeve, role-bound.")
+let _ : String = print("the transcript is domain-separated: reproducible, nothing-up-my-sleeve, role-bound.")
 let _ : String = print("(Cross-check vs official Poseidon vectors + a formal FS separation argument still pending.)")
 
-"frost_grain v0.2 — Grain-LFSR Poseidon constants + a domain-separated Fiat-Shamir transcript built on it"
+"frost_grain: Grain-LFSR Poseidon constants + a domain-separated Fiat-Shamir transcript built on it"

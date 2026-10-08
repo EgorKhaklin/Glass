@@ -1,23 +1,23 @@
 # =============================================================================
-# frost_goldilocks_stark.glass — a committed, query-verified FRI over Goldilocks
-#                                — the cryptographic STARK core, complete (H2)
+# frost_goldilocks_stark.glass: a committed, query-verified FRI over Goldilocks:
+#                                the cryptographic STARK core, complete (H2)
 #
 # The arc completes: frost_goldilocks (field) -> _fri (fold) -> _ext (F_{p^2}
-# challenge) -> this — a FRI proof that is COMMITTED and QUERY-VERIFIED, the same
+# challenge) -> this: a FRI proof that is COMMITTED and QUERY-VERIFIED, the same
 # shape as frost_crypto for Baby Bear, but over the production field.
 #
 # Three soundness mechanisms, all over Goldilocks, all int64-safe:
-#   • COMMITMENT — each layer's codeword is Merkle-committed (a Goldilocks MiMC
+#   • COMMITMENT, each layer's codeword is Merkle-committed (a Goldilocks MiMC
 #     hash, x^7 S-box) to a root; the prover is bound to it before challenges.
-#   • CHALLENGE — the fold β ∈ F_{p^2} ≈ 2^128 is derived from that root
+#   • CHALLENGE: the fold β ∈ F_{p^2} ≈ 2^128 is derived from that root
 #     (Fiat-Shamir), so it's unpredictable and non-interactive.
-#   • QUERIES — the verifier samples positions from the transcript, opens each
+#   • QUERIES: the verifier samples positions from the transcript, opens each
 #     layer's (f(x), f(-x)) pair with a Merkle path, recomputes the fold, and
 #     checks it equals the next layer. A cheat is caught at (almost) every query.
 #
 # Demo: an honest low-degree codeword ACCEPTs (0 faults); a faked final layer
 # REJECTs (queries catch the inconsistency). Dogfoods byte-identical. Heavy
-# interpreted (bignum Merkle FRI) — run natively (examples/selfhost/run_native.sh).
+# interpreted (bignum Merkle FRI): run natively (examples/selfhost/run_native.sh).
 # =============================================================================
 
 # --- Goldilocks base field via base-2^16 limbs (from frost_goldilocks.glass) -
@@ -172,9 +172,9 @@ let _ : String = print("")
 let _ : String = print("HONEST  low-degree, committed, " ++ int_to_string(len(layers)) ++ " folded layers:")
 let _ : String = print("  fri_verify:  " ++ show_a(is_const2(final) && hfaults == 0) ++ "   (faults: " ++ int_to_string(hfaults) ++ "/12)")
 let _ : String = print("CHEAT   real layers, faked final codeword:")
-let _ : String = print("  fri_verify:  " ++ show_a(is_const2(cheatf) && cfaults == 0) ++ "   (faults: " ++ int_to_string(cfaults) ++ "/12 — queries catch the inconsistency)")
+let _ : String = print("  fri_verify:  " ++ show_a(is_const2(cheatf) && cfaults == 0) ++ "   (faults: " ++ int_to_string(cfaults) ++ "/12: queries catch the inconsistency)")
 let _ : String = print("")
-let _ : String = print("a complete sound FRI — commitment + cryptographic challenge + queries — over the")
+let _ : String = print("a complete sound FRI, commitment + cryptographic challenge + queries, over the")
 let _ : String = print("production Goldilocks field, int64-safe and dogfooded. (Blinding -> full zk-STARK.)")
 
-"frost goldilocks stark v0.1 (H2) — committed, query-verified FRI over Goldilocks (Merkle + F_{p^2} Fiat-Shamir)"
+"frost goldilocks stark (H2): committed, query-verified FRI over Goldilocks (Merkle + F_{p^2} Fiat-Shamir)"

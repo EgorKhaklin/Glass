@@ -1,10 +1,11 @@
-# Prove a PRIVATE email belongs to an organization's domain — revealing only that it does.
+# Prove a PRIVATE email belongs to an organization's domain: revealing only that it does.
+# Default proofs are sound but not zero-knowledge: add --zk to hide the private inputs.
 #
 #   glass prove examples/prove/private_email.glass email="ekhaklin@setonhill.edu"  # -> 1, ACCEPT
 #   glass prove examples/prove/private_email.glass email="someone@gmail.com"       # -> 0, ACCEPT
 #
 # `email` is a PRIVATE string (its codepoints live in the witness). The proof reveals the
-# public domain literal "@setonhill.edu" and the 0/1 verdict — not the address, not even its
+# public domain literal "@setonhill.edu" and the 0/1 verdict, not the address, not even its
 # local part. The verifier learns "this person is at Seton Hill" and nothing more: the
 # zero-knowledge org-membership credential.
 #

@@ -3,12 +3,12 @@
 #
 # A conservation law says some total is INVARIANT across a transition:
 # money across a transfer, momentum across a collision, charge across a
-# reaction. We make that a refinement — a transition is only valid when
+# reaction. We make that a refinement: a transition is only valid when
 # the conserved quantity after equals the conserved quantity before:
 #
 #       checked_transition(before, after where (after == before))
 #
-# The refinement references `before` (cross-parameter, v4.56) and is an
+# The refinement references `before` (a cross-parameter refinement) and is an
 # exact Int equality, so it even compiles through Quartz. A legitimate
 # transfer (moves value, conserves the total) passes; an operation that
 # creates or destroys value is rejected at the boundary.
@@ -24,7 +24,7 @@ fn total(accounts: List<Int>) : Int =
 fn checked_transition(before: Int, after: Int where (after == before)) : Int = after
 
 # A transfer moves `amt` from account i to account j (by rebuilding the
-# list). Total is preserved by construction — we then PROVE it through
+# list). Total is preserved by construction: we then PROVE it through
 # the refinement gate.
 fn transfer(accounts: List<Int>, i: Int, j: Int, amt: Int) : List<Int> =
   map_indexed(accounts, 0, i, j, amt)

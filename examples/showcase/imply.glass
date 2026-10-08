@@ -1,8 +1,8 @@
 # =============================================================================
 # Refinement implication: stronger predicates subsume weaker ones.
 #
-# v1.3 added subsumption when the predicate matched exactly (up to binder
-# rename). v1.4 adds implication for simple comparisons:
+# Subsumption applies when the predicate matches exactly (up to binder
+# rename); implication extends it to simple comparisons:
 #
 #   (n > k1) ⟹ (n >= k2)     when k1 >= k2 - 1
 #   (n >= k1) ⟹ (n > k2)     when k1 > k2
@@ -36,7 +36,7 @@ fn more_than_ten(n: Int) : Int where (result > 10) =
 
 # ---- Consumers with WEAKER refinement requirements.
 
-# Division requires only nonzero divisor — every implementation here can
+# Division requires only nonzero divisor, every implementation here can
 # feed it because every implementation returns something strictly positive.
 fn safe_div(a: Int, b: Int where (b != 0)) : Int = a / b
 
@@ -50,7 +50,7 @@ fn sqrt_floor(n: Int where (n >= 0)) : Int =
   else if n < 36 then 5
   else 6
 
-# This one needs n > 5 — only the last two implementations satisfy it.
+# This one needs n > 5: only the last two implementations satisfy it.
 fn needs_above_five(n: Int where (n > 5)) : Int = n + 1000
 
 # ---- Discharges that fire ---------------------------------------------------
@@ -73,12 +73,12 @@ let r5 = sqrt_floor(ensure_positive(15))
 # (result >= 1) ⟹ (n >= 0)
 let r6 = sqrt_floor(min_one(8))
 
-# (result >= 5) ⟹ (n > 5)?  NO — 5 is in [5, ∞) but 5 > 5 is false.
+# (result >= 5) ⟹ (n > 5)?  NO: 5 is in [5, ∞) but 5 > 5 is false.
 # The compiler should keep this as a runtime check.
 # (Uncomment to see the runtime path fire when at_least_five returns 5.)
 #   let r7 = needs_above_five(at_least_five(0))
 
-# (result > 10) ⟹ (n > 5)?  YES — 10+1 = 11 > 5.
+# (result > 10) ⟹ (n > 5)?  YES: 10+1 = 11 > 5.
 let r8 = needs_above_five(more_than_ten(0))
 
 # (result >= 5) ⟹ (n >= 0)?  YES.
@@ -103,6 +103,6 @@ let _ = print("implication discharges: [" ++ show_list(summary))
 let _ = print("")
 let _ = print("each refinement was provably stronger than the receiver's")
 let _ = print("precondition. compile-time discharges via comparison")
-let _ = print("implication — no alpha-equivalence required, no runtime cost.")
+let _ = print("implication: no alpha-equivalence required, no runtime cost.")
 
 "implication complete"

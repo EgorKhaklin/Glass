@@ -2,14 +2,16 @@
 #
 #   glass prove examples/prove/map_prove.glass inp=5
 #
+# Default proofs are sound but not zero-knowledge: add --zk to hide the private inputs.
+#
 # This composes everything: a higher-order `map` (taking a function argument),
 # applied over a recursive `IntList`, summed by a recursive `suml`. The function
 # argument resolves and beta-reduces (E2), the list lays out as a fixed-width
-# buffer, and both recursions unroll (E1/E1-next) — so the whole pipeline becomes
+# buffer, and both recursions unroll (E1/E1-next), so the whole pipeline becomes
 # one call-free arithmetic circuit and a single zero-knowledge proof. `inp` is the
 # PRIVATE list head; the proof reveals only the final sum.
 #
-# NOTE: this composition is the *heaviest* prove sample — two recursive functions
+# NOTE: this composition is the *heaviest* prove sample: two recursive functions
 # over a list make a large circuit, so the proof takes a while on the reference
 # interpreter. It is here to show the pieces compose, not as a quick demo; for the
 # fast path see fact_prove.glass (recursion) or hello_prove.glass (first-order).

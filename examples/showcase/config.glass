@@ -1,5 +1,5 @@
 # =============================================================================
-# config.glass — a config-file parser library written in pure Glass.
+# config.glass: a config-file parser library written in pure Glass.
 #
 # Parses ".ini-style" config files:
 #
@@ -15,12 +15,12 @@
 # failure. Provides:
 #
 #   parse_config(src)          : Result<Config, String>
-#   lookup(c, key)             : Option<String>          — missing is just "no"
-#   lookup_required(c, key)    : Result<String, String>  — missing is an error
-#   parse_int_str(s)           : Option<Int>             — string -> int
-#   lookup_int(c, key)         : Result<Int, String>     — required + parsed
+#   lookup(c, key)             : Option<String>: missing is just "no"
+#   lookup_required(c, key)    : Result<String, String>: missing is an error
+#   parse_int_str(s)           : Option<Int>: string -> int
+#   lookup_int(c, key)         : Result<Int, String>: required + parsed
 #
-# Demonstrates v2.4 (let*) AND v2.5 (let?) working together in real code:
+# Demonstrates let* AND let? working together in real code:
 # Result-bind for parse errors and required lookups, Option-bind for
 # optional lookups. Each composes naturally with its short-circuit shape.
 # =============================================================================
@@ -204,8 +204,8 @@ fn lookup_int(c: Config, key: String) : Result<Int, String> =
 
 # ---- A "real" use case: server config extraction -----------------------
 #
-# Uses let* for required fields (host, port — error if missing) and
-# let? for optional fields (motd — None means just absent).
+# Uses let* for required fields (host, port: error if missing) and
+# let? for optional fields (motd: None means just absent).
 
 fn extract_server(src: String) : Result<(String, Int), String> =
   let* config = parse_config(src) in
@@ -259,7 +259,7 @@ fn show_option_str(o: Option<String>) : String =
     None    => "NONE"
   }
 
-# A valid config — parses + extracts cleanly.
+# A valid config: parses + extracts cleanly.
 let cfg_valid = "# server config\nhost = localhost\nport = 8080\nmotd = welcome\n"
 let _ = print(show_config_result(parse_config(cfg_valid)))
 let _ = print(show_server_result(extract_server(cfg_valid)))
@@ -270,22 +270,22 @@ let _ = match parse_config(cfg_valid) {
   Err(msg) => print("ERR " ++ msg)
 }
 
-# Missing required field — let* short-circuits with Err.
+# Missing required field: let* short-circuits with Err.
 let cfg_no_port = "host = localhost\n"
 let _ = print(show_server_result(extract_server(cfg_no_port)))
 
-# Port not an integer — caught by lookup_int.
+# Port not an integer: caught by lookup_int.
 let cfg_bad_port = "host = localhost\nport = banana\n"
 let _ = print(show_server_result(extract_server(cfg_bad_port)))
 
-# Optional motd missing — let? short-circuits with None.
+# Optional motd missing: let? short-circuits with None.
 let cfg_no_motd = "host = h\nport = 1\n"
 let _ = match parse_config(cfg_no_motd) {
   Ok(c)    => print(show_option_str(extract_motd(c)));
   Err(msg) => print("ERR " ++ msg)
 }
 
-# Malformed line — no '=' — parse error.
+# Malformed line, no '=', parse error.
 let cfg_bad = "host = localhost\nthis is not valid\n"
 let _ = print(show_config_result(parse_config(cfg_bad)))
 

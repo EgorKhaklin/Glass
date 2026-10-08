@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 # Cross-check the in-circuit REAL Poseidon2 (examples/prove/poseidon2_node.glass, H3 block B2) against
-# the independent from-scratch Poseidon2 spec (pentecost/poseidon.py). The circuit lowers the full t=12
+# the independent from-scratch Poseidon2 spec (lens/poseidon.py). The circuit lowers the full t=12
 # permutation to ~1.9k Goldilocks gates; this proves it for input lanes 0..11 and checks all 12 output
-# lanes equal pentecost.perm([0..11]) mod p. The native verify_b3 ACCEPT + this spec match is the gate
-# (the circuit is faithful but NOT witness3-agreeing -- x^7 + ~2^64 constants overflow int64 in the
+# lanes equal lens.perm([0..11]) mod p. The native verify_b3 ACCEPT + this spec match is the gate
+# (the circuit is faithful but NOT cross-check-agreeing -- x^7 + ~2^64 constants overflow int64 in the
 # reference interp -- so the from-scratch Python Poseidon2 is the right independent oracle).
 #   python3 fuzz/poseidon2_node_check.py
 import sys, os, subprocess, re
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from pentecost.poseidon import perm, P
+from lens.poseidon import perm, P
 
 GLASS = os.path.join(ROOT, "glass.py")
 inp = list(range(12))

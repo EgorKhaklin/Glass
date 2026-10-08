@@ -1,26 +1,26 @@
 # =============================================================================
-# frost_goldilocks.glass — the Goldilocks field, from scratch, int64-safe
+# frost_goldilocks.glass: the Goldilocks field, from scratch, int64-safe
 #
 # Goldilocks  p = 2^64 − 2^32 + 1 = 18446744069414584321  is THE field modern
 # STARK provers run on (Plonky2, RISC Zero, …). Two properties make it special:
 #
 #   1. Fast reduction. 2^64 ≡ 2^32 − 1 (mod p), so reducing a 128-bit product
-#      is a couple of shifts and adds — no division. This file builds exactly
+#      is a couple of shifts and adds: no division. This file builds exactly
 #      that fold.
 #   2. Huge 2-adicity. p − 1 = 2^32 · (2^32 − 1), so there is a 2^32-th root of
-#      unity — enough radix-2 NTT layers for any practical trace. Demonstrated
+#      unity: enough radix-2 NTT layers for any practical trace. Demonstrated
 #      below: a 2^32-th root w with w^(2^32) = 1 but w^(2^31) ≠ 1.
 #
 # The catch: p ≈ 1.8·10^19 is larger than a signed int64 (≈9.2·10^18), and a
-# product of two field elements is ~128-bit — so naive arithmetic overflows the
+# product of two field elements is ~128-bit, so naive arithmetic overflows the
 # compiled (int64) backend. The fix is bignum: base-2^16 LIMBS (little-endian),
 # so every limb product (2^16·2^16 = 2^32) and carry stays inside int64. Even the
 # inverse exponent p−2 overflows int64, so square-and-multiply walks the exponent
-# in limbs too. Every step is int64-safe — so this DOGFOODS: native_glassc (int64)
+# in limbs too. Every step is int64-safe, so this DOGFOODS: native_glassc (int64)
 # and glass.py (bignum) agree, proving the int64 wall is genuinely lifted.
 #
 # (Shares the limb toolkit with frost_field.glass; the modulus and its fast
-# reduction are what's new — plus a bignum-exponent power and a real inverse.)
+# reduction are what's new, plus a bignum-exponent power and a real inverse.)
 # =============================================================================
 
 fn lmod(x: Int) : Int = x % 65536
@@ -122,7 +122,7 @@ let _ : String = print("2-ADICITY  a 2^32-th root of unity w = 7^((p−1)/2^32):
 let _ : String = print("  w^(2^32) == 1 (so w is a 2^32-th root):  " ++ show_b(bn_eq(fpow_bn(w, two32), [1])))
 let _ : String = print("  w^(2^31) == 1 (would mean not primitive): " ++ show_b(bn_eq(fpow_bn(w, two31), [1])) ++ "   (no => w has order exactly 2^32 -> 32 NTT layers)")
 let _ : String = print("")
-let _ : String = print("a from-scratch Goldilocks field — fast reduction, real inverse, 2^32-th roots — all")
+let _ : String = print("a from-scratch Goldilocks field (fast reduction, real inverse, 2^32-th roots) all")
 let _ : String = print("int64-safe, so it dogfoods. this is the base field a production STARK prover wants.")
 
-"frost goldilocks v0.1 — the Goldilocks STARK field (p = 2^64−2^32+1) via int64-safe limbs"
+"frost goldilocks: the Goldilocks STARK field (p = 2^64−2^32+1) via int64-safe limbs"

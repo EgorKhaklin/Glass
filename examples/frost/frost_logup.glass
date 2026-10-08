@@ -1,8 +1,8 @@
 # =============================================================================
-# frost_logup.glass — a LogUp (log-derivative) RANGE-LOOKUP argument over Goldilocks
+# frost_logup.glass: a LogUp (log-derivative) RANGE-LOOKUP argument over Goldilocks
 #
 # The bridge's range gadget (range_k / lt_build) proves `a ∈ [0, 2^k)` by
-# BIT-DECOMPOSITION: ~k boolean wires + a weighted-sum bind, ~32 gates/operand —
+# BIT-DECOMPOSITION: ~k boolean wires + a weighted-sum bind, ~32 gates/operand,
 # which is what makes comparison/division proofs ~600k tokens. The cheaper, wider
 # alternative every modern STARK uses is a LOOKUP: prove `a` is one of the table
 # values {0,1,…,2^k−1} without decomposing it. The standard sound form is LogUp:
@@ -18,25 +18,25 @@
 # THE SOUNDNESS POINT (an adversarial design panel caught the trap): the table MUST
 # be the DENSE LITERAL {0..2^k−1}. If the "table" were the prover's observed
 # distinct values, an OUT-OF-RANGE value (say 16) would appear as a pole on BOTH
-# sides — 1/(β−16) on the left and m_16·1/(β−16) on the right — and CANCEL at every
+# sides, 1/(β−16) on the left and m_16·1/(β−16) on the right, and CANCEL at every
 # β, so [3,7,16] would be ACCEPTED. With the dense literal table the right side can
 # only have poles at genuine table points 0..2^k−1, so an out-of-range value has no
 # canceling partner and the sums differ. (The sparse "support = observed values"
 # form proves only values ⊆ support; it never proves support ⊆ [0,2^k).)
 #
 # β ∈ F_{p^2} ≈ 2^128 (NOT base Goldilocks 2^64): the soundness error is
-# (2^k−1)/|field|, so the base field gives only ~(64−k) bits — below the 80-bit
+# (2^k−1)/|field|, so the base field gives only ~(64−k) bits: below the 80-bit
 # target for any useful k. F_{p^2} gives 128−k bits, comfortably past 80 for k≤32.
 # Cap k ≤ 32 for F_{p^2}; k=64 would need F_{p^3}.
 #
 # This is a STANDALONE component (like frost_goldilocks_fri.glass): it computes both
-# rational sums DIRECTLY and compares them — no committed codeword, no FRI, no
-# prover/verifier split. It establishes the LogUp range-check MECHANISM — sound
+# rational sums DIRECTLY and compares them: no committed codeword, no FRI, no
+# prover/verifier split. It establishes the LogUp range-check MECHANISM: sound
 # (Schwartz–Zippel + partial-fraction uniqueness), int64-safe, dogfooded interp ==
-# native — at small k. β here is a fixed F_{p^2} value standing in for a hash output
+# native: at small k. β here is a fixed F_{p^2} value standing in for a hash output
 # (frost_goldilocks_fri.glass does the same with its fold β); wiring LogUp in-circuit
 # (a constrained running-sum column + advice-pinned multiplicities, in BOTH verify_b3
-# AND the Pentecost verifier, replacing range_k) is the known multi-session,
+# AND the Lens verifier, replacing range_k) is the known large,
 # soundness-critical next step (see the footer). Research/educational, UNAUDITED.
 # =============================================================================
 
@@ -117,8 +117,8 @@ fn rhs_sum(i: Int, tsize: Int, m: List<Int>, beta: G2) : G2 =
   if i >= tsize then g2zero(0)
   else gadd2(gscale2(ginv2(gsub2(beta, emb(il(i)))), il(nthm(m, i))), rhs_sum(i + 1, tsize, m, beta))
 # β must have a NONZERO imaginary part: then β − x (x base-field) always carries that
-# nonzero lane, so every denominator is invertible. (A degenerate β with imag 0 — e.g.
-# a forced β = emb(7) — could make a base-field denominator zero; we ABSTAIN on it.)
+# nonzero lane, so every denominator is invertible. (A degenerate β with imag 0: e.g.
+# a forced β = emb(7): could make a base-field denominator zero; we ABSTAIN on it.)
 fn beta_ok(beta: G2) : Bool = match beta { G2(b0, b1) => bn_is_zero(b1) == false }
 # the verdict: the two rational sums are equal  ⟺  {a_j} = {i with multiplicity m_i}.
 fn logup_ok(avals: List<List<Int>>, tsize: Int, m: List<Int>, beta: G2) : Bool =
@@ -158,5 +158,5 @@ let _ : String = print("degenerate β (zero imaginary part) -> abstain (do NOT d
 let _ : String = print("")
 let _ : String = print("LogUp range-check MECHANISM: sound (Schwartz–Zippel + partial-fraction uniqueness over")
 let _ : String = print("F_{p^2}), int64-safe, dogfooded. In-circuit (constrained running-sum + advice-pinned m,")
-let _ : String = print("in verify_b3 AND Pentecost, replacing range_k) is the multi-session next step. UNAUDITED.")
+let _ : String = print("in verify_b3 AND Lens, replacing range_k) is the multi-session next step. UNAUDITED.")
 "frost_logup.glass"

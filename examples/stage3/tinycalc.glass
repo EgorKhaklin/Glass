@@ -1,9 +1,9 @@
 # =============================================================================
-# tinycalc.glass — a tiny calculator written in Glass that uses string
+# tinycalc.glass: a tiny calculator written in Glass that uses string
 # operations to tokenize and recursively sum a "1+2+3+4" style expression.
 #
-# Demonstrates the v1.6 additions to prism.glass: `substring` and
-# `string_index_of` are now exposed as builtins so files like this one
+# Demonstrates prism.glass's string builtins: `substring` and
+# `string_index_of` are exposed as builtins so files like this one
 # can be read from disk by prism.glass and run.
 # =============================================================================
 

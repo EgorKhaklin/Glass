@@ -1,19 +1,19 @@
 # =============================================================================
-# generic_rec.glass — parameterized record literal type inference (v2.11).
+# generic_rec.glass: parameterized record literal type inference.
 #
-# Before v2.11, prism rejected:
+# prism type-checks parameterized record literals such as:
 #
 #   fn box_swap(b: Box<Int>, new_val: String) : Box<String> =
 #     Box { value: new_val, color: b.color }
 #
-# with "can't unify String with A". Two bugs:
-#   1. expand_record_types ignored the type arguments — Box<String> and
+# which used to fail with "can't unify String with A" for two reasons:
+#   1. expand_record_types ignored the type arguments: Box<String> and
 #      Box<Int> both expanded to a TyRec with the literal 'A' still present.
 #   2. ENamedRec didn't exist; `Box { value: x }` was parsed identically
 #      to `{ value: x }` (anonymous structural), so the record name was
 #      lost before the type-checker could use it.
 #
-# v2.11 fixes both. ENamedRec keeps the name through parsing; the type-
+# Both are fixed. ENamedRec keeps the name through parsing; the type-
 # checker looks the name up in the env (where record decls are now
 # registered as Schemes), instantiates fresh TyVars for each param, and
 # unifies user field exprs against the declared field types. expand_

@@ -1,5 +1,5 @@
 # =============================================================================
-# frost_pcs.glass — polynomial interpolation (iNTT) + the FRI bridge (v0.1)
+# frost_pcs.glass: polynomial interpolation (iNTT) + the FRI bridge
 #
 # The bridge from the constraint/data world to the FRI world. FRI proves a
 # committed codeword is a LOW-DEGREE polynomial. To USE that we must move
@@ -16,7 +16,7 @@
 #     degree. This is exactly what FRI checks succinctly (without interpolating).
 #   - LOW-DEGREE EXTENSION (LDE): interpolate data to coefficients, then
 #     re-evaluate over a LARGER domain. The result is, by construction, a
-#     low-degree codeword — a FRI-committable encoding of the data. This is the
+#     low-degree codeword: a FRI-committable encoding of the data. This is the
 #     core of a STARK: commit a trace as a low-degree polynomial.
 #
 # Baby Bear field; round-trip-tested against `evaluate`. Dogfoods on glassc.
@@ -89,13 +89,13 @@ let _ : String = print("")
 let cw_low : List<Int> = evaluate([1, 2, 3, 4, 5, 6], build_domain(8))   # degree 5
 let c_low : List<Int> = interpolate(cw_low)
 let _ : String = print("low-degree codeword interpolates to: [" ++ show_list(c_low) ++ "]")
-let _ : String = print("  -> degree " ++ int_to_string(degree(c_low)) ++ " (high coeffs vanish — genuinely low-degree)")
+let _ : String = print("  -> degree " ++ int_to_string(degree(c_low)) ++ " (high coeffs vanish: genuinely low-degree)")
 let _ : String = print("")
 
 # 3. random codeword -> interpolates to FULL degree (no vanishing).
 let c_rand : List<Int> = interpolate(data)
 let _ : String = print("random  codeword interpolates to degree " ++ int_to_string(degree(c_rand)) ++
-                       " (full — NOT low-degree)")
+                       " (full, NOT low-degree)")
 let _ : String = print("")
 
 # 4. low-degree extension: a size-8 trace -> degree-<8 poly -> evals over a
@@ -105,6 +105,6 @@ let encoded : List<Int> = lde(data, 16)
 let _ : String = print("LDE of an 8-value trace to domain 16: size " ++ int_to_string(ilen(encoded)) ++
                        ", degree " ++ int_to_string(degree(interpolate(encoded))))
 let _ : String = print("  -> degree < 8 over a size-16 domain: a low-degree codeword (rate 1/2),")
-let _ : String = print("     FRI-committable — this is how a STARK commits a trace (frost_stark accepts it).")
+let _ : String = print("     FRI-committable: this is how a STARK commits a trace (frost_stark accepts it).")
 
-"frost pcs v0.1 — iNTT interpolation + low-degree extension: the bridge from data to FRI"
+"frost pcs: iNTT interpolation + low-degree extension: the bridge from data to FRI"

@@ -1,9 +1,9 @@
 # =============================================================================
-# prove.glass — the PROVE BRIDGE v0: a Glass expression -> a ZK proof (Phase 1)
+# prove.glass: the first PROVE BRIDGE: a Glass expression -> a ZK proof (Phase 1)
 #
 # The frontier bet made concrete. You write a computation as a Glass expression
 # (a function body over field arithmetic); this:
-#   1. EVALUATES it directly — the reference semantics (the spec).
+#   1. EVALUATES it directly: the reference semantics (the spec).
 #   2. COMPILES it to a Frost constraint system + witness (trace generation):
 #      every subexpression becomes a wire, every operation a gate.
 #   3. PROVES "y = f(secret x)" with Frost's sound, non-interactive protocol
@@ -11,7 +11,7 @@
 #      of the gate residuals == 0), revealing only the circuit and a commitment.
 #
 # THE GLASS DISCIPLINE, applied: the reference evaluator (eval_expr) and the
-# compiled circuit (the witness it produces) MUST agree on the output wire — a
+# compiled circuit (the witness it produces) MUST agree on the output wire: a
 # differential test between the language's meaning and the prover's circuit.
 #
 # This is the seam between the LANGUAGE and the PROVER. Phase 2 extends the
@@ -55,7 +55,7 @@ fn residual(g: Gate, w: List<Int>) : Int =
 # --- the (mini) Glass expression: a function body over field arithmetic ------
 type Expr = | Var(Int) | Const(Int) | Add(Expr, Expr) | Sub(Expr, Expr) | Mul(Expr, Expr)
 
-# 1. REFERENCE SEMANTICS — what the expression MEANS (the spec).
+# 1. REFERENCE SEMANTICS: what the expression MEANS (the spec).
 fn eval_expr(e: Expr, inputs: List<Int>) : Int =
   match e {
     Var(i)    => nth(inputs, i);
@@ -65,7 +65,7 @@ fn eval_expr(e: Expr, inputs: List<Int>) : Int =
     Mul(a, b) => fmul(eval_expr(a, inputs), eval_expr(b, inputs))
   }
 
-# 2. COMPILER — Expr -> gates + witness. Build(nextWire, gates, witnessValues).
+# 2. COMPILER: Expr -> gates + witness. Build(nextWire, gates, witnessValues).
 # Inputs occupy wires 0..k-1 (pre-loaded in the witness); each node adds a wire.
 type Build = | Build(Int, List<Gate>, List<Int>)
 
@@ -88,7 +88,7 @@ fn compile(e: Expr, b: Build) : (Int, Build) =
 fn compile_top(e: Expr, inputs: List<Int>) : (Int, Build) =
   compile(e, Build(ilen(inputs), [], inputs))
 
-# 3. PROOF — Frost's sound, non-interactive protocol over the circuit.
+# 3. PROOF: Frost's sound, non-interactive protocol over the circuit.
 fn fiat_shamir(commitment: Int) : Int = hash2(commitment, 777)
 fn rlc(gates: List<Gate>, w: List<Int>, r: Int, rpow: Int) : Int =
   match gates { [] => 0;
@@ -100,7 +100,7 @@ fn prove_ok(gates: List<Gate>, w: List<Int>) : Bool =
 fn show_b(b: Bool) : String = if b then "yes" else "no"
 fn show_a(b: Bool) : String = if b then "ACCEPT" else "REJECT"
 
-# f(x) = x*x + x + 5  — written as a Glass expression.
+# f(x) = x*x + x + 5: written as a Glass expression.
 let f : Expr = Add(Add(Mul(Var(0), Var(0)), Var(0)), Const(5))
 let secret : List<Int> = [3]                       # the private input x = 3
 let spec : Int = eval_expr(f, secret)              # reference: 3*3 + 3 + 5 = 17
@@ -134,4 +134,4 @@ let _ : String = print("proved y = " ++ int_to_string(spec) ++
                        " for a SECRET x, revealing only the circuit + a commitment to the witness.")
 let _ : String = print("the language's meaning and the prover's circuit agree by construction.")
 
-"prove v0 — the bridge: write a Glass expression, compile to a Frost circuit, get a ZK proof"
+"prove: the bridge: write a Glass expression, compile to a Frost circuit, get a ZK proof"

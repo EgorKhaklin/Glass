@@ -1,5 +1,5 @@
 # =============================================================================
-# frost_zk.glass — verifiable query over committed private data (v0.1)
+# frost_zk.glass: verifiable query over committed private data
 #
 # THE CAPSTONE: one arithmetic circuit that proves, together,
 #   (a) the private rows hash to a public Merkle root C  (membership/commitment)
@@ -9,7 +9,7 @@
 #
 # It integrates the three earlier pieces into ONE constraint system:
 #   - frost.glass        : field F_p + arithmetic-circuit gates.
-#   - frost_commit.glass : the MiMC hash + Merkle tree — now ARITHMETIZED into
+#   - frost_commit.glass : the MiMC hash + Merkle tree: now ARITHMETIZED into
 #                          gates (mk_hash2 / mk_root), so the circuit itself
 #                          recomputes the commitment.
 #   - frost_query.glass  : the range gadget + per-row selector + accumulation.
@@ -22,7 +22,7 @@
 # If every gate holds, the prover knows rows behind C with COUNT = R. Tampering
 # with the data, the root, or the claimed result makes a constraint fail.
 #
-# (Toy field p = 2^31-1, as before — structurally complete, not yet secure.)
+# (Toy field p = 2^31-1, as before: structurally complete, not yet secure.)
 # =============================================================================
 
 # --- field -------------------------------------------------------------------
@@ -221,4 +221,4 @@ let _ : String =
                          show_b(ok) ++ " (must be no)")
   }
 
-"frost zk v0.1 — membership (Merkle, in-circuit) AND query (filter+count) in one constraint system"
+"frost zk: membership (Merkle, in-circuit) AND query (filter+count) in one constraint system"

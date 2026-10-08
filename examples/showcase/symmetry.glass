@@ -1,21 +1,21 @@
 # =============================================================================
-# Symmetry group as data — the dihedral group D₄, in Glass.
+# Symmetry group as data: the dihedral group D₄, in Glass.
 #
 # D₄ is the symmetry group of a square: 4 rotations (0°, 90°, 180°, 270°)
-# and 4 reflections — 8 elements, NON-abelian (order matters: rotating
+# and 4 reflections: 8 elements, NON-abelian (order matters: rotating
 # then flipping ≠ flipping then rotating). We represent an element as
 #
-#       Sym(k, f)   —  k ∈ {0,1,2,3} quarter-turns, f = is-a-reflection
+#       Sym(k, f): k ∈ {0,1,2,3} quarter-turns, f = is-a-reflection
 #
 # and encode the group law from the dihedral relation r·s = s·r⁻¹:
 #
 #       (sᶠ¹ rᵏ¹)(sᶠ² rᵏ²) = s^(f1⊕f2) r^((−1)^f2·k1 + k2)
 #
-# The point: the GROUP AXIOMS become CHECKABLE PROPERTIES over Int data —
+# The point: the GROUP AXIOMS become CHECKABLE PROPERTIES over Int data:
 # closure (automatic via mod 4), an identity, inverses, associativity.
 # No type-system magic; the group is just data with laws we can verify.
 # (The deeper "symmetry as a type the checker enforces" is a separate,
-# harder feature — this is the buildable Tier-1 "group as data" version.)
+# harder feature: this is the buildable Tier-1 "group as data" version.)
 # =============================================================================
 
 type Sym = | Sym(Int, Bool)

@@ -1,14 +1,16 @@
-# The trust boundary, in FULL zero-knowledge — run:
+# The trust boundary, in FULL zero-knowledge: run:
 #
 #   glass prove examples/prove/trust_prove.glass answer=1 nonce=42
 #
+# Default proofs are sound but not zero-knowledge: add --zk to hide the private inputs.
+#
 # This is the C3 trust-boundary check (a model output, contained by its
-# refinement) lowered to the *succinct + zero-knowledge* blinded F_{p^4} FRI STARK
-# — the real prover, not the standalone sound-RLC demo (prove_trust_boundary_zk).
+# refinement) lowered to the *succinct + zero-knowledge* blinded F_{p^4} FRI STARK:
+# the real prover, not the standalone sound-RLC demo (prove_trust_boundary_zk).
 # `answer` is the model's output (a PRIVATE oracle); `nonce` hides it. The public
 # commitment C (baked below) pins the model interaction. The proof attests, in zero
 # knowledge, that the committed answer (1) opens to C and (2) is a bit
-# (`answer * (answer - 1) == 0`, the refinement `result == 0 || result == 1`) —
+# (`answer * (answer - 1) == 0`, the refinement `result == 0 || result == 1`):
 # revealing C and "the contract held", never the answer.
 #
 # The proof reports R *honestly* and bound to the computation, so R = 1 is a

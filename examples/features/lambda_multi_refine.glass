@@ -1,7 +1,7 @@
 # =============================================================================
-# lambda_multi_refine.glass — refined multi-param lambda (v4.48).
+# lambda_multi_refine.glass: refined multi-param lambda.
 #
-# Combines v4.47's ELamR with v4.48's multi-param desugaring. The
+# Combines ELamR (refined lambda params) with multi-param desugaring. The
 # parser produces `ELamR(a, refine_a, ELamR(b, refine_b, body))`, and
 # eval wraps each level in VRefinedClos, so the predicate fires on
 # every argument independently. Positive case: 3 > 0 and 4 > 0, so

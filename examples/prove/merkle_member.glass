@@ -1,15 +1,16 @@
-# H3 milestone — IN-CIRCUIT MERKLE MEMBERSHIP (the recursive-verifier building block).
+# H3 milestone: IN-CIRCUIT MERKLE MEMBERSHIP (the recursive-verifier building block).
+# Default proofs are sound but not zero-knowledge: add --zk to hide the private inputs.
 #
 # The roadmap's open H3 piece: "the fold-check-as-circuit is done; composing it with in-circuit
 # Merkle membership (openings authenticated against the commitment INSIDE the circuit) hasn't
 # shipped." A recursive verifier must re-hash a leaf up its authentication path within the proven
-# circuit. Here that path-hashing is written as an ordinary Glass program (x^7 + a 3x3 MDS mix —
+# circuit. Here that path-hashing is written as an ordinary Glass program (x^7 + a 3x3 MDS mix:
 # all +,*, which the bridge lowers to field gates) and `glass prove` turns it into a circuit:
 #
-#   glass prove --witness3 examples/prove/merkle_member.glass leaf=42 s0=7 d0=0 s1=99 d1=1
+#   glass prove --cross-check examples/prove/merkle_member.glass leaf=42 s0=7 d0=0 s1=99 d1=1
 #
 # leaf + siblings + directions are PRIVATE inputs; the proof's PUBLIC result is the Merkle root
-# the path authenticates to — "I know a leaf in the tree with root R", revealing only R. A reduced
+# the path authenticates to: "I know a leaf in the tree with root R", revealing only R. A reduced
 # algebraic compression keeps the trace small enough to dogfood (the prove_preimage_zk pattern);
 # scaling to full Poseidon2 per node + composing with the FRI fold-check is the continuing H3 work.
 

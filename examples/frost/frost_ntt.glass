@@ -1,9 +1,9 @@
 # =============================================================================
-# frost_ntt.glass — fast polynomial transform (N4: performance)
+# frost_ntt.glass: fast polynomial transform (N4: performance)
 #
 # Frost's polynomial layer used an O(n^2) DFT: to evaluate a degree-<n poly over
 # the n-th roots of unity, it ran Horner at each of the n points. This is the
-# O(n log n) replacement — the recursive Cooley–Tukey number-theoretic transform.
+# O(n log n) replacement: the recursive Cooley–Tukey number-theoretic transform.
 #
 # THE IDEA (decimation in time): split the coefficients into even/odd halves,
 #   P(x) = P_even(x^2) + x·P_odd(x^2)
@@ -76,7 +76,7 @@ let _ : String = print("n=16: fast NTT == slow DFT:                            "
 let _ : String = print("n=16: round-trip iNTT∘NTT == coeffs:                   " ++
   show_b(list_eq(intt(ntt(c16, root_of_unity(16)), root_of_unity(16)), c16)))
 let _ : String = print("")
-let _ : String = print("same answers, O(n log n) instead of O(n^2) — Frost's evaluate/interpolate,")
+let _ : String = print("same answers, O(n log n) instead of O(n^2): Frost's evaluate/interpolate,")
 let _ : String = print("the FRI fold, and the AIR quotient all run on this transform.")
 
-"frost ntt v0.1 (N4) — recursive Cooley–Tukey NTT/iNTT: the O(n log n) polynomial transform"
+"frost ntt (N4): recursive Cooley–Tukey NTT/iNTT: the O(n log n) polynomial transform"

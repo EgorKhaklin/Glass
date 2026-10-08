@@ -1,15 +1,15 @@
 # =============================================================================
-# Observer-dependent computation — observation order matters, in Glass.
+# Observer-dependent computation: observation order matters, in Glass.
 #
 # Some pairs of observations don't COMMUTE: measuring A then B leaves the
-# system in a different state than B then A. Quantum spin is the model —
+# system in a different state than B then A. Quantum spin is the model:
 # measure spin along X and you get a definite X but scramble Z; measure
 # Z and you fix Z but scramble X. You cannot hold both sharp at once, and
 # WHICH one is definite depends on the order you looked.
 #
 # We model a system as (x, z) with −1 meaning "indeterminate". A
 # measurement makes its own axis definite and randomizes the other. The
-# two observation orders then leave provably different states — the
+# two observation orders then leave provably different states: the
 # computation's outcome is relative to the observer's sequence. There is
 # no frame-independent fact about both axes simultaneously.
 # =============================================================================

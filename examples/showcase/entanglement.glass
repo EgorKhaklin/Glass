@@ -1,5 +1,5 @@
 # =============================================================================
-# Entanglement — correlated measurement, in Glass.
+# Entanglement: correlated measurement, in Glass.
 #
 # A two-qubit state is a weight over the four joint outcomes
 # 00, 01, 10, 11 (weights stand in for |amplitude|², as in
@@ -8,7 +8,7 @@
 # measuring one qubit tells you something about the other.
 #
 # The Bell state |00> + |11>  (weights 1,0,0,1) is the extreme case:
-# measure qubit 1, and qubit 2 is INSTANTLY determined to match — even
+# measure qubit 1, and qubit 2 is INSTANTLY determined to match: even
 # though, before measurement, each qubit alone was a fair coin. Contrast
 # a product (separable) state where the two are independent and learning
 # one tells you nothing about the other.
@@ -32,7 +32,7 @@ fn forced_value(p: Pair<Int, Int>) : Int =
   match p { Pair(a, b) => if a != 0 then 0 else 1 }
 
 # A state is entangled (here: perfectly correlated) when BOTH q1 outcomes
-# leave qubit 2 determined — knowing q1 always pins q2.
+# leave qubit 2 determined: knowing q1 always pins q2.
 fn perfectly_correlated(j: Joint) : Bool =
   determined(cond_q2(j, 0)) && determined(cond_q2(j, 1))
 
@@ -50,7 +50,7 @@ fn report(name: String, j: Joint) : String !{IO} =
   let _ = print("  measure q1 = 0  ⇒  " ++ show_cond(j, 0)) in
   let _ = print("  measure q1 = 1  ⇒  " ++ show_cond(j, 1)) in
   print("  entangled (knowing q1 pins q2)? " ++
-        (if perfectly_correlated(j) then "YES" else "no — separable"))
+        (if perfectly_correlated(j) then "YES" else "no: separable"))
 
 # Bell state |00> + |11>: only the matching outcomes carry weight.
 let bell = Joint(1, 0, 0, 1)

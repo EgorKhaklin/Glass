@@ -1,8 +1,8 @@
 # =============================================================================
-# prove_adt.glass — structured match: ADT values in a circuit (N4 / widen N2)
+# prove_adt.glass: structured match: ADT values in a circuit (N4 / widen N2)
 #
-# Scalar `match` (prove_match) dispatched on an Int. Real Glass matches on ADTs —
-# `match s { Circle(r) => …; Rect(w, h) => … }` — destructuring tagged values and
+# Scalar `match` (prove_match) dispatched on an Int. Real Glass matches on ADTs:
+# `match s { Circle(r) => …; Rect(w, h) => … }`: destructuring tagged values and
 # binding their payloads. This shows how that compiles to an arithmetic circuit.
 #
 # REPRESENTATION. An ADT value is a fixed-width tuple of wires (tag, f0, f1, …):
@@ -11,7 +11,7 @@
 #   Rect(4, 5) ->  (tag=1, f0=4, f1=5)
 # A `match` then: for each arm `Ctor(pat-vars) => body`, a SELECTOR = is-zero
 # (tag − ctor_tag), the pattern variables are bound to the field wires, and the
-# bodies are multiplexed (first-match), exactly as for scalar match — the only
+# bodies are multiplexed (first-match), exactly as for scalar match: the only
 # new part is the tag/field layout.
 #
 # Demonstrated on  area(s) = match s { Circle(r) => 3·r·r; Rect(w, h) => w·h }.
@@ -111,6 +111,6 @@ let _ : String = run(area_arms(0), "Circle(3) = (0,3,0)", 0, 3, 0)
 let _ : String = run(area_arms(0), "Rect(4,5)  = (1,4,5)", 1, 4, 5)
 let _ : String = print("")
 let _ : String = print("an ADT value is (tag, fields...); match dispatches on the tag (is-zero gadget)")
-let _ : String = print("and binds the fields — structured pattern matching now compiles to a circuit.")
+let _ : String = print("and binds the fields: structured pattern matching now compiles to a circuit.")
 
-"prove_adt v0.1 (N4) — structured match: tagged ADT values + tag-dispatch in a circuit"
+"prove_adt (N4): structured match: tagged ADT values + tag-dispatch in a circuit"

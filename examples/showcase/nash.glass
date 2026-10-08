@@ -1,8 +1,8 @@
 # =============================================================================
 # Pure-strategy Nash equilibrium for two-player 2×2 games, in Glass.
 #
-# Given a 2×2 normal-form game — a payoff matrix where each cell holds a pair
-# of payoffs (one for each player) — this program enumerates the four pure
+# Given a 2×2 normal-form game: a payoff matrix where each cell holds a pair
+# of payoffs (one for each player): this program enumerates the four pure
 # strategy profiles, identifies which ones are Nash equilibria, and prints
 # the classification.
 #
@@ -89,7 +89,7 @@ fn show_payoff(p: Payoff) : String =
 
 fn show_profiles(ps: List<Profile>) : String =
   match ps {
-    []           => "(none — no pure-strategy equilibrium)";
+    []           => "(none: no pure-strategy equilibrium)";
     [p, ...rest] =>
       match rest {
         []  => show_profile(p);
@@ -118,7 +118,7 @@ fn report(name: String, g: Game) : String !{IO} =
 #       Cooperate    Defect
 #   C   ( 3,  3)    ( 0,  5)
 #   D   ( 5,  0)    ( 1,  1)
-# Unique NE: (Defect, Defect) — the dominant strategy outcome.
+# Unique NE: (Defect, Defect): the dominant strategy outcome.
 let pd = Game(Payoff(3, 3), Payoff(0, 5), Payoff(5, 0), Payoff(1, 1))
 let _ = report("Prisoner's Dilemma", pd)
 
@@ -134,7 +134,7 @@ let _ = report("Stag Hunt", sh)
 #       Opera   Football
 #   O   (2, 1)  (0, 0)
 #   F   (0, 0)  (1, 2)
-# Two NE: (Opera, Opera) and (Football, Football) — coordination problem.
+# Two NE: (Opera, Opera) and (Football, Football): coordination problem.
 let bos = Game(Payoff(2, 1), Payoff(0, 0), Payoff(0, 0), Payoff(1, 2))
 let _ = report("Battle of the Sexes", bos)
 
@@ -142,7 +142,7 @@ let _ = report("Battle of the Sexes", bos)
 #       Heads    Tails
 #   H   ( 1, -1) (-1,  1)
 #   T   (-1,  1) ( 1, -1)
-# No pure-strategy NE — only a mixed-strategy equilibrium at (½, ½).
+# No pure-strategy NE: only a mixed-strategy equilibrium at (½, ½).
 let mp = Game(Payoff(1, 0 - 1), Payoff(0 - 1, 1), Payoff(0 - 1, 1), Payoff(1, 0 - 1))
 let _ = report("Matching Pennies", mp)
 
@@ -150,7 +150,7 @@ let _ = report("Matching Pennies", mp)
 #       Swerve   Straight
 #   S   ( 0,  0) (-1,  1)
 #   T   ( 1, -1) (-9, -9)
-# Two NE: (Swerve, Straight) and (Straight, Swerve) — commitment matters.
+# Two NE: (Swerve, Straight) and (Straight, Swerve): commitment matters.
 let ch = Game(Payoff(0, 0), Payoff(0 - 1, 1), Payoff(1, 0 - 1), Payoff(0 - 9, 0 - 9))
 let _ = report("Chicken", ch)
 

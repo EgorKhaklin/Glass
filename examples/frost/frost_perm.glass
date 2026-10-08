@@ -1,10 +1,10 @@
 # =============================================================================
-# frost_perm.glass — the permutation argument (copy constraints) over F_{p^4}
+# frost_perm.glass: the permutation argument (copy constraints) over F_{p^4}
 #
 # THE MISSING LINK between prove_glass's circuits and the STARK backend. A
 # circuit's gates reference ARBITRARY earlier wires (w_a, w_b); a STARK's
 # transition constraints are LOCAL (row i to row i+1). Connecting them needs
-# COPY CONSTRAINTS — a proof that the same logical value appears at the wire
+# COPY CONSTRAINTS: a proof that the same logical value appears at the wire
 # positions that must agree. The tool for that is the PERMUTATION ARGUMENT, the
 # heart of PLONK, and it reduces to a MULTISET-EQUALITY check:
 #
@@ -15,7 +15,7 @@
 #            with probability <= n/|field|).
 #
 # gamma is drawn from F_{p^4} (~2^124) by Fiat-Shamir, so the soundness error is
-# ~n/2^124 — cryptographic. A real permutation passes; any multiset difference
+# ~n/2^124: cryptographic. A real permutation passes; any multiset difference
 # is caught. This is the primitive that lets a circuit's wire-routing be checked
 # inside a STARK, completing the circuit -> STARK path.
 #
@@ -92,4 +92,4 @@ let _ : String = print("gamma drawn from F_{p^4} by Fiat-Shamir -> soundness err
 let _ : String = print("this is the copy-constraint primitive: it lets a circuit's wire-routing be")
 let _ : String = print("checked inside a STARK, completing the prove_glass circuit -> STARK path.")
 
-"frost perm v0.1 — grand-product permutation argument (copy constraints) over F_{p^4}"
+"frost perm: grand-product permutation argument (copy constraints) over F_{p^4}"

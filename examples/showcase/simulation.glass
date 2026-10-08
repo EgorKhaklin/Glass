@@ -3,14 +3,14 @@
 #
 # A simulation level is a reality that hosts another. Glass already does
 # this literally: glass.py runs prism.glass, which interprets a Glass
-# program — three levels of "reality", each computing the one inside it.
+# program: three levels of "reality", each computing the one inside it.
 #
 # Here we make the level structure explicit. A tiny expression language
 # has a `Sim` node meaning "evaluate this sub-program one level deeper".
-# `eval` computes the value (levels don't change arithmetic — a sum is a
+# `eval` computes the value (levels don't change arithmetic: a sum is a
 # sum at any level), while `depth` reports how many realities are nested.
 # The value bubbles up through every level unchanged; the DEPTH is what
-# the nesting buys you — the simulated worlds are real to their inhabitants.
+# the nesting buys you: the simulated worlds are real to their inhabitants.
 # =============================================================================
 
 type Expr =
@@ -26,7 +26,7 @@ fn eval(e: Expr) : Int =
     Sim(inner) => eval(inner)
   }
 
-# Maximum simulation nesting — how many realities deep does this go?
+# Maximum simulation nesting: how many realities deep does this go?
 fn depth(e: Expr) : Int =
   match e {
     Lit(_)    => 0;

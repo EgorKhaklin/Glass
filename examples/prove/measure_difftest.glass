@@ -1,5 +1,5 @@
-# The Measuring Reed difftest: the bit-security re-derivation must be exact integer arithmetic
-# tied to the live params — ilog2(grind_modulus)=12, and at the fixed rate rho=1/8 the pinned
+# The security meter difftest: the bit-security re-derivation must be exact integer arithmetic
+# tied to the live params: ilog2(grind_modulus)=12, and at the fixed rate rho=1/8 the pinned
 # per-query bounds give provable=(q*83)/100+grind, list-decoding=(q*3)/2+grind. For q=82: 80/135.
 # (Mirrors grind_bits/provable_bits/listdecode_bits in prove_source_goldilocks_zk.glass.)
 fn ilog2(n: Int) : Int = if n <= 1 then 0 else 1 + ilog2(n / 2)

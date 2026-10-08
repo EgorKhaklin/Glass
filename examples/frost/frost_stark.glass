@@ -1,14 +1,14 @@
 # =============================================================================
-# frost_stark.glass — the full FRI protocol: commit, fold, query, verify (v0.1)
+# frost_stark.glass: the full FRI protocol: commit, fold, query, verify
 #
 # This completes Frost's proof layer. frost_fri.glass showed folding collapses
-# a low-degree polynomial to a constant. But folding ALONE proves nothing — any
+# a low-degree polynomial to a constant. But folding ALONE proves nothing: any
 # codeword folds. Soundness comes from COMMITTING each round and a VERIFIER
 # that spot-checks the fold relation between consecutive committed rounds at
-# random points. The verifier never sees a full codeword — only a logarithmic
-# number of Merkle-opened points — so the proof is SUCCINCT.
+# random points. The verifier never sees a full codeword: only a logarithmic
+# number of Merkle-opened points, so the proof is SUCCINCT.
 #
-# THE PROTOCOL (transparent, hash-based — no trusted setup, no elliptic curves)
+# THE PROTOCOL (transparent, hash-based: no trusted setup, no elliptic curves)
 #   COMMIT phase (prover):
 #     - Merkle-commit the codeword c_i  -> root_i.
 #     - Fiat-Shamir: beta_i = hash(root_i)  (non-interactive).
@@ -158,4 +158,4 @@ let _ : String =
   match commit(cw_junk, dom16, []) { (layers, final) =>
     print("cheating prover (faked final):      " ++ show_b(verify(layers, [42, 42], queries))) }
 
-"frost stark v0.1 — committed FRI with query-phase verification (succinct low-degree proof)"
+"frost stark: committed FRI with query-phase verification (succinct low-degree proof)"

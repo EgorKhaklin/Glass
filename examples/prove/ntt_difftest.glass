@@ -1,6 +1,6 @@
 # ntt_lde difftest (STAGE 2 / rope 2): the native coset-NTT intrinsic (q_ntt_lde / glass.py
 # b_ntt_lde) must equal the naive coset evaluation  eval[k] = P(shift * omega^k) = Sum_j coeff[j]*(shift*omega^k)^j
-# computed with goldw_* arithmetic — AND be byte-identical interp vs native. shift = 7 (the coset
+# computed with goldw_* arithmetic, AND be byte-identical interp vs native. shift = 7 (the coset
 # generator the bridge uses); omega = 7^((p-1)/m), a primitive m-th root. No bridge import.
 #
 #   python3 glass.py -q examples/prove/ntt_difftest.glass     (interp)

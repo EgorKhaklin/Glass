@@ -1,7 +1,7 @@
 # STAGE 0 of the "unbox the field" cut: prove the unboxed single-Int Goldilocks
 # (goldw_*) agrees with the trusted base-2^16 limb field (gold_*) AND that the
-# interpreter and the native compiler agree BYTE-IDENTICALLY. No bridge import —
-# only builtins — so it type-checks on both front ends and run_native just cp's it.
+# interpreter and the native compiler agree BYTE-IDENTICALLY. No bridge import:
+# only builtins, so it type-checks on both front ends and run_native just cp's it.
 #
 #   python3 glass.py examples/prove/goldw_difftest.glass            (interpreter)
 #   bash examples/selfhost/run_native.sh examples/prove/goldw_difftest.glass  (native)
@@ -24,7 +24,7 @@ fn walk(x: Int, n: Int, acc: Bool) : Bool =
   else let y : Int = goldw_add(goldw_mul(x, 7), 3) in
        walk(y, n - 1, acc && ck_mul(x, y) && ck_add(x, y) && ck_sub(x, y))
 
-let big1 : Int = gw([0, 0, 0, 40000])                    # 40000*2^48 mod p — a large element (>= 2^63 path)
+let big1 : Int = gw([0, 0, 0, 40000])                    # 40000*2^48 mod p: a large element (>= 2^63 path)
 let big2 : Int = gw([12345, 54321, 9999, 60000])
 let _ : String = print("CHECK walk " ++ sb(walk(123456789, 300, true)))
 let _ : String = print("CHECK bigmul " ++ sb(ck_mul(big1, big2)))

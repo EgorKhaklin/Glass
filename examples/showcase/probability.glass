@@ -2,7 +2,7 @@
 # Probabilistic types with refinement bounds, in Glass.
 #
 # A distribution is a list of EXACT rational probabilities (see
-# showcase/rational.glass — Glass has no imports, so the Rat core is
+# showcase/rational.glass: Glass has no imports, so the Rat core is
 # repeated here). The defining refinement of a probability distribution
 # is exact and checkable: the weights must sum to exactly 1.
 #
@@ -12,16 +12,16 @@
 #       U = 1 − Σ pᵢ²
 #
 # rather than Shannon entropy −Σ pᵢ·log pᵢ. Shannon needs logarithms,
-# which are irrational — so an "entropy" over exact rationals would have
+# which are irrational, so an "entropy" over exact rationals would have
 # to lie (round). Gini uncertainty is genuinely rational: it stays exact,
 # it's 0 for a certainty and maximal for the uniform distribution, and it
 # answers the same question (how spread out is the mass). Honest beats
 # familiar.
 # =============================================================================
 
-# ---- Rat core: IMPORTED, not copy-pasted (v4.70 module system) --------------
-# Before v4.70 this file repeated the entire Rat algebra from
-# showcase/rational.glass. Now it imports the shared library — the
+# ---- Rat core: IMPORTED, not copy-pasted (module system) ---------------------
+# Rather than repeat the entire Rat algebra from
+# showcase/rational.glass, this file imports the shared library: the
 # definitions live in exactly one place.
 import "../lib/rational.glass"
 
@@ -56,7 +56,7 @@ let fair    = [rat(1, 2), rat(1, 2)]
 let biased  = [rat(9, 10), rat(1, 10)]
 let uniform = [rat(1, 4), rat(1, 4), rat(1, 4), rat(1, 4)]
 let certain = [rat(1, 1)]
-let broken  = [rat(1, 2), rat(1, 3)]   # sums to 5/6 — not a distribution
+let broken  = [rat(1, 2), rat(1, 3)]   # sums to 5/6, not a distribution
 
 let _ = print("=== Distributions: validity, uncertainty (Gini), confidence ===")
 let _ = report("fair coin   ", fair)

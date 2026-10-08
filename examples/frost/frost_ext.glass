@@ -1,18 +1,18 @@
 # =============================================================================
-# frost_ext.glass — extension fields F_{p^2}, F_{p^4} in int64 (P3, algebraic side)
+# frost_ext.glass: extension fields F_{p^2}, F_{p^4} in int64 (P3, algebraic side)
 #
 # CORRECTING AN EARLIER CAVEAT. I claimed a real (cryptographic) field needs a
 # ~124-bit Fermat-inverse exponent that int64 can't hold, so extension fields
 # were "blocked." That was wrong. The inverse in an extension field does NOT use
-# a huge exponent — it uses the NORM:  a^-1 = conj(a) / N(a), where N(a) lives in
+# a huge exponent: it uses the NORM:  a^-1 = conj(a) / N(a), where N(a) lives in
 # the BASE field and is inverted with the ordinary base exponent (p-2, fits int64).
 # And the Euler non-residue checks need exponent (p^2-1)/2 ≈ 2e18, which fits.
 # So the whole tower is reachable in int64. This file builds it.
 #
 # WHY IT MATTERS (the algebraic-soundness gap from frost_fiat): FRI/RLC
 # challenges drawn from the ~2^31 base field give only ~2^-31 algebraic
-# soundness per round. Drawing them from F_{p^4} (~2^124 elements) gives ~2^-124
-# — CRYPTOGRAPHIC. This is the standard small-field-STARK move (RISC Zero uses a
+# soundness per round. Drawing them from F_{p^4} (~2^124 elements) gives ~2^-124:
+# CRYPTOGRAPHIC. This is the standard small-field-STARK move (RISC Zero uses a
 # Baby Bear degree-4 extension for exactly this).
 #
 #   F_{p^2} = F_p[X]/(X^2 - W),  W a non-residue in F_p            (~2^62)
@@ -89,8 +89,8 @@ let _ : String = print("F_{p^2} non-square V = " ++ s2(v) ++ " (Y^2 = V);  is_no
 let _ : String = print("F_{p^4} = F_{p^2}[Y]/(Y^2-V),  ~2^124 elements  -> CRYPTOGRAPHIC challenge space")
 let _ : String = print("  A · A^-1 == 1 in F_{p^4} ?  " ++ show_b(eq4(mul4(a4, inv4(a4, v, w), v, w), one4)))
 let _ : String = print("")
-let _ : String = print("inverse uses the NORM (base inverse, exponent p-2) — no 124-bit exponent.")
+let _ : String = print("inverse uses the NORM (base inverse, exponent p-2): no 124-bit exponent.")
 let _ : String = print("drawing FRI/RLC challenges from F_{p^4} gives ~2^-124 algebraic soundness:")
 let _ : String = print("a small base field for fast int64 arithmetic, a degree-4 extension for security.")
 
-"frost ext v0.1 — F_{p^2} and F_{p^4} (~2^124, cryptographic) built in int64 via norm-based inverse"
+"frost ext: F_{p^2} and F_{p^4} (~2^124, cryptographic) built in int64 via norm-based inverse"

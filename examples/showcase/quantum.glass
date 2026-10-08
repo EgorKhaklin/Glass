@@ -2,19 +2,19 @@
 # Quantum-inspired measurement, in Glass.
 #
 # A `Superposed` value holds several basis states, each with an integer
-# WEIGHT — think of |amplitude|² scaled to whole "shares" so we stay in
+# WEIGHT: think of |amplitude|² scaled to whole "shares" so we stay in
 # Glass's Int world (no floats needed). Measurement COLLAPSES the
 # superposition to exactly one basis state.
 #
 # The interesting design point: with the random seed threaded EXPLICITLY,
-# measurement is referentially transparent — `measure(s, seed)` always
+# measurement is referentially transparent: `measure(s, seed)` always
 # yields the same outcome for the same seed. The "collapse" is real (you
 # get one definite value, the others vanish), but it isn't an impure
-# effect. A true `!{Measure}` effect — where the seed comes from the
-# outside world — would need a host builtin; here the seed is the
+# effect. A true `!{Measure}` effect, where the seed comes from the
+# outside world: would need a host builtin; here the seed is the
 # program's stand-in for "which branch of reality you observed".
 #
-# Demonstrated on: a fair qubit, a biased qubit, and a 3-state qutrit —
+# Demonstrated on: a fair qubit, a biased qubit, and a 3-state qutrit,
 # plus a frequency check that repeated measurement tracks the weights,
 # and a determinism check that re-observing the same seed never changes
 # the outcome.
@@ -83,7 +83,7 @@ fn report(name: String, s: Superposed) : String !{IO} =
   let _ = print("  measure(seed=0): " ++ measure(s, 0)) in
   let _ = print("  measure(seed=1): " ++ measure(s, 1)) in
   let _ = print("  measure(seed=7): " ++ measure(s, 7)) in
-  print("  measure(seed=7) again: " ++ measure(s, 7) ++ "  (same — collapse is deterministic in the seed)")
+  print("  measure(seed=7) again: " ++ measure(s, 7) ++ "  (same: collapse is deterministic in the seed)")
 
 fn measure_states(s: Superposed) : List<Amp> =
   match s { Superposed(xs) => xs }

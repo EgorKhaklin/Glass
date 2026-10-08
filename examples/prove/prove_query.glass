@@ -1,20 +1,20 @@
 # =============================================================================
-# prove_query.glass — H1: a zero-knowledge query (Pane ⊕ Frost)
+# prove_query.glass: H1: a zero-knowledge query (Pane ⊕ Frost)
 #
 # The founding vision: *Frost is the zero-knowledge extension of Pane.* You hold
 # a private table; you publish a COMMITMENT to it; then you prove the result of a
-# QUERY over that table — revealing only the query, the commitment, and the
+# QUERY over that table: revealing only the query, the commitment, and the
 # answer, never the rows.
 #
 # Here the query is the Pane classic SELECT SUM(salary) WHERE dept = target.
 # The table is private; public are: a binding commitment C to the table, the
 # target dept, and the claimed result R. The circuit proves, over the table as
 # private witness:
-#   1. BINDING — the witness really is the committed table: a fingerprint
+#   1. BINDING: the witness really is the committed table: a fingerprint
 #      commitment C' = Σ flat_i · γ^i  (a polynomial-evaluation/Reed–Solomon
 #      fingerprint at a Fiat-Shamir point γ) must equal the public C. Two
 #      different tables collide only with probability ≤ n/|field|.
-#   2. QUERY — running the query yields R: for each row a selector
+#   2. QUERY: running the query yields R: for each row a selector
 #      [dept = target] (is-zero gadget) times its salary, summed, must equal R.
 # A sound proof (here the RLC protocol) then attests "the table committed as C
 # has SUM(salary WHERE dept=target) = R" without exposing a single salary. Feed
@@ -117,4 +117,4 @@ let _ : String = print("")
 let _ : String = print("proven: the table committed as C has SUM(salary WHERE dept=eng) = R, no salary revealed.")
 let _ : String = print("the same circuit feeds prove_zk for the succinct, zero-knowledge STARK.")
 
-"prove_query v0.1 (H1) — prove a Pane query (filtered sum) over a committed private table"
+"prove_query (H1): prove a Pane query (filtered sum) over a committed private table"
