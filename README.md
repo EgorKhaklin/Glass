@@ -1,6 +1,9 @@
 <div align="center">
 
-<img src="assets/glass-logo.jpg" alt="Glass" width="460"/>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/glass-dark.svg">
+  <img src="assets/glass-light.svg" width="100%" alt="Glass: a verifiable functional language">
+</picture>
 
 
 ### You can see straight through it.
