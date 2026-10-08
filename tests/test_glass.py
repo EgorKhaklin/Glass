@@ -2522,14 +2522,14 @@ def main() -> int:
         print(f"        {(_help.stdout + _help.stderr).strip()[-200:]}")
         failures += 1
 
-    total = (len(POSITIVE) + len(NEGATIVE) +
-             len(inline_positive) + len(prism_checks) + len(repl_cases) + 84)  # +84: the standalone gates checked one by one in main(), on top of the list-driven cases above
-    passed = total - failures
     quartz_failures = run_quartz_tests()
     failures += quartz_failures
-    total += 174  # quartz: the native-compile cases checked by run_quartz_tests()
-    passed = total - failures
-    print(f"\n{passed}/{total} passed")
+    # The summary counts the check lines actually printed ("  OK" / "  FAIL"), so it
+    # cannot drift from the checks; a skipped heavy gate prints OK with "(SKIPPED".
+    t = _TALLY
+    print(f"\n{t.ok - t.skipped}/{t.ok + t.fail} passed, {t.skipped} skipped, {t.fail} failed")
+    if failures and not t.fail:
+        print(f"({failures} failure(s) were counted without a FAIL line)")
     return 0 if failures == 0 else 1
 
 
@@ -3576,5 +3576,29 @@ def run_quartz_tests() -> int:
     return failures
 
 
+class _CheckTally:
+    """Counts the "  OK" and "  FAIL" check lines written to stdout, passing them through."""
+    def __init__(self, out):
+        self.out, self.buf = out, ""
+        self.ok = self.fail = self.skipped = 0
+    def write(self, s):
+        self.buf += s
+        while "\n" in self.buf:
+            line, self.buf = self.buf.split("\n", 1)
+            if line.startswith("  OK"):
+                self.ok += 1
+                self.skipped += "(SKIPPED" in line
+            elif line.startswith("  FAIL"):
+                self.fail += 1
+        return self.out.write(s)
+    def flush(self):
+        self.out.flush()
+    def __getattr__(self, name):
+        return getattr(self.out, name)
+
+
+_TALLY = _CheckTally(sys.stdout)
+
 if __name__ == "__main__":
+    sys.stdout = _TALLY
     sys.exit(main())
