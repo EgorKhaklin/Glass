@@ -31,6 +31,7 @@ CANON = [
     "glass.py",                                  # the reference interpreter (the spec)
     "quartz.py",                                 # the bootstrap compiler
     "examples/prove/prove_source_goldilocks_zk.glass",  # the prover + verify_b3 bridge
+    "examples/prove/prove_job.glass",            # the driver glass prove runs it with
     "lens/verify.py",             # the second, independent verifier
     "lens/poseidon.py",
     "lens/_gold_constants.py",

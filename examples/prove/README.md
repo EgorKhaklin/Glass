@@ -23,6 +23,11 @@ Each demo's header comment gives its exact command and expected result.
   arguments inlined), `cgen` to Goldilocks gates, then `prove_b3` / `verify_b3` (and the
   randomized-trace `--zk` path), the security meter, and the serializer for the independent
   [Lens](../../lens/) verifier.
+- [`prove_job.glass`](prove_job.glass): the driver `glass prove` appends to the bridge. The
+  two are compiled to a native binary once and cached under `/tmp/glass-native/bridge`; each
+  proof then runs that binary on a small job file (the program, its inputs, the mode and any
+  claim). The first proof after a change to the bridge or the compiler takes about 20 seconds
+  to compile; later proofs pay only for proving. `GLASS_PROVE_UNCACHED=1` compiles per proof.
 
 ## Demos for `glass prove`
 

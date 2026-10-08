@@ -1333,6 +1333,40 @@ def main() -> int:
             return True
         return False
 
+    # The cached prover: `glass prove` compiles the bridge once with a fixed job driver
+    # (examples/prove/prove_job.glass) and runs it per proof. Its output, exit code and
+    # emitted proof must match the per-proof compile (GLASS_PROVE_UNCACHED=1) exactly, so
+    # the job driver can never drift from the driver it replaced. Three result shapes: a
+    # false scalar claim (REJECT), a tuple, and a string.
+    print("== cached prover == per-proof compile ==")
+    import tempfile as _tf_cp
+    with _tf_cp.NamedTemporaryFile("w", suffix=".glass", delete=False) as _cpf:
+        _cpf.write('fn tag(a: Int) : String = if a > 3 then "big" else "small"\ntag(x)\n')
+        _cp_str = _cpf.name
+    with _tf_cp.NamedTemporaryFile("w", suffix=".glass", delete=False) as _cpf:
+        _cpf.write("(x + 1, x * 2)\n")
+        _cp_tup = _cpf.name
+    _cp_cases = [
+        ("false scalar claim", [os.path.join(EX, "prove", "hello_prove.glass"), "inp=9", "--claim", "87"]),
+        ("tuple result", [_cp_tup, "x=5"]),
+        ("string result", [_cp_str, "x=5"]),
+    ]
+    for _cp_label, _cp_args in _cp_cases:
+        _cp_env = {k: v for k, v in os.environ.items() if k != "GLASS_PROVE_UNCACHED"}
+        _cp_new = _prove_run([sys.executable, GLASS, "prove"] + _cp_args, env=_cp_env)
+        _cp_old = _prove_run([sys.executable, GLASS, "prove"] + _cp_args, env={**_cp_env, "GLASS_PROVE_UNCACHED": "1"})
+        if _heavy_skipped(_cp_new, f"cached prover matches the per-proof compile: {_cp_label}") or \
+           _heavy_skipped(_cp_old, f"cached prover matches the per-proof compile: {_cp_label}"):
+            continue
+        _cp_ok = (_cp_new.returncode, _cp_new.stdout) == (_cp_old.returncode, _cp_old.stdout) and "proof:" in _cp_new.stdout
+        print(f"  {'OK ' if _cp_ok else 'FAIL'}  cached prover matches the per-proof compile: {_cp_label} (rc={_cp_new.returncode})")
+        if not _cp_ok:
+            print(f"        cached rc={_cp_new.returncode} out: {_cp_new.stdout.strip()[-200:]}")
+            print(f"        per-proof rc={_cp_old.returncode} out: {_cp_old.stdout.strip()[-200:]}")
+            failures += 1
+    os.unlink(_cp_str)
+    os.unlink(_cp_tup)
+
     # Dead-branch PREDICATION: cgen builds BOTH if-arms, so a divide-by-zero in a DEAD arm
     # (`if a==a then a else a%b`, b=0) used to poison the circuit. The division gadget now predicates
     # its `r < b` check on an in-circuit `b!=0` bit, so the dead `a%0` is vacuously satisfiable and the

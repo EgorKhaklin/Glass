@@ -4075,6 +4075,114 @@ def _prove_result_struct(usrc, inputs):
         return None
 
 
+# The Goldilocks prover runs natively. Compiling the bridge takes most of a proof's
+# time (about 18 s against well under a second of proving for a small program), so
+# `glass prove` compiles the bridge with a fixed driver (examples/prove/prove_job.glass)
+# once, caches the binary by content, and hands each proof to it as a job file.
+_JOB_INT_BOUND = 1 << 62
+
+
+def _prove_job_text(job, usrc):
+    """The job file the cached prover reads: `key value` lines, `src`, then the source."""
+    lines = []
+    for key in ("mode", "call", "seed", "claim", "claimint", "claimcodes", "claimdisp",
+                "kind", "arity", "rname", "fields"):
+        if key in job:
+            lines.append("%s %s" % (key, job[key]))
+    for name, vals in job["inputs"]:
+        lines.append("input %s %s" % (name, " ".join(str(v) for v in vals)))
+    return "\n".join(lines) + "\nsrc\n" + usrc
+
+
+def _prove_job_ok(job):
+    """True when the job format carries this proof exactly; otherwise the proof takes the
+    per-proof compile, which embeds everything as Glass literals."""
+    def word(w):
+        return isinstance(w, str) and w != "" and not any(c.isspace() for c in w)
+    def small(v):
+        return isinstance(v, int) and -_JOB_INT_BOUND < v < _JOB_INT_BOUND
+    if not all(word(n) and all(small(v) for v in vals) for n, vals in job["inputs"]):
+        return False
+    if "claimint" in job and not small(job["claimint"]):
+        return False
+    if "claimdisp" in job and ("\n" in job["claimdisp"] or "\r" in job["claimdisp"]):
+        return False
+    if "rname" in job and not word(job["rname"]):
+        return False
+    if "fields" in job and not all(word(f) for f in job["fields"].split(" ")):
+        return False
+    return True
+
+
+def _prove_native(here, machinery, job, usrc, driver, env):
+    """Run one Goldilocks proof natively. Returns (returncode, stdout, stderr).
+
+    With a job the format can carry, the bridge is compiled once (cached under
+    /tmp/glass-native/bridge by a hash of everything that shapes the binary) and run in
+    a private directory holding the job. Otherwise, or with GLASS_PROVE_UNCACHED=1, the
+    per-proof `driver` is compiled and run, as before the cache existed."""
+    import hashlib
+    import shutil
+    import tempfile
+    run_native = os.path.join(here, "examples", "selfhost", "run_native.sh")
+    if job is None or not _prove_job_ok(job) or os.environ.get("GLASS_PROVE_UNCACHED") == "1":
+        tmp = "/tmp/glass_prove_driver.glass"
+        with open(tmp, "w") as f:
+            f.write(driver)
+        p = subprocess.run(["bash", run_native, tmp], check=False, env=env,
+                           capture_output=True, text=True)
+        return p.returncode, p.stdout or "", p.stderr or ""
+    with open(os.path.join(here, "examples", "prove", "prove_job.glass")) as f:
+        source = machinery + "\n" + f.read()
+    h = hashlib.sha256(source.encode())
+    for rel in ("examples/selfhost/glassc.glass", "examples/selfhost/prism.glass", "quartz.py",
+                "examples/selfhost/native_build.sh", "examples/selfhost/run_native.sh"):
+        with open(os.path.join(here, rel), "rb") as f:
+            h.update(f.read())
+    cache = os.path.join("/tmp/glass-native/bridge", h.hexdigest()[:32])
+    if not os.path.exists(cache):
+        os.makedirs(os.path.dirname(cache), exist_ok=True)
+        src_path = "%s.%d.glass" % (cache, os.getpid())
+        with open(src_path, "w") as f:
+            f.write(source)
+        b = subprocess.run(["bash", run_native, src_path, "--build", cache], check=False, env=env,
+                           capture_output=True, text=True)
+        os.unlink(src_path)
+        if b.returncode != 0 or not os.path.exists(cache):
+            return b.returncode or 1, b.stdout or "", b.stderr or ""
+        # Keep the newest 32 binaries (about 1 MB each): one per bridge version, plus
+        # the forged bridges the soundness gates build.
+        cdir = os.path.dirname(cache)
+        bins = [os.path.join(cdir, n) for n in os.listdir(cdir) if len(n) == 32 and "." not in n]
+        for old in sorted(bins, key=os.path.getmtime, reverse=True)[32:]:
+            try:
+                os.unlink(old)
+            except OSError:
+                pass
+    work = tempfile.mkdtemp(prefix="glass-prove-")
+    try:
+        with open(os.path.join(work, "glass_prove_job.txt"), "w") as f:
+            f.write(_prove_job_text(job, usrc))
+        def big_stack():
+            # The prover recurses deeply; macOS links a 512 MB stack into the binary, and
+            # Linux takes it from the limit (run_native.sh sets the same with ulimit -s).
+            try:
+                import resource
+                want = 512 * 1024 * 1024
+                _soft, hard = resource.getrlimit(resource.RLIMIT_STACK)
+                if hard == resource.RLIM_INFINITY or hard >= want:
+                    resource.setrlimit(resource.RLIMIT_STACK, (want, hard))
+            except (ImportError, ValueError, OSError):
+                pass
+        p = subprocess.run([cache], cwd=work, check=False, env=env, capture_output=True,
+                           text=True, preexec_fn=big_stack)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    # Drop the binary's auto-printed final value, as run_native.sh does.
+    out = "".join((p.stdout or "").splitlines(True)[:-1])
+    return p.returncode, out, p.stderr or ""
+
+
 def main() -> None:
     """Console entry point. After `pip install glass-lang`, this is what
     the `glass` command invokes. With no args it starts the REPL; with a
@@ -4193,6 +4301,7 @@ def main() -> None:
         # old hardcoded 11111 made every --zk proof identical). The mask derivation downstream is still
         # an idealized PRG (a disclosed honest-scope caveat). Used only by the --zk gprove_zk* calls.
         _zk_seed = int.from_bytes(os.urandom(4), "big") % (1 << 31)
+        _job_call = "fast" if fast_mode else ("zk" if zk_mode else "sound")
         here = os.path.dirname(os.path.abspath(__file__))
         # GLASS_BRIDGE_DIR: the adversarial-prover test harness hook. Soundness gates point this at a
         # FORGED copy of the bridge (e.g. a malicious q-hint in divmod_build) to check that verify_b3
@@ -4214,6 +4323,7 @@ def main() -> None:
                 return "[" + ", ".join(str(ord(c)) for c in v) + "]"
             return "[%d]" % v
         inp_glass = "[" + ", ".join('Pair("%s", %s)' % (k, _mw_vals(v)) for k, v in inputs) + "]"
+        _job_inputs = [(k, [ord(c) for c in v] if isinstance(v, str) else [v]) for k, v in inputs]
         inp_glass_bb = "[" + ", ".join('Pair("%s", %d)' % (k, v) for k, v in inputs if isinstance(v, int)) + "]"
         bridge_file = "prove_source_goldilocks_zk.glass" if goldilocks else "prove_source_adt_zk.glass"
         with open(os.path.join(bridge_dir, bridge_file)) as f:
@@ -4239,19 +4349,16 @@ def main() -> None:
                 'let _inp : List<Pair<String, List<Int>>> = %s\n'
                 'let _rv : List<List<Int>> = gref_m_checked(_usrc, _inp)\n'
             ) % (esc, inp_glass) + _emit_body + '"emit-done"\n'
-            _et = "/tmp/glass_emit_driver.glass"
-            with open(_et, "w") as _f:
-                _f.write(_ed)
+            _ejob = {"mode": "emitmw" if _res_str is not None else "emit", "inputs": _job_inputs}
             print("Glass prove --emit %s  [field: Goldilocks (2^64)]\n" % emit_path)
-            _ep = subprocess.run(["bash", os.path.join(here, "examples", "selfhost", "run_native.sh"), _et],
-                                 check=False, capture_output=True, text=True, env=_native_env)
-            if _ep.returncode != 0:
-                sys.stderr.write(_ep.stderr or "")
+            _erc, _eout, _eerr = _prove_native(here, machinery, _ejob, usrc, _ed, _native_env)
+            if _erc != 0:
+                sys.stderr.write(_eerr)
                 print("\nverdict: ABSTAIN  (Glass refused to lower this statement: no proof emitted.)")
-                sys.exit(_ep.returncode)
+                sys.exit(_erc)
             with open(emit_path, "w") as _f:
-                _f.write(_ep.stdout)
-            _ntok = len((_ep.stdout or "").split())
+                _f.write(_eout)
+            _ntok = len(_eout.split())
             print("wrote a portable proof: %s  (%d tokens)" % (emit_path, _ntok))
             print("verify it independently with:  glass verify %s" % emit_path)
             return
@@ -4289,6 +4396,11 @@ def main() -> None:
                          '{ Build(_n, _gs, _w) => measure_line(_gs) }))\n') % _claim_arg
             _proof_line = 'let _ : String = print("proof:   " ++ (if %s then "%s" else "REJECT"))\n' % (_prove_call, _prove_label)
             driver = machinery + _head_lines + _claim_let + _disp_line + _sec_line + _proof_line + '"glass prove --goldilocks"\n'
+            _job = {"mode": "mw", "call": _job_call, "seed": _zk_seed, "inputs": _job_inputs,
+                    "claim": "none" if claim_raw is None else "str"}
+            if claim_raw is not None:
+                _job["claimcodes"] = " ".join(str(ord(c)) for c in claim_raw)
+                _job["claimdisp"] = claim_raw
         elif goldilocks and _res_struct is not None:
             # TUPLE/RECORD result (multi-wire, scalar components): bind EVERY component wire as the
             # public claim (the same build_claim_mw / gprove_*_mw a string result uses) and display the
@@ -4328,6 +4440,13 @@ def main() -> None:
                          '{ Build(_n, _gs, _w) => measure_line(_gs) }))\n')
             _proof_line = 'let _ : String = print("proof:   " ++ (if %s then "%s" else "REJECT"))\n' % (_prove_call, _prove_label)
             driver = machinery + _head_lines + _disp_line + _sec_line + _proof_line + '"glass prove --goldilocks"\n'
+            _job = {"mode": "struct", "call": _job_call, "seed": _zk_seed, "inputs": _job_inputs,
+                    "kind": _kindword}
+            if _kindword == "tuple":
+                _job["arity"] = len(_res_struct[1])
+            else:
+                _job["rname"] = _rname
+                _job["fields"] = " ".join(f for f, _ in _rfields)
         elif goldilocks:
             if fast_mode:
                 _prove_call = "gprove_m(_usrc, _inp, _r, 11111)"
@@ -4379,7 +4498,12 @@ def main() -> None:
                 'let _ : String = print("proof:   " ++ (if %s then "%s" else "REJECT"))\n'
                 '"glass prove --goldilocks"\n'
             ) % (esc, inp_glass, _prove_call, _prove_label)
+            _job = {"mode": "scalar", "call": _job_call, "seed": _zk_seed, "inputs": _job_inputs,
+                    "claim": "none" if claim_val is None else "int"}
+            if claim_val is not None:
+                _job["claimint"] = claim_val
         else:
+            _job = None
             driver = machinery + (
                 '\nlet bbw : Int = find_nonres_b(2)\n'
                 'let bbv : F2 = find_v(0, bbw)\n'
@@ -4403,17 +4527,13 @@ def main() -> None:
         print("")
         if goldilocks:
             # Goldilocks is bignum-heavy: run natively (the interpreter is ~hours).
-            # run_native.sh builds native_glassc once, then compiles + runs the driver.
-            _tmp = "/tmp/glass_prove_driver.glass"
-            with open(_tmp, "w") as _f:
-                _f.write(driver)
+            # The cached prover runs the job; see _prove_native.
             _w3 = "--cross-check" in sys.argv[2:]
             # Output is always captured and relayed: the exit-code contract (see below) needs the
             # verdict line, which the GENERATED DRIVER prints (glass.py never computes it itself).
             # The result/proof block prints at the end of the run anyway, so nothing is lost.
-            _proc = subprocess.run(["bash", os.path.join(here, "examples", "selfhost", "run_native.sh"), _tmp],
-                           check=False, env=_native_env,
-                           capture_output=True, text=True)
+            _rc, _out, _err = _prove_native(here, machinery, _job, usrc, driver, _native_env)
+            _proc = subprocess.CompletedProcess([], _rc, _out, _err)
             sys.stdout.write(_proc.stdout or ""); sys.stderr.write(_proc.stderr or "")
             if _proc.returncode != 0:
                 # ABSTAIN: the third verdict. The native prover REFUSED before reaching a

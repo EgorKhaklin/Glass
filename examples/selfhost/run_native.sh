@@ -10,14 +10,19 @@
 #
 #   bash examples/selfhost/run_native.sh examples/prove/prove_query_zk.glass
 #   bash examples/selfhost/run_native.sh <file>  --time   # also print timing
+#   bash examples/selfhost/run_native.sh <file>  --build OUT   # compile only, install at OUT
 #
 # Workflow: prototype + verify on the interpreter (small inputs, `dogfood.sh`
 # for the reference⟷compiler check), then RUN at scale here. native_glassc is
 # built once (cached; see native_build.sh), then compiles any file in ~1s.
 # =============================================================================
 set -euo pipefail
-[ $# -ge 1 ] || { echo "usage: run_native.sh <file.glass> [--time]"; exit 2; }
-FILE="$1"; TIMEIT="${2:-}"
+[ $# -ge 1 ] || { echo "usage: run_native.sh <file.glass> [--time | --build OUT]"; exit 2; }
+FILE="$1"; TIMEIT="${2:-}"; BUILD_OUT=""
+if [ "$TIMEIT" = "--build" ]; then
+  BUILD_OUT="${3:-}"; TIMEIT=""
+  [ -n "$BUILD_OUT" ] || { echo "usage: run_native.sh <file.glass> --build OUT"; exit 2; }
+fi
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 PY="${PYTHON:-$(command -v python3.12 || echo python3)}"   # quartz.py needs Python 3.10+
@@ -28,6 +33,8 @@ T=/tmp/glass-native; mkdir -p "$T"
 # concurrent build (another prove, a gate, the fixpoint) cannot overwrite them.
 . "$HERE/native_lock.sh"
 native_lock
+# --build: another process may have installed the binary while this one waited.
+if [ -n "$BUILD_OUT" ] && [ -x "$BUILD_OUT" ]; then exit 0; fi
 
 # 1. the self-hosted native compiler (cached; rebuilt when its sources change)
 GLASSC="${GLASSC:-$T/native_glassc}"
@@ -57,6 +64,14 @@ rm -f /tmp/glassc_bin
 if [ "$TIMEIT" = "--time" ]; then echo "[compile]" >&2; time "$GLASSC" >/dev/null 2>&1 || true
 else "$GLASSC" >/dev/null 2>&1 || true; fi
 [ -x /tmp/glassc_bin ] || { echo "run_native: native compile error (run $GLASSC on /tmp/in.glass to see cc errors)" >&2; exit 1; }
+
+# --build: install the binary at OUT (atomically, so a concurrent reader never sees
+# half a file) and stop. glass prove caches the prover this way and runs it per proof.
+if [ -n "$BUILD_OUT" ]; then
+  mkdir -p "$(dirname "$BUILD_OUT")"
+  cp /tmp/glassc_bin "$BUILD_OUT.partial.$$" && mv -f "$BUILD_OUT.partial.$$" "$BUILD_OUT"
+  exit 0
+fi
 
 # 4. run it (drop the binary's auto-printed final return value, like dogfood).
 #    512MB stack for the prover's deep m=32768 codeword recursion. macOS links it

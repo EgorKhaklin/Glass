@@ -1,0 +1,163 @@
+# --- the job driver: appended to the bridge machinery by `glass prove` ----------
+#
+# `glass prove` compiles the bridge and this driver once into a native binary,
+# cached by content, and runs it once per proof. Each run reads its proof job from
+# glass_prove_job.txt in the working directory: a header of `key value` lines,
+# then a line `src`, then the program's source to the end of the file.
+#
+#   mode scalar | mw | struct | emit | emitmw   the result shape, or a portable proof
+#   call sound | zk | fast                      which prover and verifier run
+#   seed N                                      the --zk randomness
+#   claim none | int | str                      what --claim asserted
+#   claimint N / claimcodes C1 C2 .. / claimdisp TEXT
+#   kind tuple | record, arity N, rname NAME, fields F1 F2 ..   (struct results)
+#   input NAME V1 V2 ..                         one line per private input
+#
+# The output is what the per-proof driver printed before the binary was cached:
+# the result or claim line, the security line, and the verdict.
+
+fn jb_after(s: String, i: Int) : String = substring(s, i, string_length(s))
+
+fn jb_line(s: String) : String =
+  match string_index_of(s, "\n") { None => s; Some(j) => substring(s, 0, j) }
+
+# The value of header line `key` ("" when absent). The header starts and ends with "\n".
+fn jb_field(h: String, key: String) : String =
+  match string_index_of(h, "\n" ++ key ++ " ") {
+    None => "";
+    Some(i) => jb_line(jb_after(h, i + string_length(key) + 2)) }
+
+# Space-separated signed integers.
+fn jb_ints(s: String, i: Int) : List<Int> =
+  if i >= string_length(s) then []
+  else if char_at(s, i) == " " then jb_ints(s, i + 1)
+  else if char_at(s, i) == "-" then
+    match read_int(s, i + 1, 0) { (v, j) =>
+      if j == i + 1 then error("glass prove: malformed job file (a lone minus sign)")
+      else [0 - v] ++ jb_ints(s, j) }
+  else match read_int(s, i, 0) { (v, j) =>
+    if j == i then error("glass prove: malformed job file (not an integer)")
+    else [v] ++ jb_ints(s, j) }
+
+fn jb_one(s: String) : Int =
+  match jb_ints(s, 0) {
+    [] => error("glass prove: malformed job file (expected an integer)");
+    [v, ...r] => if len(r) == 0 then v else error("glass prove: malformed job file (expected one integer)") }
+
+# Space-separated words.
+fn jb_words(s: String) : List<String> =
+  if string_length(s) == 0 then []
+  else match string_index_of(s, " ") {
+    None => [s];
+    Some(k) => (if k == 0 then [] else [substring(s, 0, k)]) ++ jb_words(jb_after(s, k + 1)) }
+
+# Every `input NAME V1 V2 ..` line, in order.
+fn jb_inputs(h: String) : List<Pair<String, List<Int>>> =
+  match string_index_of(h, "\ninput ") {
+    None => [];
+    Some(i) =>
+      let rest : String = jb_after(h, i + 7) in
+      let line : String = jb_line(rest) in
+      match string_index_of(line, " ") {
+        None => error("glass prove: malformed job file (an input line without values)");
+        Some(k) => [Pair(substring(line, 0, k), jb_ints(line, k + 1))] ++ jb_inputs(jb_after(rest, string_length(line))) } }
+
+fn jb_gins(cs: List<Int>) : List<List<Int>> =
+  match cs { [] => []; [c, ...r] => [gin(c)] ++ jb_gins(r) }
+
+# A negative claim binds canonically as p-|claim|, as inputs and signed results do.
+fn jb_claim_r(c: Int) : List<Int> = if c < 0 then fsub(glit4(0), glit4(0 - c)) else glit(c)
+
+fn jb_label(call: String) : String =
+  if call == "fast" then "ACCEPT  (self-check over the witness, NOT a soundness proof; drop --fast for verify_b3)"
+  else if call == "zk" then "ACCEPT  (SOUND + zero-knowledge: independent verify_b3 + randomized-trace hiding)"
+  else "ACCEPT  (SOUND: independent witness-free verify_b3; not zero-knowledge)"
+
+fn jb_prove(call: String, src: String, inp: List<Pair<String, List<Int>>>, r: List<Int>, seed: Int) : Bool =
+  if call == "fast" then gprove_m(src, inp, r, 11111)
+  else if call == "zk" then gprove_zk(src, inp, r, seed, 256)
+  else gprove_sound(src, inp, r)
+
+fn jb_prove_mw(call: String, src: String, inp: List<Pair<String, List<Int>>>, rs: List<List<Int>>, seed: Int) : Bool =
+  if call == "fast" then gprove_m_mw(src, inp, rs, 11111)
+  else if call == "zk" then gprove_zk_mw(src, inp, rs, seed, 256)
+  else gprove_sound_mw(src, inp, rs)
+
+fn jb_verdict(ok: Bool, call: String) : String !{IO} =
+  print("proof:   " ++ (if ok then jb_label(call) else "REJECT"))
+
+# A scalar (Int/Bool) result: one wire, bound to the computed value or the --claim.
+fn jb_run_scalar(h: String, src: String, inp: List<Pair<String, List<Int>>>) : String !{IO} =
+  let rv : List<List<Int>> = gref_m_checked(src, inp) in
+  let claimed : Bool = jb_field(h, "claim") == "int" in
+  let r : List<Int> =
+    if claimed then jb_claim_r(jb_one(jb_field(h, "claimint")))
+    else if len(rv) > 1 then error("glass prove: this program returns a MULTI-WIRE value not bindable as a public claim: an ADT, or a tuple/record with a non-scalar component. Supported results: a scalar (Int/Bool), a String, or a tuple/record of scalars.")
+    else vh(rv) in
+  let _shown : String =
+    if claimed then print("claim:   " ++ bn_dec_signed(r) ++ "  (asserted; the proof verifies iff this is the true result over Goldilocks)")
+    else print("result:  " ++ bn_dec_signed(r) ++ "  (over Goldilocks, p = 2^64-2^32+1)") in
+  let _sec : String = print("security: " ++ (match build_claim_m(src, inp, r) { Build(_n, _gs, _w) => measure_line(_gs) })) in
+  let call : String = jb_field(h, "call") in
+  jb_verdict(jb_prove(call, src, inp, r, jb_one(jb_field(h, "seed"))), call)
+
+# A String result: one wire per codepoint, bound to the computed string or the --claim.
+fn jb_run_mw(h: String, src: String, inp: List<Pair<String, List<Int>>>) : String !{IO} =
+  let rv : List<List<Int>> = gref_m_checked(src, inp) in
+  let claimed : Bool = jb_field(h, "claim") == "str" in
+  let rs : List<List<Int>> = if claimed then jb_gins(jb_ints(jb_field(h, "claimcodes"), 0)) else rv in
+  let _shown : String =
+    if claimed then print("claim:   \"" ++ jb_field(h, "claimdisp") ++ "\"  (asserted; the proof verifies iff this is the true string result over Goldilocks)")
+    else print("result:  \"" ++ decode_str(rv) ++ "\"  (a String result, each codepoint bound as a public output wire over Goldilocks)") in
+  let _sec : String = print("security: " ++ (match build_claim_mw(src, inp, rs) { Build(_n, _gs, _w) => measure_line(_gs) })) in
+  let call : String = jb_field(h, "call") in
+  jb_verdict(jb_prove_mw(call, src, inp, rs, jb_one(jb_field(h, "seed"))), call)
+
+fn jb_tuple_disp(rv: List<List<Int>>, i: Int, n: Int) : String =
+  if i >= n then ""
+  else (if i == 0 then "" else ", ") ++ bn_dec_signed(wnth(rv, i)) ++ jb_tuple_disp(rv, i + 1, n)
+
+fn jb_record_disp(rv: List<List<Int>>, fs: List<String>, i: Int) : String =
+  match fs { [] => ""; [f, ...fr] =>
+    (if i == 0 then "" else ", ") ++ f ++ ": " ++ bn_dec_signed(wnth(rv, i)) ++ jb_record_disp(rv, fr, i + 1) }
+
+# A tuple or record of scalars: every component wire bound to its computed value.
+fn jb_run_struct(h: String, src: String, inp: List<Pair<String, List<Int>>>) : String !{IO} =
+  let rv : List<List<Int>> = gref_m_checked(src, inp) in
+  let kind : String = jb_field(h, "kind") in
+  let disp : String =
+    if kind == "tuple" then "(" ++ jb_tuple_disp(rv, 0, jb_one(jb_field(h, "arity"))) ++ ")"
+    else jb_field(h, "rname") ++ " { " ++ jb_record_disp(rv, jb_words(jb_field(h, "fields")), 0) ++ " }" in
+  let _shown : String = print("result:  " ++ disp ++ "  (a " ++ kind ++ " result, each component bound as a public output wire over Goldilocks)") in
+  let _sec : String = print("security: " ++ (match build_claim_mw(src, inp, rv) { Build(_n, _gs, _w) => measure_line(_gs) })) in
+  let call : String = jb_field(h, "call") in
+  jb_verdict(jb_prove_mw(call, src, inp, rv, jb_one(jb_field(h, "seed"))), call)
+
+# A portable proof (--emit): the token stream Lens reads.
+fn jb_run_emit(h: String, src: String, inp: List<Pair<String, List<Int>>>) : String !{IO} =
+  let rv : List<List<Int>> = gref_m_checked(src, inp) in
+  if jb_field(h, "mode") == "emitmw" then print(gprove_emit_mw(src, inp, rv))
+  else
+    let r : List<Int> =
+      if len(rv) > 1 then error("glass prove --emit: a multi-wire NON-string result (tuple / record / ADT) is not serializable to a portable proof: use `glass prove`, or return a scalar or a String")
+      else vh(rv) in
+    print(gprove_emit(src, inp, r))
+
+let _job : String = match read_file("glass_prove_job.txt") {
+  Ok(s) => s;
+  Err(e) => error("glass prove: cannot read the proof job: " ++ e) }
+let _jcut : Int = match string_index_of(_job, "\nsrc\n") {
+  Some(i) => i;
+  None => error("glass prove: malformed job file (no src line)") }
+let _jh : String = "\n" ++ substring(_job, 0, _jcut) ++ "\n"
+let _jsrc : String = jb_after(_job, _jcut + 5)
+let _jinp : List<Pair<String, List<Int>>> = jb_inputs(_jh)
+let _jmode : String = jb_field(_jh, "mode")
+let _ : String =
+  if _jmode == "scalar" then jb_run_scalar(_jh, _jsrc, _jinp)
+  else if _jmode == "mw" then jb_run_mw(_jh, _jsrc, _jinp)
+  else if _jmode == "struct" then jb_run_struct(_jh, _jsrc, _jinp)
+  else if _jmode == "emit" then jb_run_emit(_jh, _jsrc, _jinp)
+  else if _jmode == "emitmw" then jb_run_emit(_jh, _jsrc, _jinp)
+  else error("glass prove: malformed job file (unknown mode " ++ _jmode ++ ")")
+"glass prove --goldilocks"

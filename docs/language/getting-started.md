@@ -26,7 +26,8 @@ The interpreter, the REPL, and the bundled examples need only Python. The
 **self-hosted native compiler** (`examples/selfhost/run_native.sh`,
 `bootstrap_fixpoint.sh`) also needs a C compiler and the Boehm garbage collector,
 because it emits C and links `libgc`. The default `glass prove` runs on that
-native path, so it needs them too:
+native path, so it needs them too. Its first run compiles the prover (about 20
+seconds) and caches it; later proofs reuse it:
 
 ```bash
 # macOS

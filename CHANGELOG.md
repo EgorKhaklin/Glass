@@ -9,6 +9,10 @@ Version numbering restarted at 1.0.0 when development resumed; the earlier 0.x t
 
 ## Unreleased
 
+### Changed
+
+- `glass prove` compiles the prover once and caches it, instead of compiling it for every proof. Compiling took about 18 of the 19.6 seconds a small proof needed; a cached proof of `hello_prove.glass` takes a quarter of a second. Each proof runs the cached binary on a job file in a private directory, so proofs no longer wait on one another. The output, exit code and emitted proof are byte-identical to the per-proof compile, which `GLASS_PROVE_UNCACHED=1` still selects.
+
 ## v1.0.0 - 2026-10-08 (development resumes; everything before it is one release)
 
 ### Added
