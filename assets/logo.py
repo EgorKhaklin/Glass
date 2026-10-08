@@ -5,9 +5,11 @@
 The crystal keeps the shape of the first mark, a hexagon with six spokes and the two triangles
 of a star, redrawn in line art and read as a glass cube seen corner on. The edges and face
 diagonals in front are drawn firmly; the ones behind are drawn finely, still visible through
-the glass, because nothing in Glass is hidden. A faint tint shades the three faces, and a glint
-crosses the crystal once. Ink, line weight and the diamonds follow the house style of
-github.com/EgorKhaklin; the wordmark is set in Cinzel capitals, kept as outlines
+the glass, because nothing in Glass is hidden. The crystal is ice: each face takes a cool hue
+(pale ice on top, sky on the left, deeper blue on the right), the centre fills with a soft ice
+gradient, a faint glow sits behind it on dark backgrounds, and a glint crosses it once. The
+wordmark keeps the monochrome ink of the house style of github.com/EgorKhaklin, so the crystal
+is the one accent; it is set in Cinzel capitals, kept as outlines
 (cinzel-caps.json, SIL Open Font License 1.1) so it renders the same everywhere.
 
 GitHub serves these through an img tag, so the animation lives inside each SVG: it plays once,
@@ -36,7 +38,14 @@ NEAR, FAR = (5, 1, 3), (0, 2, 4)             # the corners the near (front) and 
 # lightens on dark, so the order flips to keep the top face the brightest in both themes.
 FACES = {"top": (5, 0), "right": (1, 2), "left": (3, 4)}
 SUBTITLE = "VERIFIABLE FUNCTIONAL LANGUAGE"
-TINT = {"light": {"top": .03, "left": .07, "right": .12}, "dark": {"top": .12, "left": .07, "right": .035}}
+# The ice: per theme, the crystal's line colour, the diamond, and each face's hue and opacity
+# (the first triangle of a face a little stronger than the second, so the facets read as cut).
+ICE = {
+    "light": {"line": "#0B4A6F", "gem": "#0EA5E9", "core": ("#E0F7FF", .9), "glow": 0,
+              "face": {"top": ("#9EE7FF", .62, .44), "left": ("#38BDF8", .40, .28), "right": ("#2B7FFF", .34, .24)}},
+    "dark": {"line": "#CFF3FF", "gem": "#5EE6FF", "core": ("#E0F7FF", .22), "glow": .32,
+             "face": {"top": ("#9EE7FF", .40, .28), "left": ("#38BDF8", .32, .22), "right": ("#2B7FFF", .38, .26)}},
+}
 
 
 def f(v):
@@ -90,17 +99,26 @@ STYLE = (".draw{stroke-dasharray:1 2;stroke-dashoffset:1.01;animation:draw 1.1s 
 
 def crystal(ink, theme, ox, oy, k, uid):
     """The crystal at (ox, oy), scale k. uid keeps ids unique when several are inlined."""
-    tint = "".join('<path fill-opacity="%s" d="%s"/>' % (f(TINT[theme][face]), poly([V[e], V[(e + 1) % 6], STAR[e]]))
-                   for face, edges in FACES.items() for e in edges)
+    ice = ICE[theme]
+    ink = ice["line"]
+    tint = "".join('<path fill="%s" fill-opacity="%s" d="%s"/>'
+                   % (ice["face"][face][0], f(ice["face"][face][1 + i]), poly([V[e], V[(e + 1) % 6], STAR[e]]))
+                   for face, edges in FACES.items() for i, e in enumerate(edges))
+    core = '<path fill="url(#core%s)" d="%s"/>' % (uid, poly(STAR))
+    glow = ('<path class="tint" filter="url(#glow%s)" fill="#38BDF8" fill-opacity="%s" d="%s"/>'
+            % (uid, f(ice["glow"]), poly(V))) if ice["glow"] else ""
     near = "".join('<path class="edge" pathLength="1" style="animation-delay:%ss" d="%s"/>'
                    % (f(.7 + .1 * i), line((C, C), V[j])) for i, j in enumerate(NEAR))
     far = "".join(line((C, C), V[j]) for j in FAR)
     return f"""<g transform="translate({f(ox)} {f(oy)}) scale({f(k)})">
 <defs>
 <clipPath id="in{uid}"><path d="{poly(V)}"/></clipPath>
-<linearGradient id="sheen{uid}" x1="0" x2="1" y1="0" y2="0"><stop offset="0" stop-color="{ink}" stop-opacity="0"/><stop offset=".5" stop-color="{ink}" stop-opacity=".2"/><stop offset="1" stop-color="{ink}" stop-opacity="0"/></linearGradient>
+<linearGradient id="sheen{uid}" x1="0" x2="1" y1="0" y2="0"><stop offset="0" stop-color="#FFFFFF" stop-opacity="0"/><stop offset=".5" stop-color="#FFFFFF" stop-opacity=".45"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/></linearGradient>
+<radialGradient id="core{uid}" cx="{f(C)}" cy="{f(C)}" r="{f(R * .62)}" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="{ice["core"][0]}" stop-opacity="{f(ice["core"][1])}"/><stop offset="1" stop-color="{ice["core"][0]}" stop-opacity="0"/></radialGradient>
+<filter id="glow{uid}" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="16"/></filter>
 </defs>
-<g class="tint" fill="{ink}">{tint}</g>
+{glow}
+<g class="tint">{tint}{core}</g>
 <g class="far" fill="none" stroke="{ink}" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round">
 <path d="{far}"/>
 <path d="{poly([V[j] for j in FAR])}"/>
@@ -110,7 +128,7 @@ def crystal(ink, theme, ox, oy, k, uid):
 <path class="edge" pathLength="1" stroke-width="1.3" style="animation-delay:1s" d="{poly([V[j] for j in NEAR])}"/>
 <g stroke-width="1.6">{near}</g>
 </g>
-<g class="gem" fill="{ink}">{diamond(C, C, 4.6)}</g>
+<g class="gem" fill="{ice["gem"]}">{diamond(C, C, 4.6)}</g>
 <g clip-path="url(#in{uid})"><rect class="glint" x="-90" y="0" width="60" height="240" fill="url(#sheen{uid})"/></g>
 </g>"""
 
