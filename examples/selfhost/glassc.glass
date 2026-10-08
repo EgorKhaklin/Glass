@@ -317,12 +317,29 @@ fn cpre_5(unused: Int) : String =
   "  if (a && *((long long*)(intptr_t)a) == 0x5147CAFE5147CAFELL) return q_list_concat(a, b);\n" ++
   "  return (long long)(intptr_t)q_str_concat((char*)(intptr_t)a, (char*)(intptr_t)b);\n" ++
   "}\n" ++
-  "/* polymorphic == : Int/Bool compare by value; String by content. A raw\n" ++
-  "   pointer (string) is always >= 4GB on arm64 macOS, while Glass ints are\n" ++
-  "   far smaller, so only strcmp when BOTH operands are pointer-sized. */\n" ++
+  "/* polymorphic == : Int/Bool compare by value; String by content. Types are\n" ++
+  "   erased, so a word is read as a string only when it is one: an object in the\n" ++
+  "   collected heap (GC_base) or a literal in this program's image. Any other\n" ++
+  "   word compares by value, so a large Int never reaches strcmp. */\n" ++
+  "#if defined(__APPLE__)\n" ++
+  "#include <mach-o/getsect.h>\n" ++
+  "#include <mach-o/ldsyms.h>\n" ++
+  "static int q_in_image(const char* p) {\n" ++
+  "  static const char* lo = 0; static unsigned long n = 0;\n" ++
+  "  if (!lo) lo = (const char*)getsegmentdata(&_mh_execute_header, \"__TEXT\", &n);\n" ++
+  "  return p >= lo && p < lo + n;\n" ++
+  "}\n" ++
+  "#else\n" ++
+  "extern char __executable_start, edata;\n" ++
+  "static int q_in_image(const char* p) { return p >= &__executable_start && p < &edata; }\n" ++
+  "#endif\n" ++
+  "static int q_is_str(long long v) {\n" ++
+  "  if ((unsigned long long)v < 0x100000000ULL) return 0;\n" ++
+  "  return GC_base((void*)(intptr_t)v) != 0 || q_in_image((const char*)(intptr_t)v);\n" ++
+  "}\n" ++
   "static long long q_eq(long long a, long long b) {\n" ++
   "  if (a == b) return 1;\n" ++
-  "  if ((unsigned long long)a >= 0x100000000ULL && (unsigned long long)b >= 0x100000000ULL)\n" ++
+  "  if (q_is_str(a) && q_is_str(b))\n" ++
   "    return strcmp((char*)(intptr_t)a, (char*)(intptr_t)b) == 0;\n" ++
   "  return 0;\n"
 fn cpre_6(unused: Int) : String =
@@ -631,10 +648,10 @@ fn gen_expr(e: Expr, venv: List<Pair<String, String>>, path: String)
   }
 
 # Equality: Glass `==`/`!=` compiles to the runtime q_eq. Types are erased, so q_eq
-# guesses: equal words are equal, and two words both at or above 2^32 are taken for
-# string pointers and compared with strcmp. Two DIFFERENT Ints both >= 2^32 are
-# therefore misread as strings (a crash, or a wrong answer): a known bug, see the
-# roadmap (Column 4).
+# compares by value unless both words are strings: objects in the collected heap or
+# literals in the program image (checked by address, never by dereferencing a guess).
+# An Int that happens to equal a live string's address would still be misread; typed
+# equality in the emitted C would close that (roadmap, Column 4).
 fn gen_eq(a: Expr, b: Expr, venv: List<Pair<String, String>>, path: String, positive: Bool)
   : (String, String, String) =
   match gen_expr(a, venv, path ++ "0") {

@@ -88,7 +88,7 @@ The native prover spends 75 to 85 percent of its time in the garbage collector, 
 
 ### Column 4: the language (Glass)
 
-- [ ] **Equality in compiled code.** Types are erased in the emitted C, so `==` calls a runtime guess: two words both at or above 2^32 are taken for strings and compared with `strcmp`. Two different Ints both at or above 2^32 therefore crash natively (or, if both happen to point at readable memory, compare wrongly) where the interpreter answers correctly. Gate: a native test comparing large Ints agrees with the interpreter, and the fixpoint holds.
+- [ ] **Equality in compiled code.** Types are erased in the emitted C, so `==` is decided at run time. It used to take any two words at or above 2^32 for strings and call `strcmp`, which crashed on two different large Ints; it now reads a word as a string only when it is a heap object or a literal in the program image. What remains: an Int that happens to equal a live string's address is still read as a string. Typed equality (emit Int and String comparisons from the checker's types, keeping the run-time test for polymorphic code) closes it. Gate: the fixpoint, and native results equal to the interpreter's on a corpus of mixed comparisons.
 - [ ] **Signed overflow wraps in compiled code.** The interpreter wraps at 64 bits; the emitted C leaves signed overflow undefined. Compile with `-fwrapv` (Quartz and glassc). Gate: the suite, the fixpoint, and an overflow test that agrees in both.
 - [ ] **Strings as Unicode code points everywhere.** The interpreter counts code points, the emitted C counts bytes; make the native side match.
 - [ ] **A standard library** with a stable surface: lists, maps, strings, results, and a small numeric tower.

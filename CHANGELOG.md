@@ -11,6 +11,8 @@ Version numbering restarted at 1.0.0 when development resumed; the earlier 0.x t
 
 ### Fixed
 
+- In compiled code, `==` on two different Ints both at or above 2^32 crashed the program, or could compare them wrongly: the emitted C erases types, and the runtime took any two such words for string pointers and called `strcmp`. It now treats a word as a string only when the word is an object in the collected heap or a literal in the program image; anything else compares by value. The interpreter was always right.
+- The suite counted a prove gate that crashed (a segfault or an abort) as skipped, the same as one the machine killed for memory or time. Only a SIGKILL is skipped now; a crash fails the gate.
 - The bridge's soundness gate, which asserts that `verify_b3` accepts honest proofs and rejects attacks, sat in a demo section that nothing ran: `glass prove`, the Lens difftest and the suite all cut the bridge before it, and it no longer typechecked. Its cases now live in `examples/prove/soundness_gate.glass`, and the suite runs them natively.
 
 ### Added

@@ -1324,11 +1324,14 @@ def main() -> int:
     # was the runner-specific cause: run_native inlined prism via `grep|head -1`, and on hosts that
     # IGNORE SIGPIPE (GitHub runners) head closing the pipe made grep fail EPIPE (exit 2) under
     # `pipefail`+`set -e`, aborting run_native BEFORE the compile (rc=2, no binary) → the gate skipped.
-    # _heavy_skipped() now stands only as a FALLBACK: a future resource-starved env that signal-kills a
-    # heavy prove (rc>=128) skips that one gate (CI green) while a real logic regression (rc<128) still
-    # produces a verdict and is evaluated normally. See reference_build_portability memory.
+    # _heavy_skipped() now stands only as a FALLBACK: a resource-starved env that SIGKILLs a heavy
+    # prove (rc 137: the out-of-memory killer, or this suite's timeout) skips that one gate, while any
+    # other outcome, a crash included, is evaluated normally.
     def _heavy_skipped(proc, label):
-        if proc.returncode >= 128:
+        # Only SIGKILL (137) is the environment: the out-of-memory killer, or this suite's
+        # own timeout. A segfault, abort or bus error is the program failing, and must
+        # fail the gate rather than pass as a skip.
+        if proc.returncode == 137:
             print(f"  OK   {label}  (SKIPPED: native heavy-prove killed by signal rc={proc.returncode}: env-limited)")
             return True
         return False
@@ -1366,6 +1369,33 @@ def main() -> int:
             failures += 1
     os.unlink(_cp_str)
     os.unlink(_cp_tup)
+
+    # Native equality: the emitted C erases types, and == once took any two words at or
+    # above 2^32 for string pointers and called strcmp on them, so two different large
+    # Ints crashed the compiled program (the interpreter answered correctly). Strings
+    # must still compare by content: heap against literal, heap against heap.
+    print("== native equality ==")
+    _ne_src = (
+        'fn big(k: Int) : Int = k * 1099511627776 + 12345\n'
+        'let _ : String = print(if big(3) == big(5) then "big: equal" else "big: different")\n'
+        'let _ : String = print(if big(7) == big(7) then "same big: equal" else "same big: different")\n'
+        'let s : String = "ab" ++ "c"\n'
+        'let _ : String = print(if s == "abc" then "heap vs literal: equal" else "heap vs literal: different")\n'
+        'let _ : String = print(if s == ("a" ++ "bc") then "heap vs heap: equal" else "heap vs heap: different")\n'
+        '"done"\n')
+    _ne_path = os.path.join(_tf_cp.gettempdir(), "glass_native_eq_%d.glass" % os.getpid())
+    with open(_ne_path, "w") as _nef:
+        _nef.write(_ne_src)
+    _ne = _prove_run(["bash", os.path.join(EX, "selfhost", "run_native.sh"), _ne_path])
+    os.unlink(_ne_path)
+    _ne_want = ["big: different", "same big: equal", "heap vs literal: equal", "heap vs heap: equal"]
+    if not _heavy_skipped(_ne, "native == on large Ints and on strings agrees with the interpreter"):
+        _ne_ok = (_ne.returncode == 0) and _ne.stdout.split() != [] and \
+                 [l.strip() for l in _ne.stdout.splitlines() if l.strip()] == _ne_want
+        print(f"  {'OK ' if _ne_ok else 'FAIL'}  native == on large Ints and on strings agrees with the interpreter")
+        if not _ne_ok:
+            print(f"        rc={_ne.returncode} out: {_ne.stdout.strip()[-200:]} err: {_ne.stderr.strip()[-200:]}")
+            failures += 1
 
     # The soundness gate (examples/prove/soundness_gate.glass): honest proofs verify and
     # attacks are rejected through verify_b3 and the verifiers it grew from, including a
@@ -2500,7 +2530,7 @@ def main() -> int:
     # that the difftest segfault, a stale input type, is fixed.)
     try:
         _dt = _prove_run(["bash", os.path.join("lens", "difftest.sh")], cwd=_root)
-        if _dt.returncode >= 128:
+        if _dt.returncode == 137:
             print(f"  OK   native round-trip: difftest emit<->Lens  (SKIPPED: native stall rc={_dt.returncode}: env-limited)")
         else:
             dt_ok = (_dt.returncode == 0) and ("LENS DIFFERENTIAL PASSED" in _dt.stdout)
