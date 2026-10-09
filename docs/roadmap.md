@@ -98,11 +98,11 @@ The native prover spends 75 to 85 percent of its time in the garbage collector, 
 
 ### Column 5: the engine under Tiresias (Tiresias)
 
-Tiresias proves today through Glass's older Baby Bear path (a 2^31 field, sums capped near 2.1 billion, comparisons below 65,536). It moves twice.
+Tiresias no longer proves with Glass. Since tiresias@57a53bc it proves in the audited RISC Zero zkVM (3.0.6): a pinned guest recomputes a salted SHA-256 commitment, answers over 64-bit integers, and enforces the cohort floor; the succinct receipt is zero-knowledge.
 
-- [ ] **Onto Glass's sound Goldilocks path**: `verify_b3` proofs that Lens can check, 2^64 field, the wider comparison range. Gate: every query type round-trips and Lens verifies the bundle.
-- [ ] **Witness-free third-party verification**: a public link verifies the proof math without the data (today a third party checks only the binding). Gate: `tiresias verify <bundle>` with no data and no account.
-- [ ] **Onto the audited backend with zero-knowledge** once Column 1 lands. Privacy of the rows is the product; Tiresias never ships a proof mode that is not zero-knowledge.
+- [x] **Witness-free third-party verification**: `tiresias verify <bundle>` checks the receipt with no data and no account, and the public link runs the same check (on RISC Zero).
+- [x] **An audited backend with zero-knowledge**: the RISC Zero zkVM, rather than waiting for Column 1. Tiresias ships no proof mode that is not zero-knowledge.
+- [ ] **Back onto Glass**, if Glass's own audited backend lands and matches those guarantees. Gate: every query type round-trips and Lens verifies the bundle.
 
 ### Column 6: the privacy of the answer (Tiresias)
 
@@ -125,7 +125,7 @@ A proof that an average is true does not stop the average from leaking a person.
 
 The columns carry weight only once a beam joins them.
 
-- [ ] Tiresias runs end to end on the audited backend with zero-knowledge, through the Glass package, verified by Lens.
+- [ ] Tiresias runs end to end on Glass's audited backend with zero-knowledge, through the Glass package, verified by Lens. (It already runs end to end on RISC Zero's.)
 - [ ] One pinned set of versions (Glass, the backend, Tiresias) passes both suites and an interop test between them.
 - [ ] Threat models for both projects, and an audit package that scopes the bridge, the constraint format, Lens, and the Tiresias query circuits.
 

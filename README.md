@@ -122,7 +122,7 @@ docs/           language, compiler, security, roadmap
 tests/          the regression suite
 ```
 
-Glass is the engine under [Tiresias](https://github.com/EgorKhaklin/tiresias), which answers aggregate questions over data it never reveals.
+Its sibling, [Tiresias](https://github.com/EgorKhaklin/tiresias), answers aggregate questions over data it never reveals; it proves with the audited RISC Zero zkVM while Glass's own backend is built.
 
 ## License
 
